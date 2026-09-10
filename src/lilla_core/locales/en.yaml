@@ -1,0 +1,110 @@
+# UI messages shown on Discord (English).
+#
+# Keys are stable dotted paths (nested the same way in YAML); `{name}` inside a
+# value is filled in by the arguments of `lilla_core.ui.messages.t()`.
+# When adding a message, add the same key to ja.yaml as well.
+
+command:
+  handler:
+    empty: "Please enter a command."
+    unknown_title: "Command error"
+    unknown: "Unknown command: !{name}\nCurrently supported commands: {supported}"
+    error: "An error occurred while processing the command"
+
+  cleardirty:
+    not_found: "No history entry to delete was found."
+    deleted: "Deleted the most recent flagged reply ({discord_count} on Discord, 1 in the conversation history)."
+
+  disable_tools:
+    done: "Disabled all tools for normal conversation.\nUse `!enable_tools` to turn them back on."
+
+  enable_tools:
+    done: "Re-enabled the tools for normal conversation."
+
+  model:
+    switched: "Switched the model to {model}"
+    reset: "Reverted the model to {model}"
+    not_found: "Model '{name}' was not found. Available models: {available}"
+    none: "(none)"
+
+  mongodata:
+    json_parse_title: "!mongodata: JSON parse error"
+    invalid_request_title: "!mongodata: Invalid request"
+    db_error_title: "!mongodata: Database error"
+    collection_required: "The collection field is required"
+    collection_not_allowed: "Collection is not allowed: {collection}"
+    invalid_payload: "The payload field is invalid"
+    key_field_missing: "Key field '{key_field}' is not present in the payload"
+
+  runtask:
+    invalid_request_title: "[RUNTASK] Invalid request"
+    execution_error_title: "[RUNTASK] An error occurred while running {tool}"
+    tool_error_title: "[RUNTASK] An error occurred while running the tool"
+    tool_name_required: "No tool name was given"
+    tool_not_found: "Tool '{tool}' was not found"
+    tool_not_manual: "Tool '{tool}' does not support manual execution"
+
+attachment:
+  error_title: "{command}: Attachment error"
+  download_error_title: "{command}: Attachment download error"
+  body_missing_title: "{command}: BODY not found"
+  not_text: "This attachment cannot be read as text: {filename} (content_type={content_type})"
+  content_type_unknown: "unknown"
+  too_large: "The attachment is too large: {filename} ({size} bytes, limit {max_size} bytes)"
+  decode_failed: "Could not read the attachment as UTF-8: {filename} ({error})"
+  body_missing: "Neither the command text nor an attachment contains a BODY"
+
+image_attachment:
+  size_error_title: "Image attachment: size limit exceeded"
+  download_error_title: "Image attachment: download error"
+  too_large: "The image exceeds the {max_mb}MB limit: {filename} ({size} bytes, limit {max_size} bytes)"
+  unknown_filename: "(unnamed)"
+
+selftest:
+  summary: "🩺 Self-test result ({mode}): {ok}/{total} passed"
+  detail_header: "Self-test result ({timestamp})"
+  mode:
+    full: "{arg} (includes the LLM connectivity check)"
+    normal: "standard"
+  check:
+    process_alive: "The process is responding"
+    mongodb_ok: "Responded to ping"
+    mongodb_timeout: "Timed out after {seconds} seconds"
+    command_registry_count: "Registered commands: {count}"
+    task_tools_count: "Task tools: {count}"
+    llm_config_error: "Failed to read the configuration: {error}"
+    llm_prompt_error: "{info} Failed to build the system prompt: {error}"
+    llm_timeout: "{info} The LLM round trip timed out after {seconds} seconds"
+    llm_request_error: "{info} The LLM round trip failed: {error}"
+    llm_ok: "{info} Received a response"
+
+approval:
+  command_marker: "----- Command to run (approving executes exactly this) -----"
+  truncated: "…(truncated) See the attached {filename} for the full text."
+  request: "<@{user_id}> A new command request has arrived.\n\nFrom: {author}\nChannel: {channel}\n[Open the original message]({jump_url})\nNote: the link above is only for checking the sender and the context. The original message can be edited afterwards, so this approval request is the authoritative copy of what will run.\n\n{marker}\n{body}"
+  error_title: "Approval flow"
+  restore_failed: "Aborted because the command could not be restored from the approval request message."
+  approved_suffix: "✅ Approved"
+  rejected_suffix: "❌ Rejected"
+  button:
+    approve: "Approve"
+    reject: "Reject"
+    approved: "Approved"
+    rejected: "Rejected"
+
+interaction:
+  no_permission: "You do not have permission to do this."
+  expired: "This suggestion has expired."
+  done: "Done (title: {title})"
+  failed: "An error occurred: {error}"
+  error: "An error occurred while processing."
+
+message:
+  error: "An error occurred while processing the message"
+
+task:
+  execution_error_title: "[TASK] An error occurred while running {tool}"
+
+conversation:
+  reauth_required: "[Re-authentication required]\n{service} authentication has expired.\nPlease sign in from the link below.\n{url}"
+  tool_call_limit: "Reached the tool call limit, so processing was stopped."

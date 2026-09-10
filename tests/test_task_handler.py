@@ -1,0 +1,230 @@
+"""task_handler.py のテスト。"""
+from __future__ import annotations
+
+import sys
+from datetime import datetime
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from lilla_core.handlers import task_handler
+
+
+sys.path.insert(0, "src")
+
+
+@pytest.fixture(autouse=True)
+def _reset_scheduler():
+    """各テストの前後でグローバルスケジューラをリセットする。"""
+    task_handler._scheduler = None
+    yield
+    task_handler._scheduler = None
+
+
+# ---------------------------------------------------------------------------
+# TestStartScheduler
+# ---------------------------------------------------------------------------
+
+
+class TestStartScheduler:
+    def _make_tools(self, schedule="0 7 * * *", scheduled=True):
+        """テスト用のツール辞書を生成する。"""
+        tool = MagicMock()
+        tool.schedule = schedule
+        return {
+            "my_tool": {"instance": tool, "trigger": "task", "scheduled": scheduled}
+        }
+
+    @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
+    def test_registers_scheduled_jobs(self, mock_scheduler_cls) -> None:
+        """スケジュール設定済みタスクが add_job で登録されること。"""
+        mock_scheduler = MagicMock()
+        mock_scheduler_cls.return_value = mock_scheduler
+        tools = self._make_tools()
+        bot = MagicMock()
+
+        task_handler.start_scheduler(tools, bot)
+
+        mock_scheduler_cls.assert_called_once_with(
+            timezone='Asia/Tokyo',
+            job_defaults={"misfire_grace_time": 3600, "coalesce": True},
+        )
+        mock_scheduler.add_job.assert_called_once()
+        call_kwargs = mock_scheduler.add_job.call_args
+        assert call_kwargs[1]["id"] == "my_tool"
+        mock_scheduler.start.assert_called_once()
+
+    @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
+    def test_skips_unscheduled_tools(self, mock_scheduler_cls) -> None:
+        """scheduled=False のツールはスキップされること。"""
+        mock_scheduler = MagicMock()
+        mock_scheduler_cls.return_value = mock_scheduler
+        tools = self._make_tools(scheduled=False)
+        bot = MagicMock()
+
+        task_handler.start_scheduler(tools, bot)
+
+        mock_scheduler.add_job.assert_not_called()
+        mock_scheduler.start.assert_called_once()
+
+    @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
+    def test_idempotent(self, mock_scheduler_cls) -> None:
+        """2回呼んでもスケジューラは1つしか作られないこと。"""
+        mock_scheduler = MagicMock()
+        mock_scheduler_cls.return_value = mock_scheduler
+        tools = self._make_tools()
+        bot = MagicMock()
+
+        task_handler.start_scheduler(tools, bot)
+        task_handler.start_scheduler(tools, bot)
+
+        mock_scheduler_cls.assert_called_once()
+
+    @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
+    def test_skips_tool_without_schedule(self, mock_scheduler_cls) -> None:
+        """scheduleが空のツールはスキップされること。"""
+        mock_scheduler = MagicMock()
+        mock_scheduler_cls.return_value = mock_scheduler
+        tools = self._make_tools(schedule="")
+        bot = MagicMock()
+
+        task_handler.start_scheduler(tools, bot)
+
+        mock_scheduler.add_job.assert_not_called()
+
+    @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
+    def test_registers_multiple_scheduled_tools(self, mock_scheduler_cls) -> None:
+        """複数のスケジュール済みタスクが全て登録されること。"""
+        mock_scheduler = MagicMock()
+        mock_scheduler_cls.return_value = mock_scheduler
+
+        tool_a = MagicMock()
+        tool_a.schedule = "0 7 * * *"
+        tool_b = MagicMock()
+        tool_b.schedule = "30 9 * * 1-5"
+        tools = {
+            "tool_a": {"instance": tool_a, "trigger": "task", "scheduled": True},
+            "tool_b": {"instance": tool_b, "trigger": "task", "scheduled": True},
+        }
+        bot = MagicMock()
+
+        task_handler.start_scheduler(tools, bot)
+
+        assert mock_scheduler.add_job.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# TestStopScheduler
+# ---------------------------------------------------------------------------
+
+
+class TestStopScheduler:
+    @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
+    def test_shuts_down_running_scheduler(self, mock_scheduler_cls) -> None:
+        """起動中のスケジューラを shutdown(wait=False) で停止すること。"""
+        mock_scheduler = MagicMock()
+        mock_scheduler_cls.return_value = mock_scheduler
+        task_handler.start_scheduler(self._make_tools(), MagicMock())
+
+        task_handler.stop_scheduler()
+
+        mock_scheduler.shutdown.assert_called_once_with(wait=False)
+        assert task_handler._scheduler is None
+
+    def test_noop_when_not_started(self) -> None:
+        """未起動の場合は何もせず例外にもならないこと。"""
+        task_handler.stop_scheduler()  # 例外にならないことを確認
+        assert task_handler._scheduler is None
+
+    @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
+    def test_allows_restart_after_stop(self, mock_scheduler_cls) -> None:
+        """停止後は start_scheduler で再度スケジューラを作れること。"""
+        mock_scheduler_cls.side_effect = [MagicMock(), MagicMock()]
+        task_handler.start_scheduler(self._make_tools(), MagicMock())
+        task_handler.stop_scheduler()
+
+        task_handler.start_scheduler(self._make_tools(), MagicMock())
+
+        assert mock_scheduler_cls.call_count == 2
+
+    def _make_tools(self, schedule="0 7 * * *", scheduled=True):
+        """テスト用のツール辞書を生成する。"""
+        tool = MagicMock()
+        tool.schedule = schedule
+        return {
+            "my_tool": {"instance": tool, "trigger": "task", "scheduled": scheduled}
+        }
+
+
+# ---------------------------------------------------------------------------
+# TestMakeJobFunc
+# ---------------------------------------------------------------------------
+
+
+class TestMakeJobFunc:
+    def test_calls_run_coroutine_threadsafe(self) -> None:
+        """生成されたジョブ関数が asyncio.run_coroutine_threadsafe を呼ぶこと。"""
+        tool = MagicMock()
+        bot = MagicMock()
+
+        with patch("lilla_core.handlers.task_handler.asyncio.run_coroutine_threadsafe") as mock_run:
+            job_func = task_handler._make_job_func("test_tool", tool, bot, {})
+            job_func()
+
+            mock_run.assert_called_once()
+            coro, loop_arg = mock_run.call_args[0]
+            coro.close()  # 未 await コルーチンを明示的に閉じて RuntimeWarning を抑制
+            assert loop_arg is bot.loop
+
+    def test_passes_bot_loop(self) -> None:
+        """生成されたジョブ関数が bot.loop を渡すこと。"""
+        tool = MagicMock()
+        bot = MagicMock()
+
+        with patch("lilla_core.handlers.task_handler.asyncio.run_coroutine_threadsafe") as mock_run:
+            job_func = task_handler._make_job_func("test_tool", tool, bot, {})
+            job_func()
+
+            coro, loop_arg = mock_run.call_args[0]
+            coro.close()  # 未 await コルーチンを明示的に閉じて RuntimeWarning を抑制
+            assert loop_arg is bot.loop
+
+
+# ---------------------------------------------------------------------------
+# TestRunTool
+# ---------------------------------------------------------------------------
+
+
+class TestRunTool:
+    async def test_calls_execute(self) -> None:
+        """_run_tool が tool.execute を正しく呼ぶこと。"""
+        tool = MagicMock()
+        tool.execute = AsyncMock(return_value="ok")
+        bot = MagicMock()
+        now = datetime.now()
+        llm_tools = {"dummy": {}}
+
+        await task_handler._run_tool("test_tool", tool, bot, now, llm_tools)
+
+        tool.execute.assert_called_once()
+        call_args = tool.execute.call_args[0][0]
+        assert call_args["discord_client"] is bot
+        assert call_args["now"] is now
+        assert call_args["llm_tools"] is llm_tools
+
+    async def test_handles_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """ツール実行で例外が起きても外に漏れず、エラー通知が行われること。"""
+        tool = MagicMock()
+        error = Exception("crash")
+        tool.execute = AsyncMock(side_effect=error)
+        bot = MagicMock()
+        now = datetime.now()
+
+        mock_notify_error = AsyncMock()
+        monkeypatch.setattr(task_handler, "notify_error", mock_notify_error)
+
+        # 例外が raise されないことを確認
+        await task_handler._run_tool("crash_tool", tool, bot, now, {})
+
+        mock_notify_error.assert_called_once_with(
+            bot, "[TASK] crash_tool の実行中にエラーが発生しました", error
+        )

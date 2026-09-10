@@ -1,0 +1,30 @@
+version: 1
+disable_existing_loggers: false
+
+formatters:
+  standard:
+    format: '%(asctime)s - %(levelname)s - %(message)s'
+
+loggers:
+  pymongo:
+    level: WARNING
+  motor:
+    level: WARNING
+
+handlers:
+  console:
+    class: logging.StreamHandler
+    level: DEBUG
+    formatter: standard
+    stream: ext://sys.stdout
+  mongodb:
+    # uri と db_name は logging_setup.setup_logging() で AppConfig から注入される
+    (): lilla_core.log_handler.MongoDBHandler
+    level: INFO
+    formatter: standard
+
+root:
+  level: DEBUG
+  handlers:
+    - console
+    - mongodb

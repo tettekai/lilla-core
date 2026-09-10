@@ -1,0 +1,5 @@
+# テスト実行時に AppConfig / AppConfigEx が必須セクションを解決できるようにする
+# 最小構成の lilla.yaml（conftest.py が CONFIG_ROOT にこのディレクトリを指定する）。
+discord:
+  my_user_id: "123456789"
+  habits_channel: habits-test

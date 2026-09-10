@@ -1,0 +1,110 @@
+# Discord に見せる UI 文言（日本語）。
+#
+# キーは安定した英語のドット区切り（YAML 上は同じ形のネスト）で、値の中の
+# `{name}` は `lilla_core.ui.messages.t()` の引数で埋める。
+# 文言を足すときは en.yaml にも同じキーを追加すること。
+
+command:
+  handler:
+    empty: "コマンドを入力してください。"
+    unknown_title: "コマンド処理エラー"
+    unknown: "未知のコマンドです: !{name}\n現在サポートしているコマンド: {supported}"
+    error: "コマンド処理中にエラーが発生しました"
+
+  cleardirty:
+    not_found: "削除対象の履歴が見つかりません。"
+    deleted: "直近の要確認メッセージを削除しました（Discord {discord_count} 件、会話履歴 1 件）。"
+
+  disable_tools:
+    done: "通常会話のツールをすべて無効にしました。\n`!enable_tools` で元に戻せます。"
+
+  enable_tools:
+    done: "通常会話のツールを再び有効にしました。"
+
+  model:
+    switched: "モデルを {model} に切り替えました"
+    reset: "モデルを {model} に戻しました"
+    not_found: "モデル '{name}' は見つかりません。利用可能なモデル: {available}"
+    none: "（なし）"
+
+  mongodata:
+    json_parse_title: "!mongodata: JSONパースエラー"
+    invalid_request_title: "!mongodata: 不正なリクエスト"
+    db_error_title: "!mongodata: DB操作エラー"
+    collection_required: "collection フィールドが必要です"
+    collection_not_allowed: "許可されていないコレクションです: {collection}"
+    invalid_payload: "payload フィールドが不正です"
+    key_field_missing: "key フィールド '{key_field}' が payload に存在しません"
+
+  runtask:
+    invalid_request_title: "[RUNTASK] 不正なリクエスト"
+    execution_error_title: "[RUNTASK] {tool} の実行中にエラーが発生しました"
+    tool_error_title: "[RUNTASK] ツール実行中にエラーが発生しました"
+    tool_name_required: "ツール名が指定されていません"
+    tool_not_found: "ツール '{tool}' が見つかりません"
+    tool_not_manual: "ツール '{tool}' は手動実行に対応していません"
+
+attachment:
+  error_title: "{command}: 添付ファイルエラー"
+  download_error_title: "{command}: 添付ファイルの取得エラー"
+  body_missing_title: "{command}: BODY未検出"
+  not_text: "テキストとして読み取れない添付ファイルです: {filename} (content_type={content_type})"
+  content_type_unknown: "不明"
+  too_large: "添付ファイルが大きすぎます: {filename} ({size} bytes、上限 {max_size} bytes)"
+  decode_failed: "添付ファイルを UTF-8 として読み取れませんでした: {filename} ({error})"
+  body_missing: "コマンド本文にも添付ファイルにも BODY が含まれていません"
+
+image_attachment:
+  size_error_title: "画像添付: サイズ超過"
+  download_error_title: "画像添付: ダウンロードエラー"
+  too_large: "画像サイズが上限（{max_mb}MB）を超えています: {filename} ({size} bytes、上限 {max_size} bytes)"
+  unknown_filename: "(名前不明)"
+
+selftest:
+  summary: "🩺 自己診断結果（{mode}）: {ok}/{total} 成功"
+  detail_header: "自己診断結果 ({timestamp})"
+  mode:
+    full: "{arg}（LLM 疎通確認あり）"
+    normal: "通常"
+  check:
+    process_alive: "プロセスは応答しています"
+    mongodb_ok: "ping に応答しました"
+    mongodb_timeout: "{seconds}秒でタイムアウトしました"
+    command_registry_count: "登録コマンド数: {count}"
+    task_tools_count: "タスクツール数: {count}"
+    llm_config_error: "設定の読み込みに失敗: {error}"
+    llm_prompt_error: "{info} システムプロンプトの組み立てに失敗: {error}"
+    llm_timeout: "{info} LLM 往復が{seconds}秒でタイムアウトしました"
+    llm_request_error: "{info} LLM 往復に失敗: {error}"
+    llm_ok: "{info} 応答を受信しました"
+
+approval:
+  command_marker: "----- 実行内容（承認するとこの内容がそのまま実行されます） -----"
+  truncated: "…（省略）全文は添付ファイル {filename} をご確認ください。"
+  request: "<@{user_id}> 新しいコマンドリクエストが届きました。\n\n送信者: {author}\nチャンネル: {channel}\n[元のメッセージを開く]({jump_url})\n※ 上のリンクは送信者・文脈の確認用です。元メッセージは後から編集されうるため、実行内容の正はこの承認依頼メッセージの内容です。\n\n{marker}\n{body}"
+  error_title: "承認フロー"
+  restore_failed: "承認依頼メッセージから実行内容を復元できなかったため、実行を中止しました。"
+  approved_suffix: "✅ 承認済み"
+  rejected_suffix: "❌ 拒否済み"
+  button:
+    approve: "承認する"
+    reject: "拒否する"
+    approved: "承認済み"
+    rejected: "拒否済み"
+
+interaction:
+  no_permission: "この操作を行う権限がありません。"
+  expired: "この提案は有効期限切れです。"
+  done: "処理が完了しました（タイトル: {title}）"
+  failed: "エラーが発生しました: {error}"
+  error: "処理中にエラーが発生しました。"
+
+message:
+  error: "メッセージ処理中にエラーが発生しました"
+
+task:
+  execution_error_title: "[TASK] {tool} の実行中にエラーが発生しました"
+
+conversation:
+  reauth_required: "【再認証が必要です】\n{service} の認証が切れています。\n以下のリンクからログインしてください。\n{url}"
+  tool_call_limit: "ツール呼び出しの上限に達しました。処理を中断しました。"
