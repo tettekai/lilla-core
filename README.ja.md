@@ -1,3 +1,5 @@
+<img src="docs/lilla-logo.svg" alt="Lilla" width="160" />
+
 # lilla-core
 
 Lilla のコアランタイム。AI エージェントを構築するための汎用基盤ライブラリです。

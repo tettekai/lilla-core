@@ -1,3 +1,5 @@
+<img src="docs/lilla-logo.svg" alt="Lilla" width="160" />
+
 # lilla-core
 
 The core runtime of Lilla. A general-purpose foundation library for building AI agents.
