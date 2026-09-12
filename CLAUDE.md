@@ -141,6 +141,29 @@ Examples:
 - `refactor: remove yaml flatten from core`
 - `docs: describe locale fallback`
 
+### 関連 Issue のクローズ（PR マージ時）
+
+対応する Issue がある変更では、本文の末尾（`Co-Authored-By` などの行より前）に
+独立した行でクローズキーワードを書き、PR マージ時に GitHub 側で Issue を自動クローズ
+させる。キーワード自体の効果はどれも同じ（`close(s)` / `fix(es)` / `resolve(s)`）だが、
+読み手にとっての意味合いを揃えるため type に対応させて選ぶ。
+
+| type | キーワード |
+|------|-----------|
+| `fix` | `Fixes #123` |
+| それ以外（`feat` / `refactor` / `test` / `docs` / `chore`） | `Closes #123` |
+
+複数の Issue にまたがる場合は行を分けて書く（`Fixes #123` と `Closes #456` など）。
+対応する Issue が無いコミットには付けない。
+
+例:
+
+```
+fix(selftest): handle LLM timeout
+
+Fixes #123
+```
+
 ## Pull request descriptions
 
 Write the PR title and body in English. Keep it short.
