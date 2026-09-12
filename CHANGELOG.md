@@ -15,6 +15,9 @@
 
 ### Changed
 
+- **BREAKING**: `llm:` を未記載のまま起動、または `providers` が空、`llm.default` に
+  対応する provider が無い `lilla.yaml` では起動できなくなった（`AppConfig()` 構築時に
+  `ValidationError`）。初メッセージ受信時まで気付けなかった設定ミスを起動時に検出する
 - **BREAKING**: `utils/datetime_utils.py` の `to_jst_date` / `jst_day_end_utc` の基準を
   UTC+9 固定から `ui.timezone` の解決結果へ変更（関数名は互換のため維持）。`local_timezone` /
   `local_now` も同じ解決結果を返す。`JST` 定数だけは `ui.timezone` によらず UTC+9 のまま
@@ -28,6 +31,17 @@
 - 上記に伴い、日付や実行時刻を日本時間で固定したいホストは `lilla.yaml` に
   `ui.timezone: Asia/Tokyo` を明示すること（コンテナの OS が UTC の場合、未指定だと
   cron も「今日」も UTC になる）
+
+### Fixed
+
+- `LlmProviderConfig.type` を自由文字列から `Literal["ollama", "openai_compat"]` に変更し、
+  typo を起動時の `ValidationError` として検出できるようにした
+- `logging.yaml` に `handlers.mongodb` が無い場合に `setup_logging()` が `KeyError` で
+  落ちていた問題を修正。mongodb ハンドラが無いときは接続情報を注入せず、
+  `root.handlers` / 各 `loggers.*.handlers` からも `mongodb` への参照を除去する
+- 不正な cron 式を持つタスクが 1 件あるだけで `on_ready` のスケジューラ登録処理全体が
+  失敗していた問題を修正。不正なタスクだけ `WARNING` でスキップし、他の正当なタスクは
+  登録したうえでスケジューラを起動する
 
 ## [0.2.0]
 
