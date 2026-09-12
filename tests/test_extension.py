@@ -7,18 +7,50 @@ from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from pydantic import BaseModel
 
 from lilla_core.core import extension as ext_module
 from lilla_core.core.extension import Extension
 
 
+def config_module():
+    """`load_extensions()` が実際に触る `lilla_core.core.config` を都度解決する。
+
+    他のテストモジュールが `sys.modules` から `lilla_core.core.config` を
+    取り除くことがあり、その後の再 import では別のモジュールオブジェクトに
+    なる。import 時に束縛した参照では `set_config()` の相手とズレるため、
+    参照のたびに `sys.modules` から引き直す。
+    """
+    import lilla_core.core.config as module
+
+    return module
+
+
 @pytest.fixture(autouse=True)
 def _isolate_registry():
-    """登録内容はプロセス全体で共有されるため、テストごとに前後で復元する。"""
+    """登録内容はプロセス全体で共有されるため、テストごとに前後で復元する。
+
+    `load_extensions()` は設定の合成まで行い `set_config()` するため、拡張の
+    登録内容だけでなくプロセスの設定インスタンスと OS 変数名のレジストリも
+    元へ戻す。
+    """
+    cfg = config_module()
     saved = ext_module.get_extensions()
+    saved_config = cfg._config_instance
+    saved_var_names = dict(cfg._extra_env_var_names)
     ext_module.reset_extensions()
     yield
     ext_module.set_extensions(saved)
+    cfg._config_instance = saved_config
+    cfg._extra_env_var_names.clear()
+    cfg._extra_env_var_names.update(saved_var_names)
+    cfg._default_config.cache_clear()
+
+
+class SampleSectionConfig(BaseModel):
+    """テスト用の YAML セクションモデル（全フィールドにデフォルトあり）。"""
+
+    value: str = "default"
 
 
 def _make_module(name: str, attrs: dict) -> ModuleType:
@@ -210,6 +242,164 @@ class TestValidation:
 
         assert [e.name for e in ext_module.get_extensions()] == ["ok"]
         assert "a" in ext_module.get_tool_context_providers()
+
+
+# ---------------------------------------------------------------------------
+# TestConfigContributions
+# ---------------------------------------------------------------------------
+
+
+class TestConfigContributions:
+    """`config_models()` / `env_fields()` のマージと衝突検査。"""
+
+    def test_contributions_are_merged_in_load_order(
+        self, make_extension, use_extensions
+    ) -> None:
+        """複数の拡張の申告が 1 つの dict へまとまる。"""
+        use_extensions(
+            make_extension("a", config_models={"alpha": SampleSectionConfig}),
+            make_extension(
+                "b",
+                config_models={"beta": SampleSectionConfig},
+                env_fields={"beta_secret": "BETA_SECRET"},
+            ),
+        )
+
+        assert ext_module.get_config_models() == {
+            "alpha": SampleSectionConfig,
+            "beta": SampleSectionConfig,
+        }
+        assert ext_module.get_env_fields() == {"beta_secret": "BETA_SECRET"}
+
+    def test_duplicate_section_between_extensions_raises(self, make_extension) -> None:
+        """同じセクション名を 2 つの拡張が提供したら fail-fast する。"""
+        with pytest.raises(ValueError, match="Duplicate config model key 'alpha'"):
+            ext_module.set_extensions([
+                make_extension("a", config_models={"alpha": SampleSectionConfig}),
+                make_extension("b", config_models={"alpha": SampleSectionConfig}),
+            ])
+
+    def test_duplicate_env_field_between_extensions_raises(self, make_extension) -> None:
+        """同じ env フィールド名を 2 つの拡張が提供したら fail-fast する。"""
+        with pytest.raises(ValueError, match="Duplicate env field key 'shared_secret'"):
+            ext_module.set_extensions([
+                make_extension("a", env_fields={"shared_secret": "SHARED_SECRET"}),
+                make_extension("b", env_fields={"shared_secret": "OTHER_SECRET"}),
+            ])
+
+    def test_core_section_name_is_reserved(self, make_extension) -> None:
+        """コア確定のセクション名は拡張から提供できない。"""
+        with pytest.raises(ValueError, match="reserved key 'discord'"):
+            ext_module.set_extensions([
+                make_extension("a", config_models={"discord": SampleSectionConfig}),
+            ])
+
+    def test_core_env_field_name_is_reserved(self, make_extension) -> None:
+        """コア確定の `EnvConfig` フィールド名は拡張から提供できない。"""
+        with pytest.raises(ValueError, match="reserved key 'discord_token'"):
+            ext_module.set_extensions([
+                make_extension("a", env_fields={"discord_token": "DISCORD_TOKEN"}),
+            ])
+
+    def test_set_extensions_does_not_replace_process_config(
+        self, make_extension, use_extensions
+    ) -> None:
+        """`set_extensions()` は登録と検証だけで、プロセスの設定を差し替えない。"""
+        sentinel = config_module().get_config()
+
+        use_extensions(make_extension("a", config_models={"alpha": SampleSectionConfig}))
+
+        assert config_module().get_config() is sentinel
+
+
+# ---------------------------------------------------------------------------
+# TestRequiredConfigSections
+# ---------------------------------------------------------------------------
+
+
+class TestRequiredConfigSections:
+    """`required_config_sections()` の存在検査。"""
+
+    def test_section_provided_by_another_extension_is_accepted(
+        self, make_extension, use_extensions
+    ) -> None:
+        """他の拡張が提供していれば要求できる（提供側の並び順は問わない）。"""
+        use_extensions(
+            make_extension("consumer", required_config_sections=["alpha"]),
+            make_extension("provider", config_models={"alpha": SampleSectionConfig}),
+        )
+
+        assert ext_module.get_config_models() == {"alpha": SampleSectionConfig}
+
+    def test_core_section_is_always_available(self, make_extension, use_extensions) -> None:
+        """コア確定のセクションは誰も提供しなくても要求できる。"""
+        use_extensions(make_extension("consumer", required_config_sections=["prompt"]))
+
+        assert ext_module.get_config_models() == {}
+
+    def test_unprovided_section_fails_fast(self, make_extension) -> None:
+        """誰も提供していないセクションを要求したら、要求元の名前つきで落とす。"""
+        with pytest.raises(
+            ValueError,
+            match="Extension 'consumer' requires config section 'google'",
+        ):
+            ext_module.set_extensions([
+                make_extension("consumer", required_config_sections=["google"]),
+            ])
+
+
+# ---------------------------------------------------------------------------
+# TestLoadExtensionsComposesConfig
+# ---------------------------------------------------------------------------
+
+
+class TestLoadExtensionsComposesConfig:
+    """`load_extensions()` が申告を合成してプロセスの設定に据えること。"""
+
+    def test_declared_section_is_readable_after_load(
+        self, register_module, make_extension
+    ) -> None:
+        """ロード後の `get_config()` で拡張のセクションが読める。"""
+        register_module(
+            "pack_cfg",
+            extension=make_extension("cfg", config_models={"alpha": SampleSectionConfig}),
+        )
+
+        ext_module.load_extensions("pack_cfg")
+
+        assert config_module().get_config().alpha.value == "default"
+
+    def test_declared_env_field_is_readable_after_load(
+        self, register_module, make_extension, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ロード後の `get_config().env` で拡張の秘匿フィールドが読める。"""
+        monkeypatch.setenv("SAMPLE_SECRET", "s3cret")
+        register_module(
+            "pack_env",
+            extension=make_extension("env", env_fields={"sample_secret": "SAMPLE_SECRET"}),
+        )
+
+        ext_module.load_extensions("pack_env")
+
+        assert config_module().get_config().env.sample_secret == "s3cret"
+
+    def test_composition_overrides_import_side_effect_set_config(
+        self, register_module, make_extension
+    ) -> None:
+        """拡張が import 副作用で差し込んだ設定は、合成結果で上書きされる。"""
+        host_instance = config_module().AppConfig()
+        config_module().set_config(host_instance)
+        register_module("pack_cfg", extension=make_extension("cfg"))
+
+        ext_module.load_extensions("pack_cfg")
+
+        assert config_module().get_config() is not host_instance
+
+    def test_zero_extensions_still_set_a_plain_config(self) -> None:
+        """拡張 0 個でも素の `AppConfig` が据えられる（コア単体起動）。"""
+        ext_module.load_extensions("")
+
+        assert type(config_module().get_config()) is config_module().AppConfig
 
 
 # ---------------------------------------------------------------------------

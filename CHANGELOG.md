@@ -9,12 +9,28 @@
 
 ### Added
 
+- 拡張が申告した設定差分をコアが `AppConfig` へ合成するようになった。`Extension.config_models()`
+  に「YAML セクション名 → セクションモデル」を、`Extension.env_fields()` に「`EnvConfig` の
+  フィールド名 → OS 環境変数名」を返すと、`load_extensions()` が全拡張の申告を 1 つの Pydantic
+  モデルへ組み、`get_config().<セクション名>` / `get_config().env.<フィールド名>` で型付きで
+  読めるようになる。セクションはモデルが必須フィールドを持てば必須、全フィールドにデフォルトが
+  あれば省略可能。`env_fields()` で足すフィールドの型は常に `str | None`（既定値 `None`）
+- `Extension.required_config_sections()` を追加。自分では提供しないが読む YAML セクション名を
+  並べると、誰も提供しておらずコア確定のセクションでもない場合にロード時 fail-fast する
+  （メッセージに要求元の拡張名を含む）。拡張どうしの依存を自動解決する仕組みは持たない
+- 同名の YAML セクション・同名の `EnvConfig` フィールドを 2 つの拡張が提供した場合、および
+  コア確定の名前と重複した場合はロード時 fail-fast するようになった
 - `lilla.yaml` の `ui` に `timezone` を追加。「人間側の今日 / いま」に使うタイムゾーンを
   IANA 名で指定する。未指定なら従来どおり OS のローカルタイムゾーンに従う。空文字や
   `ZoneInfo` が受け付けない名前は、ロケールと違ってフォールバックせず起動時に失敗する
 
 ### Changed
 
+- **BREAKING**: ホストが `AppConfig` のサブクラスを手書きし、拡張モジュールの import 副作用で
+  `set_config()` して差し替える方式を廃止した。`load_extensions()` が拡張の登録後に必ず設定を
+  合成して `set_config()` するため、import 時に差し込んだインスタンスは上書きされる。設定の差分は
+  `config_models()` / `env_fields()` から出すこと。あわせて `LILLA_EXTENSIONS` の先頭にホスト
+  設定モジュールを置く規約が不要になった（並び順は設定の合成に影響しない）
 - **BREAKING**: `llm:` を未記載のまま起動、または `providers` が空、`llm.default` に
   対応する provider が無い `lilla.yaml` では起動できなくなった（`AppConfig()` 構築時に
   `ValidationError`）。初メッセージ受信時まで気付けなかった設定ミスを起動時に検出する

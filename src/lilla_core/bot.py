@@ -24,7 +24,8 @@ from lilla_core.core.extension import (
 # 環境変数 `LILLA_EXTENSIONS`（カンマ区切りの import パス）が指す拡張モジュールを
 # 読み込む。未設定・空なら 0 個で、拡張を持たないコア単体起動になる。import や
 # 検証に失敗した場合はここで例外が伝播し、起動が失敗する（fail-fast）。
-# 拡張モジュールの import 副作用（ホストの `set_config()` など）を有効にするため、
+# あわせて拡張が申告した YAML セクション・秘匿フィールドを `AppConfig` へ合成し、
+# プロセスの設定インスタンスとして据える。以降の `get_config()` がその結果を返すため、
 # 必ずコアの他の初期化処理より前に完了させる。
 load_extensions()
 

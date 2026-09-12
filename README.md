@@ -210,18 +210,56 @@ extension = MyExtension()
 | `tool_context_providers` | Values injected into the tool execution context |
 | `tool_roots` | Extra directories searched for tool `.py` files |
 | `command_packages` | Extra packages scanned for `@register_command` handlers |
-| `config_models` / `env_fields` | Reserved for config composition; not read yet |
+| `config_models` | YAML sections this extension adds to `AppConfig` |
+| `env_fields` | Secret fields this extension adds to `cfg.env` |
+| `required_config_sections` | YAML sections this extension reads but does not provide |
 
 Contribution keys must not collide **between extensions**: duplicate `Extension.name`,
-tool context keys, `client_type` keys, command names, or tool file names across
-different roots all fail fast at startup rather than silently picking a winner.
+config section names, env field names, tool context keys, `client_type` keys, command
+names, or tool file names across different roots all fail fast at startup rather than
+silently picking a winner.
 `client_type="discord"` is special in two ways: the core provides a built-in system
 prompt that an extension may override, and the core owns `!toolresult` delivery, so
 extensions cannot register a result delivery for it.
 
-Extensions may also define an `AppConfig` subclass and swap it in via `set_config()` as
-an import side effect of the module. Put that module first in `LILLA_EXTENSIONS`; the
-core does not verify the order.
+### Config composition
+
+An extension declares the config it adds, and the core composes one Pydantic model out
+of every declaration at startup. Writing an `AppConfig` subclass by hand and swapping it
+in via `set_config()` as an import side effect is no longer part of the contract: the
+composed instance replaces anything an extension sets during import, so the order of
+`LILLA_EXTENSIONS` does not affect config.
+
+```python
+class GoogleConfig(BaseModel):
+    client_id: str | None = None
+    redirect_uri: str = "http://localhost/google-callback"
+
+
+class MyExtension(Extension):
+    name = "my-extension"
+
+    def config_models(self):
+        return {"google": GoogleConfig}
+
+    def env_fields(self):
+        return {"google_client_secret": "GOOGLE_CLIENT_SECRET"}
+```
+
+`get_config().google.client_id` and `get_config().env.google_client_secret` are then
+readable process-wide.
+
+- A section is **required** when its model has at least one required field, and optional
+  otherwise. A required section missing from `lilla.yaml` fails at startup.
+- Composed env fields are always `str | None` with a default of `None`. The contract
+  carries no type, so required or non-string secrets cannot be expressed this way.
+- Providing a section name or an env field name twice fails fast, even when the two
+  models are identical. Core-owned names are reserved as well.
+- `required_config_sections()` lists sections the extension reads but does not provide,
+  such as a shared `google:` section owned by another pack. If nothing provides one, the
+  load fails and names the extension that asked for it. Dependencies between packs are
+  not resolved automatically, so document which extensions belong together and list them
+  all in `LILLA_EXTENSIONS`.
 
 Modules listed in `LILLA_EXTENSIONS` run as **trusted code** in the same process. This
 is not a sandbox.
