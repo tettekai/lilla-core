@@ -265,7 +265,7 @@ class TestUiConfig:
         """`ZoneInfo` が受け付けない名前は起動時に失敗する（ロケールと異なり落とす）。"""
         _write_yaml(
             isolated_config_root,
-            'discord:\n  my_user_id: "1"\nui:\n  timezone: Nowhere/Nothing\n',
+            'discord:\n  my_user_id: "1"\nui:\n  timezone: Nowhere/Nothing\n' + _DUMMY_LLM_YAML,
         )
         with pytest.raises(ValidationError):
             AppConfig(env={"discord_token": "dummy"}, _env_file=None)
@@ -274,7 +274,7 @@ class TestUiConfig:
         """空文字はフォールバックせず起動時に失敗する。"""
         _write_yaml(
             isolated_config_root,
-            'discord:\n  my_user_id: "1"\nui:\n  timezone: ""\n',
+            'discord:\n  my_user_id: "1"\nui:\n  timezone: ""\n' + _DUMMY_LLM_YAML,
         )
         with pytest.raises(ValidationError):
             AppConfig(env={"discord_token": "dummy"}, _env_file=None)
