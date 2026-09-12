@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 
 from lilla_core.core.config import AppConfig, get_config
 from lilla_core.core.extension import get_client_prompt_provider
 from lilla_core.services.message_util import format_session_memory_block, prepend_timestamp_prefix
 from lilla_core.services.session_memory_manager import get_session_memory_manager
-from lilla_core.utils.datetime_utils import local_now, local_timezone
+from lilla_core.utils.datetime_utils import local_now
 
 
 def _resolve_client_prompt(client_type: str) -> str:
@@ -77,16 +77,19 @@ class MemoryManager:
     async def load_conversation_history_with_timestamps(self) -> list[dict]:
         """タイムスタンプ付きの会話履歴を LLM 送信用に返す。
 
-        MongoDB の time フィールドをシステムのローカルタイムゾーンに変換し、
-        各メッセージの content 先頭に "[Apr 28 11:22] " 形式のタイムスタンプを付与する。
+        MongoDB の time フィールドを `local_timezone()` が解決したタイムゾーン
+        （`ui.timezone`、未指定なら OS のローカル）に変換し、各メッセージの
+        content 先頭に "[Apr 28 11:22] " 形式のタイムスタンプを付与する。
+        履歴を遡る起点となる「今日」も同じタイムゾーンのカレンダー日付で数える。
         元の message dict は変更せず、新しい dict として返す。
         MongoDB 保存済みメッセージには一切手を加えない。
 
         content がリスト（画像添付など）の場合は、先頭の type="text" ブロックの
         text フィールド先頭に付与する。text ブロックが存在しない場合は先頭に挿入する。
         """
-        local_tz = local_timezone()
-        today = date.today()
+        now_local = local_now()
+        local_tz = now_local.tzinfo
+        today = now_local.date()
         since_local = datetime(
             today.year, today.month, today.day,
             tzinfo=local_tz,

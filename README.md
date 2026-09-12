@@ -42,6 +42,8 @@ nothing, so the core never depends on the presence of extensions.
   work, result delivery, client-specific prompts, conversation-start hooks, tool
   execution context, extra tool roots, and extra command packages)
 - User-facing Discord text is pulled from locale catalogs (`ja` / `en`)
+- One configurable timezone (`ui.timezone`) for schedules, "today", and the
+  current time shown to the LLM
 
 ## Requirements
 
@@ -87,6 +89,27 @@ the core alone). Modules are loaded in the order given.
 export LILLA_EXTENSIONS=my_extension_package,another_pack
 python -m lilla_core.bot
 ```
+
+### Timezone
+
+`ui.timezone` in `lilla.yaml` decides the clock the bot treats as "now" and "today"
+for humans. The crontab expressions of scheduled tasks, the current time embedded in
+the system prompt, the conversation-history window, and relative date ranges such as
+`today` all follow it.
+
+- Omitted (or YAML `null`): the OS local timezone of the process.
+- An IANA name such as `Asia/Tokyo`: that timezone only. The OS timezone is ignored.
+- An empty string, or a name `zoneinfo` does not accept: startup fails. There is no
+  fallback, so a typo cannot silently shift every date by a day.
+
+In `utils/datetime_utils.py`, `local_timezone()`, `local_now()`, `to_jst_date()` and
+`jst_day_end_utc()` all resolve to that same timezone on every call, so the wall clock
+and the calendar date never disagree. The `JST` constant is the one exception: it stays
+at UTC+9 no matter what `ui.timezone` says, for code that needs Japan time explicitly.
+
+> **Note:** container images usually run with their OS timezone set to UTC. If you
+> leave `ui.timezone` unset there, cron schedules and "today" are UTC as well. Set it
+> explicitly whenever the dates matter.
 
 ### Discord bot setup
 

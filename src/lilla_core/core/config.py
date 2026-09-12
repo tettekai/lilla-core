@@ -5,10 +5,11 @@ import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import yaml
 from dotenv import dotenv_values, load_dotenv
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from lilla_core.utils.resource_loader import SourceSpec, load_text_resources
@@ -152,12 +153,39 @@ class CommandsConfig(BaseModel):
 class UiConfig(BaseModel):
     """lilla.yaml の `ui:` セクション。
 
-    Discord に見せる文言のロケールを決める。カタログ
-    （`lilla_core/locales/{locale}.yaml`）に無いロケール名を指定しても起動は
-    落とさず、`lilla_core.ui.messages.t()` が既定ロケールへフォールバックする。
+    Discord に見せる文言のロケールと、アプリが「人間側の今日 / いま」として
+    扱うタイムゾーンを決める。
+
+    ロケールはカタログ（`lilla_core/locales/{locale}.yaml`）に無い名前を指定しても
+    起動は落とさず、`lilla_core.ui.messages.t()` が既定ロケールへフォールバックする。
+
+    タイムゾーンは IANA 名（`Asia/Tokyo` など）の文字列、または未指定。未指定なら
+    実行環境の OS のローカルタイムゾーンに従う。ロケールと異なり、受け付けられない
+    名前や空文字はフォールバックせず起動時に失敗する（気付かないまま日付が
+    ずれた状態で動き続けるのを防ぐため）。
     """
 
     locale: str = "ja"
+    timezone: str | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def _validate_timezone(cls, value: str | None) -> str | None:
+        """`ui.timezone` が IANA タイムゾーン名として解決できることを検証する。
+
+        `None`（キーなし / YAML の `null`）はそのまま通し、OS のローカル
+        タイムゾーンを使う意味になる。空文字や `ZoneInfo` が受け付けない名前は
+        `ValueError` を送出して起動時に失敗させる。
+        """
+        if value is None:
+            return None
+        if not value.strip():
+            raise ValueError("ui.timezone must not be empty; omit the key to follow the OS timezone")
+        try:
+            ZoneInfo(value)
+        except Exception as e:
+            raise ValueError(f"ui.timezone is not a valid IANA timezone name: {value!r}") from e
+        return value
 
 
 class LlmConfig(BaseModel):

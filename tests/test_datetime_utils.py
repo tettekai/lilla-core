@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -14,6 +15,17 @@ from lilla_core.utils.datetime_utils import (
 )
 
 
+@pytest.fixture
+def app_timezone(monkeypatch):
+    """`ui.timezone` を差し替える関数を返す（テスト終了時に元の値へ戻る）。"""
+    from lilla_core.core.config import get_config
+
+    def _set(name: str | None) -> None:
+        monkeypatch.setattr(get_config().ui, "timezone", name)
+
+    return _set
+
+
 class TestLocalTimezone:
     """local_timezone のテスト。"""
 
@@ -22,10 +34,28 @@ class TestLocalTimezone:
         tz = local_timezone()
         assert tz is not None
 
-    def test_matches_system_local_offset(self):
-        """システムのローカルオフセットと一致すること。"""
+    def test_matches_system_local_offset_when_unset(self, app_timezone):
+        """`ui.timezone` 未指定なら OS のローカルオフセットと一致すること。"""
+        app_timezone(None)
         expected = datetime.now().astimezone().tzinfo
         assert local_timezone().utcoffset(None) == expected.utcoffset(None)
+
+    def test_uses_configured_timezone(self, app_timezone):
+        """`ui.timezone` を指定したらその ZoneInfo を返すこと。"""
+        app_timezone("Asia/Tokyo")
+        assert local_timezone() == ZoneInfo("Asia/Tokyo")
+
+    def test_configured_utc_has_zero_offset(self, app_timezone):
+        """`ui.timezone: UTC` ならオフセットが 0 になること。"""
+        app_timezone("UTC")
+        assert local_timezone().utcoffset(datetime(2026, 8, 30)) == timedelta(0)
+
+    def test_resolved_on_every_call(self, app_timezone):
+        """設定を差し替えたら次の呼び出しから反映されること（import 時に束縛しない）。"""
+        app_timezone("UTC")
+        first = local_timezone()
+        app_timezone("Asia/Tokyo")
+        assert first != local_timezone()
 
 
 class TestUtcNow:
@@ -61,6 +91,13 @@ class TestLocalNow:
         now = local_now()
         after = datetime.now().astimezone()
         assert before <= now <= after
+
+    def test_uses_configured_timezone(self, app_timezone):
+        """`ui.timezone` で指定したタイムゾーンの現在時刻を返すこと。"""
+        app_timezone("UTC")
+        assert local_now().utcoffset() == timedelta(0)
+        app_timezone("Asia/Tokyo")
+        assert local_now().utcoffset() == timedelta(hours=9)
 
 
 class TestEnsureUtc:
@@ -110,9 +147,20 @@ class TestJst:
         """UTC+9 のオフセットを持つこと。"""
         assert JST.utcoffset(None) == timedelta(hours=9)
 
+    def test_offset_ignores_configured_timezone(self, app_timezone):
+        """`ui.timezone` を変えても UTC+9 のままであること。"""
+        app_timezone("UTC")
+        assert JST.utcoffset(None) == timedelta(hours=9)
+        app_timezone(None)
+        assert JST.utcoffset(None) == timedelta(hours=9)
+
 
 class TestToJstDate:
-    """to_jst_date のテスト。"""
+    """to_jst_date のテスト（`ui.timezone: Asia/Tokyo` のとき）。"""
+
+    @pytest.fixture(autouse=True)
+    def _tokyo(self, app_timezone):
+        app_timezone("Asia/Tokyo")
 
     def test_converts_utc_to_jst_calendar_date(self):
         """UTC の日時を JST のカレンダー日付に変換すること。"""
@@ -141,7 +189,11 @@ class TestToJstDate:
 
 
 class TestJstDayEndUtc:
-    """jst_day_end_utc のテスト。"""
+    """jst_day_end_utc のテスト（`ui.timezone: Asia/Tokyo` のとき）。"""
+
+    @pytest.fixture(autouse=True)
+    def _tokyo(self, app_timezone):
+        app_timezone("Asia/Tokyo")
 
     def test_returns_next_jst_midnight_in_utc(self):
         """JST 日付の翌 0:00（＝UTC の当日 15:00）を返すこと。"""
@@ -163,3 +215,25 @@ class TestJstDayEndUtc:
     def test_returns_utc_aware_datetime(self):
         """UTC の aware な datetime を返すこと。"""
         assert jst_day_end_utc(datetime(2026, 8, 30, 13, 11)).tzinfo == timezone.utc
+
+
+class TestCalendarDateFollowsConfiguredTimezone:
+    """to_jst_date / jst_day_end_utc が `ui.timezone` に追従することのテスト。"""
+
+    def test_to_jst_date_uses_utc_calendar_date(self, app_timezone):
+        """`ui.timezone: UTC` なら UTC のカレンダー日付になること。"""
+        app_timezone("UTC")
+        dt = datetime(2026, 8, 30, 15, 0, tzinfo=timezone.utc)
+        assert to_jst_date(dt) == date(2026, 8, 30)
+
+    def test_day_end_is_next_utc_midnight(self, app_timezone):
+        """`ui.timezone: UTC` なら上限は UTC 日付の翌 0:00 になること。"""
+        app_timezone("UTC")
+        dt = datetime(2026, 8, 30, 15, 0, tzinfo=timezone.utc)
+        assert jst_day_end_utc(dt) == datetime(2026, 8, 31, 0, 0, tzinfo=timezone.utc)
+
+    def test_day_end_matches_configured_timezone_midnight(self, app_timezone):
+        """設定タイムゾーンでの翌 0:00 を UTC で返すこと（Asia/Tokyo は UTC 15:00）。"""
+        app_timezone("Asia/Tokyo")
+        dt = datetime(2026, 8, 30, 13, 11, tzinfo=timezone.utc)
+        assert jst_day_end_utc(dt) == datetime(2026, 8, 30, 15, 0, tzinfo=timezone.utc)

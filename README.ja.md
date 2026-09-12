@@ -39,6 +39,7 @@ lilla-core は拡張を 1 つも読み込まない状態でも Discord bot と�
   クライアント固有プロンプト、会話開始フック、ツール実行 context、追加ツール
   ルート、追加コマンドパッケージ）
 - Discord に見せる文言はロケールカタログ（`ja` / `en`）から取得
+- 定期実行・「今日」・LLM に見せる現在時刻のタイムゾーンを `ui.timezone` で統一
 
 ## 動作要件
 
@@ -83,6 +84,26 @@ python -m lilla_core.bot
 export LILLA_EXTENSIONS=my_extension_package,another_pack
 python -m lilla_core.bot
 ```
+
+### タイムゾーン
+
+`lilla.yaml` の `ui.timezone` が、ボットにとっての「人間側の今日 / いま」を決めます。
+定期タスクの crontab、システムプロンプトに埋め込む現在時刻、会話履歴の対象期間、
+`today` などの相対日付は、すべてこの設定に従います。
+
+- 未指定（または YAML の `null`）: プロセスの OS のローカルタイムゾーン
+- `Asia/Tokyo` のような IANA 名: そのタイムゾーンのみを使い、OS のタイムゾーンは見ない
+- 空文字、および `zoneinfo` が受け付けない名前: 起動時に失敗する。フォールバックは
+  しないため、書き間違いによって日付だけが静かに 1 日ずれることはない
+
+`utils/datetime_utils.py` の `local_timezone()` / `local_now()` / `to_jst_date()` /
+`jst_day_end_utc()` は、いずれも呼び出しのたびに同じタイムゾーンへ解決します。
+時計とカレンダー日付がずれることはありません。例外は `JST` 定数だけで、これは
+`ui.timezone` の値にかかわらず UTC+9 のままです（日本時間を明示したいコード向け）。
+
+> **注意:** コンテナイメージは OS のタイムゾーンが UTC のまま動くのが普通です。
+> その環境で `ui.timezone` を未指定にすると、cron のスケジュールも「今日」も UTC に
+> なります。日付が重要な場合は必ず明示してください。
 
 ### Discordボットのセットアップ
 

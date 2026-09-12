@@ -54,6 +54,11 @@ lilla-core は拡張が一切登録されていない状態でも Discord bot �
   そちらの更新が必要なことを合わせて伝える
 - Discord に見せる文言のロケールは `ui.locale`（既定 `ja`）で切り替える。カタログの無い
   ロケール名を書いても起動は落とさず、`ja` へフォールバックする
+- 「人間側の今日 / いま」のタイムゾーンは `ui.timezone`（IANA 名。既定は未指定）で決める。
+  未指定なら OS のローカルタイムゾーン、文字列を書けばそのタイムゾーンだけを使う。
+  ロケールと違いフォールバックせず、空文字や `ZoneInfo` が受け付けない名前は起動時に落とす。
+  新しく「今日」「いま」を扱うコードは `date.today()` / `datetime.now()` を直接書かず、
+  `utils/datetime_utils.py` の `local_now()` / `local_timezone()` を通すこと
 - コアの汎用範囲を超える固有の設定フィールド（特定の外部サービス連携など）は `AppConfig` に
   追加しない。拡張する側で `AppConfig` のサブクラスを定義して `set_config()` で差し替え、
   YAML 由来のフィールドは `settings_customise_sources()` を override して独自の設定ソースを
@@ -179,7 +184,7 @@ lilla-core 自体は起動スクリプトを持たない（ライブラリとし
 ### コア基盤 (`src/lilla_core/core/`)
 | ファイル | 役割 |
 |----------|------|
-| `config.py` | Pydantic ベースの設定管理（`AppConfig`）。`${CONFIG_ROOT}/lilla.yaml` はネスト構造のまま同じ形のセクションモデル（`cfg.discord.my_user_id` など）へ読み込み、`.env` / OS 環境変数は `EnvConfig`（`cfg.env.discord_token` など）へ読み込む（YAML の項目を環境変数で上書きする経路は持たない。YAML トップレベルの `env:` は警告して無視する）。複数 LLM プロバイダの動的選択に対応。`ui.locale`（`UiConfig`）は Discord に見せる文言のロケールを決める。コアの汎用範囲を超えるフィールドは持たず、拡張側は `AppConfig` のサブクラスで `settings_customise_sources()` を override して独自ソースを足す。`get_config()` / `set_config()` でプロセス全体の設定インスタンスを共有し、`set_config()` により拡張側で定義したサブクラスへ差し替え可能 |
+| `config.py` | Pydantic ベースの設定管理（`AppConfig`）。`${CONFIG_ROOT}/lilla.yaml` はネスト構造のまま同じ形のセクションモデル（`cfg.discord.my_user_id` など）へ読み込み、`.env` / OS 環境変数は `EnvConfig`（`cfg.env.discord_token` など）へ読み込む（YAML の項目を環境変数で上書きする経路は持たない。YAML トップレベルの `env:` は警告して無視する）。複数 LLM プロバイダの動的選択に対応。`ui.locale`（`UiConfig`）は Discord に見せる文言のロケールを、`ui.timezone`（同じく `UiConfig`。IANA 名か未指定）は「人間側の今日 / いま」のタイムゾーンを決める（未指定なら OS のローカル。不正な名前・空文字はバリデーションで起動時に落とす）。コアの汎用範囲を超えるフィールドは持たず、拡張側は `AppConfig` のサブクラスで `settings_customise_sources()` を override して独自ソースを足す。`get_config()` / `set_config()` でプロセス全体の設定インスタンスを共有し、`set_config()` により拡張側で定義したサブクラスへ差し替え可能 |
 | `extension.py` | コアの外から機能を差し込むための `Extension` 基底クラスと、そのロード・参照 API。`Extension` は Adapter 型で、起動時リポジトリ・メッセージフック・起動処理（`setup`）・結果配送・クライアント固有プロンプト・会話開始フック・ツール実行 context プロバイダ・追加ツールルート・追加コマンドパッケージの各メソッドに「何も貢献しない」デフォルトを持つ。`load_extensions()` が `LILLA_EXTENSIONS` のモジュールを import して各 `extension` を集め、`set_extensions()` が貢献キーの衝突を検証して登録する（拡張どうしの重複は fail-fast）。`lilla_core/bot.py` が拡張モジュールを直接 import しないための唯一の橋渡し層 |
 | `exceptions.py` | `ReauthenticationRequiredError`（外部 API 再認証要求時）・`LLMError`（LLM 呼び出し失敗時）の例外定義 |
 | `error_notify.py` | コマンド実行系・定期タスク実行系のエラー出力を一元化する（`notify_error`）。ERROR ログと Discord のエラー通知チャンネル（`discord.error_channel`）の 2 箇所にのみ出力し、元チャンネルへの `message.reply()` は行わない（bot 間チャンネルで相手 bot が reply に反応するのを防ぐため）。チャンネル未設定・未発見・送信失敗時は WARNING ログのみで、例外は投げない |
@@ -223,7 +228,7 @@ HTTP サーバー・ダッシュボードサーバー・WebSocket サーバー�
 | `interaction_handler.py` | Discord のインタラクション（ボタン押下）イベントのディスパッチ。`custom_id` のプレフィックスで処理を振り分け、`approve:` / `reject:` は `handlers/approval_flow.py` へ、`command:{コマンド文字列}` は `handlers/command_handler.py` へ汎用的に委譲し、`action:{uuid}` 形式の保留中アクション（`button_actions`）のみ自身で取得・実行して結果を followup で返す。保留中アクションはツール名で特別扱いせず常に `execute_tool_call` を通すため、会話履歴には残らない。デフォルトではオーナー以外のインタラクションを拒否する（プレフィックス分岐より前で一括拒否。`message_handler.py` と同じ判定パターン）。コアは汎用ランタイムであり、より緩い権限モデルは利用側の拡張で差し替え可能という位置づけ。`bot` / `tools` / `llm_tools` は引数で受け取る |
 | `message_handler.py` | Discord のメッセージ受信イベントのディスパッチ。メッセージフック（`extension.dispatch_on_message()`。拡張が 0 個なら常に `False`）→ 承認フロー振り分け → コマンド処理 → 通常会話、の順に処理する。通常会話は画像添付の変換（`services/image_attachment.py` へ委譲。サイズ超過・ダウンロード失敗で None が返ったら会話処理自体を行わない）・`run_conversation` の呼び出し・応答の分割送信と会話履歴保存を担い、送信中タスクをチャンネル単位で保持して後続メッセージ受信時に先行タスクをキャンセルする。`bot` / `tools` / `llm_tools` / `message_hook` は引数で受け取る |
 | `request_params.py` | HTTP ハンドラー共通のリクエスト入力解析ユーティリティ。整数クエリパラメータのデフォルト値・範囲丸め付き取得（`parse_int_param`）、JSON ボディのパース（`parse_json_body`）、`ObjectId` へのパス変数変換（`parse_object_id`）を提供する。aiohttp のレスポンス生成自体は呼び出し側（拡張側の HTTP ハンドラーなど）に委ねる |
-| `task_handler.py` | `trigger="task"` のツールの実行を管理する。APScheduler（`BackgroundScheduler`、タイムゾーン `Asia/Tokyo`）による定期ジョブ管理。ジョブは `asyncio.run_coroutine_threadsafe` で Discord の `bot.loop` に投げる |
+| `task_handler.py` | `trigger="task"` のツールの実行を管理する。APScheduler（`BackgroundScheduler`）による定期ジョブ管理。タイムゾーンは `local_timezone()` の解決結果（`ui.timezone`、未指定なら OS のローカル）で、`CronTrigger` はスケジューラの設定を引き継がないため crontab 式にも同じタイムゾーンを明示的に渡す。ジョブは `asyncio.run_coroutine_threadsafe` で Discord の `bot.loop` に投げる |
 
 ### ビジネスロジック層 (`src/lilla_core/services/`)
 特定ドメイン向けのサービス（外部サービス連携のデータ集計など）はここに置かず、拡張側で実装する想定。
@@ -233,7 +238,7 @@ HTTP サーバー・ダッシュボードサーバー・WebSocket サーバー�
 | `attachment_download.py` | Discord 添付ファイルのダウンロード共通処理（`download_attachment_bytes` / `resolve_proxy_settings` / `normalize_content_type`）。プロキシ設定を尊重して Discord CDN から取得する。画像添付（`services/image_attachment.py`）とコマンドの BODY 添付（`commands/attachment_body.py`）で共有する |
 | `image_attachment.py` | Discord の画像添付を LLM へ渡す `image_url` パート（data URL）へ変換する処理。対応 MIME タイプの絞り込み（`filter_image_attachments`）と、サイズ上限ガード付きのダウンロード＋base64 化（`build_image_content_parts`）を担う。上限は `AppConfig.bot.max_image_attachment_size_mb`（既定 8MB。未設定・不正値・0 以下なら既定値）で、ダウンロード前に `attachment.size` で早期に弾き、Discord 側の申告値を過信しないようダウンロード後の実バイト数でも再検証する。上限超過・ダウンロード失敗はいずれも `notify_error` で通知して None を返し（例外は呼び出し元へ伝播させない）、呼び出し元は会話処理そのものを中止する |
 | `conversation_service.py` | tool_call ループと会話履歴の読み書きを担う共通ロジック。Discord をはじめ、複数の対話クライアントのエントリポイントから再利用できる。LLM 最終応答の META ブロック（`actions`）を種別ごとにディスパッチして適用する（`set_session_memory` でセッションメモリを更新/クリア）。クライアント種別の判定は `"task"` かどうかだけで行い、それ以外の対話クライアント種別（`"discord"` や拡張が増やす種別）はコア側に列挙しない。会話開始フック（`extension.get_conversation_start_hook`）・ツール実行 context プロバイダ（`extension.get_tool_context_providers`）を経由して拡張の差し込みポイントを利用する |
-| `memory_manager.py` | 会話履歴・ユーザーメモ・セッションメモリを統合し、LLM 向けシステムプロンプトを構築する（`build_system_prompt`）。クライアント種別ごとのプロンプト追記は `_resolve_client_prompt()` が「拡張の `client_prompt_providers()` → コア内蔵（`"discord"` のみ）→ 付けない」の順で解決する。ツールキャッシュ（`tool_cache_repository`）の有効なレコードも `## Cached Tool Results` としてシステムプロンプトへ埋め込む |
+| `memory_manager.py` | 会話履歴・ユーザーメモ・セッションメモリを統合し、LLM 向けシステムプロンプトを構築する（`build_system_prompt`）。履歴の対象期間とタイムスタンプ表示、プロンプトに埋め込む現在時刻はいずれも `local_timezone()` の解決結果を使う。クライアント種別ごとのプロンプト追記は `_resolve_client_prompt()` が「拡張の `client_prompt_providers()` → コア内蔵（`"discord"` のみ）→ 付けない」の順で解決する。ツールキャッシュ（`tool_cache_repository`）の有効なレコードも `## Cached Tool Results` としてシステムプロンプトへ埋め込む |
 | `message_splitter.py` | LLM 応答を `---SPLIT---` / 改行2つ / タイムスタンプ境界で分割し、意味のない断片とタイムスタンプ prefix を除去するユーティリティ（`split_response`） |
 | `message_util.py` | メッセージ送信ユーティリティ。フラグパース（`parse_message_flags`）・タイムスタンプ prefix の付与/除去（`prepend_timestamp_prefix` / `strip_timestamp_prefix`）・システムプロンプト埋め込み用セッションメモリブロックの整形（`format_session_memory_block`）・LLM 出力の META ブロック（JSON）の抽出（`extract_meta_block`）・外部エージェントとやりとりする FrontMatter 付きメッセージの組み立て/解釈（`build_correlation_frontmatter` / `parse_correlation_frontmatter`）・DM チャンネルの解決と Discord への送信（`resolve_dm_channel` / `send_to_discord`） |
 | `session_memory_manager.py` | 単一領域のセッションメモリ（作業の途中状態や一時的な意図）をプロセス内メモリで保持する。TTL 付き、MongoDB 永続化なし。更新は LLM 出力の META アクション `set_session_memory` 経由で行う |
@@ -255,7 +260,7 @@ Discord に見せる短い文言のカタログ。表示言語は `lilla.yaml` �
 ### ユーティリティ (`src/lilla_core/utils/`)
 | ファイル | 役割 |
 |----------|------|
-| `datetime_utils.py` | UTC の現在日時（`utc_now`）、実行環境のローカルタイムゾーン（`local_timezone`）、タイムゾーン aware なローカル現在日時（`local_now`）を返す共通ユーティリティ。JST タイムゾーン定数（`JST`）や、datetime を timezone-aware な UTC に正規化する `ensure_utc`・ISO 文字列を UTC datetime に変換する `parse_iso_utc` も提供する。JST のカレンダー日付で比較したい処理向けに、datetime を JST 日付（時刻切り捨て）へ変換する `to_jst_date` と、その JST 日付の終端（翌 0:00 JST）を UTC で返す `jst_day_end_utc`（Mongo クエリの上限に使う）も持つ（日次の期限判定などが利用する想定） |
+| `datetime_utils.py` | UTC の現在日時（`utc_now`）と、アプリが「人間側の今日 / いま」として使うタイムゾーン（`local_timezone`）・その現在日時（`local_now`）を返す共通ユーティリティ。`local_timezone()` は呼び出しのたびに `ui.timezone` から解決する（未指定なら `datetime.now().astimezone().tzinfo`）ため、`get_config()` をモジュール import 時に束縛しないこと。datetime を timezone-aware な UTC に正規化する `ensure_utc`・ISO 文字列を UTC datetime に変換する `parse_iso_utc` も提供する。カレンダー日付で比較したい処理向けの `to_jst_date`（日付へ変換）と `jst_day_end_utc`（その日付の終端＝翌 0:00 を UTC で返す。Mongo クエリの上限に使う）は、名前に反して `local_timezone()` の解決結果を基準にする（名前は互換のため維持）。`JST` 定数だけは `ui.timezone` の値によらず UTC+9 固定で、日本時間を明示したいコード向けに残している |
 | `oauth2_authorization_code_utils.py` | OAuth2 認可コードフロー（Authorization Code Grant）専用の認証情報ユーティリティ。アクセストークンの有効期限判定（`is_access_token_valid`）、リフレッシュトークン保持判定（`has_refresh_token`）、トークンレスポンスからの認証情報構築（`build_token_credentials`）を提供し、複数の OAuth2 クライアント（実装は拡張側）で共有できる（クライアントクレデンシャルフローや、API キー方式の認証情報は対象外） |
 | `resource_loader.py` | `file:` / `dir:` プレフィックス付き source spec を受け取り、単一ファイル・ディレクトリ一括（`.md`/`.txt` をファイル名昇順）読み込みを統一的に扱うユーティリティ（`load_text_resources`。`${config_root}` 展開対応） |
 | `path_utils.py` | ユーザー入力由来の相対パスを安全に扱う共通ユーティリティ。絶対パス・`..` セグメントの拒否（`validate_relative_path`）と、解決後のパスがルート配下にあることの確認つき解決（`resolve_within_root`）を提供する。ファイルシステム上のリソースを LLM の入力由来のパスで読み書きするツール（拡張側の実装）が利用する想定 |
@@ -302,7 +307,7 @@ Discord に見せる短い文言のカタログ。表示言語は `lilla.yaml` �
 | `tool_result.py` | LLM ツールの標準結果辞書（`success` / `tool_name` / `memory_entry` / `needs_auth` / `needs_auth_list` / `data` / `error`）を成功・失敗・再認証要求の用途別に生成する共通ヘルパー（`tool_success` / `tool_error` / `tool_needs_auth` / `tool_reauth_required`） |
 | `context_ex.py` | `execute(input, context)` の `context`(dict) を便利に扱う薄いラッパー（`ContextEx`、opt-in）。`call_tool` の注入を前提とし、ローダー側の dict ベース処理には影響しない |
 | `tool_response_ex.py` | ツール実行結果 dict（`success` / `tool_name` / `data` / `error` 形式）を便利に扱う薄いラッパー（`ToolResponseEx`、opt-in） |
-| `date_range.py` | `today` / `yesterday` / `tomorrow` / `last_N_days` / `next_N_days` / `this_week` / `last_week` / `YYYY-MM-DD` / `YYYY-MM-DD/YYYY-MM-DD` 形式の日付範囲 Value Object（`DateRange`。週は日曜始まり・土曜終わり）と、時刻まで指定できる `DateTimeRange` |
+| `date_range.py` | `today` / `yesterday` / `tomorrow` / `last_N_days` / `next_N_days` / `this_week` / `last_week` / `YYYY-MM-DD` / `YYYY-MM-DD/YYYY-MM-DD` 形式の日付範囲 Value Object（`DateRange`。週は日曜始まり・土曜終わり）と、時刻まで指定できる `DateTimeRange`。相対指定の基準日は `local_timezone()` が解決したタイムゾーンのカレンダー日付 |
 
 ## tests/ — テスト
 `tests/` 配下に各モジュールの単体テストを配置（pytest で実行）。`tests/repository/test_motor_client.py`
