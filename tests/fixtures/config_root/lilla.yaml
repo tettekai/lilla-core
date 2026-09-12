@@ -3,3 +3,10 @@
 discord:
   my_user_id: "123456789"
   habits_channel: habits-test
+llm:
+  default: dummy
+  providers:
+    dummy:
+      type: ollama
+      url: http://localhost:11434
+      model: dummy

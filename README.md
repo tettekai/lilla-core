@@ -66,6 +66,10 @@ python -m lilla_core.bot
 The directory pointed to by `CONFIG_ROOT` should contain `lilla.yaml` (non-secret
 structural config) and, if needed, `logging.yaml`. See `config.example/` for a sample.
 
+`lilla.yaml` must define at least one entry under `llm.providers`, and `llm.default`
+must match one of those provider names — otherwise startup fails with a
+`ValidationError`.
+
 > **Privacy note:** `config.example/logging.yaml` sets the root logger to `DEBUG`.
 > At that level, `core/http_util.py` logs request/response bodies to stdout, which
 > can include LLM request bodies (i.e. the system prompt and conversation history).

@@ -57,7 +57,18 @@ def isolated_config_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pat
     """必須項目だけを書いた lilla.yaml を持つ config_root を用意する。"""
     monkeypatch.setenv("CONFIG_ROOT", str(tmp_path))
     monkeypatch.setenv("DISCORD_TOKEN", "dummy")
-    (tmp_path / "lilla.yaml").write_text('discord:\n  my_user_id: "1"\n', encoding="utf-8")
+    (tmp_path / "lilla.yaml").write_text(
+        'discord:\n'
+        '  my_user_id: "1"\n'
+        "llm:\n"
+        "  default: dummy\n"
+        "  providers:\n"
+        "    dummy:\n"
+        "      type: ollama\n"
+        "      url: http://localhost:11434\n"
+        "      model: dummy\n",
+        encoding="utf-8",
+    )
     return tmp_path
 
 
