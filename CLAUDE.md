@@ -68,6 +68,11 @@ lilla-core は拡張が一切登録されていない状態でも Discord bot �
   `send_http_request` の戻り値（str）では扱えない場合のみ例外。`services/attachment_download.py`
   がその唯一の例外実装で、他から参照して共有すること）
 
+## バージョンと CHANGELOG
+- 利用者に見える変更（API / 起動方法 / 設定 / 互換性）は、同じ PR で `CHANGELOG.md` の `[Unreleased]` に日本語で追記する。`[Unreleased]` セクションが無い場合はファイルの一番上に追加する。
+- テストやコメントのみの変更は CHANGELOG に書かない
+- `pyproject.toml` の version は触らない
+
 # テスト
 - コードを変更したら、タスク終了前に必ず以下を実行して確認すること
 - `pytest tests/`（このリポジトリ直下。`pyproject.toml` の `pythonpath = ["src"]` により
