@@ -61,6 +61,15 @@
 
 ## [0.2.0]
 
+### Fixed
+
+- `run_conversation` の tool_call ループが `finish_reason == "tool_calls"` のみで
+  分岐していたため、OpenAI 互換の一部プロバイダが `tool_calls` 付きで
+  `finish_reason: "stop"` を返すケースで呼び出しが無視され、空返信になっていたのを修正。
+  判定を `tool_calls` の有無に変更
+- tool_call の引数 JSON が壊れている場合に `json.loads` が例外を投げ、会話全体が
+  失敗していたのを修正。例外を捕捉し、ツールエラーとして LLM に返すように変更
+
 ### Changed
 
 - **BREAKING**: 拡張 API を `register_*` + `LILLA_EXTENSIONS_MODULE` から、Adapter 型の

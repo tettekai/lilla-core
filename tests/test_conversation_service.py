@@ -223,6 +223,77 @@ class TestRunConversation:
 
         assert result == "完了しました"
 
+    async def test_tool_calls_dispatched_even_when_finish_reason_is_stop(
+        self, conversation_service, mock_memory_manager_instance, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """finish_reason が "stop" でも tool_calls があればツールを実行する（互換プロバイダ対策）。"""
+        tool_response = {
+            "content": None,
+            "finish_reason": "stop",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "test_tool", "arguments": "{}"},
+                }
+            ],
+            "raw_message": {"role": "assistant", "content": None, "tool_calls": []},
+        }
+        text_response = {
+            "content": "完了しました",
+            "finish_reason": "stop",
+            "tool_calls": None,
+            "raw_message": {"role": "assistant", "content": "完了しました"},
+        }
+        mock_chat = AsyncMock(side_effect=[tool_response, text_response])
+        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
+        mock_execute_tool_call = AsyncMock(return_value={
+            "success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None
+        })
+        monkeypatch.setattr(conversation_service, "execute_tool_call", mock_execute_tool_call)
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(fake_tools)
+
+        mock_execute_tool_call.assert_awaited_once()
+        assert result == "完了しました"
+
+    async def test_malformed_tool_arguments_json_returns_tool_error_without_crashing(
+        self, conversation_service, mock_memory_manager_instance, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """引数の JSON が壊れていてもツールエラーとして LLM に返し、会話を落とさない。"""
+        tool_response = {
+            "content": None,
+            "finish_reason": "tool_calls",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "test_tool", "arguments": "{invalid json"},
+                }
+            ],
+            "raw_message": {"role": "assistant", "content": None, "tool_calls": []},
+        }
+        text_response = {
+            "content": "エラーを確認しました",
+            "finish_reason": "stop",
+            "tool_calls": None,
+            "raw_message": {"role": "assistant", "content": "エラーを確認しました"},
+        }
+        mock_chat = AsyncMock(side_effect=[tool_response, text_response])
+        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
+        mock_execute_tool_call = AsyncMock()
+        monkeypatch.setattr(conversation_service, "execute_tool_call", mock_execute_tool_call)
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(fake_tools)
+
+        assert result == "エラーを確認しました"
+        mock_execute_tool_call.assert_not_awaited()
+        second_call_messages = mock_chat.call_args_list[1][0][0]
+        tool_msg = next(m for m in second_call_messages if m.get("role") == "tool")
+        assert "JSON" in tool_msg["content"]
+
     async def test_tool_call_notifier_injected_into_context(
         self, conversation_service, mock_memory_manager_instance, monkeypatch: pytest.MonkeyPatch
     ) -> None:
