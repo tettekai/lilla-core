@@ -77,22 +77,18 @@ def _clear_result_deliveries(monkeypatch: pytest.MonkeyPatch) -> dict:
     `get_result_delivery` はモジュールグローバルを呼び出し時に参照するため、
     差し替えた dict がそのまま参照される。戻り値の dict に直接登録もできる。
     """
-    from lilla_core.core import extension_points
+    from lilla_core.core import extension
 
     registry: dict = {}
-    monkeypatch.setattr(extension_points, "_result_deliveries", registry)
+    monkeypatch.setattr(extension, "_result_deliveries", registry)
     return registry
 
 
 def _register_delivery(monkeypatch: pytest.MonkeyPatch, client_type: str) -> AsyncMock:
     """指定 client_type 向けの配送関数としてモックを登録し、そのモックを返す。"""
-    from lilla_core.core import extension_points
-
     registry = _clear_result_deliveries(monkeypatch)
     delivery = AsyncMock()
-    # 実際の登録 API を通して登録内容を検証できるようにする
-    extension_points.register_result_delivery(client_type, delivery)
-    assert registry[client_type] is delivery
+    registry[client_type] = delivery
     return delivery
 
 

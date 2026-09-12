@@ -175,9 +175,10 @@ async def _deliver_tool_result(record: dict, result_text: str, bot) -> None:
     （task 実行など）があり、その場合はオーナー DM へフォールバックする既存仕様が
     あるため。`"discord"` 以外は `get_result_delivery` に登録された配送関数へ
     委譲し、未登録の `client_type`（拡張を読み込まないコア単体起動や、将来の
-    未知の値）は Discord 配送へフォールバックする。
+    未知の値）は Discord 配送へフォールバックする。`"discord"` はコアが配送を
+    持つ予約キーで、拡張が登録しようとするとロード時に落ちる。
     """
-    from lilla_core.core.extension_points import get_result_delivery
+    from lilla_core.core.extension import get_result_delivery
 
     client_type = record.get("client_type") or "discord"
     reply_text = await _generate_reply(record, result_text, client_type)

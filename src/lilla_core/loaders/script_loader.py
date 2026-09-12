@@ -7,7 +7,14 @@ from lilla_core.core.config import get_config
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_PATHS = get_config().paths.allowed_tool_paths_list
+
+def _get_allowed_paths() -> list[Path]:
+    """ホワイトリストパスのリストを設定から都度読む。
+
+    import 時に固定すると、拡張が `set_config()` で差し替えた設定が
+    反映されないため、呼び出しのたびに読む。
+    """
+    return get_config().paths.allowed_tool_paths_list
 
 
 def load_script_function(script_path: Path, function_name: str) -> Callable | None:
@@ -18,7 +25,7 @@ def load_script_function(script_path: Path, function_name: str) -> Callable | No
     resolved_path = script_path.resolve()
 
     # ホワイトリストチェック
-    if not any(resolved_path.is_relative_to(allowed) for allowed in ALLOWED_PATHS):
+    if not any(resolved_path.is_relative_to(allowed) for allowed in _get_allowed_paths()):
         logger.error("Path is not allowed: %s", resolved_path)
         return None
 
@@ -50,7 +57,7 @@ def load_script_class(
     resolved_path = script_path.resolve()
 
     # ホワイトリストチェック
-    if not any(resolved_path.is_relative_to(allowed) for allowed in ALLOWED_PATHS):
+    if not any(resolved_path.is_relative_to(allowed) for allowed in _get_allowed_paths()):
         logger.error("Path is not allowed: %s", resolved_path)
         return None
 

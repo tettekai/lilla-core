@@ -1,6 +1,6 @@
 [project]
 name = "lilla-core"
-version = "0.1.0"
+version = "0.2.0"
 description = "Core runtime of the Lilla agent"
 readme = "README.md"
 license = "MIT"

@@ -10,12 +10,12 @@ Discord ボットとして常駐し、メッセージを受け取って LLM（Ol
 
 キャラクター設定・特定ドメイン専用のツール（外部サービス連携など）・特定用途の
 HTTP/ダッシュボードサーバーといった、利用者ごとに異なる要素はコアには含めません。
-そうした要素は拡張ポイントと、起動時に読み込む `LILLA_EXTENSIONS_MODULE` 環境変数を
-通じて外部から拡張できるようにしています。
+そうした要素は `Extension`（`core/extension.py`）のサブクラスと、起動時に読み込む
+`LILLA_EXTENSIONS` 環境変数を通じて外部から拡張できるようにしています。
 
-lilla-core は拡張が一切登録されていない状態でも Discord bot として単体で起動できる
-ことを設計上の前提にしています。各拡張ポイントは「未登録ならデフォルト動作に
-フォールバックする」形で実装されており、コアが拡張の有無に依存しません。
+lilla-core は拡張を 1 つも読み込まない状態でも Discord bot として単体で起動できる
+ことを設計上の前提にしています。`Extension` の各メソッドは「何も貢献しない」
+デフォルトを持ち、コアが拡張の有無に依存しません。
 
 ## 制約
 
@@ -34,9 +34,10 @@ lilla-core は拡張が一切登録されていない状態でも Discord bot �
 - `!` コマンドのプラグイン的な追加（`commands/` にファイルを置くだけ）
 - APScheduler による定期タスク（`task_*.yaml`）
 - 承認フロー（オーナー以外からのコマンド実行を Discord 上で承認/拒否）
-- 7 種類の拡張ポイントによる、コアを変更しないカスタマイズ
-  （追加リポジトリ、メッセージフック、起動タスク、結果配送、クライアント固有
-  プロンプト、会話開始フック、ツール実行 context）
+- `Extension` アダプタクラスによる、コアを変更しないカスタマイズ。1 プロセスで
+  複数の拡張を読み込める（追加リポジトリ、メッセージフック、起動処理、結果配送、
+  クライアント固有プロンプト、会話開始フック、ツール実行 context、追加ツール
+  ルート、追加コマンドパッケージ）
 - Discord に見せる文言はロケールカタログ（`ja` / `en`）から取得
 
 ## 動作要件
@@ -74,11 +75,12 @@ python -m lilla_core.bot
 `lilla.yaml` の `api_key_env` で指定した名前）にも当てはまり、`AppConfig` 経由ではなく
 `api/llm_client.py` が環境変数から直接読み取ります。
 
-拡張を登録して起動する場合は、`LILLA_EXTENSIONS_MODULE` 環境変数に拡張モジュールの
-import パスを指定してください（未指定の場合はコア単体で起動します）。
+拡張を読み込んで起動する場合は、`LILLA_EXTENSIONS` 環境変数にモジュールの import
+パスをカンマ区切りで指定してください（未指定・空ならコア単体で起動します）。
+モジュールは指定した順に読み込まれます。
 
 ```bash
-export LILLA_EXTENSIONS_MODULE=my_extension_package
+export LILLA_EXTENSIONS=my_extension_package,another_pack
 python -m lilla_core.bot
 ```
 
@@ -127,7 +129,7 @@ pytest tests/
 src/lilla_core/
 ├── bot.py                # Discord bot エントリポイント
 ├── bot_client.py         # commands.Bot インスタンスの共有モジュール
-├── core/                 # 設定管理・拡張ポイント・共通ユーティリティ
+├── core/                 # 設定管理・Extension 基底クラス・共通ユーティリティ
 ├── commands/             # `!コマンド名` の実装（1 コマンド 1 ファイル）
 ├── handlers/             # Discord イベント/コマンドのディスパッチ、定期タスク管理
 ├── services/             # tool_call ループ・会話履歴・システムプロンプト構築など
@@ -143,24 +145,54 @@ config.example/           # lilla.yaml / logging.yaml のサンプル
 
 詳細な設計・各ファイルの役割は [`CLAUDE.md`](./CLAUDE.md) にまとめています。
 
-## 拡張ポイント
+## 拡張
 
-コアの外から機能を差し込むための拡張ポイントを 7 種類提供しています。いずれも
-「未登録ならコア単体でも安全に動くデフォルト」を持ちます。
+拡張は `lilla_core.core.extension.Extension` を継承し、必要なメソッドだけを
+オーバーライドして、モジュールから `extension` 属性として 1 つだけ export します。
+各メソッドは「何も貢献しない」デフォルトを持つため、コアは単体でも動き続けます。
 
-| 登録関数 | 用途 |
+```python
+from lilla_core.core.extension import Extension
+
+
+class MyExtension(Extension):
+    name = "my-extension"
+
+    def tool_context_providers(self):
+        return {"my_client": get_my_client}
+
+    async def setup(self, tools, llm_tools, bot):
+        await start_my_http_server(llm_tools, tools, bot)
+
+
+extension = MyExtension()
+```
+
+| メソッド | 用途 |
 |----------|------|
-| `register_startup_repo` | `on_ready` で初期化する追加リポジトリファクトリ |
-| `register_message_hook` | `on_message` の冒頭で必ず呼ばれるハンドラ |
-| `register_startup_task` | `bot.start()` の前に await される起動タスク（HTTP サーバー等） |
-| `register_result_delivery` | `!toolresult` の配送先を `client_type` ごとに差し替え |
-| `register_client_prompt_provider` | `client_type` ごとのシステムプロンプト追記 |
-| `register_conversation_start_hook` | 会話処理開始前のクライアント固有の前処理 |
-| `register_tool_context_provider` | ツール実行 context への値の注入 |
+| `startup_repos` | `on_ready` で初期化する追加リポジトリファクトリ |
+| `on_message` | `on_message` の冒頭で呼ばれる。`True` を返すと以降の処理を止める |
+| `setup` | `bot.start()` の前に await される起動処理（HTTP サーバー等） |
+| `result_deliveries` | `!toolresult` の配送先を `client_type` ごとに指定 |
+| `client_prompt_providers` | `client_type` ごとのシステムプロンプト追記 |
+| `conversation_start_hooks` | 会話処理開始前のクライアント固有の前処理 |
+| `tool_context_providers` | ツール実行 context への値の注入 |
+| `tool_roots` | ツールの `.py` を探す追加ディレクトリ |
+| `command_packages` | `@register_command` を探す追加パッケージ |
+| `config_models` / `env_fields` | 設定合成用の予約。現時点でコアは読まない |
 
-拡張は `AppConfig` のサブクラス定義と `set_config()` による差し替え、
-`core/extension_points.py` の登録関数の呼び出しによって、コアのコードを変更せずに
-機能を追加できます。
+貢献キーは **拡張どうし** で衝突してはいけません。`Extension.name`・ツール context
+のキー・`client_type` のキー・コマンド名・複数ルートにまたがる同名ツールファイルの
+いずれも、静かに勝者を決めず起動時に fail-fast します。`client_type="discord"` だけは
+扱いが 2 点異なります。システムプロンプトはコアが内蔵デフォルトを持ち拡張が上書き
+でき、`!toolresult` の配送はコアが持つため拡張は登録できません。
+
+拡張は `AppConfig` のサブクラスを定義し、モジュールの import 副作用として
+`set_config()` で差し替えることもできます。そのモジュールは `LILLA_EXTENSIONS` の
+先頭に置いてください（コアは順番を検証しません）。
+
+`LILLA_EXTENSIONS` に並べたモジュールは同一プロセスで動く **信頼コード** です。
+サンドボックスではありません。
 
 ## ツール契約
 

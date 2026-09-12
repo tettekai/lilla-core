@@ -55,7 +55,7 @@ def write_script(tmp_path: Path, name: str, content: str) -> Path:
 
 @pytest.fixture(autouse=True)
 def allow_tmp_path(script_loader, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(script_loader, "ALLOWED_PATHS", [tmp_path.resolve()])
+    monkeypatch.setattr(script_loader, "_get_allowed_paths", lambda: [tmp_path.resolve()])
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +93,7 @@ class TestLoadScriptFunction:
         # ホワイトリストを tmp_path/allowed のみに限定
         allowed = tmp_path / "allowed"
         allowed.mkdir()
-        monkeypatch.setattr(script_loader, "ALLOWED_PATHS", [allowed.resolve()])
+        monkeypatch.setattr(script_loader, "_get_allowed_paths", lambda: [allowed.resolve()])
         assert script_loader.load_script_function(script, "run") is None
 
     def test_nonexistent_file_returns_none(self, script_loader, tmp_path: Path) -> None:
@@ -175,7 +175,7 @@ class TestLoadScriptClass:
         )
         allowed = tmp_path / "allowed"
         allowed.mkdir()
-        monkeypatch.setattr(script_loader, "ALLOWED_PATHS", [allowed.resolve()])
+        monkeypatch.setattr(script_loader, "_get_allowed_paths", lambda: [allowed.resolve()])
         assert script_loader.load_script_class(script) is None
 
     def test_nonexistent_file_returns_none(self, script_loader, tmp_path: Path) -> None:

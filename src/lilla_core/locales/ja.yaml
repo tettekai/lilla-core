@@ -102,6 +102,9 @@ interaction:
 message:
   error: "メッセージ処理中にエラーが発生しました"
 
+extension:
+  on_message_error: "拡張 {name} のメッセージ処理中にエラーが発生しました"
+
 task:
   execution_error_title: "[TASK] {tool} の実行中にエラーが発生しました"
 

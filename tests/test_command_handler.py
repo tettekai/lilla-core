@@ -30,9 +30,20 @@ def _make_message() -> MagicMock:
 
 
 @pytest.fixture()
-def isolated_registry(monkeypatch: pytest.MonkeyPatch) -> None:
-    """レジストリをコピーに差し替え、テスト内の登録が他テストへ漏れないようにする。"""
-    monkeypatch.setattr(registry, "_KNOWN_COMMANDS", dict(registry._KNOWN_COMMANDS))
+def isolated_registry(monkeypatch: pytest.MonkeyPatch):
+    """レジストリをコピーに差し替え、テスト内の登録が他テストへ漏れないようにする。
+
+    `register_command` は同名の別ハンドラを拒否するため、実コマンド名を
+    モックへ差し替えるテストは戻り値のヘルパーで直接差し込む。
+    """
+    commands = dict(registry._KNOWN_COMMANDS)
+    monkeypatch.setattr(registry, "_KNOWN_COMMANDS", commands)
+
+    def override(name: str, handler):
+        commands[name] = handler
+        return handler
+
+    return override
 
 
 @pytest.fixture()
@@ -56,10 +67,9 @@ class TestHandleCommand:
         msg.reply.assert_called_once()
         assert "コマンド" in msg.reply.call_args[0][0]
 
-    async def test_dispatches_to_registered_handler(self, isolated_registry: None) -> None:
+    async def test_dispatches_to_registered_handler(self, isolated_registry) -> None:
         """コマンド名の完全一致でレジストリのハンドラへ委譲する。"""
-        handler = AsyncMock()
-        registry.register_command("runtask")(handler)
+        handler = isolated_registry("runtask", AsyncMock())
         msg = _make_message()
         tools = {"task_tool": {"trigger": "task"}}
         bot = MagicMock()
@@ -68,10 +78,9 @@ class TestHandleCommand:
 
         handler.assert_called_once_with(msg, "my_tool", tools, bot)
 
-    async def test_passes_empty_arg_without_argument(self, isolated_registry: None) -> None:
+    async def test_passes_empty_arg_without_argument(self, isolated_registry) -> None:
         """引数のないコマンドには空文字列が渡る。"""
-        handler = AsyncMock()
-        registry.register_command("cleardirty")(handler)
+        handler = isolated_registry("cleardirty", AsyncMock())
         msg = _make_message()
         bot = MagicMock()
 
@@ -79,20 +88,18 @@ class TestHandleCommand:
 
         handler.assert_called_once_with(msg, "", {}, bot)
 
-    async def test_passes_multiline_arg(self, isolated_registry: None) -> None:
+    async def test_passes_multiline_arg(self, isolated_registry) -> None:
         """2 行目以降も引数としてそのまま渡る（toolresult の本文など）。"""
-        handler = AsyncMock()
-        registry.register_command("toolresult")(handler)
+        handler = isolated_registry("toolresult", AsyncMock())
         msg = _make_message()
 
         await command_handler.handle_command(msg, f"!toolresult {_UUID}\n本文", {}, MagicMock())
 
         assert handler.call_args[0][1] == f"{_UUID}\n本文"
 
-    async def test_splits_only_once(self, isolated_registry: None) -> None:
+    async def test_splits_only_once(self, isolated_registry) -> None:
         """分割は最初の空白 1 回だけで、引数内の空白は保持される。"""
-        handler = AsyncMock()
-        registry.register_command("mongodata")(handler)
+        handler = isolated_registry("mongodata", AsyncMock())
         msg = _make_message()
 
         await command_handler.handle_command(msg, '!mongodata {"a": 1, "b": 2}', {}, MagicMock())
@@ -131,11 +138,11 @@ class TestHandleCommand:
         assert "!cleardm" not in supported
 
     async def test_exception_in_handler_notifies_error(
-        self, isolated_registry: None, mock_notify_error: AsyncMock
+        self, isolated_registry, mock_notify_error: AsyncMock
     ) -> None:
         """ハンドラ内の例外も元チャンネルに返信せず、エラー通知のみ行う。"""
         error = Exception("boom")
-        registry.register_command("runtask")(AsyncMock(side_effect=error))
+        isolated_registry("runtask", AsyncMock(side_effect=error))
         msg = _make_message()
         bot = MagicMock()
         await command_handler.handle_command(msg, "!runtask x", {}, bot)
@@ -196,7 +203,7 @@ class TestExtractCommandContent:
             f"!toolresult {_UUID}\n結果本文\n2行目"
         )
 
-    def test_uses_registry_as_source_of_truth(self, isolated_registry: None) -> None:
+    def test_uses_registry_as_source_of_truth(self, isolated_registry) -> None:
         """既知コマンド判定はレジストリを参照する（定数リストを持たない）。"""
         registry.register_command("newcommand")(AsyncMock())
         assert command_handler.extract_command_content("!newcommand 引数") == "!newcommand 引数"

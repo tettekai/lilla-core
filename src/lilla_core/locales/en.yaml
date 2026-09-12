@@ -102,6 +102,9 @@ interaction:
 message:
   error: "An error occurred while processing the message"
 
+extension:
+  on_message_error: "An error occurred while extension {name} handled the message"
+
 task:
   execution_error_title: "[TASK] An error occurred while running {tool}"
 

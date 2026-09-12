@@ -8,34 +8,28 @@ Discord イベントの各 handler への委譲のみを行う。
 にあり、このモジュールには業務ロジックを置かない。
 """
 import asyncio
-import importlib
 import logging
-import os
 import sys
 
 import aiohttp
 import discord
 
-# 起動時拡張（config の `set_config()` や extension_points への
-# 登録など）を動的に import する。環境変数 `LILLA_EXTENSIONS_MODULE` が
-# 指定されていればその名前のモジュールを import する（副作用としての登録が
-# 走る）。未指定なら何もしない（拡張を持たないコア単体起動を許容する）。
-# 指定されているのに import できない場合はここで例外が伝播し、起動が失敗
-# する（fail-fast）。extensions の import は、拡張の登録
-# （`set_config` / `register_startup_repo` / `register_message_hook` /
-# `register_startup_task`）を有効にするため、必ずコアの他の初期化処理より
-# 前に完了させる。
-_extensions_module = os.environ.get("LILLA_EXTENSIONS_MODULE")
-if _extensions_module:
-    importlib.import_module(_extensions_module)
+from lilla_core.core.extension import (
+    dispatch_on_message,
+    get_startup_repos,
+    load_extensions,
+    run_setup_hooks,
+)
+
+# 環境変数 `LILLA_EXTENSIONS`（カンマ区切りの import パス）が指す拡張モジュールを
+# 読み込む。未設定・空なら 0 個で、拡張を持たないコア単体起動になる。import や
+# 検証に失敗した場合はここで例外が伝播し、起動が失敗する（fail-fast）。
+# 拡張モジュールの import 副作用（ホストの `set_config()` など）を有効にするため、
+# 必ずコアの他の初期化処理より前に完了させる。
+load_extensions()
 
 from lilla_core.bot_client import bot
 from lilla_core.core.config import get_config
-from lilla_core.core.extension_points import (
-    get_extra_startup_repos,
-    get_message_hook,
-    get_startup_tasks,
-)
 from lilla_core.core.logging_setup import setup_logging
 from lilla_core.commands import load_all_commands
 from lilla_core.loaders.task_tool_loader import load_all_tools
@@ -83,11 +77,11 @@ llm_tools = get_llm_tools()
 async def on_ready():
     """Discord 接続完了時に、各リポジトリの初期化と定期タスクスケジューラの起動を行う。
 
-    追加リポジトリは呼び出し時点の `get_extra_startup_repos()` から取得する
+    追加リポジトリは呼び出し時点の `get_startup_repos()` から取得する
     （モジュールレベルで固定しない＝テストで登録を差し替えやすくする）。
     """
     logger.info("Logged in as %s (Lilla ready)", bot.user)
-    for factory in _CORE_STARTUP_REPOS + get_extra_startup_repos():
+    for factory in _CORE_STARTUP_REPOS + get_startup_repos():
         repo = factory()
         try:
             await repo.init_collection()
@@ -103,10 +97,13 @@ async def on_ready():
 async def on_message(message):
     """メッセージ受信イベントを message_handler へ委譲する。
 
-    メッセージフックは呼び出し時点の `get_message_hook()` から取得する
-    （未登録時はデフォルトの「常に False」フックが返る）。
+    メッセージフックは全拡張の `on_message` をロード順に呼ぶディスパッチャで、
+    拡張が 0 個なら常に `False` を返す（＝通常フローへ進む）。
     """
-    await message_handler.handle_message(message, bot, tools, llm_tools, get_message_hook())
+    async def message_hook(msg) -> bool:
+        return await dispatch_on_message(msg, bot)
+
+    await message_handler.handle_message(message, bot, tools, llm_tools, message_hook)
 
 
 @bot.event
@@ -117,19 +114,17 @@ async def on_interaction(interaction: discord.Interaction):
 
 # 起動
 async def main():
-    """拡張が登録した追加起動処理（HTTP/ダッシュボードサーバー等）を
-    実行し、Discord へ接続する。
+    """拡張の `setup()`（HTTP/ダッシュボードサーバー等）を実行し、Discord へ接続する。
 
-    起動タスクは呼び出し時点の `get_startup_tasks()` から取得する
-    （モジュールレベルで固定しない）。
+    `setup()` はロード順に await する。例外はそのまま伝播させ、Discord への
+    接続に進まない（起動 fail-fast）。
 
     `bot.start()` が `PrivilegedIntentsRequired`（Developer Portal で
     MESSAGE CONTENT INTENT が未有効化）を送出した場合は、原因と対処法を
     ERROR ログへ出力してからプロセスを終了する（スタックトレースは
     `exc_info=True` で残す）。それ以外の例外は従来通りそのまま伝播させる。
     """
-    for task in get_startup_tasks():
-        await task(tools, llm_tools, bot)
+    await run_setup_hooks(tools, llm_tools, bot)
     try:
         await bot.start(_config.env.discord_token)
     except discord.errors.PrivilegedIntentsRequired:

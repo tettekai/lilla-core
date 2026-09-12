@@ -10,12 +10,13 @@ replies.
 
 Character settings, domain-specific tools (integrations with external services, etc.),
 and purpose-specific HTTP/dashboard servers — anything that varies per user — are kept
-out of the core. Such elements can be added from the outside through extension points
-and the `LILLA_EXTENSIONS_MODULE` environment variable, which is loaded at startup.
+out of the core. Such elements are added from the outside by subclassing `Extension`
+(`core/extension.py`) and listing the module in the `LILLA_EXTENSIONS` environment
+variable, which is loaded at startup.
 
-lilla-core is designed to be able to start as a standalone Discord bot even with no
-extensions registered at all. Each extension point falls back to safe default behavior
-when nothing is registered, so the core never depends on the presence of extensions.
+lilla-core is designed to be able to start as a standalone Discord bot with zero
+extensions loaded. Every `Extension` method has a safe default that contributes
+nothing, so the core never depends on the presence of extensions.
 
 ## Constraints
 
@@ -36,9 +37,10 @@ when nothing is registered, so the core never depends on the presence of extensi
 - Plugin-style `!` commands (just drop a file into `commands/`)
 - Scheduled tasks via APScheduler (`task_*.yaml`)
 - Approval flow (commands from non-owners can be approved/rejected on Discord)
-- Seven extension points for customization without modifying the core
-  (extra repositories, message hooks, startup tasks, result delivery, client-specific
-  prompts, conversation-start hooks, and tool execution context)
+- `Extension` adapter class for customization without modifying the core, with any
+  number of extensions loaded per process (extra repositories, message hooks, startup
+  work, result delivery, client-specific prompts, conversation-start hooks, tool
+  execution context, extra tool roots, and extra command packages)
 - User-facing Discord text is pulled from locale catalogs (`ja` / `en`)
 
 ## Requirements
@@ -77,12 +79,12 @@ covers LLM provider API keys as well (e.g. `GROK_API_KEY`, or whatever name you 
 via `api_key_env` in `lilla.yaml`), which are read directly from the environment by
 `api/llm_client.py` rather than through `AppConfig`.
 
-To start with extensions registered, set the `LILLA_EXTENSIONS_MODULE` environment
-variable to the import path of your extension module (omit it to start with the core
-alone).
+To start with extensions loaded, set the `LILLA_EXTENSIONS` environment variable to a
+comma-separated list of module import paths (omit it, or leave it empty, to start with
+the core alone). Modules are loaded in the order given.
 
 ```bash
-export LILLA_EXTENSIONS_MODULE=my_extension_package
+export LILLA_EXTENSIONS=my_extension_package,another_pack
 python -m lilla_core.bot
 ```
 
@@ -129,7 +131,7 @@ pytest tests/
 src/lilla_core/
 ├── bot.py                # Discord bot entry point
 ├── bot_client.py         # Shared module holding the commands.Bot instance
-├── core/                 # Config management, extension points, shared utilities
+├── core/                 # Config management, the Extension base class, shared utilities
 ├── commands/             # `!command` implementations (one file per command)
 ├── handlers/             # Dispatch for Discord events/commands, scheduled tasks
 ├── services/             # tool_call loop, conversation history, system prompt build
@@ -146,24 +148,56 @@ config.example/           # Sample lilla.yaml / logging.yaml
 Detailed design notes and the role of each file are documented in
 [`CLAUDE.md`](./CLAUDE.md).
 
-## Extension points
+## Extensions
 
-Seven extension points let you plug in functionality from outside the core. Each has a
-safe default that keeps the core working on its own when nothing is registered.
+An extension subclasses `lilla_core.core.extension.Extension`, overrides only the
+methods it needs, and is exported from its module as a single `extension` attribute.
+Every method has a safe default that contributes nothing, so the core keeps working on
+its own.
 
-| Registration function | Purpose |
+```python
+from lilla_core.core.extension import Extension
+
+
+class MyExtension(Extension):
+    name = "my-extension"
+
+    def tool_context_providers(self):
+        return {"my_client": get_my_client}
+
+    async def setup(self, tools, llm_tools, bot):
+        await start_my_http_server(llm_tools, tools, bot)
+
+
+extension = MyExtension()
+```
+
+| Method | Purpose |
 |----------|------|
-| `register_startup_repo` | Extra repository factories to initialize on `on_ready` |
-| `register_message_hook` | A handler always invoked at the start of `on_message` |
-| `register_startup_task` | Startup tasks awaited before `bot.start()` (e.g. an HTTP server) |
-| `register_result_delivery` | Overrides where `!toolresult` delivers results, per `client_type` |
-| `register_client_prompt_provider` | System prompt additions per `client_type` |
-| `register_conversation_start_hook` | Client-specific preprocessing before conversation handling starts |
-| `register_tool_context_provider` | Injects values into the tool execution context |
+| `startup_repos` | Extra repository factories to initialize on `on_ready` |
+| `on_message` | Invoked at the start of `on_message`; return `True` to stop further handling |
+| `setup` | Startup work awaited before `bot.start()` (e.g. an HTTP server) |
+| `result_deliveries` | Where `!toolresult` delivers results, per `client_type` |
+| `client_prompt_providers` | System prompt additions per `client_type` |
+| `conversation_start_hooks` | Client-specific preprocessing before conversation handling starts |
+| `tool_context_providers` | Values injected into the tool execution context |
+| `tool_roots` | Extra directories searched for tool `.py` files |
+| `command_packages` | Extra packages scanned for `@register_command` handlers |
+| `config_models` / `env_fields` | Reserved for config composition; not read yet |
 
-Extensions can add functionality without modifying core code, by defining an
-`AppConfig` subclass and swapping it in via `set_config()`, and by calling the
-registration functions in `core/extension_points.py`.
+Contribution keys must not collide **between extensions**: duplicate `Extension.name`,
+tool context keys, `client_type` keys, command names, or tool file names across
+different roots all fail fast at startup rather than silently picking a winner.
+`client_type="discord"` is special in two ways: the core provides a built-in system
+prompt that an extension may override, and the core owns `!toolresult` delivery, so
+extensions cannot register a result delivery for it.
+
+Extensions may also define an `AppConfig` subclass and swap it in via `set_config()` as
+an import side effect of the module. Put that module first in `LILLA_EXTENSIONS`; the
+core does not verify the order.
+
+Modules listed in `LILLA_EXTENSIONS` run as **trusted code** in the same process. This
+is not a sandbox.
 
 ## Tool contracts
 

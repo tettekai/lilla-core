@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 
 from lilla_core.core.config import get_config
-from lilla_core.core.extension_points import (
+from lilla_core.core.extension import (
     get_conversation_start_hook,
     get_tool_context_providers,
 )
@@ -113,7 +113,7 @@ def build_tool_message_content(result: dict) -> str:
 def build_tool_context() -> dict:
     """ツール実行コンテキストを構築する。未設定・未利用のクライアントはスキップする。
 
-    context へ入れる値は `register_tool_context_provider` で登録されたプロバイダ
+    context へ入れる値は各拡張の `tool_context_providers()` が返すプロバイダ
     から集める。コアは登録内容を列挙するだけなので、ツール（＝必要なクライアント）
     が増えても本関数を編集する必要はない。1 つのプロバイダが失敗してもそのキーが
     欠けるだけで、他のプロバイダと呼び出し元の処理は妨げない。

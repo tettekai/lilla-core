@@ -4,13 +4,35 @@ from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 
 from lilla_core.core.config import AppConfig, get_config
-from lilla_core.core.extension_points import (
-    get_client_prompt_provider,
-    register_client_prompt_provider,
-)
+from lilla_core.core.extension import get_client_prompt_provider
 from lilla_core.services.message_util import format_session_memory_block, prepend_timestamp_prefix
 from lilla_core.services.session_memory_manager import get_session_memory_manager
 from lilla_core.utils.datetime_utils import local_now, local_timezone
+
+
+def _resolve_client_prompt(client_type: str) -> str:
+    """`client_type` に付けるクライアント固有プロンプトを解決する。
+
+    解決順は次のとおり。プロバイダは呼ぶたびに評価される（＝ファイルを
+    読み直す）ため、戻り値はキャッシュしない。
+
+    1. 拡張の `client_prompt_providers()` に `client_type` があればそれを使う
+    2. 誰も出していなければ、`"discord"` のときだけコア内蔵の
+       `discord_client_prompt` を使う
+    3. どちらにも該当しなければ何も付けない
+
+    Args:
+        client_type: プロンプトを解決するクライアント種別。
+
+    Returns:
+        追記するプロンプト本文。付けるものが無ければ空文字列。
+    """
+    provider = get_client_prompt_provider(client_type)
+    if provider is not None:
+        return provider()
+    if client_type == "discord":
+        return get_config().discord_client_prompt
+    return ""
 
 
 class MemoryManager:
@@ -26,16 +48,6 @@ class MemoryManager:
         self._session_memory = get_session_memory_manager()
         self._config = config
         self._max_history_turns = config.memory.max_history_turns
-        # Discord はコア自身が知ってよいクライアント種別なので、拡張に頼らず
-        # ここで自己登録する。`get_memory_manager()` を通さず `MemoryManager()` を
-        # 直接生成する経路（テストなど）でも確実に登録されるよう __init__ に置く。
-        # 他の拡張ポイントと同じ「後勝ち」規約を壊さないよう、未登録の場合のみ
-        # デフォルトを登録する（拡張側が独自の discord プロバイダを登録済みなら
-        # それを上書きしない）。
-        if get_client_prompt_provider("discord") is None:
-            register_client_prompt_provider(
-                "discord", lambda: get_config().discord_client_prompt
-            )
 
     async def add_conversation(
         self,
@@ -95,8 +107,7 @@ class MemoryManager:
         """systemプロンプトを組み立てて返す。
 
         base_prompt に以下を順に追記する:
-        1. クライアント固有プロンプト（client_type に対応するプロバイダが
-           `register_client_prompt_provider` で登録されている場合のみ付与）
+        1. クライアント固有プロンプト（`_resolve_client_prompt` で解決できた場合のみ付与）
         2. 動的メモリ（有効なuser_memosが存在する場合のみ）
         3. セッションメモリ（有効なセッションメモリが存在する場合のみ）
         4. 現在日時と時刻付き会話履歴
@@ -117,11 +128,7 @@ class MemoryManager:
         now_str = now.strftime("%b") + f" {now.day}" + " " + now.strftime("%H:xx") + f" ({weekday})"
         time_section = f"Current time: {now_str}"
 
-        # クライアント種別ごとのプロンプトは拡張ポイントのレジストリから引く。
-        # プロバイダは呼ぶたびに評価され（＝ファイルを読み直し）、未登録の
-        # client_type では何も付与しない。
-        provider = get_client_prompt_provider(client_type)
-        client_prompt = provider() if provider is not None else ""
+        client_prompt = _resolve_client_prompt(client_type)
 
         base = self._config.system_prompt
         if client_prompt:

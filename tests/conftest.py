@@ -64,3 +64,46 @@ class _CleaningModule(pytest.Module):
 def pytest_pycollect_makemodule(module_path, parent):
     """各テストモジュールのコレクタとして _CleaningModule を返す。"""
     return _CleaningModule.from_parent(parent, path=module_path)
+
+
+@pytest.fixture
+def make_extension():
+    """テスト用の `Extension` インスタンスを組み立てるファクトリを返す。
+
+    キーワード引数はメソッド名で、値が callable ならそのままメソッドとして
+    差し込み、そうでなければ「その値を返すメソッド」として差し込む::
+
+        ext = make_extension("pack", client_prompt_providers={"discord": provider})
+        ext = make_extension("pack", on_message=AsyncMock(return_value=True))
+    """
+    from lilla_core.core.extension import Extension
+
+    def _const(value):
+        return lambda *args, **kwargs: value
+
+    def _make(name: str = "test-extension", **contributions):
+        ext = Extension()
+        ext.name = name
+        for method_name, value in contributions.items():
+            setattr(ext, method_name, value if callable(value) else _const(value))
+        return ext
+
+    return _make
+
+
+@pytest.fixture
+def use_extensions():
+    """拡張の登録をテスト内だけに閉じ込めるヘルパーを返す。
+
+    登録内容はプロセス全体で共有されるモジュール状態のため、テスト終了時に
+    元の内容へ戻す。
+    """
+    from lilla_core.core import extension
+
+    saved = extension.get_extensions()
+
+    def _use(*extensions) -> None:
+        extension.set_extensions(list(extensions))
+
+    yield _use
+    extension.set_extensions(saved)

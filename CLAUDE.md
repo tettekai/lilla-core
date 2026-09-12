@@ -6,20 +6,20 @@ AI エージェントを構築するための汎用基盤ライブラリ。Disco
 
 キャラクター設定・特定ドメイン専用のツール（外部サービス連携など）・特定用途の
 HTTP/ダッシュボードサーバーといった、利用者ごとに異なる要素はコアには含めない。
-そうした要素は `core/extension_points.py` の拡張ポイントと、起動時に読み込む
-`LILLA_EXTENSIONS_MODULE` 環境変数を通じて外部から拡張できるようにする（詳細は
-「拡張ポイント」節を参照）。
+そうした要素は `core/extension.py` の `Extension` サブクラスと、起動時に読み込む
+`LILLA_EXTENSIONS` 環境変数を通じて外部から拡張できるようにする（詳細は
+「拡張（`core/extension.py`）まとめ」節を参照）。
 
 lilla-core は拡張が一切登録されていない状態でも Discord bot として単体で起動できる
-ことを設計上の前提にしている。各拡張ポイントは「未登録ならデフォルト動作に
-フォールバックする」形で実装し、コアが拡張の有無に依存しないようにする。
+ことを設計上の前提にしている。`Extension` の各メソッドは「何も貢献しない」
+デフォルトを持ち、コアが拡張の有無に依存しないようにする。
 
 # 開発ルール
 - セキュリティ懸念事項があれば遠慮なく伝える（特にプロンプトインジェクションの危険がある場合など）
 - コアの汎用範囲を超える要素（キャラクター設定・特定ドメイン専用ツール・特定用途の
   HTTP/ダッシュボードサーバーなど）はこのリポジトリに持ち込まない。コアがそうした
-  拡張側の情報を必要とする場合は、直接参照せず `core/extension_points.py` に
-  登録ポイントを追加し、拡張する側から登録してもらう形にする
+  拡張側の情報を必要とする場合は、直接参照せず `core/extension.py` の `Extension`
+  にメソッドを追加し、拡張する側でオーバーライドしてもらう形にする
 - 関数には docstring を日本語で書く
 - `logger.*()` / `raise` に渡すメッセージ文字列は英語で書く（docstring・コメントは日本語のまま）
 - Discord に見える文言（コマンドの返信・ボタンのラベル・`notify_error` に渡す文脈など）は
@@ -157,7 +157,7 @@ Write the PR title and body in English. Keep it short.
 ## エントリポイント
 lilla-core 自体は起動スクリプトを持たない（ライブラリとして `pip install -e` される前提）。
 `src/lilla_core/bot.py` が Discord bot のエントリポイントで、ホスト側の起動スクリプトが
-`LILLA_EXTENSIONS_MODULE` 環境変数を設定したうえで `python -m lilla_core.bot`
+`LILLA_EXTENSIONS` 環境変数を設定したうえで `python -m lilla_core.bot`
 相当の呼び出しを行う想定（`if __name__ == "__main__"` を持つ）。拡張を一切登録しなくても
 そのまま起動できる。
 
@@ -166,7 +166,7 @@ lilla-core 自体は起動スクリプトを持たない（ライブラリとし
 ### ルート直下
 | ファイル | 役割 |
 |----------|------|
-| `bot.py` | Discord ボット本体。設定・コマンド・ツール・コア確定リポジトリの初期化と、Discord イベントの各 handler への委譲を統括する。起動直後（他の import より前）に環境変数 `LILLA_EXTENSIONS_MODULE` が指すモジュールを import し、`set_config()` / `register_*` 系の拡張登録処理を走らせる（未指定ならコア単体で起動する）。`on_ready` / `on_message` / `on_interaction` は `handlers/` の各ハンドラへ委譲するだけの薄いラッパー |
+| `bot.py` | Discord ボット本体。設定・コマンド・ツール・コア確定リポジトリの初期化と、Discord イベントの各 handler への委譲を統括する。起動直後（他の import より前）に `load_extensions()` で環境変数 `LILLA_EXTENSIONS`（カンマ区切り）が指すモジュールを import し、各モジュールの `extension` を集めて検証する（未設定ならコア単体で起動する）。`on_ready` / `on_message` / `on_interaction` は `handlers/` の各ハンドラへ委譲するだけの薄いラッパー |
 | `bot_client.py` | Discord `commands.Bot` インスタンスの生成のみを担う共有モジュール。`bot.py` をスクリプト実行した際の多重ロード（Discord 未接続の幽霊インスタンス生成）を防ぐため、`bot` インスタンスを参照する側は必ずこのモジュールから import する |
 | `log_handler.py` | MongoDB へのログ書き込みハンドラー（`MongoDBHandler`。レベル別 TTL 付き） |
 
@@ -174,7 +174,7 @@ lilla-core 自体は起動スクリプトを持たない（ライブラリとし
 | ファイル | 役割 |
 |----------|------|
 | `config.py` | Pydantic ベースの設定管理（`AppConfig`）。`${CONFIG_ROOT}/lilla.yaml` はネスト構造のまま同じ形のセクションモデル（`cfg.discord.my_user_id` など）へ読み込み、`.env` / OS 環境変数は `EnvConfig`（`cfg.env.discord_token` など）へ読み込む（YAML の項目を環境変数で上書きする経路は持たない。YAML トップレベルの `env:` は警告して無視する）。複数 LLM プロバイダの動的選択に対応。`ui.locale`（`UiConfig`）は Discord に見せる文言のロケールを決める。コアの汎用範囲を超えるフィールドは持たず、拡張側は `AppConfig` のサブクラスで `settings_customise_sources()` を override して独自ソースを足す。`get_config()` / `set_config()` でプロセス全体の設定インスタンスを共有し、`set_config()` により拡張側で定義したサブクラスへ差し替え可能 |
-| `extension_points.py` | コアの外から機能を差し込むための拡張ポイント一式。起動時リポジトリ・メッセージフック・起動タスク・結果配送（`!toolresult` の配送先）・クライアント固有プロンプト・会話開始フック・ツール実行 context プロバイダの登録/取得関数を提供する。いずれも「未登録ならコア単体でも安全に動くデフォルト」を持つ。`lilla_core/bot.py` が拡張モジュールを直接 import しないための唯一の橋渡し層 |
+| `extension.py` | コアの外から機能を差し込むための `Extension` 基底クラスと、そのロード・参照 API。`Extension` は Adapter 型で、起動時リポジトリ・メッセージフック・起動処理（`setup`）・結果配送・クライアント固有プロンプト・会話開始フック・ツール実行 context プロバイダ・追加ツールルート・追加コマンドパッケージの各メソッドに「何も貢献しない」デフォルトを持つ。`load_extensions()` が `LILLA_EXTENSIONS` のモジュールを import して各 `extension` を集め、`set_extensions()` が貢献キーの衝突を検証して登録する（拡張どうしの重複は fail-fast）。`lilla_core/bot.py` が拡張モジュールを直接 import しないための唯一の橋渡し層 |
 | `exceptions.py` | `ReauthenticationRequiredError`（外部 API 再認証要求時）・`LLMError`（LLM 呼び出し失敗時）の例外定義 |
 | `error_notify.py` | コマンド実行系・定期タスク実行系のエラー出力を一元化する（`notify_error`）。ERROR ログと Discord のエラー通知チャンネル（`discord.error_channel`）の 2 箇所にのみ出力し、元チャンネルへの `message.reply()` は行わない（bot 間チャンネルで相手 bot が reply に反応するのを防ぐため）。チャンネル未設定・未発見・送信失敗時は WARNING ログのみで、例外は投げない |
 | `http_util.py` | 全 HTTP リクエストの共通ユーティリティ（`send_http_request` / `stream_http_request`）。プロキシ自動適用、リクエスト/レスポンスの秘匿情報（`client_secret` 等）・base64 画像のログマスキングつき |
@@ -191,13 +191,13 @@ lilla-core 自体は起動スクリプトを持たない（ライブラリとし
 
 | ファイル | 役割 |
 |----------|------|
-| `registry.py` | コマンド名 → ハンドラのレジストリ。登録デコレータ（`register_command`）、既知コマンド名の一覧（`known_command_names`）、ハンドラ取得（`get_command_handler`）を提供する。既知コマンド名を持つ唯一の場所 |
-| `__init__.py` | `src/lilla_core/commands/` 配下の全モジュールを動的に import する `load_all_commands` |
+| `registry.py` | コマンド名 → ハンドラのレジストリ。登録デコレータ（`register_command`）、既知コマンド名の一覧（`known_command_names`）、ハンドラ取得（`get_command_handler`）を提供する。既知コマンド名を持つ唯一の場所。同じ名前を別のハンドラで登録しようとすると fail-fast する（同一性は `(__module__, __qualname__)` で見るため、モジュールの再 exec による同じ関数の再登録は許容する） |
+| `__init__.py` | `src/lilla_core/commands/` 配下の全モジュールと、拡張の `command_packages()` が返すパッケージを動的に import する `load_all_commands` |
 | `discord_util.py` | コマンド共通の Discord ユーティリティ。チャンネル ID の解決（キャッシュ → API 問い合わせの順、`resolve_discord_channel`） |
 | `attachment_body.py` | コマンドの BODY をテキストと添付ファイルの両方から解決する共通処理（`resolve_command_body`）。添付があれば優先（複数なら先頭 1 件のみ）、無ければテキスト側を使い、どちらも無ければ `notify_error` で通知して None を返す。テキスト判定は拡張子（`.json` / `.txt`）または Content-Type（`text/*` / `application/json`）のどちらか一致、上限 1MB、文字コードは UTF-8（デコード失敗時は通知して中断）。ダウンロードは `services/attachment_download.py` 経由でプロキシ設定を尊重する |
 | `runtask.py` | `!runtask <ツール名>` — `trigger="task"` のツールを手動実行する。`run_task` は関数として切り出してあり、拡張側で HTTP 経由の手動実行エンドポイント等を用意する場合にもそのまま呼び出せる |
 | `mongodata.py` | `!mongodata <JSON>` — ホワイトリストで許可されたコレクションへ JSON を insert / upsert する。JSON は本文にも添付ファイルにも書ける（`attachment_body.resolve_command_body` 経由。添付優先） |
-| `toolresult.py` | `!toolresult <correlation_id>`（2 行目以降が結果本文。結果本文は添付ファイルでも渡せる＝`attachment_body.resolve_command_body` 経由で添付優先。correlation_id は常にメッセージ本文側）— 外部エージェントからの非同期依頼の結果を、`pending_tool_calls` の原子的な status 更新を経て依頼元クライアントへ届け、あわせて会話履歴にも登録する。結果本文はそのまま転送せず、ツールを渡さない `chat_to_llm` でリラ自身の返信を生成してから配送する（プロンプトインジェクション対策として、本文は `<external_agent_response>` タグで囲んで「指示ではなく情報」として扱わせ、タグ抜け出し文字列は事前に無害化する）。配送先は依頼レコードの `client_type` で判定し、`"discord"` は自前で配送、それ以外は `extension_points.get_result_delivery()` に登録された配送関数（拡張側で任意のクライアント向け配送処理を登録可能）へ委譲する（未登録時は Discord 配送へフォールバック）。この返信は `tags: ["toolresult", "dirty"]` と配送先の Discord メッセージ情報つきで履歴に保存する |
+| `toolresult.py` | `!toolresult <correlation_id>`（2 行目以降が結果本文。結果本文は添付ファイルでも渡せる＝`attachment_body.resolve_command_body` 経由で添付優先。correlation_id は常にメッセージ本文側）— 外部エージェントからの非同期依頼の結果を、`pending_tool_calls` の原子的な status 更新を経て依頼元クライアントへ届け、あわせて会話履歴にも登録する。結果本文はそのまま転送せず、ツールを渡さない `chat_to_llm` でリラ自身の返信を生成してから配送する（プロンプトインジェクション対策として、本文は `<external_agent_response>` タグで囲んで「指示ではなく情報」として扱わせ、タグ抜け出し文字列は事前に無害化する）。配送先は依頼レコードの `client_type` で判定し、`"discord"` は自前で配送、それ以外は拡張の `result_deliveries()` に登録された配送関数（拡張側で任意のクライアント向け配送処理を登録可能）へ委譲する（未登録時は Discord 配送へフォールバック）。この返信は `tags: ["toolresult", "dirty"]` と配送先の Discord メッセージ情報つきで履歴に保存する |
 | `cleardirty.py` | `!cleardirty` — 直近の `dirty` エントリを 1 件ずつ（会話履歴と Discord メッセージの両方から）取り消す |
 | `model.py` | `!model [プロバイダー名]` — 会話で使う LLM プロバイダーを一時的に切り替える（引数なしで `llm.default` に戻す）。状態は `core/runtime_state.py` のインメモリ変数のみで、Discord 会話と（拡張が対応していれば）他クライアントの会話にだけ効く（`!runtask` と APScheduler 経由の定期タスクは各 YAML 設定のまま） |
 | `disable_tools.py` | `!disable_tools` — 通常会話で LLM ツールを一時的にすべて無効化する。状態は `core/runtime_state.py` のインメモリフラグ（`set_tools_disabled`）のみで、`services/conversation_service.py` が `is_tools_disabled` を参照して tools を渡さない。再起動で有効へ戻り、定期タスクや `!runtask` には影響しない |
@@ -207,15 +207,15 @@ lilla-core 自体は起動スクリプトを持たない（ライブラリとし
 ### 外部トリガー入り口層 (`src/lilla_core/handlers/`)
 コアが持つのは Discord のメッセージ/インタラクション/コマンドのディスパッチと定期タスクの実行のみ。
 HTTP サーバー・ダッシュボードサーバー・WebSocket サーバーのような、対話クライアントを
-増やす実装はこのリポジトリには含めず、`core/extension_points.py` の `register_startup_task`
-を通じて `main()` の起動シーケンスへ差し込むことができる。
+増やす実装はこのリポジトリには含めず、`Extension.setup()` を通じて `main()` の
+起動シーケンスへ差し込むことができる。
 
 | ファイル | 役割 |
 |----------|------|
 | `approval_flow.py` | オーナー以外から届いたコマンドの承認フローを担う共通ロジック。`#lilla-approval` への承認依頼投稿（`send_approval_request`）、承認 / 拒否ボタン押下の処理（`handle_approve_interaction` / `handle_reject_interaction`）、承認対象コマンド文字列の組み立て（`extract_approvable_command` / `build_toolresult_command`）を提供する。`bot` / `tools` はモジュール変数ではなく引数で受け取る。**信頼境界は「承認依頼メッセージ（bot 自身の投稿）」に置く**: 承認依頼を作る時点で `resolve_full_command` が BODY（テキスト直書き／添付ファイルのどちらでも）を解決して「実行される内容の全文」を組み立て、300 文字以内なら承認依頼メッセージ本文の区切り行（`command_marker()`。文言はロケールごとに異なるため定数ではなく関数で持ち、復元時は他ロケールの区切り行も候補にする）以降にそのまま書き、超える場合はプレビュー＋bot が新規作成した `message.txt` に全文を添付する（元メッセージの添付は使い回さない）。BODY を解決できない場合は承認依頼を作成しない。承認ボタン押下時は `interaction.message` 以外を一切参照せず（元メッセージの `fetch_message()` は行わない）、復元した全文と、添付を空にした代理メッセージ（`ApprovedMessage`）を `command_handler.handle_command` へ渡す。`custom_id` の channel_id は実行内容には使わず、`message.reply` の返信先（`ApprovedMessage.channel`）の解決にのみ使う（解決できなければ承認チャンネルへフォールバック）。これにより承認待ちの間に元メッセージが編集されても実行内容は変わらない（TOCTOU 対策）。元メッセージへの `jump_url` は送信者・文脈の確認用リンクとしてのみ表示する。なお承認ボタンの二重押下による二重実行防止は行っていない（許容リスク） |
 | `command_handler.py` | `!` プレフィックスの Discord コマンドのディスパッチのみを担う。コマンド文字列を最初の空白で 1 回だけ分割し、コマンド名の完全一致で `commands/` のレジストリを引いてハンドラへ委譲する（個別コマンドのロジックは持たない）。既知コマンドで始まる行以降を切り出す `extract_command_content` もレジストリのコマンド名一覧から判定する |
 | `interaction_handler.py` | Discord のインタラクション（ボタン押下）イベントのディスパッチ。`custom_id` のプレフィックスで処理を振り分け、`approve:` / `reject:` は `handlers/approval_flow.py` へ、`command:{コマンド文字列}` は `handlers/command_handler.py` へ汎用的に委譲し、`action:{uuid}` 形式の保留中アクション（`button_actions`）のみ自身で取得・実行して結果を followup で返す。保留中アクションはツール名で特別扱いせず常に `execute_tool_call` を通すため、会話履歴には残らない。デフォルトではオーナー以外のインタラクションを拒否する（プレフィックス分岐より前で一括拒否。`message_handler.py` と同じ判定パターン）。コアは汎用ランタイムであり、より緩い権限モデルは利用側の拡張で差し替え可能という位置づけ。`bot` / `tools` / `llm_tools` は引数で受け取る |
-| `message_handler.py` | Discord のメッセージ受信イベントのディスパッチ。メッセージフック（`extension_points.get_message_hook()`。未登録時は常に `False` を返すデフォルト）→ 承認フロー振り分け → コマンド処理 → 通常会話、の順に処理する。通常会話は画像添付の変換（`services/image_attachment.py` へ委譲。サイズ超過・ダウンロード失敗で None が返ったら会話処理自体を行わない）・`run_conversation` の呼び出し・応答の分割送信と会話履歴保存を担い、送信中タスクをチャンネル単位で保持して後続メッセージ受信時に先行タスクをキャンセルする。`bot` / `tools` / `llm_tools` / `message_hook` は引数で受け取る |
+| `message_handler.py` | Discord のメッセージ受信イベントのディスパッチ。メッセージフック（`extension.dispatch_on_message()`。拡張が 0 個なら常に `False`）→ 承認フロー振り分け → コマンド処理 → 通常会話、の順に処理する。通常会話は画像添付の変換（`services/image_attachment.py` へ委譲。サイズ超過・ダウンロード失敗で None が返ったら会話処理自体を行わない）・`run_conversation` の呼び出し・応答の分割送信と会話履歴保存を担い、送信中タスクをチャンネル単位で保持して後続メッセージ受信時に先行タスクをキャンセルする。`bot` / `tools` / `llm_tools` / `message_hook` は引数で受け取る |
 | `request_params.py` | HTTP ハンドラー共通のリクエスト入力解析ユーティリティ。整数クエリパラメータのデフォルト値・範囲丸め付き取得（`parse_int_param`）、JSON ボディのパース（`parse_json_body`）、`ObjectId` へのパス変数変換（`parse_object_id`）を提供する。aiohttp のレスポンス生成自体は呼び出し側（拡張側の HTTP ハンドラーなど）に委ねる |
 | `task_handler.py` | `trigger="task"` のツールの実行を管理する。APScheduler（`BackgroundScheduler`、タイムゾーン `Asia/Tokyo`）による定期ジョブ管理。ジョブは `asyncio.run_coroutine_threadsafe` で Discord の `bot.loop` に投げる |
 
@@ -226,8 +226,8 @@ HTTP サーバー・ダッシュボードサーバー・WebSocket サーバー�
 |----------|------|
 | `attachment_download.py` | Discord 添付ファイルのダウンロード共通処理（`download_attachment_bytes` / `resolve_proxy_settings` / `normalize_content_type`）。プロキシ設定を尊重して Discord CDN から取得する。画像添付（`services/image_attachment.py`）とコマンドの BODY 添付（`commands/attachment_body.py`）で共有する |
 | `image_attachment.py` | Discord の画像添付を LLM へ渡す `image_url` パート（data URL）へ変換する処理。対応 MIME タイプの絞り込み（`filter_image_attachments`）と、サイズ上限ガード付きのダウンロード＋base64 化（`build_image_content_parts`）を担う。上限は `AppConfig.bot.max_image_attachment_size_mb`（既定 8MB。未設定・不正値・0 以下なら既定値）で、ダウンロード前に `attachment.size` で早期に弾き、Discord 側の申告値を過信しないようダウンロード後の実バイト数でも再検証する。上限超過・ダウンロード失敗はいずれも `notify_error` で通知して None を返し（例外は呼び出し元へ伝播させない）、呼び出し元は会話処理そのものを中止する |
-| `conversation_service.py` | tool_call ループと会話履歴の読み書きを担う共通ロジック。Discord をはじめ、複数の対話クライアントのエントリポイントから再利用できる。LLM 最終応答の META ブロック（`actions`）を種別ごとにディスパッチして適用する（`set_session_memory` でセッションメモリを更新/クリア）。クライアント種別の判定は `"task"` かどうかだけで行い、それ以外の対話クライアント種別（`"discord"` や拡張が増やす種別）はコア側に列挙しない。会話開始フック（`extension_points.get_conversation_start_hook`）・ツール実行 context プロバイダ（`extension_points.get_tool_context_providers`）を経由して拡張の差し込みポイントを利用する |
-| `memory_manager.py` | 会話履歴・ユーザーメモ・セッションメモリを統合し、LLM 向けシステムプロンプトを構築する（`build_system_prompt`）。クライアント種別ごとのプロンプト追記は `extension_points.get_client_prompt_provider()` から取得する（`"discord"` 用はコア自身が `__init__` で自己登録する）。ツールキャッシュ（`tool_cache_repository`）の有効なレコードも `## Cached Tool Results` としてシステムプロンプトへ埋め込む |
+| `conversation_service.py` | tool_call ループと会話履歴の読み書きを担う共通ロジック。Discord をはじめ、複数の対話クライアントのエントリポイントから再利用できる。LLM 最終応答の META ブロック（`actions`）を種別ごとにディスパッチして適用する（`set_session_memory` でセッションメモリを更新/クリア）。クライアント種別の判定は `"task"` かどうかだけで行い、それ以外の対話クライアント種別（`"discord"` や拡張が増やす種別）はコア側に列挙しない。会話開始フック（`extension.get_conversation_start_hook`）・ツール実行 context プロバイダ（`extension.get_tool_context_providers`）を経由して拡張の差し込みポイントを利用する |
+| `memory_manager.py` | 会話履歴・ユーザーメモ・セッションメモリを統合し、LLM 向けシステムプロンプトを構築する（`build_system_prompt`）。クライアント種別ごとのプロンプト追記は `_resolve_client_prompt()` が「拡張の `client_prompt_providers()` → コア内蔵（`"discord"` のみ）→ 付けない」の順で解決する。ツールキャッシュ（`tool_cache_repository`）の有効なレコードも `## Cached Tool Results` としてシステムプロンプトへ埋め込む |
 | `message_splitter.py` | LLM 応答を `---SPLIT---` / 改行2つ / タイムスタンプ境界で分割し、意味のない断片とタイムスタンプ prefix を除去するユーティリティ（`split_response`） |
 | `message_util.py` | メッセージ送信ユーティリティ。フラグパース（`parse_message_flags`）・タイムスタンプ prefix の付与/除去（`prepend_timestamp_prefix` / `strip_timestamp_prefix`）・システムプロンプト埋め込み用セッションメモリブロックの整形（`format_session_memory_block`）・LLM 出力の META ブロック（JSON）の抽出（`extract_meta_block`）・外部エージェントとやりとりする FrontMatter 付きメッセージの組み立て/解釈（`build_correlation_frontmatter` / `parse_correlation_frontmatter`）・DM チャンネルの解決と Discord への送信（`resolve_dm_channel` / `send_to_discord`） |
 | `session_memory_manager.py` | 単一領域のセッションメモリ（作業の途中状態や一時的な意図）をプロセス内メモリで保持する。TTL 付き、MongoDB 永続化なし。更新は LLM 出力の META アクション `set_session_memory` 経由で行う |
@@ -259,9 +259,10 @@ Discord に見せる短い文言のカタログ。表示言語は `lilla.yaml` �
 ### ツール・スクリプトローダー群 (`src/lilla_core/loaders/`)
 | ファイル | 役割 |
 |----------|------|
-| `llm_tool_loader.py` | `${CONFIG_ROOT}/tools/llm_*.yaml` と `${TOOL_ROOT}/**/llm_*.py`（および `type: self` の場合は YAML と同名の `.py`）を動的に読み込む。LLM に渡す tools パラメータの構築（`build_tools_param`）と tool_call の実行（`execute_tool_call`）を担う。実行時にツールへ注入される context には `call_tool`（入れ子呼び出し用。深さ上限 `MAX_TOOL_CALL_DEPTH=5`）を自動的に加える。`tool_config` が実行時共通キー（`client_type` 等。拡張が `register_tool_context_provider` で登録したキー名も含む）と衝突していないか起動時に検証し、衝突時は fail-fast する（`_validate_no_runtime_key_collision`）。ツール設定の `cache.mode`（`disable` / `enable` / `auto`）に応じた実行結果の MongoDB キャッシュ保存（`_save_tool_cache`）、`client_type == "discord"` かつ通知コールバックが注入されている場合のツール呼び出しログ送信（`_notify_tool_call`）も担う |
-| `task_tool_loader.py` | `${CONFIG_ROOT}/tools/task_*.yaml` と `${TOOL_ROOT}/` 配下の Python クラスを動的に読み込む（`load_all_tools`）。定期実行タスクのクラスマップをキャッシュし、ファイル名プレフィックス（`task_` / `llm_` / `system_`）からトリガー種別を判定する |
-| `script_loader.py` | ホワイトリスト検証（`AppConfig.paths.allowed_tool_paths_list`）付きで外部 Python 関数・クラスを安全にロードする（`load_script_function` / `load_script_class`） |
+| `llm_tool_loader.py` | `${CONFIG_ROOT}/tools/llm_*.yaml` と、`loaders/tool_paths.py` が解決したツールルート配下の `llm_*.py`（および `type: self` の場合は YAML と同名の `.py`）を動的に読み込む。LLM に渡す tools パラメータの構築（`build_tools_param`）と tool_call の実行（`execute_tool_call`）を担う。実行時にツールへ注入される context には `call_tool`（入れ子呼び出し用。深さ上限 `MAX_TOOL_CALL_DEPTH=5`）を自動的に加える。`tool_config` が実行時共通キー（`client_type` 等。拡張の `tool_context_providers()` が返すキー名も含む）と衝突していないか起動時に検証し、衝突時は fail-fast する（`_validate_no_runtime_key_collision`）。ツール設定の `cache.mode`（`disable` / `enable` / `auto`）に応じた実行結果の MongoDB キャッシュ保存（`_save_tool_cache`）、`client_type == "discord"` かつ通知コールバックが注入されている場合のツール呼び出しログ送信（`_notify_tool_call`）も担う |
+| `task_tool_loader.py` | `${CONFIG_ROOT}/tools/task_*.yaml` と、`loaders/tool_paths.py` が解決したツールルート配下の Python クラスを動的に読み込む（`load_all_tools`）。定期実行タスクのクラスマップをキャッシュし、ファイル名プレフィックス（`task_` / `llm_` / `system_`）からトリガー種別を判定する |
+| `script_loader.py` | ホワイトリスト検証（`AppConfig.paths.allowed_tool_paths_list`。拡張のロード後に差し替えられた設定を読むため、import 時ではなく呼び出しのたびに取得する）付きで外部 Python 関数・クラスを安全にロードする（`load_script_function` / `load_script_class`） |
+| `tool_paths.py` | ツール探索ルートの解決（`resolve_tool_roots`。`paths.tool_root` の後に拡張の `tool_roots()` をロード順で足す）と、ツールファイルの検索（`find_tool_file`）。同名ファイルが複数ルートにあれば fail-fast し、1 ルート内の重複は従来どおり先頭マッチを使う。追加ルートはファイル探索専用で、`sys.path` へ入れるのは `paths.tool_root` の親だけ |
 
 ### 外部APIクライアント (`src/lilla_core/api/`)
 特定の外部サービス向けの API クライアントはこのリポジトリには置かず、拡張側に実装する想定。
@@ -306,42 +307,72 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
 
 ## 処理フロー概要
 ```
-起動スクリプト（LILLA_EXTENSIONS_MODULE を設定。未指定でも起動可能）
+起動スクリプト（LILLA_EXTENSIONS を設定。未指定でも起動可能）
   → lilla_core/bot.py 起動
-  ├→ LILLA_EXTENSIONS_MODULE の import（拡張側の set_config() / register_* を実行。未指定ならスキップ）
+  ├→ load_extensions()（LILLA_EXTENSIONS の各モジュールを import し、module.extension を
+  │    集めて衝突を検証。拡張側の set_config() は import 副作用。未指定ならスキップ）
   ├→ 設定読み込み（get_config()）+ ログ設定（setup_logging）
-  ├→ コマンド読み込み (commands.load_all_commands で commands/ を動的ロード)
-  ├→ ツール読み込み (llm_tool_loader + task_tool_loader)
+  ├→ コマンド読み込み (commands.load_all_commands で commands/ と command_packages() を動的ロード)
+  ├→ ツール読み込み (llm_tool_loader + task_tool_loader。探索ルートは tool_paths.resolve_tool_roots())
   ├→ main() 実行
-  │    ├→ 拡張が登録した起動タスク（get_startup_tasks()）を順に await
+  │    ├→ 各拡張の setup() をロード順に await
   │    │    （HTTP サーバー等、対話クライアントを増やす拡張の起動など）
   │    └→ Discord へ接続（bot.start）
   ├→ 接続完了時 (on_ready):
-  │    ├→ コア確定リポジトリ + 拡張が登録した追加リポジトリ（get_extra_startup_repos()）を
-  │    │    init_collection() で初期化
+  │    ├→ コア確定リポジトリ + 拡張の startup_repos() を init_collection() で初期化
   │    └→ 定期スケジューラ開始 (task_handler.start_scheduler)
   └→ メッセージ受信時 (on_message → handlers/message_handler.py):
-       ├→ メッセージフック (get_message_hook()。未登録ならデフォルトの「常に False」)
+       ├→ メッセージフック (dispatch_on_message()。各拡張の on_message をロード順に連鎖。
+       │    拡張が 0 個なら常に False)
        ├→ コマンド (!) → command_handler がコマンド名で commands/ のハンドラへ委譲
        ├→ オーナー以外からのメッセージ → 既知コマンド、または FrontMatter に実在する
        │    correlation_id を持つ外部エージェントの結果（→ `!toolresult` へ変換）のみ
        │    #lilla-approval の承認フローへ。承認後に command_handler が結果を配送する
        └→ 通常会話 → memory_manager で履歴+メモ+セッションメモリ統合 → conversation_service
-            （tool_call ループ。拡張ポイント経由で会話開始フック・ツール context を注入）
+            （tool_call ループ。拡張経由で会話開始フック・ツール context を注入）
             → LLM 呼び出し → 返信保存・送信
 ```
 
-## 拡張ポイント（`core/extension_points.py`）まとめ
-コアの外から `import` して登録することで機能を拡張できるポイントは以下の 7 種類。いずれも
-「未登録ならコア単体でも安全に動くデフォルト」を持ち、同じキー（`client_type` 等）への
-二重登録は合成せず後勝ちになる。
+## 拡張（`core/extension.py`）まとめ
+コアの外から機能を差し込むには `Extension` を継承し、必要なメソッドだけをオーバーライド
+して、モジュールから `extension` 属性として 1 つだけ export する。`LILLA_EXTENSIONS`
+（カンマ区切りの import パス）に並べたモジュールをロード順に読む。いずれのメソッドも
+「何も貢献しない」デフォルトを持ち、拡張が 0 個でもコア単体で動く。
 
-| 登録関数 | 取得関数 | 用途 |
+| メソッド | コア側の参照 | 用途 |
 |----------|----------|------|
-| `register_startup_repo` | `get_extra_startup_repos` | `on_ready` で `init_collection()` を呼ぶ追加リポジトリファクトリ |
-| `register_message_hook` | `get_message_hook` | `on_message` の冒頭で必ず 1 度呼ばれるハンドラ（外部からの通知の入口などに使う。単一登録のみ想定） |
-| `register_startup_task` | `get_startup_tasks` | `main()` で `bot.start()` の前に順に await される非同期関数（HTTP サーバー等の起動など） |
-| `register_result_delivery` | `get_result_delivery` | `!toolresult` が結果を届ける先を `client_type` ごとに差し替える（Discord 以外のクライアントへの配送処理を追加する場合など） |
-| `register_client_prompt_provider` | `get_client_prompt_provider` | `client_type` ごとにシステムプロンプトへ追記する文字列を返すプロバイダ（呼ぶたびに評価される関数を登録する） |
-| `register_conversation_start_hook` | `get_conversation_start_hook` | `run_conversation` の冒頭で `client_type` ごとに呼ばれる非同期関数（会話処理本体が始まる前にクライアント固有の前処理を挟みたい場合に使う） |
-| `register_tool_context_provider` | `get_tool_context_providers`（全件） | ツール実行 context へ注入する値を context キー名ごとに供給する（新しいツールを増やしてもコアを編集せずに済む） |
+| `startup_repos` | `get_startup_repos` | `on_ready` で `init_collection()` を呼ぶ追加リポジトリファクトリ |
+| `on_message` | `dispatch_on_message` | `on_message` の冒頭でロード順に呼ばれる。`True` で以降を止める |
+| `setup` | `run_setup_hooks` | `main()` で `bot.start()` の前に順に await される非同期関数（HTTP サーバー等の起動など） |
+| `result_deliveries` | `get_result_delivery` | `!toolresult` が結果を届ける先を `client_type` ごとに差し替える |
+| `client_prompt_providers` | `get_client_prompt_provider` | `client_type` ごとにシステムプロンプトへ追記する文字列を返すプロバイダ（呼ぶたびに評価される） |
+| `conversation_start_hooks` | `get_conversation_start_hook` | `run_conversation` の冒頭で `client_type` ごとに呼ばれる非同期関数 |
+| `tool_context_providers` | `get_tool_context_providers`（全件） | ツール実行 context へ注入する値を context キー名ごとに供給する |
+| `tool_roots` | `get_tool_roots` | `paths.tool_root` に足すツール探索ディレクトリ（`allowed_tool_paths` は自動で広げない） |
+| `command_packages` | `get_command_packages` | `load_all_commands()` が追加で走査するパッケージ |
+| `config_models` / `env_fields` | （未使用） | 設定合成用の予約。今回のローダは読まない |
+
+### 衝突は fail-fast
+拡張どうしで以下が重複したら、静かな後勝ちにせずロード時に例外を投げる。
+
+- `Extension.name`（未設定・空文字も落とす）
+- ツール実行 context プロバイダのキー
+- `result_deliveries` / `client_prompt_providers` / `conversation_start_hooks` の `client_type`
+- `command_packages` 経由で登録されるコマンド名（`register_command` が検出）
+- 複数のツールルートに同じ名前のツールファイルがあるとき（`find_tool_file` が検出）
+
+コア内蔵のデフォルトとの重複は衝突にしない。`client_type="discord"` のシステム
+プロンプトは拡張が出していればそれを使い、誰も出していなければコアの
+`discord_client_prompt` を使う。逆に `"discord"` の `result_deliveries` はコアが
+配送を持つ予約キーで、拡張が登録するとロード時に落ちる。
+
+### `on_message` の実行時例外
+ある拡張の `on_message` が例外を投げたときは、その 1 通の処理をそこで打ち切る。
+後続の拡張も通常の会話フローも動かさず、ERROR ログと `core/error_notify.py` の
+エラー通知チャンネルへ出したうえで「処理済み」として扱う（プロセスは落とさない）。
+
+### 起動順の規約
+ホストが `AppConfig` のサブクラスを使う場合、そのモジュールの import 副作用で
+`set_config()` を呼ぶ仕組みは残す。そのモジュールを `LILLA_EXTENSIONS` の先頭に置くのは
+ホスト側の規約で、コアは順番を検証しない。並べたモジュールは同一プロセスで動く
+**信頼コード** であり、サンドボックスではない。
