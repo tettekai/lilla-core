@@ -234,8 +234,8 @@ Tools are loaded dynamically from `${TOOL_ROOT}/**/*.py` based on YAML config fi
 
 **The `context` dict passed to `execute`** varies by call site. For LLM tools it always
 includes `client_type` and a nested-call helper `call_tool(tool_name, tool_input)`,
-plus any tool-specific keys from that tool's YAML, and any keys registered via
-`register_tool_context_provider`. For task tools, a scheduled run passes
+plus any tool-specific keys from that tool's YAML, and any keys contributed by an
+extension's `tool_context_providers()`. For task tools, a scheduled run passes
 `discord_client` / `now` / `llm_tools`, and a manual `!runtask` run additionally passes
 `params`.
 

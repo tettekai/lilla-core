@@ -230,7 +230,7 @@ extension = MyExtension()
 **`execute` に渡される `context`** は呼び出し元によって内容が異なります。LLM
 ツールでは常に `client_type` と、入れ子呼び出し用のヘルパー
 `call_tool(tool_name, tool_input)` に加え、そのツールの YAML 固有のキーと、
-`register_tool_context_provider` で登録されたキーが入ります。task ツールでは、
+拡張の `tool_context_providers()` が返すキーが入ります。task ツールでは、
 スケジュール実行時は `discord_client` / `now` / `llm_tools` が、`!runtask` による
 手動実行時はさらに `params` が渡されます。
 

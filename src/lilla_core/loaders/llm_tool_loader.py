@@ -28,7 +28,7 @@ _TOOL_CALL_NOTIFIER_KEY = "_tool_call_notifier"
 MAX_TOOL_CALL_DEPTH = 5  # 将来的に core.config 側で設定可能にしてもよい（今回は固定値でOK）
 
 # コア自身が実行時にツールコンテキストへ注入する共通キー（フレームワーク側の枠）。
-# 拡張が注入するキーはここに列挙せず、`register_tool_context_provider` の
+# 拡張が注入するキーはここに列挙せず、`get_tool_context_providers()` が返す
 # 登録内容から `_validate_no_runtime_key_collision()` が都度導出する。
 # なお _tool_call_depth と call_tool は各階層で必ず作り直されるため含めない。
 _CORE_RUNTIME_CONTEXT_KEYS = frozenset({
@@ -235,8 +235,8 @@ def _validate_no_runtime_key_collision(llm_tools: dict[str, dict]) -> None:
     起動時に検知して fail-fast させる。
 
     検証対象のキーはモジュールレベルの定数として固定せず、呼び出しのたびに
-    「コア自身のフレームワークキー」と「`register_tool_context_provider` の
-    登録内容」を合成して求める。拡張の登録タイミングとこのモジュールの
+    「コア自身のフレームワークキー」と「拡張の `tool_context_providers()` が
+    返すキー」を合成して求める。拡張のロードタイミングとこのモジュールの
     import 順序に依存させないため。
 
     Parameters

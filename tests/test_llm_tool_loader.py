@@ -977,7 +977,7 @@ class TestValidateNoRuntimeKeyCollision:
     """load_llm_tools 起動時の実行時共通キー衝突検証のテスト。
 
     検証対象キーは「コア自身のフレームワークキー」と
-    「`register_tool_context_provider` の登録内容」の合成なので、
+    「拡張の `tool_context_providers()` が返すキー」の合成なので、
     provider 登録の有無それぞれで衝突検知が正しく働くことを確認する。
     """
 
