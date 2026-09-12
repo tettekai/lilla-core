@@ -48,7 +48,12 @@ def start_scheduler(tools: dict, bot, llm_tools: dict = None) -> None:
             logger.warning("[TASK] %s has no schedule configured. Skipping", tool_name)
             continue
 
-        trigger = CronTrigger.from_crontab(schedule, timezone=scheduler_timezone)
+        try:
+            trigger = CronTrigger.from_crontab(schedule, timezone=scheduler_timezone)
+        except Exception as e:
+            logger.warning("[TASK] %s has invalid cron %r. Skipping: %s", tool_name, schedule, e)
+            continue
+
         job_func = _make_job_func(tool_name, tool, bot, llm_tools or {})
         _scheduler.add_job(job_func, trigger, id=tool_name)
         logger.info("[TASK] Job registered: %s (schedule=%s)", tool_name, schedule)
