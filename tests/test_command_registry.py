@@ -1,6 +1,7 @@
 """commands/registry.py と commands/__init__.py（動的ロード）のテスト。"""
 from __future__ import annotations
 
+import sys
 from unittest.mock import AsyncMock
 
 import pytest
@@ -31,17 +32,25 @@ class TestRegisterCommand:
 
         assert registry.register_command("dummy")(handler) is handler
 
-    def test_duplicate_name_overwrites_and_warns(self, caplog) -> None:
-        """同名コマンドの二重登録は警告ログを出して上書きする。"""
-        import logging
-
+    def test_duplicate_name_raises(self) -> None:
+        """同名コマンドを別のハンドラで登録しようとすると fail-fast する。"""
         first, second = AsyncMock(), AsyncMock()
         registry.register_command("dummy")(first)
-        with caplog.at_level(logging.WARNING):
+
+        with pytest.raises(ValueError, match="already registered"):
             registry.register_command("dummy")(second)
 
-        assert registry.get_command_handler("dummy") is second
-        assert any("duplicated" in r.message for r in caplog.records)
+        assert registry.get_command_handler("dummy") is first
+
+    def test_same_handler_can_be_registered_twice(self) -> None:
+        """同じハンドラの再登録は許容する（モジュールの再 exec を衝突にしない）。"""
+        async def handler(message, arg, tools, bot):
+            return None
+
+        registry.register_command("dummy")(handler)
+        registry.register_command("dummy")(handler)
+
+        assert registry.get_command_handler("dummy") is handler
 
 
 class TestKnownCommandNames:
@@ -74,3 +83,45 @@ class TestLoadAllCommands:
         first = sorted(load_all_commands())
         second = sorted(load_all_commands())
         assert first == second
+
+
+class TestExtensionCommandPackages:
+    """拡張の `command_packages()` から追加コマンドが登録されること。"""
+
+    @pytest.fixture
+    def command_package(self, tmp_path, monkeypatch: pytest.MonkeyPatch) -> str:
+        """`@register_command` を持つモジュールを 1 つ含むパッケージを用意する。"""
+        package_dir = tmp_path / "extra_commands"
+        package_dir.mkdir()
+        (package_dir / "__init__.py").write_text("", encoding="utf-8")
+        (package_dir / "hello.py").write_text(
+            "from lilla_core.commands.registry import register_command\n"
+            "\n"
+            "\n"
+            '@register_command("hello")\n'
+            "async def handle_hello(message, arg, tools, bot):\n"
+            "    return None\n",
+            encoding="utf-8",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.delitem(sys.modules, "extra_commands", raising=False)
+        monkeypatch.delitem(sys.modules, "extra_commands.hello", raising=False)
+        return "extra_commands"
+
+    def test_registers_commands_from_extension_package(
+        self, command_package: str, make_extension, use_extensions
+    ) -> None:
+        """拡張が指定したパッケージのコマンドがレジストリへ入る。"""
+        use_extensions(make_extension("pack", command_packages=[command_package]))
+
+        names = load_all_commands()
+
+        assert "hello" in names
+        assert registry.get_command_handler("hello") is not None
+
+    def test_missing_package_raises(self, make_extension, use_extensions) -> None:
+        """import できないパッケージを指定したら起動が失敗する。"""
+        use_extensions(make_extension("pack", command_packages=["no_such_command_pkg"]))
+
+        with pytest.raises(ImportError):
+            load_all_commands()

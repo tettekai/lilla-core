@@ -126,29 +126,21 @@ def manager(
 
 
 @pytest.fixture
-def client_prompt_providers(mock_cfg: MagicMock):
-    """クライアント固有プロンプトのプロバイダをテスト用に登録する。
+def client_prompt_providers(mock_cfg: MagicMock, make_extension, use_extensions):
+    """クライアント固有プロンプトのプロバイダを拡張として登録する。
 
-    `build_system_prompt` はクライアント種別ごとのプロンプトを
-    `extension_points` のレジストリから引くようになったため、テスト側で
-    明示的に登録する。`MemoryManager.__init__` も "discord" を自己登録するが、
-    その実装は本物の `get_config()` を見るためモック設定を返さない。後勝ちの
-    規約に従い、インスタンス生成後にここで上書き登録する。
-
-    レジストリはモジュールレベルの状態なので、テスト後に元へ戻す。
+    `build_system_prompt` はクライアント種別ごとのプロンプトを拡張の
+    `client_prompt_providers()` から引くため、テスト側で拡張を 1 つ登録する。
+    "discord" はコア内蔵のデフォルトもあるが、その実装は本物の
+    `get_config()` を見るためモック設定を返さない。拡張側を優先させる。
     """
-    from lilla_core.core import extension_points
-
-    saved = dict(extension_points._client_prompt_providers)
-    extension_points.register_client_prompt_provider(
-        "discord", lambda: mock_cfg.discord_client_prompt
-    )
-    extension_points.register_client_prompt_provider(
-        "lilla-client", lambda: mock_cfg.lilla_client_prompt
-    )
-    yield extension_points
-    extension_points._client_prompt_providers.clear()
-    extension_points._client_prompt_providers.update(saved)
+    use_extensions(make_extension(
+        "prompt-pack",
+        client_prompt_providers={
+            "discord": lambda: mock_cfg.discord_client_prompt,
+            "lilla-client": lambda: mock_cfg.lilla_client_prompt,
+        },
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -408,23 +400,23 @@ class TestBuildSystemPrompt:
     ) -> None:
         """プロバイダ未登録の client_type では例外を出さず何も付与しない。
 
-        コア単体起動（`LILLA_EXTENSIONS_MODULE` 未設定）で "lilla-client" の
+        コア単体起動（`LILLA_EXTENSIONS` 未設定）で "lilla-client" の
         プロバイダが登録されていない状況に相当する。
         """
-        client_prompt_providers._client_prompt_providers.pop("lilla-client", None)
-
-        result = await manager.build_system_prompt(client_type="lilla-client")
+        result = await manager.build_system_prompt(client_type="unknown-client")
 
         assert _LILLA_CLIENT_PROMPT not in result
         assert _SYSTEM_PROMPT in result
 
     async def test_client_prompt_provider_is_reevaluated_each_call(
-        self, manager, client_prompt_providers, mock_conv_repo, mock_memo_repo,
+        self, manager, make_extension, use_extensions, mock_conv_repo, mock_memo_repo,
         mock_tool_cache_repo, mock_session_memory
     ) -> None:
         """プロバイダは呼び出しのたびに評価される（値をキャッシュしない）。"""
         provider = MagicMock(side_effect=["1回目のプロンプト", "2回目のプロンプト"])
-        client_prompt_providers.register_client_prompt_provider("discord", provider)
+        use_extensions(make_extension(
+            "prompt-pack", client_prompt_providers={"discord": provider}
+        ))
 
         first = await manager.build_system_prompt(client_type="discord")
         second = await manager.build_system_prompt(client_type="discord")
@@ -521,74 +513,51 @@ class TestCachedToolResultsSection:
         assert "寿司、焼肉、カレー" in result
 
 
-class TestDiscordPromptSelfRegistration:
-    """`MemoryManager.__init__` の "discord" プロンプト自己登録の挙動。"""
+class TestResolveClientPrompt:
+    """クライアント固有プロンプトの解決順（拡張 → コア内蔵 → 何も付けない）。"""
 
-    def test_registers_default_when_unregistered(self, mm_module, mock_cfg: MagicMock) -> None:
-        """未登録の状態で生成すると、コアのデフォルトが登録される。"""
-        from lilla_core.core import extension_points
+    def test_extension_provider_wins(self, mm_module, make_extension, use_extensions) -> None:
+        """拡張が "discord" を出していればそれを使う。"""
+        use_extensions(make_extension(
+            "pack", client_prompt_providers={"discord": lambda: "custom-discord-prompt"}
+        ))
+        assert mm_module._resolve_client_prompt("discord") == "custom-discord-prompt"
 
-        saved = dict(extension_points._client_prompt_providers)
-        extension_points._client_prompt_providers.pop("discord", None)
-        try:
-            mm_module.MemoryManager(mock_cfg)
-            provider = extension_points.get_client_prompt_provider("discord")
-            assert provider is not None
-        finally:
-            extension_points._client_prompt_providers.clear()
-            extension_points._client_prompt_providers.update(saved)
-
-    def test_does_not_overwrite_existing_registration(
-        self, mm_module, mock_cfg: MagicMock
+    def test_falls_back_to_core_default_for_discord(
+        self, mm_module, use_extensions, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """既に "discord" が登録済みなら、生成時にそれを上書きしない。"""
-        from lilla_core.core import extension_points
+        """拡張が 0 個でも "discord" にはコア内蔵のプロンプトが付く。"""
+        use_extensions()
+        cfg = MagicMock()
+        cfg.discord_client_prompt = "core-discord-prompt"
+        monkeypatch.setattr(mm_module, "get_config", lambda: cfg)
+        assert mm_module._resolve_client_prompt("discord") == "core-discord-prompt"
 
-        saved = dict(extension_points._client_prompt_providers)
-        sentinel = lambda: "custom-discord-prompt"
-        extension_points.register_client_prompt_provider("discord", sentinel)
-        try:
-            mm_module.MemoryManager(mock_cfg)
-            provider = extension_points.get_client_prompt_provider("discord")
-            assert provider is sentinel
-        finally:
-            extension_points._client_prompt_providers.clear()
-            extension_points._client_prompt_providers.update(saved)
+    def test_no_prompt_for_other_client_types(self, mm_module, use_extensions) -> None:
+        """内蔵デフォルトは "discord" だけで、他の client_type には付かない。"""
+        use_extensions()
+        assert mm_module._resolve_client_prompt("lilla-client") == ""
+        assert mm_module._resolve_client_prompt("") == ""
 
-    def test_repeated_construction_does_not_break_existing_registration(
-        self, mm_module, mock_cfg: MagicMock
+    def test_extension_provider_for_other_client_type(
+        self, mm_module, make_extension, use_extensions
     ) -> None:
-        """MemoryManager を複数回生成しても既存の登録が壊れない。"""
-        from lilla_core.core import extension_points
+        """拡張が増やした client_type も同じ経路で解決できる。"""
+        use_extensions(make_extension(
+            "pack", client_prompt_providers={"lilla-client": lambda: "lilla-client-prompt"}
+        ))
+        assert mm_module._resolve_client_prompt("lilla-client") == "lilla-client-prompt"
 
-        saved = dict(extension_points._client_prompt_providers)
-        sentinel = lambda: "custom-discord-prompt"
-        extension_points.register_client_prompt_provider("discord", sentinel)
-        try:
-            mm_module.MemoryManager(mock_cfg)
-            mm_module.MemoryManager(mock_cfg)
-            provider = extension_points.get_client_prompt_provider("discord")
-            assert provider is sentinel
-        finally:
-            extension_points._client_prompt_providers.clear()
-            extension_points._client_prompt_providers.update(saved)
-
-    def test_lilla_client_registration_unaffected(
-        self, mm_module, mock_cfg: MagicMock
+    def test_provider_is_reevaluated_each_call(
+        self, mm_module, make_extension, use_extensions
     ) -> None:
-        """"lilla-client" など他の client_type の登録には影響しない。"""
-        from lilla_core.core import extension_points
-
-        saved = dict(extension_points._client_prompt_providers)
-        sentinel = lambda: "lilla-client-prompt"
-        extension_points.register_client_prompt_provider("lilla-client", sentinel)
-        try:
-            mm_module.MemoryManager(mock_cfg)
-            provider = extension_points.get_client_prompt_provider("lilla-client")
-            assert provider is sentinel
-        finally:
-            extension_points._client_prompt_providers.clear()
-            extension_points._client_prompt_providers.update(saved)
+        """プロバイダは呼ぶたびに評価される（戻り値をキャッシュしない）。"""
+        values = iter(["first", "second"])
+        use_extensions(make_extension(
+            "pack", client_prompt_providers={"discord": lambda: next(values)}
+        ))
+        assert mm_module._resolve_client_prompt("discord") == "first"
+        assert mm_module._resolve_client_prompt("discord") == "second"
 
 
 class TestGetMemoryManager:

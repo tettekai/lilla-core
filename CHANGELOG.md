@@ -5,6 +5,34 @@
 バージョニングは [Semantic Versioning](https://semver.org/lang/ja/) に、
 それぞれ準じています。
 
+## [0.2.0]
+
+### Changed
+
+- **BREAKING**: 拡張 API を `register_*` + `LILLA_EXTENSIONS_MODULE` から、Adapter 型の
+  `Extension` 基底クラス（`core/extension.py`）+ `LILLA_EXTENSIONS` へ置き換え。
+  拡張は `Extension` を継承し、モジュールから `extension` インスタンスを 1 つ export する。
+  `LILLA_EXTENSIONS` はカンマ区切りで、1 プロセスに 0 個以上の拡張を読み込める
+  （未設定・空ならコア単体起動）
+- **BREAKING**: `core/extension_points.py` と `register_*` / `get_*` 系のモジュール関数を削除
+- メッセージフックはロード順の連鎖になり、`on_message` が `True` を返した時点で以降を止める。
+  例外時はその 1 通の処理を打ち切り、ERROR ログとエラー通知チャンネルへ出す
+- 同名コマンドの二重登録は、警告つきの後勝ちから fail-fast へ変更
+  （同じハンドラの再登録は許容する）
+- ツールの探索ルートを複数持てるようにし、`loaders/tool_paths.py` に解決を集約。
+  ローダーが import 時に設定を束縛しないよう修正（`llm_tool_loader` / `task_tool_loader` /
+  `script_loader`）
+
+### Added
+
+- `Extension.tool_roots()`: `paths.tool_root` に足すツール探索ディレクトリ
+  （`allowed_tool_paths` のホワイトリストは自動で広げない）
+- `Extension.command_packages()`: `load_all_commands()` が追加で走査するパッケージ
+- 拡張どうしの貢献キー衝突（`name` / ツール context キー / `client_type` / コマンド名 /
+  複数ルートの同名ツールファイル）をロード時に fail-fast
+- `client_type="discord"` のシステムプロンプトをコア内蔵のデフォルトとして保持
+  （拡張が出していればそちらを優先）
+
 ## [0.1.0]
 
 初回公開版。

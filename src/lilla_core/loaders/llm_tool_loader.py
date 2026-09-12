@@ -18,7 +18,8 @@ from typing import Any
 import yaml
 
 from lilla_core.core.config import get_config
-from lilla_core.core.extension_points import get_tool_context_providers
+from lilla_core.core.extension import get_tool_context_providers
+from lilla_core.loaders.tool_paths import find_tool_file, resolve_tool_roots
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ _TOOL_CALL_NOTIFIER_KEY = "_tool_call_notifier"
 MAX_TOOL_CALL_DEPTH = 5  # 将来的に core.config 側で設定可能にしてもよい（今回は固定値でOK）
 
 # コア自身が実行時にツールコンテキストへ注入する共通キー（フレームワーク側の枠）。
-# 拡張が注入するキーはここに列挙せず、`register_tool_context_provider` の
+# 拡張が注入するキーはここに列挙せず、`get_tool_context_providers()` が返す
 # 登録内容から `_validate_no_runtime_key_collision()` が都度導出する。
 # なお _tool_call_depth と call_tool は各階層で必ず作り直されるため含めない。
 _CORE_RUNTIME_CONTEXT_KEYS = frozenset({
@@ -38,14 +39,15 @@ _CORE_RUNTIME_CONTEXT_KEYS = frozenset({
     _TOOL_CALL_NOTIFIER_KEY,
 })
 
-_config = get_config()
-TOOL_ROOT = _config.paths.tool_root
-CONFIG_ROOT = _config.env.config_root
+def _ensure_tool_root_on_sys_path() -> None:
+    """`tools.shared` などツール間共通パッケージを import できるようにする。
 
-# tools.shared などツール間共通パッケージを import できるよう TOOL_ROOT の親をパスに追加
-_tool_root_parent = str(TOOL_ROOT.parent)
-if _tool_root_parent not in sys.path:
-    sys.path.insert(0, _tool_root_parent)
+    `paths.tool_root` の親だけを `sys.path` へ入れる。拡張の `tool_roots()` は
+    ファイル探索専用で、`sys.path` へは足さない。
+    """
+    parent = str(get_config().paths.tool_root.parent)
+    if parent not in sys.path:
+        sys.path.insert(0, parent)
 
 
 def _get_allowed_paths() -> list[Path]:
@@ -101,28 +103,8 @@ def _resolve_self_tool_file(config_path: Path) -> Path | None:
     return py_file if py_file.exists() else None
 
 
-def _find_llm_tool_file(tool_type: str, tool_root: Path) -> Path | None:
-    """tool_root 配下を再帰的に検索し、{tool_type}.py にマッチするファイルを返す。
-
-    Parameters
-    ----------
-    tool_type : str
-        YAML の type 値（例: "llm_web_search"）
-    tool_root : Path
-        ツールルートディレクトリ
-
-    Returns
-    -------
-    Path | None
-        最初にマッチしたファイルパス。見つからない場合は None。
-    """
-    for match in tool_root.rglob(f"{tool_type}.py"):
-        return match
-    return None
-
-
 def load_llm_tools(
-    tool_root: Path | None = None,
+    tool_roots: list[Path] | None = None,
     config_root: Path | None = None,
 ) -> dict[str, dict]:
     """config/tools/llm_*.yaml を読み込み、対応するツールをロードして返す。
@@ -135,8 +117,8 @@ def load_llm_tools(
 
     Parameters
     ----------
-    tool_root : Path, optional
-        ツールルートディレクトリ（デフォルト: 設定値）
+    tool_roots : list[Path], optional
+        ツール探索ルートのリスト（デフォルト: `paths.tool_root` + 拡張の `tool_roots()`）
     config_root : Path, optional
         設定ルートディレクトリ（デフォルト: 設定値）
 
@@ -145,10 +127,11 @@ def load_llm_tools(
     dict
         { "yaml_stem": { "schema": {...}, "execute": <coroutine func> }, ... }
     """
-    if tool_root is None:
-        tool_root = TOOL_ROOT
+    _ensure_tool_root_on_sys_path()
+    if tool_roots is None:
+        tool_roots = resolve_tool_roots()
     if config_root is None:
-        config_root = CONFIG_ROOT
+        config_root = get_config().env.config_root
 
     tool_config_root = config_root / "tools"
     llm_tools: dict[str, dict] = {}
@@ -171,9 +154,11 @@ def load_llm_tools(
                 )
                 continue
         else:
-            py_file = _find_llm_tool_file(tool_type, tool_root)
+            py_file = find_tool_file(tool_type, tool_roots)
             if py_file is None:
-                logger.warning("Tool file not found: %s.py (tool_root=%s)", tool_type, tool_root)
+                logger.warning(
+                    "Tool file not found: %s.py (tool_roots=%s)", tool_type, tool_roots
+                )
                 continue
 
         module = _load_llm_module(py_file)
@@ -250,8 +235,8 @@ def _validate_no_runtime_key_collision(llm_tools: dict[str, dict]) -> None:
     起動時に検知して fail-fast させる。
 
     検証対象のキーはモジュールレベルの定数として固定せず、呼び出しのたびに
-    「コア自身のフレームワークキー」と「`register_tool_context_provider` の
-    登録内容」を合成して求める。拡張の登録タイミングとこのモジュールの
+    「コア自身のフレームワークキー」と「拡張の `tool_context_providers()` が
+    返すキー」を合成して求める。拡張のロードタイミングとこのモジュールの
     import 順序に依存させないため。
 
     Parameters

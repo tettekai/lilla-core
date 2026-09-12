@@ -691,15 +691,13 @@ class TestBuildToolContext:
     """`build_tool_context()` が登録済みプロバイダを展開することのテスト。"""
 
     @pytest.fixture(autouse=True)
-    def providers(self, conversation_service):
-        """ツール実行 context プロバイダのレジストリをテストごとに隔離する。"""
-        from lilla_core.core import extension_points
+    def providers(self, conversation_service, make_extension, use_extensions):
+        """ツール実行 context プロバイダを拡張として差し込むヘルパーを返す。"""
+        def _register(**providers):
+            use_extensions(make_extension("context-pack", tool_context_providers=providers))
 
-        saved = dict(extension_points._tool_context_providers)
-        extension_points._tool_context_providers.clear()
-        yield extension_points
-        extension_points._tool_context_providers.clear()
-        extension_points._tool_context_providers.update(saved)
+        use_extensions()
+        return _register
 
     def test_registered_providers_are_expanded_into_context(
         self, conversation_service, providers, mock_cfg: MagicMock
@@ -707,8 +705,7 @@ class TestBuildToolContext:
         """登録されたプロバイダの戻り値がそのキー名で context に入る。"""
         obsidian = MagicMock()
         bitbucket = MagicMock()
-        providers.register_tool_context_provider("obsidian_client", lambda: obsidian)
-        providers.register_tool_context_provider("bitbucket_client", lambda: bitbucket)
+        providers(obsidian_client=lambda: obsidian, bitbucket_client=lambda: bitbucket)
 
         context = conversation_service.build_tool_context()
 
@@ -726,8 +723,8 @@ class TestBuildToolContext:
             raise Exception("not configured")
 
         healthy = MagicMock()
-        providers.register_tool_context_provider("obsidian_client", _raise)
-        providers.register_tool_context_provider("bitbucket_client", lambda: healthy)
+        providers(obsidian_client=_raise)
+        providers(bitbucket_client=lambda: healthy)
 
         context = conversation_service.build_tool_context()
 
@@ -750,9 +747,9 @@ class TestBuildToolContext:
     ) -> None:
         """media_base_url は拡張が登録したプロバイダ経由で context に入る。"""
         repo = MagicMock()
-        providers.register_tool_context_provider("current_media_repo", lambda: repo)
-        providers.register_tool_context_provider(
-            "media_base_url", lambda: mock_cfg.media_base_url
+        providers(
+            current_media_repo=lambda: repo,
+            media_base_url=lambda: mock_cfg.media_base_url,
         )
         mock_cfg.media_base_url = "http://lilla.example"
 
@@ -765,9 +762,7 @@ class TestBuildToolContext:
         self, conversation_service, providers, mock_cfg: MagicMock
     ) -> None:
         """設定値が空文字でもプロバイダが登録されていればキー自体は存在する。"""
-        providers.register_tool_context_provider(
-            "media_base_url", lambda: mock_cfg.media_base_url
-        )
+        providers(media_base_url=lambda: mock_cfg.media_base_url)
         mock_cfg.media_base_url = ""
 
         context = conversation_service.build_tool_context()
@@ -779,7 +774,7 @@ class TestBuildToolContext:
     ) -> None:
         """プロバイダは呼び出しのたびに評価される（レジストリは値をキャッシュしない）。"""
         provider = MagicMock(side_effect=["1回目", "2回目"])
-        providers.register_tool_context_provider("obsidian_client", provider)
+        providers(obsidian_client=provider)
 
         assert conversation_service.build_tool_context()["obsidian_client"] == "1回目"
         assert conversation_service.build_tool_context()["obsidian_client"] == "2回目"
@@ -923,15 +918,13 @@ class TestConversationStartHook:
     """`run_conversation` 冒頭の会話開始フック呼び出しのテスト。"""
 
     @pytest.fixture(autouse=True)
-    def _isolate_hooks(self, conversation_service):
-        """会話開始フックのレジストリをテストごとに隔離する。"""
-        from lilla_core.core import extension_points
+    def _isolate_hooks(self, conversation_service, make_extension, use_extensions):
+        """会話開始フックを拡張として差し込むヘルパーを返す。"""
+        def _register(**hooks):
+            use_extensions(make_extension("hook-pack", conversation_start_hooks=hooks))
 
-        saved = dict(extension_points._conversation_start_hooks)
-        extension_points._conversation_start_hooks.clear()
-        yield extension_points
-        extension_points._conversation_start_hooks.clear()
-        extension_points._conversation_start_hooks.update(saved)
+        use_extensions()
+        return _register
 
     @pytest.fixture
     def mock_chat(self, conversation_service, monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
@@ -945,7 +938,7 @@ class TestConversationStartHook:
     ) -> None:
         """登録済みフックは ws_clients を渡して await される。"""
         hook = AsyncMock()
-        _isolate_hooks.register_conversation_start_hook("lilla-client", hook)
+        _isolate_hooks(**{"lilla-client": hook})
         ws_clients = {MagicMock()}
 
         await conversation_service.run_conversation(
@@ -959,7 +952,7 @@ class TestConversationStartHook:
     ) -> None:
         """ws_clients が渡されなければフックには None が渡る。"""
         hook = AsyncMock()
-        _isolate_hooks.register_conversation_start_hook("lilla-client", hook)
+        _isolate_hooks(**{"lilla-client": hook})
 
         await conversation_service.run_conversation({}, client_type="lilla-client")
 
@@ -971,7 +964,7 @@ class TestConversationStartHook:
     ) -> None:
         """別の client_type に登録されたフックは呼ばれない。"""
         hook = AsyncMock()
-        _isolate_hooks.register_conversation_start_hook("lilla-client", hook)
+        _isolate_hooks(**{"lilla-client": hook})
 
         await conversation_service.run_conversation({}, client_type=client_type)
 
@@ -991,7 +984,7 @@ class TestConversationStartHook:
     ) -> None:
         """フックが例外を送出しても run_conversation は通常どおり返答を返す。"""
         hook = AsyncMock(side_effect=RuntimeError("フック失敗"))
-        _isolate_hooks.register_conversation_start_hook("lilla-client", hook)
+        _isolate_hooks(**{"lilla-client": hook})
 
         result = await conversation_service.run_conversation({}, client_type="lilla-client")
 

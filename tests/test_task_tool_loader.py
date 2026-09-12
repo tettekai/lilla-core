@@ -225,7 +225,7 @@ class TestResolveToolClass:
         py_file.touch()
         monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path: FakeClass)
 
-        result = task_tool_loader._resolve_tool_class("task_foo", tmp_path, {})
+        result = task_tool_loader._resolve_tool_class("task_foo", [tmp_path], {})
         assert result is FakeClass
 
     def test_returns_none_when_load_fails(
@@ -236,7 +236,7 @@ class TestResolveToolClass:
         py_file.touch()
         monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path: None)
 
-        result = task_tool_loader._resolve_tool_class("task_foo", tmp_path, {})
+        result = task_tool_loader._resolve_tool_class("task_foo", [tmp_path], {})
         assert result is None
 
     def test_returns_none_when_no_file_found(
@@ -246,7 +246,7 @@ class TestResolveToolClass:
         called = []
         monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path: called.append(path) or None)
 
-        result = task_tool_loader._resolve_tool_class("task_foo", tmp_path, {})
+        result = task_tool_loader._resolve_tool_class("task_foo", [tmp_path], {})
         assert result is None
         assert called == []
 
@@ -260,7 +260,7 @@ class TestResolveToolClass:
         py_file.touch()
         monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path: captured.append(path) or None)
 
-        task_tool_loader._resolve_tool_class("task_foo", tmp_path, {})
+        task_tool_loader._resolve_tool_class("task_foo", [tmp_path], {})
         assert captured[0] == py_file
 
     def test_caches_loaded_class(
@@ -279,8 +279,8 @@ class TestResolveToolClass:
         monkeypatch.setattr(task_tool_loader, "load_script_class", fake_load)
 
         class_map: dict = {}
-        task_tool_loader._resolve_tool_class("task_foo", tmp_path, class_map)
-        task_tool_loader._resolve_tool_class("task_foo", tmp_path, class_map)
+        task_tool_loader._resolve_tool_class("task_foo", [tmp_path], class_map)
+        task_tool_loader._resolve_tool_class("task_foo", [tmp_path], class_map)
         assert call_count == 1
 
     def test_returns_cached_class(
@@ -292,7 +292,7 @@ class TestResolveToolClass:
         # load_script_class が呼ばれたら失敗させる
         monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path: None)
 
-        result = task_tool_loader._resolve_tool_class("task_foo", tmp_path, class_map)
+        result = task_tool_loader._resolve_tool_class("task_foo", [tmp_path], class_map)
         assert result is FakeClass
 
 
@@ -316,7 +316,7 @@ class TestLoadAllTools:
         self, task_tool_loader, tool_root: Path, config_root: Path
     ) -> None:
         result = task_tool_loader.load_all_tools(
-            tool_root=tool_root, config_root=config_root, class_map={}
+            tool_roots=[tool_root], config_root=config_root, class_map={}
         )
         assert result == {}
 
@@ -332,7 +332,7 @@ class TestLoadAllTools:
         monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path: None)
 
         result = task_tool_loader.load_all_tools(
-            tool_root=tool_root, config_root=config_root, class_map={}
+            tool_roots=[tool_root], config_root=config_root, class_map={}
         )
         assert result == {}
 
@@ -348,7 +348,7 @@ class TestLoadAllTools:
         monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path: None)
 
         result = task_tool_loader.load_all_tools(
-            tool_root=tool_root, config_root=config_root, class_map={}
+            tool_roots=[tool_root], config_root=config_root, class_map={}
         )
         assert result == {}
 
@@ -369,7 +369,7 @@ class TestLoadAllTools:
         monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path: _make_tool_class())
 
         result = task_tool_loader.load_all_tools(
-            tool_root=tool_root, config_root=config_root, class_map={}
+            tool_roots=[tool_root], config_root=config_root, class_map={}
         )
         assert "task_tool" in result
 
@@ -388,7 +388,7 @@ class TestLoadAllTools:
         monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path: _make_tool_class())
 
         result = task_tool_loader.load_all_tools(
-            tool_root=tool_root, config_root=config_root, class_map={}
+            tool_roots=[tool_root], config_root=config_root, class_map={}
         )
         assert "task_foo" in result
 
@@ -409,7 +409,7 @@ class TestLoadAllTools:
         monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path: _make_tool_class())
 
         result = task_tool_loader.load_all_tools(
-            tool_root=tool_root, config_root=config_root, class_map={}
+            tool_roots=[tool_root], config_root=config_root, class_map={}
         )
         entry = result["task_tool"]
         assert set(entry.keys()) == {"instance", "description", "category", "trigger", "scheduled"}
@@ -430,6 +430,6 @@ class TestLoadAllTools:
 
         before = dict(task_tool_loader.tool_class_map)
         task_tool_loader.load_all_tools(
-            tool_root=tool_root, config_root=config_root, class_map={}
+            tool_roots=[tool_root], config_root=config_root, class_map={}
         )
         assert task_tool_loader.tool_class_map == before

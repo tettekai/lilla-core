@@ -6,12 +6,9 @@ import yaml
 
 from lilla_core.core.config import get_config
 from lilla_core.loaders.script_loader import load_script_class  # 共通ローダー使用（クラス版）
+from lilla_core.loaders.tool_paths import find_tool_file, resolve_tool_roots
 
 logger = logging.getLogger(__name__)
-
-_config = get_config()
-TOOL_ROOT = _config.paths.tool_root
-CONFIG_ROOT = _config.env.config_root
 
 tool_class_map = {}  # type名 -> クラス（キャッシュ）
 
@@ -27,14 +24,17 @@ def _load_tool_configs(config_root: Path) -> list[tuple[str, dict]]:
 
 
 def _resolve_tool_class(
-    tool_type: str, tool_root: Path, class_map: dict
+    tool_type: str, tool_roots: list[Path], class_map: dict
 ) -> type | None:
-    """tool_type に対応するクラスを返す。キャッシュ済みなら再利用、なければロード。"""
+    """tool_type に対応するクラスを返す。キャッシュ済みなら再利用、なければロード。
+
+    同名のツールファイルが複数のツールルートにある場合は `find_tool_file` が
+    例外を投げる（どちらが使われるかを暗黙にしないため）。
+    """
     if tool_type not in class_map:
-        matches = list(tool_root.rglob(f"{tool_type}.py"))
-        if not matches:
+        py_file = find_tool_file(tool_type, tool_roots)
+        if py_file is None:
             return None
-        py_file = matches[0]
         cls = load_script_class(py_file)
         if not cls:
             return None
@@ -54,15 +54,18 @@ def _build_tool_entry(instance, tool_type: str, config: dict) -> dict:
 
 
 def load_all_tools(
-    tool_root: Path | None = None,
+    tool_roots: list[Path] | None = None,
     config_root: Path | None = None,
     class_map: dict | None = None,
 ) -> dict[str, dict]:
-    """全ツールを読み込み、ツール名をキーとする dict を返す。"""
-    if tool_root is None:
-        tool_root = TOOL_ROOT
+    """全ツールを読み込み、ツール名をキーとする dict を返す。
+
+    `tool_roots` の既定は `paths.tool_root` に拡張の `tool_roots()` を足したもの。
+    """
+    if tool_roots is None:
+        tool_roots = resolve_tool_roots()
     if config_root is None:
-        config_root = CONFIG_ROOT
+        config_root = get_config().env.config_root
     if class_map is None:
         class_map = tool_class_map
 
@@ -73,7 +76,7 @@ def load_all_tools(
             logger.warning("Config file %s has no type. Skipping", config_path)
             continue
 
-        cls = _resolve_tool_class(tool_type, tool_root, class_map)
+        cls = _resolve_tool_class(tool_type, tool_roots, class_map)
         if not cls:
             continue
 

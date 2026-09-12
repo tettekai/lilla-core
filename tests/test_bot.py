@@ -270,16 +270,18 @@ def startup_repo_instances(
 
 
 @pytest.fixture
-def mock_extension_points() -> MagicMock:
-    """`lilla_core.core.extension_points` のモック。
+def mock_extension() -> MagicMock:
+    """`lilla_core.core.extension` のモック。
 
-    `get_extra_startup_repos` / `get_message_hook` / `get_startup_tasks` を
-    持ち、`discord_bot` フィクスチャで具体的な戻り値をセットする。
+    `load_extensions` / `get_startup_repos` / `dispatch_on_message` /
+    `run_setup_hooks` を持ち、`discord_bot` フィクスチャで具体的な戻り値を
+    セットする。
     """
     mock = MagicMock()
-    mock.get_extra_startup_repos = MagicMock(return_value=[])
-    mock.get_message_hook = MagicMock(return_value=AsyncMock(return_value=False))
-    mock.get_startup_tasks = MagicMock(return_value=[])
+    mock.load_extensions = MagicMock(return_value=[])
+    mock.get_startup_repos = MagicMock(return_value=[])
+    mock.dispatch_on_message = AsyncMock(return_value=False)
+    mock.run_setup_hooks = AsyncMock(return_value=None)
     return mock
 
 
@@ -292,7 +294,7 @@ def with_mocked_modules(
     mock_conversation_service: MagicMock,
     mock_memory_manager_module: MagicMock,
     mock_command_handler: MagicMock,
-    mock_extension_points: MagicMock,
+    mock_extension: MagicMock,
     mock_conversation_repo_instance: MagicMock,
     mock_user_memo_repo_instance: MagicMock,
     mock_tool_cache_repo_instance: MagicMock,
@@ -301,8 +303,8 @@ def with_mocked_modules(
 ):
     """依存モジュールを patch.dict で差し替える。
 
-    `lilla_core.core.extension_points` をモックし、`discord_bot` フィクスチャで
-    `get_extra_startup_repos` / `get_message_hook` / `get_startup_tasks` の
+    `lilla_core.core.extension` をモックし、`discord_bot` フィクスチャで
+    `get_startup_repos` / `dispatch_on_message` / `run_setup_hooks` の
     戻り値をセットする。
     """
     mock_discord = MagicMock()
@@ -318,7 +320,7 @@ def with_mocked_modules(
             "discord.ext.commands": mock_commands,
             "aiohttp": MagicMock(),
             "lilla_core.core.config": MagicMock(get_config=lambda: mock_cfg),
-            "lilla_core.core.extension_points": mock_extension_points,
+            "lilla_core.core.extension": mock_extension,
             "lilla_core.core.logging_setup": MagicMock(setup_logging=lambda: None),
             "lilla_core.api.llm_client": mock_llm_module,
             "lilla_core.handlers.command_handler": mock_command_handler,
@@ -352,7 +354,7 @@ def discord_bot(
     with_mocked_modules,
     mock_cfg: MagicMock,
     mock_memory_manager_instance: MagicMock,
-    mock_extension_points: MagicMock,
+    mock_extension: MagicMock,
     startup_repo_instances: list,
 ):
     """patch.dict 有効後に bot / bot_client をロードする。"""
@@ -374,25 +376,24 @@ def discord_bot(
 
     # bot.py が data_collector_handler モジュール属性を持たなくなったが、
     # 既存テストが `monkeypatch.setattr(discord_bot, "data_collector_handler",
-    # mock)` で差し替えるスタイルを維持する。`get_message_hook()` の
+    # mock)` で差し替えるスタイルを維持する。`dispatch_on_message()` の
     # side_effect で毎回この属性を読み直せば、テストで setattr された最新の
     # ハンドラが `on_message` の呼び出しに反映される。
     discord_bot_mod.data_collector_handler = AsyncMock(return_value=False)
-    mock_extension_points.get_message_hook.side_effect = (
-        lambda: discord_bot_mod.data_collector_handler
-    )
+
+    async def _dispatch(message, bot=None):
+        return await discord_bot_mod.data_collector_handler(message)
+
+    mock_extension.dispatch_on_message.side_effect = _dispatch
 
     # 全リポジトリインスタンス（コア・拡張問わず）を追加起動リポジトリとして
     # 差し込む。`_CORE_STARTUP_REPOS` は空リストに差し替えて重複起動を避ける
     # （テストは初期化される全リポジトリの init_collection 呼び出しだけを
     # 見ており、コア/拡張の分類を意識しない）。
     discord_bot_mod._CORE_STARTUP_REPOS = []
-    mock_extension_points.get_extra_startup_repos.return_value = [
+    mock_extension.get_startup_repos.return_value = [
         (lambda inst=inst: inst) for inst in startup_repo_instances
     ]
-
-    # 追加起動タスクはデフォルトで空（`TestMain` で必要なテストが個別に設定）。
-    mock_extension_points.get_startup_tasks.return_value = []
 
     # `from lilla_core.handlers import task_handler` はパッケージ属性経由のため、
     # 先行テストで実モジュールが読み込まれていると patch.dict が効かない。
@@ -1545,37 +1546,34 @@ class TestOnReady:
 class TestMain:
     """main() の起動順序テスト。
 
-    拡張が登録した起動タスクを順に await し、その後で bot.start() する。
+    拡張の `setup()` を await し、その後で bot.start() する。
     """
 
-    async def test_calls_startup_tasks_in_order_then_bot_start(
-        self, discord_bot, mock_extension_points, monkeypatch: pytest.MonkeyPatch
+    async def test_awaits_setup_hooks_before_bot_start(
+        self, discord_bot, mock_extension: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """登録された startup_tasks を順に await した後、bot.start が呼ばれる。"""
+        """拡張の setup() を await した後、bot.start が呼ばれる。"""
         call_order = []
-        task_a = AsyncMock(side_effect=lambda *_args, **_kwargs: call_order.append("a"))
-        task_b = AsyncMock(side_effect=lambda *_args, **_kwargs: call_order.append("b"))
-        mock_extension_points.get_startup_tasks.return_value = [task_a, task_b]
+        mock_extension.run_setup_hooks.side_effect = (
+            lambda *_args, **_kwargs: call_order.append("setup")
+        )
 
         mock_start = AsyncMock(side_effect=lambda *_args, **_kwargs: call_order.append("bot_start"))
         monkeypatch.setattr(discord_bot.bot, "start", mock_start)
 
         await discord_bot.main()
 
-        assert call_order == ["a", "b", "bot_start"]
-        task_a.assert_awaited_once_with(
-            discord_bot.tools, discord_bot.llm_tools, discord_bot.bot
-        )
-        task_b.assert_awaited_once_with(
+        assert call_order == ["setup", "bot_start"]
+        mock_extension.run_setup_hooks.assert_awaited_once_with(
             discord_bot.tools, discord_bot.llm_tools, discord_bot.bot
         )
         mock_start.assert_awaited_once_with(discord_bot._config.env.discord_token)
 
-    async def test_no_startup_tasks_still_calls_bot_start(
-        self, discord_bot, mock_extension_points, monkeypatch: pytest.MonkeyPatch
+    async def test_no_extensions_still_calls_bot_start(
+        self, discord_bot, mock_extension: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """startup_tasks が空でも bot.start は呼ばれる（コア単体起動の想定）。"""
-        mock_extension_points.get_startup_tasks.return_value = []
+        """拡張が 0 個でも bot.start は呼ばれる（コア単体起動の想定）。"""
+        mock_extension.run_setup_hooks.side_effect = None
         mock_start = AsyncMock()
         monkeypatch.setattr(discord_bot.bot, "start", mock_start)
 
