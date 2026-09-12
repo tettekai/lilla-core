@@ -62,6 +62,10 @@ python -m lilla_core.bot
 `CONFIG_ROOT` が指すディレクトリには `lilla.yaml`（非秘匿の構造設定）と、必要に応じて
 `logging.yaml` を配置します。サンプルは `config.example/` を参照してください。
 
+`lilla.yaml` には `llm.providers` に少なくとも 1 つの provider を定義し、
+`llm.default` がそのいずれかの provider 名と一致している必要があります。
+一致しない場合は起動時に `ValidationError` で失敗します。
+
 > **プライバシーに関する注意:** `config.example/logging.yaml` は root ロガーを
 > `DEBUG` に設定しています。この場合 `core/http_util.py` がリクエスト/レスポンス
 > 本文を標準出力にログ出力し、LLM へのリクエスト本文（システムプロンプトや会話

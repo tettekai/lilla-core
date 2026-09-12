@@ -4,12 +4,12 @@ import logging
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 import yaml
 from dotenv import dotenv_values, load_dotenv
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from lilla_core.utils.resource_loader import SourceSpec, load_text_resources
@@ -38,7 +38,7 @@ _apply_dotenv_to_os_environ()
 class LlmProviderConfig(BaseModel):
     """LLMプロバイダーの設定モデル。"""
 
-    type: str  # "ollama" or "openai_compat"
+    type: Literal["ollama", "openai_compat"]  # "ollama" or "openai_compat"
     url: str
     model: str
     # ollama タイプのみ
@@ -195,6 +195,22 @@ class LlmConfig(BaseModel):
     providers: dict[str, LlmProviderConfig] = {}
     max_tool_call_iterations: int = 10
 
+    @model_validator(mode="after")
+    def _validate_default_provider_exists(self) -> "LlmConfig":
+        """`default` が `providers` のキーに存在することを検証する。
+
+        `llm:` セクション自体を省略した場合もクラスデフォルト
+        （`default="ollama-gemma3"`, `providers={}`）に対してこの検証が走り、
+        意図どおり起動時に `ValidationError` となる。
+        """
+        if self.default not in self.providers:
+            available = ", ".join(sorted(self.providers)) or "(none)"
+            raise ValueError(
+                f"llm.default '{self.default}' is not defined in llm.providers. "
+                f"Available providers: {available}"
+            )
+        return self
+
 
 class EnvConfig(BaseModel):
     """`.env` / OS 環境変数から読み込むコア設定（`cfg.env`）。"""
@@ -301,7 +317,10 @@ class AppConfig(BaseSettings):
     memory: MemoryConfig = MemoryConfig()
     tools: ToolsConfig = ToolsConfig()
     commands: CommandsConfig = CommandsConfig()
-    llm: LlmConfig = LlmConfig()
+    # `LlmConfig()` を直接デフォルト値にすると、クラス定義（モジュール import）の
+    # 時点で即座にインスタンス化・検証されてしまい、YAML の内容に関わらず
+    # import だけで落ちる。`default_factory` で AppConfig 構築時まで遅延させる。
+    llm: LlmConfig = Field(default_factory=LlmConfig)
     ui: UiConfig = UiConfig()
 
     @classmethod

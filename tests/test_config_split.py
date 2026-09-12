@@ -45,6 +45,16 @@ _CORE_ENV_NAMES = [
     "HTTP_PROXY_PASS",
 ]
 
+_DUMMY_LLM_YAML = """\
+llm:
+  default: dummy
+  providers:
+    dummy:
+      type: ollama
+      url: http://localhost:11434
+      model: dummy
+"""
+
 _YAML_WITH_ALL_SECTIONS = """\
 discord:
   my_user_id: "1234"
@@ -169,7 +179,7 @@ class TestBotSectionLegacyKeysAreIgnored:
     ) -> None:
         _write_yaml(
             isolated_config_root,
-            'discord:\n  my_user_id: "1234"\nbot:\n  max_history_turns: 99\n',
+            'discord:\n  my_user_id: "1234"\nbot:\n  max_history_turns: 99\n' + _DUMMY_LLM_YAML,
         )
         cfg = AppConfig(env={"discord_token": "dummy"}, _env_file=None)
         assert cfg.memory.max_history_turns == 30
@@ -211,13 +221,19 @@ class TestUiConfig:
 
     def test_locale_from_yaml(self, isolated_config_root: Path) -> None:
         """`ui.locale` を YAML から読み取る。"""
-        _write_yaml(isolated_config_root, 'discord:\n  my_user_id: "1"\nui:\n  locale: en\n')
+        _write_yaml(
+            isolated_config_root,
+            'discord:\n  my_user_id: "1"\nui:\n  locale: en\n' + _DUMMY_LLM_YAML,
+        )
         cfg = AppConfig(env={"discord_token": "dummy"}, _env_file=None)
         assert cfg.ui.locale == "en"
 
     def test_unknown_locale_does_not_fail_startup(self, isolated_config_root: Path) -> None:
         """未知のロケール名でも設定の読み込み自体は成功する（文言側でフォールバックする）。"""
-        _write_yaml(isolated_config_root, 'discord:\n  my_user_id: "1"\nui:\n  locale: fr\n')
+        _write_yaml(
+            isolated_config_root,
+            'discord:\n  my_user_id: "1"\nui:\n  locale: fr\n' + _DUMMY_LLM_YAML,
+        )
         cfg = AppConfig(env={"discord_token": "dummy"}, _env_file=None)
         assert cfg.ui.locale == "fr"
 
@@ -231,7 +247,7 @@ class TestUiConfig:
         """`ui.timezone` を YAML から読み取る。"""
         _write_yaml(
             isolated_config_root,
-            'discord:\n  my_user_id: "1"\nui:\n  timezone: Asia/Tokyo\n',
+            'discord:\n  my_user_id: "1"\nui:\n  timezone: Asia/Tokyo\n' + _DUMMY_LLM_YAML,
         )
         cfg = AppConfig(env={"discord_token": "dummy"}, _env_file=None)
         assert cfg.ui.timezone == "Asia/Tokyo"
@@ -240,7 +256,7 @@ class TestUiConfig:
         """YAML の `timezone:`（null）も未指定と同じ扱いになる。"""
         _write_yaml(
             isolated_config_root,
-            'discord:\n  my_user_id: "1"\nui:\n  timezone:\n',
+            'discord:\n  my_user_id: "1"\nui:\n  timezone:\n' + _DUMMY_LLM_YAML,
         )
         cfg = AppConfig(env={"discord_token": "dummy"}, _env_file=None)
         assert cfg.ui.timezone is None
@@ -249,7 +265,7 @@ class TestUiConfig:
         """`ZoneInfo` が受け付けない名前は起動時に失敗する（ロケールと異なり落とす）。"""
         _write_yaml(
             isolated_config_root,
-            'discord:\n  my_user_id: "1"\nui:\n  timezone: Nowhere/Nothing\n',
+            'discord:\n  my_user_id: "1"\nui:\n  timezone: Nowhere/Nothing\n' + _DUMMY_LLM_YAML,
         )
         with pytest.raises(ValidationError):
             AppConfig(env={"discord_token": "dummy"}, _env_file=None)
@@ -258,7 +274,7 @@ class TestUiConfig:
         """空文字はフォールバックせず起動時に失敗する。"""
         _write_yaml(
             isolated_config_root,
-            'discord:\n  my_user_id: "1"\nui:\n  timezone: ""\n',
+            'discord:\n  my_user_id: "1"\nui:\n  timezone: ""\n' + _DUMMY_LLM_YAML,
         )
         with pytest.raises(ValidationError):
             AppConfig(env={"discord_token": "dummy"}, _env_file=None)
@@ -285,7 +301,7 @@ class TestYamlSearchUsesEnvConfigRoot:
 
         yaml_dir = tmp_path / "from_dotenv"
         yaml_dir.mkdir()
-        _write_yaml(yaml_dir, 'discord:\n  my_user_id: "from-dotenv"\n')
+        _write_yaml(yaml_dir, 'discord:\n  my_user_id: "from-dotenv"\n' + _DUMMY_LLM_YAML)
 
         (tmp_path / ".env").write_text(
             f"DISCORD_TOKEN=dummy\nCONFIG_ROOT={yaml_dir}\n", encoding="utf-8"
@@ -305,11 +321,11 @@ class TestYamlSearchUsesEnvConfigRoot:
 
         os_dir = tmp_path / "from_os"
         os_dir.mkdir()
-        _write_yaml(os_dir, 'discord:\n  my_user_id: "from-os"\n')
+        _write_yaml(os_dir, 'discord:\n  my_user_id: "from-os"\n' + _DUMMY_LLM_YAML)
 
         dotenv_dir = tmp_path / "from_dotenv"
         dotenv_dir.mkdir()
-        _write_yaml(dotenv_dir, 'discord:\n  my_user_id: "from-dotenv"\n')
+        _write_yaml(dotenv_dir, 'discord:\n  my_user_id: "from-dotenv"\n' + _DUMMY_LLM_YAML)
 
         (tmp_path / ".env").write_text(
             f"DISCORD_TOKEN=dummy\nCONFIG_ROOT={dotenv_dir}\n", encoding="utf-8"
@@ -349,6 +365,77 @@ class TestDotenvAppliedToOsEnviron:
         _config_module._apply_dotenv_to_os_environ()
 
         assert os.environ["GROK_API_KEY"] == "from-os"
+
+
+class TestLlmConfigValidation:
+    """`llm.default` が `llm.providers` に存在することを起動時に検証する。"""
+
+    def test_missing_llm_section_fails(self, isolated_config_root: Path) -> None:
+        """`llm:` を書かないと、クラスデフォルト（`providers={}`）に対して検証が走り落ちる。"""
+        _write_yaml(isolated_config_root, 'discord:\n  my_user_id: "1"\n')
+        with pytest.raises(ValidationError):
+            AppConfig(env={"discord_token": "dummy"}, _env_file=None)
+
+    def test_default_with_empty_providers_fails(self, isolated_config_root: Path) -> None:
+        _write_yaml(
+            isolated_config_root,
+            'discord:\n  my_user_id: "1"\nllm:\n  default: dummy\n  providers: {}\n',
+        )
+        with pytest.raises(ValidationError):
+            AppConfig(env={"discord_token": "dummy"}, _env_file=None)
+
+    def test_default_not_in_providers_fails(self, isolated_config_root: Path) -> None:
+        _write_yaml(
+            isolated_config_root,
+            'discord:\n  my_user_id: "1"\n'
+            "llm:\n"
+            "  default: missing\n"
+            "  providers:\n"
+            "    other:\n"
+            "      type: ollama\n"
+            "      url: http://localhost:11434\n"
+            "      model: dummy\n",
+        )
+        with pytest.raises(ValidationError):
+            AppConfig(env={"discord_token": "dummy"}, _env_file=None)
+
+    def test_default_matching_provider_succeeds(self, isolated_config_root: Path) -> None:
+        _write_yaml(isolated_config_root, 'discord:\n  my_user_id: "1"\n' + _DUMMY_LLM_YAML)
+        cfg = AppConfig(env={"discord_token": "dummy"}, _env_file=None)
+        assert cfg.llm.default == "dummy"
+
+    def test_provider_type_typo_fails(self, isolated_config_root: Path) -> None:
+        _write_yaml(
+            isolated_config_root,
+            'discord:\n  my_user_id: "1"\n'
+            "llm:\n"
+            "  default: dummy\n"
+            "  providers:\n"
+            "    dummy:\n"
+            "      type: ollmaa\n"
+            "      url: http://localhost:11434\n"
+            "      model: dummy\n",
+        )
+        with pytest.raises(ValidationError):
+            AppConfig(env={"discord_token": "dummy"}, _env_file=None)
+
+    @pytest.mark.parametrize("provider_type", ["ollama", "openai_compat"])
+    def test_provider_type_valid_values_succeed(
+        self, isolated_config_root: Path, provider_type: str
+    ) -> None:
+        _write_yaml(
+            isolated_config_root,
+            'discord:\n  my_user_id: "1"\n'
+            "llm:\n"
+            "  default: dummy\n"
+            "  providers:\n"
+            "    dummy:\n"
+            f"      type: {provider_type}\n"
+            "      url: http://localhost:11434\n"
+            "      model: dummy\n",
+        )
+        cfg = AppConfig(env={"discord_token": "dummy"}, _env_file=None)
+        assert cfg.llm.providers["dummy"].type == provider_type
 
 
 class TestNoFlattenApiRemains:

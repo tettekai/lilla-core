@@ -29,9 +29,25 @@ def setup_logging() -> None:
     with open(log_config_path, "r", encoding="utf-8") as f:
         log_config = yaml.safe_load(f)
 
-    # AppConfig から MongoDB 接続情報を注入
-    log_config["handlers"]["mongodb"]["uri"] = config.env.mongodb_uri
-    log_config["handlers"]["mongodb"]["db_name"] = config.mongodb.db_name
-    log_config["handlers"]["mongodb"]["ttl_hours"] = dict(config.bot.log_ttl_hours)
+    handlers = log_config.get("handlers")
+    if isinstance(handlers, dict) and "mongodb" in handlers:
+        # AppConfig から MongoDB 接続情報を注入
+        handlers["mongodb"]["uri"] = config.env.mongodb_uri
+        handlers["mongodb"]["db_name"] = config.mongodb.db_name
+        handlers["mongodb"]["ttl_hours"] = dict(config.bot.log_ttl_hours)
+    elif isinstance(handlers, dict):
+        # mongodb ハンドラが定義されていない場合は注入せず、
+        # root / 各 logger からの参照も外す（残すと dictConfig が KeyError で落ちる）。
+        root = log_config.get("root")
+        if isinstance(root, dict) and isinstance(root.get("handlers"), list):
+            root["handlers"] = [h for h in root["handlers"] if h != "mongodb"]
+
+        loggers = log_config.get("loggers")
+        if isinstance(loggers, dict):
+            for logger_config in loggers.values():
+                if isinstance(logger_config, dict) and isinstance(logger_config.get("handlers"), list):
+                    logger_config["handlers"] = [
+                        h for h in logger_config["handlers"] if h != "mongodb"
+                    ]
 
     logging.config.dictConfig(log_config)

@@ -150,6 +150,52 @@ class TestStartScheduler:
 
         assert mock_scheduler.add_job.call_count == 2
 
+    @patch("lilla_core.handlers.task_handler.CronTrigger.from_crontab")
+    @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
+    def test_invalid_cron_is_skipped_and_scheduler_still_starts(
+        self, mock_scheduler_cls, mock_from_crontab, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """不正な cron は WARNING でスキップし、それでもスケジューラは start する。"""
+        mock_scheduler = MagicMock()
+        mock_scheduler_cls.return_value = mock_scheduler
+        mock_from_crontab.side_effect = ValueError("bad cron")
+        tools = self._make_tools(schedule="not a cron")
+        bot = MagicMock()
+
+        with caplog.at_level("WARNING"):
+            task_handler.start_scheduler(tools, bot)
+
+        mock_scheduler.add_job.assert_not_called()
+        mock_scheduler.start.assert_called_once()
+        assert any("invalid cron" in record.message for record in caplog.records)
+
+    @patch("lilla_core.handlers.task_handler.CronTrigger.from_crontab")
+    @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
+    def test_valid_cron_registered_when_mixed_with_invalid(
+        self, mock_scheduler_cls, mock_from_crontab
+    ) -> None:
+        """不正な cron と正当な cron が混在するとき、正当な方だけ登録されること。"""
+        mock_scheduler = MagicMock()
+        mock_scheduler_cls.return_value = mock_scheduler
+        valid_trigger = MagicMock()
+        mock_from_crontab.side_effect = [ValueError("bad cron"), valid_trigger]
+
+        tool_bad = MagicMock()
+        tool_bad.schedule = "not a cron"
+        tool_good = MagicMock()
+        tool_good.schedule = "0 7 * * *"
+        tools = {
+            "bad_tool": {"instance": tool_bad, "trigger": "task", "scheduled": True},
+            "good_tool": {"instance": tool_good, "trigger": "task", "scheduled": True},
+        }
+        bot = MagicMock()
+
+        task_handler.start_scheduler(tools, bot)
+
+        mock_scheduler.add_job.assert_called_once()
+        assert mock_scheduler.add_job.call_args[1]["id"] == "good_tool"
+        mock_scheduler.start.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # TestStopScheduler
