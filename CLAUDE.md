@@ -112,8 +112,9 @@ async def test_xxx(with_mocked_modules, mock_llm_client):
 守っていても取りこぼした汚染がある場合の保険であり、これに頼ってルール自体を省略しないこと。
 
 ## ブランチ戦略
-- mainブランチへの直接pushは禁止（必ずPR経由でマージすること）
-- デフォルトはmainブランチから作業ブランチを作り、mainへのPRを作成すること
+- main / developブランチへの直接pushは禁止（必ずPR経由でマージすること）
+- mainには触れない
+- デフォルトはdevelopブランチから作業ブランチを作り、developへのPRを作成すること
 - featureブランチを使う場合は都度指示する
 - featureブランチ名: `feature/#{issue番号}-{概要}`
 
