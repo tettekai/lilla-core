@@ -53,7 +53,9 @@ class LlmProviderConfig(BaseModel):
 class DiscordConfig(BaseModel):
     """lilla.yaml の `discord:` セクション（コア確定分）。"""
 
-    # 拡張側が同じセクションに固有フィールドを追加できるよう extra を無視する。
+    # コア確定のセクション名は予約済みで、拡張がここへ型付きのフィールドを足すことは
+    # できない（`compose_config()` が重複として落とす）。`extra="ignore"` は、利用側が
+    # YAML に書いた未知のキーで起動が落ちないようにするためのもの。
     model_config = ConfigDict(extra="ignore")
 
     # リラはオーナー専用の個人アシスタントという前提であり、オーナー判定ができない
@@ -101,7 +103,9 @@ class ProxyConfig(BaseModel):
 class PromptConfig(BaseModel):
     """lilla.yaml の `prompt:` セクション（コア確定分）。"""
 
-    # 拡張側が同じセクションに固有フィールドを追加できるよう extra を無視する。
+    # コア確定のセクション名は予約済みで、拡張がここへ型付きのフィールドを足すことは
+    # できない（`compose_config()` が重複として落とす）。`extra="ignore"` は、利用側が
+    # YAML に書いた未知のキーで起動が落ちないようにするためのもの。
     model_config = ConfigDict(extra="ignore")
 
     system: SourceSpec | None = None
