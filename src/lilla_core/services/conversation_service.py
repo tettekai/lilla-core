@@ -236,12 +236,34 @@ async def run_conversation(
             messages, system_prompt=system_prompt, tools=tools_param, llm_name=llm_name
         )
 
-        if response["finish_reason"] == "tool_calls":
+        if response["tool_calls"]:
             messages.append(response["raw_message"])
             for tc in response["tool_calls"]:
                 arguments = tc["function"]["arguments"]
                 if isinstance(arguments, str):
-                    arguments = json.loads(arguments)
+                    try:
+                        arguments = json.loads(arguments)
+                    except json.JSONDecodeError as e:
+                        logger.warning(
+                            "Failed to parse tool call arguments as JSON (%s): %s",
+                            tc["function"]["name"],
+                            e,
+                        )
+                        error_message = f"引数の JSON が壊れています: {e}"
+                        result = {
+                            "success": False,
+                            "tool_name": tc["function"]["name"],
+                            "memory_entry": error_message,
+                            "data": None,
+                            "error": error_message,
+                        }
+                        tool_content = build_tool_message_content(result)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": tool_content,
+                        })
+                        continue
                 result = await execute_tool_call(
                     tc["function"]["name"],
                     arguments,
