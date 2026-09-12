@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Self
 
+from lilla_core.utils.datetime_utils import local_now
+
 _LAST_N_DAYS_PATTERN = re.compile(r"^last_(\d+)_days$")
 _NEXT_N_DAYS_PATTERN = re.compile(r"^next_(\d+)_days$")
 _SINGLE_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -17,8 +19,11 @@ def _parse_to_dates(date_range: str) -> tuple[date, date]:
     today / yesterday / tomorrow / last_N_days / next_N_days /
     this_week / last_week / YYYY-MM-DD / YYYY-MM-DD/YYYY-MM-DD 形式をサポートする。
     this_week / last_week は日曜始まり・土曜終わりの週とする。
+
+    相対指定の基準日は `local_timezone()` が解決したタイムゾーン（`ui.timezone`、
+    未指定なら OS のローカル）のカレンダー日付で数える。
     """
-    today = date.today()
+    today = local_now().date()
 
     if date_range == "today":
         return today, today

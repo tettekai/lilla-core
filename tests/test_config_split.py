@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 _CONFIG_PATH = Path(
     importlib.util.find_spec("lilla_core.core.config").origin
@@ -219,6 +220,48 @@ class TestUiConfig:
         _write_yaml(isolated_config_root, 'discord:\n  my_user_id: "1"\nui:\n  locale: fr\n')
         cfg = AppConfig(env={"discord_token": "dummy"}, _env_file=None)
         assert cfg.ui.locale == "fr"
+
+    def test_timezone_defaults_to_none(self, isolated_config_root: Path) -> None:
+        """`ui.timezone` を書かなければ `None`（OS のローカルに従う）になる。"""
+        _write_yaml(isolated_config_root)
+        cfg = AppConfig(env={"discord_token": "dummy"}, _env_file=None)
+        assert cfg.ui.timezone is None
+
+    def test_timezone_from_yaml(self, isolated_config_root: Path) -> None:
+        """`ui.timezone` を YAML から読み取る。"""
+        _write_yaml(
+            isolated_config_root,
+            'discord:\n  my_user_id: "1"\nui:\n  timezone: Asia/Tokyo\n',
+        )
+        cfg = AppConfig(env={"discord_token": "dummy"}, _env_file=None)
+        assert cfg.ui.timezone == "Asia/Tokyo"
+
+    def test_explicit_null_timezone_is_none(self, isolated_config_root: Path) -> None:
+        """YAML の `timezone:`（null）も未指定と同じ扱いになる。"""
+        _write_yaml(
+            isolated_config_root,
+            'discord:\n  my_user_id: "1"\nui:\n  timezone:\n',
+        )
+        cfg = AppConfig(env={"discord_token": "dummy"}, _env_file=None)
+        assert cfg.ui.timezone is None
+
+    def test_unknown_timezone_fails_startup(self, isolated_config_root: Path) -> None:
+        """`ZoneInfo` が受け付けない名前は起動時に失敗する（ロケールと異なり落とす）。"""
+        _write_yaml(
+            isolated_config_root,
+            'discord:\n  my_user_id: "1"\nui:\n  timezone: Nowhere/Nothing\n',
+        )
+        with pytest.raises(ValidationError):
+            AppConfig(env={"discord_token": "dummy"}, _env_file=None)
+
+    def test_empty_timezone_fails_startup(self, isolated_config_root: Path) -> None:
+        """空文字はフォールバックせず起動時に失敗する。"""
+        _write_yaml(
+            isolated_config_root,
+            'discord:\n  my_user_id: "1"\nui:\n  timezone: ""\n',
+        )
+        with pytest.raises(ValidationError):
+            AppConfig(env={"discord_token": "dummy"}, _env_file=None)
 
 
 class TestYamlSearchUsesEnvConfigRoot:

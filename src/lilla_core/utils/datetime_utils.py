@@ -1,6 +1,8 @@
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
+from zoneinfo import ZoneInfo
 
-# 日本標準時（UTC+9）。カレンダー・ヘルスなど JST 前提の日付処理で共通利用する。
+# 日本標準時（UTC+9）。`ui.timezone` の設定とは独立した固定値で、日本時間での
+# 表示・変換が必要な箇所（ホスト側のツールなど）が明示的に使うための定数。
 JST = timezone(timedelta(hours=9))
 
 
@@ -14,20 +16,33 @@ def utc_now() -> datetime:
 
 
 def local_timezone() -> tzinfo:
-    """実行環境のローカルタイムゾーン（tzinfo）を返す。
+    """アプリが「人間側の今日 / いま」として使うタイムゾーンを返す。
 
-    現在時刻のローカルオフセットに基づく tzinfo を返す。
-    `datetime.now().astimezone().tzinfo` と等価。
+    呼び出しのたびに設定から解決するため、`set_config()` による差し替えも反映される。
+    解決規則は次のとおり:
+
+    - `ui.timezone` が未指定 → OS のローカルタイムゾーン
+      （`datetime.now().astimezone().tzinfo` と等価）
+    - `ui.timezone` が文字列 → `ZoneInfo(その値)`。OS のタイムゾーンは見ない
+
+    受け付けられない名前や空文字は `UiConfig` のバリデーションで起動時に弾かれるため、
+    ここでフォールバックすることはない。
     """
-    return datetime.now().astimezone().tzinfo
+    from lilla_core.core.config import get_config
+
+    name = get_config().ui.timezone
+    if name is None:
+        return datetime.now().astimezone().tzinfo
+    return ZoneInfo(name)
 
 
 def local_now() -> datetime:
-    """ローカルタイムゾーン付きの現在日時を返す。
+    """`local_timezone()` のタイムゾーン付きの現在日時を返す。
 
-    `datetime.now().astimezone()` と等価で、タイムゾーン aware な現在時刻を返す。
+    `ui.timezone` を指定していればそのタイムゾーン、未指定なら OS の
+    ローカルタイムゾーンでの現在時刻を返す。
     """
-    return datetime.now().astimezone()
+    return datetime.now(local_timezone())
 
 
 def ensure_utc(dt: datetime) -> datetime:
@@ -56,33 +71,41 @@ def parse_iso_utc(value: str) -> datetime:
 
 
 def to_jst_date(dt: datetime) -> date:
-    """datetime を JST のカレンダー日付（時刻切り捨て）に変換する。
+    """datetime を `local_timezone()` のカレンダー日付（時刻切り捨て）に変換する。
 
-    naive な値は `ensure_utc` で UTC とみなして aware 化したうえで JST へ変換する。
-    「何日ごと」の繰り返しのように、時刻ではなく日本時間の日付で比較したい箇所で
+    naive な値は `ensure_utc` で UTC とみなして aware 化したうえで変換する。
+    「何日ごと」の繰り返しのように、時刻ではなくカレンダー日付で比較したい箇所で
     共通利用する（習慣の期限判定など）。
+
+    NOTE: 関数名は互換のため残しているが、変換先は `JST` 固定ではなく
+    `ui.timezone` で解決したタイムゾーンになる（未指定なら OS のローカル）。
 
     Args:
         dt: 変換する日時（UTC の aware / naive のいずれでもよい）。
 
     Returns:
-        JST に変換したときのカレンダー日付。
+        解決したタイムゾーンに変換したときのカレンダー日付。
     """
-    return ensure_utc(dt).astimezone(JST).date()
+    return ensure_utc(dt).astimezone(local_timezone()).date()
 
 
 def jst_day_end_utc(dt: datetime) -> datetime:
-    """datetime の JST 日付の終端（翌日 0:00 JST）を UTC で返す。
+    """datetime のカレンダー日付の終端（翌日 0:00）を UTC で返す。
 
-    MongoDB のクエリでタイムゾーン付きの日付比較を直接書く代わりに、
-    「その JST 日付の終わりまで」を UTC の上限時刻として表現するために使う
+    日付は `local_timezone()` で解決したタイムゾーンで数える。MongoDB のクエリで
+    タイムゾーン付きの日付比較を直接書く代わりに、「その日付の終わりまで」を UTC の
+    上限時刻として表現するために使う
     （`{"$lt": jst_day_end_utc(now)}` でその日いっぱいまでを含められる）。
+
+    NOTE: 関数名は互換のため残しているが、基準は `JST` 固定ではなく
+    `ui.timezone` で解決したタイムゾーンになる（未指定なら OS のローカル）。
 
     Args:
         dt: 基準となる日時（UTC の aware / naive のいずれでもよい）。
 
     Returns:
-        JST 日付の翌日 0:00 を UTC に変換した aware datetime。
+        解決したタイムゾーンでの翌日 0:00 を UTC に変換した aware datetime。
     """
-    next_day = to_jst_date(dt) + timedelta(days=1)
-    return datetime.combine(next_day, time.min, tzinfo=JST).astimezone(timezone.utc)
+    tz = local_timezone()
+    next_day = ensure_utc(dt).astimezone(tz).date() + timedelta(days=1)
+    return datetime.combine(next_day, time.min, tzinfo=tz).astimezone(timezone.utc)
