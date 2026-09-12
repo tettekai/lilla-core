@@ -4,12 +4,25 @@ from __future__ import annotations
 import sys
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from lilla_core.handlers import task_handler
+from lilla_core.utils.datetime_utils import local_timezone
 
 
 sys.path.insert(0, "src")
+
+
+@pytest.fixture
+def app_timezone(monkeypatch):
+    """`ui.timezone` を差し替える関数を返す（テスト終了時に元の値へ戻る）。"""
+    from lilla_core.core.config import get_config
+
+    def _set(name: str | None) -> None:
+        monkeypatch.setattr(get_config().ui, "timezone", name)
+
+    return _set
 
 
 @pytest.fixture(autouse=True)
@@ -45,13 +58,39 @@ class TestStartScheduler:
         task_handler.start_scheduler(tools, bot)
 
         mock_scheduler_cls.assert_called_once_with(
-            timezone='Asia/Tokyo',
+            timezone=local_timezone(),
             job_defaults={"misfire_grace_time": 3600, "coalesce": True},
         )
         mock_scheduler.add_job.assert_called_once()
         call_kwargs = mock_scheduler.add_job.call_args
         assert call_kwargs[1]["id"] == "my_tool"
         mock_scheduler.start.assert_called_once()
+
+    @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
+    def test_scheduler_uses_configured_timezone(self, mock_scheduler_cls, app_timezone) -> None:
+        """スケジューラのタイムゾーンが `ui.timezone` の解決結果になること。"""
+        app_timezone("UTC")
+        mock_scheduler_cls.return_value = MagicMock()
+
+        task_handler.start_scheduler(self._make_tools(), MagicMock())
+
+        assert mock_scheduler_cls.call_args[1]["timezone"] == ZoneInfo("UTC")
+
+    @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
+    def test_cron_trigger_uses_configured_timezone(self, mock_scheduler_cls, app_timezone) -> None:
+        """crontab 式も同じタイムゾーンで解釈されること。
+
+        `CronTrigger` はインスタンスとして渡すとスケジューラの timezone を
+        引き継がないため、明示的に渡していることを固定する。
+        """
+        app_timezone("Asia/Tokyo")
+        mock_scheduler = MagicMock()
+        mock_scheduler_cls.return_value = mock_scheduler
+
+        task_handler.start_scheduler(self._make_tools(), MagicMock())
+
+        trigger = mock_scheduler.add_job.call_args[0][1]
+        assert trigger.timezone == ZoneInfo("Asia/Tokyo")
 
     @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
     def test_skips_unscheduled_tools(self, mock_scheduler_cls) -> None:
@@ -110,6 +149,52 @@ class TestStartScheduler:
         task_handler.start_scheduler(tools, bot)
 
         assert mock_scheduler.add_job.call_count == 2
+
+    @patch("lilla_core.handlers.task_handler.CronTrigger.from_crontab")
+    @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
+    def test_invalid_cron_is_skipped_and_scheduler_still_starts(
+        self, mock_scheduler_cls, mock_from_crontab, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """不正な cron は WARNING でスキップし、それでもスケジューラは start する。"""
+        mock_scheduler = MagicMock()
+        mock_scheduler_cls.return_value = mock_scheduler
+        mock_from_crontab.side_effect = ValueError("bad cron")
+        tools = self._make_tools(schedule="not a cron")
+        bot = MagicMock()
+
+        with caplog.at_level("WARNING"):
+            task_handler.start_scheduler(tools, bot)
+
+        mock_scheduler.add_job.assert_not_called()
+        mock_scheduler.start.assert_called_once()
+        assert any("invalid cron" in record.message for record in caplog.records)
+
+    @patch("lilla_core.handlers.task_handler.CronTrigger.from_crontab")
+    @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
+    def test_valid_cron_registered_when_mixed_with_invalid(
+        self, mock_scheduler_cls, mock_from_crontab
+    ) -> None:
+        """不正な cron と正当な cron が混在するとき、正当な方だけ登録されること。"""
+        mock_scheduler = MagicMock()
+        mock_scheduler_cls.return_value = mock_scheduler
+        valid_trigger = MagicMock()
+        mock_from_crontab.side_effect = [ValueError("bad cron"), valid_trigger]
+
+        tool_bad = MagicMock()
+        tool_bad.schedule = "not a cron"
+        tool_good = MagicMock()
+        tool_good.schedule = "0 7 * * *"
+        tools = {
+            "bad_tool": {"instance": tool_bad, "trigger": "task", "scheduled": True},
+            "good_tool": {"instance": tool_good, "trigger": "task", "scheduled": True},
+        }
+        bot = MagicMock()
+
+        task_handler.start_scheduler(tools, bot)
+
+        mock_scheduler.add_job.assert_called_once()
+        assert mock_scheduler.add_job.call_args[1]["id"] == "good_tool"
+        mock_scheduler.start.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

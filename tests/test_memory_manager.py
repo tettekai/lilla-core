@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -75,7 +76,12 @@ def with_mocked_modules(
     with patch.dict(
         sys.modules,
         {
-            "lilla_core.core.config": MagicMock(AppConfig=MagicMock()),
+            "lilla_core.core.config": MagicMock(
+                AppConfig=MagicMock(),
+                # datetime_utils.local_timezone() が OS のローカルタイムゾーンへ
+                # 解決するよう、ui.timezone だけ実値（未指定）にしておく
+                get_config=MagicMock(return_value=MagicMock(ui=MagicMock(timezone=None))),
+            ),
             "motor": MagicMock(),
             "motor.motor_asyncio": MagicMock(),
             "pymongo": MagicMock(),
@@ -222,6 +228,21 @@ class TestLoadConversationHistoryWithTimestamps:
         mock_conv_repo.load_with_time_since.return_value = []
         result = await manager.load_conversation_history_with_timestamps()
         assert result == []
+
+    async def test_history_window_starts_at_configured_timezone_midnight(
+        self, manager, mock_conv_repo, mock_memo_repo, mock_tool_cache_repo, mock_session_memory
+    ) -> None:
+        """履歴を遡る起点が `ui.timezone` の日付の 0:00 になる（OS の TZ は見ない）。"""
+        sys.modules["lilla_core.core.config"].get_config.return_value.ui.timezone = "Asia/Tokyo"
+        mock_conv_repo.load_with_time_since.return_value = []
+
+        await manager.load_conversation_history_with_timestamps()
+
+        tokyo = ZoneInfo("Asia/Tokyo")
+        since_local = mock_conv_repo.load_with_time_since.call_args[0][0].astimezone(tokyo)
+        assert (since_local.hour, since_local.minute, since_local.second) == (0, 0, 0)
+        # history_days = 2 なので「今日を含む 2 日分」＝今日の前日 0:00 が起点になる
+        assert since_local.date() == datetime.now(tokyo).date() - timedelta(days=1)
 
     async def test_prefixes_list_content_text_block(
         self, manager, mock_conv_repo, mock_memo_repo, mock_tool_cache_repo, mock_session_memory

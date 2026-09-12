@@ -4,11 +4,12 @@ import logging
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 import yaml
 from dotenv import dotenv_values, load_dotenv
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, create_model, field_validator, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from lilla_core.utils.resource_loader import SourceSpec, load_text_resources
@@ -37,7 +38,7 @@ _apply_dotenv_to_os_environ()
 class LlmProviderConfig(BaseModel):
     """LLMプロバイダーの設定モデル。"""
 
-    type: str  # "ollama" or "openai_compat"
+    type: Literal["ollama", "openai_compat"]  # "ollama" or "openai_compat"
     url: str
     model: str
     # ollama タイプのみ
@@ -52,7 +53,9 @@ class LlmProviderConfig(BaseModel):
 class DiscordConfig(BaseModel):
     """lilla.yaml の `discord:` セクション（コア確定分）。"""
 
-    # 拡張側が同じセクションに固有フィールドを追加できるよう extra を無視する。
+    # コア確定のセクション名は予約済みで、拡張がここへ型付きのフィールドを足すことは
+    # できない（`compose_config()` が重複として落とす）。`extra="ignore"` は、利用側が
+    # YAML に書いた未知のキーで起動が落ちないようにするためのもの。
     model_config = ConfigDict(extra="ignore")
 
     # リラはオーナー専用の個人アシスタントという前提であり、オーナー判定ができない
@@ -100,7 +103,9 @@ class ProxyConfig(BaseModel):
 class PromptConfig(BaseModel):
     """lilla.yaml の `prompt:` セクション（コア確定分）。"""
 
-    # 拡張側が同じセクションに固有フィールドを追加できるよう extra を無視する。
+    # コア確定のセクション名は予約済みで、拡張がここへ型付きのフィールドを足すことは
+    # できない（`compose_config()` が重複として落とす）。`extra="ignore"` は、利用側が
+    # YAML に書いた未知のキーで起動が落ちないようにするためのもの。
     model_config = ConfigDict(extra="ignore")
 
     system: SourceSpec | None = None
@@ -152,12 +157,39 @@ class CommandsConfig(BaseModel):
 class UiConfig(BaseModel):
     """lilla.yaml の `ui:` セクション。
 
-    Discord に見せる文言のロケールを決める。カタログ
-    （`lilla_core/locales/{locale}.yaml`）に無いロケール名を指定しても起動は
-    落とさず、`lilla_core.ui.messages.t()` が既定ロケールへフォールバックする。
+    Discord に見せる文言のロケールと、アプリが「人間側の今日 / いま」として
+    扱うタイムゾーンを決める。
+
+    ロケールはカタログ（`lilla_core/locales/{locale}.yaml`）に無い名前を指定しても
+    起動は落とさず、`lilla_core.ui.messages.t()` が既定ロケールへフォールバックする。
+
+    タイムゾーンは IANA 名（`Asia/Tokyo` など）の文字列、または未指定。未指定なら
+    実行環境の OS のローカルタイムゾーンに従う。ロケールと異なり、受け付けられない
+    名前や空文字はフォールバックせず起動時に失敗する（気付かないまま日付が
+    ずれた状態で動き続けるのを防ぐため）。
     """
 
     locale: str = "ja"
+    timezone: str | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def _validate_timezone(cls, value: str | None) -> str | None:
+        """`ui.timezone` が IANA タイムゾーン名として解決できることを検証する。
+
+        `None`（キーなし / YAML の `null`）はそのまま通し、OS のローカル
+        タイムゾーンを使う意味になる。空文字や `ZoneInfo` が受け付けない名前は
+        `ValueError` を送出して起動時に失敗させる。
+        """
+        if value is None:
+            return None
+        if not value.strip():
+            raise ValueError("ui.timezone must not be empty; omit the key to follow the OS timezone")
+        try:
+            ZoneInfo(value)
+        except Exception as e:
+            raise ValueError(f"ui.timezone is not a valid IANA timezone name: {value!r}") from e
+        return value
 
 
 class LlmConfig(BaseModel):
@@ -166,6 +198,22 @@ class LlmConfig(BaseModel):
     default: str = "ollama-gemma3"
     providers: dict[str, LlmProviderConfig] = {}
     max_tool_call_iterations: int = 10
+
+    @model_validator(mode="after")
+    def _validate_default_provider_exists(self) -> "LlmConfig":
+        """`default` が `providers` のキーに存在することを検証する。
+
+        `llm:` セクション自体を省略した場合もクラスデフォルト
+        （`default="ollama-gemma3"`, `providers={}`）に対してこの検証が走り、
+        意図どおり起動時に `ValidationError` となる。
+        """
+        if self.default not in self.providers:
+            available = ", ".join(sorted(self.providers)) or "(none)"
+            raise ValueError(
+                f"llm.default '{self.default}' is not defined in llm.providers. "
+                f"Available providers: {available}"
+            )
+        return self
 
 
 class EnvConfig(BaseModel):
@@ -211,12 +259,20 @@ class YamlConfigSettingsSource(PydanticBaseSettingsSource):
         return self._data
 
 
+#: 拡張が `env_fields()` で申告した秘匿フィールドの「フィールド名 -> OS 環境変数名」。
+#: `compose_config()` が起動時に書き換え、`EnvConfigSettingsSource` がコア確定の
+#: `_VAR_NAMES` へ重ねて読む。合成した `AppConfig` のクラス属性として持たせない
+#: のは、pydantic のモデル本体に置いたアンダースコア始まりの属性がプライベート属性
+#: として扱われ、`settings_customise_sources()` から素直に読めないため。
+_extra_env_var_names: dict[str, str] = {}
+
+
 class EnvConfigSettingsSource(PydanticBaseSettingsSource):
     """`.env` / OS 環境変数から `env` セクションを組み立てるカスタム設定ソース。
 
     OS 変数名は従来のまま（`DISCORD_TOKEN` など）で、`ENV__` プレフィックスは
-    使わない。ここに列挙した変数だけが `cfg.env` に流れ、YAML 由来の項目を
-    環境変数で上書きする経路は持たない。
+    使わない。ここに列挙した変数と、拡張が `env_fields()` で申告した変数だけが
+    `cfg.env` に流れ、YAML 由来の項目を環境変数で上書きする経路は持たない。
     """
 
     _VAR_NAMES = {
@@ -231,6 +287,15 @@ class EnvConfigSettingsSource(PydanticBaseSettingsSource):
         super().__init__(settings_cls)
         self._data: dict[str, Any] = self._load(env_file)
 
+    def _resolve_var_names(self) -> dict[str, str]:
+        """このソースが読む「フィールド名 -> OS 環境変数名」を返す。
+
+        コア確定の `_VAR_NAMES` に、拡張が申告して `compose_config()` が登録した
+        分（`_extra_env_var_names`）を重ねる。名前の衝突はロード時に fail-fast
+        済みのため、ここでの上書きは起きない。
+        """
+        return {**self._VAR_NAMES, **_extra_env_var_names}
+
     def _load(self, env_file: Any) -> dict[str, Any]:
         """OS 環境変数（優先）と `.env` から `{"env": {...}}` を組み立てる。"""
         file_values: dict[str, str | None] = {}
@@ -238,7 +303,7 @@ class EnvConfigSettingsSource(PydanticBaseSettingsSource):
             file_values = dotenv_values(env_file, encoding="utf-8")
 
         values: dict[str, Any] = {}
-        for field_name, var_name in self._VAR_NAMES.items():
+        for field_name, var_name in self._resolve_var_names().items():
             raw = os.environ.get(var_name, file_values.get(var_name))
             if raw is not None:
                 values[field_name] = raw
@@ -273,7 +338,10 @@ class AppConfig(BaseSettings):
     memory: MemoryConfig = MemoryConfig()
     tools: ToolsConfig = ToolsConfig()
     commands: CommandsConfig = CommandsConfig()
-    llm: LlmConfig = LlmConfig()
+    # `LlmConfig()` を直接デフォルト値にすると、クラス定義（モジュール import）の
+    # 時点で即座にインスタンス化・検証されてしまい、YAML の内容に関わらず
+    # import だけで落ちる。`default_factory` で AppConfig 構築時まで遅延させる。
+    llm: LlmConfig = Field(default_factory=LlmConfig)
     ui: UiConfig = UiConfig()
 
     @classmethod
@@ -361,10 +429,11 @@ _config_instance: AppConfig | None = None
 def set_config(instance: AppConfig) -> None:
     """アプリ全体で共有する設定インスタンスを差し込む。
 
-    `src/extensions.py` で `AppConfigEx()` を組み立て、この関数で
-    差し込むことで、`get_config()` の戻り値をコア既定から拡張版へ
-    切り替える。1 プロセスで複数回呼ぶことは想定していないが、
-    テスト用途では上書き可（`_config_instance` の直接リセットも可）。
+    通常は `load_extensions()` が `compose_config()` の結果をこの関数で据える。
+    拡張モジュールが import 副作用として自前のサブクラスを差し込んでも、
+    そのあとの合成結果で上書きされるため、設定の差分は `Extension.config_models()`
+    / `Extension.env_fields()` から出すこと。テスト用途では上書き可
+    （`_config_instance` の直接リセットも可）。
     """
     global _config_instance
     _config_instance = instance
@@ -392,3 +461,111 @@ def get_config() -> AppConfig:
     if _config_instance is not None:
         return _config_instance
     return _default_config()
+
+
+def core_config_section_names() -> frozenset[str]:
+    """コアが確定済みの YAML セクション名（`AppConfig` のフィールド名）を返す。
+
+    拡張が提供・要求するセクション名の検査に使う。`env` も含むため、拡張が
+    `env:` という名前のセクションを提供することはできない。
+    """
+    return frozenset(AppConfig.model_fields)
+
+
+def core_env_field_names() -> frozenset[str]:
+    """コアが確定済みの `EnvConfig` フィールド名を返す。
+
+    拡張が提供する秘匿フィールド名の検査に使う。
+    """
+    return frozenset(EnvConfig.model_fields)
+
+
+def _validate_identifier(name: str, label: str) -> None:
+    """合成に使う名前が Python の識別子として妥当であることを検証する。
+
+    アンダースコア始まりを弾くのは、pydantic がモデル本体のアンダースコア始まりの
+    属性をプライベート属性として扱い、フィールドにならないため。
+
+    Raises:
+        ValueError: 識別子でない、またはアンダースコアで始まる場合。
+    """
+    if not name.isidentifier() or name.startswith("_"):
+        raise ValueError(
+            f"Invalid {label} name: {name!r} "
+            "(must be a valid Python identifier not starting with '_')"
+        )
+
+
+def _section_field(model: type[BaseModel]) -> tuple[type[BaseModel], Any]:
+    """YAML セクション 1 つ分のフィールド定義（型, デフォルト）を組み立てる。
+
+    セクションモデルの全フィールドにデフォルトがあれば、そのセクションは
+    `lilla.yaml` に無くてもよい（`default_factory` で空のモデルを組む）。必須
+    フィールドを 1 つでも持つ場合はセクション自体を必須にして、YAML に無ければ
+    起動時に落とす。「必須項目のあるセクションを書き忘れたまま起動する」ことを
+    防ぐための既定で、必須かどうかを拡張が個別に申告する経路は持たない。
+    """
+    if any(field.is_required() for field in model.model_fields.values()):
+        return (model, ...)
+    return (model, Field(default_factory=model))
+
+
+def compose_config(
+    config_models: dict[str, type[BaseModel]],
+    env_fields: dict[str, str],
+) -> AppConfig:
+    """拡張が申告した差分を `AppConfig` へ合成し、組み立てたインスタンスを返す。
+
+    `core/extension.py` の `load_extensions()` が、拡張の貢献をマージして
+    衝突を検証したあとに一度だけ呼ぶ。`extension.py` が pydantic の組み立て
+    詳細を知らずに済むよう、合成そのものはこのモジュールに閉じている。
+
+    合成されるのは次の 2 つ。
+
+    - YAML セクション: `AppConfig` を基盤に `pydantic.create_model` で追加する。
+      セクションが必須かどうかは `_section_field()` がモデルから導出する
+    - 秘匿フィールド: `EnvConfig` へ同様に追加し、OS 変数名のマッピング
+      （`_extra_env_var_names`）も合わせて延ばす。型は常に `str | None`
+      （既定値 `None`）で、必須フィールドや非文字列は表現できない
+
+    Args:
+        config_models: YAML セクション名 -> セクションモデル。
+        env_fields: `EnvConfig` に足すフィールド名 -> OS 環境変数名。
+
+    Returns:
+        合成済みモデルのインスタンス。どちらの申告も空なら素の `AppConfig`。
+
+    Raises:
+        ValueError: セクション名・フィールド名が識別子として妥当でない場合。
+        pydantic.ValidationError: 合成後のモデルで設定の検証に失敗した場合。
+    """
+    for name in config_models:
+        _validate_identifier(name, "config section")
+    for name in env_fields:
+        _validate_identifier(name, "env field")
+
+    # モデルの構築より先に登録する。`EnvConfigSettingsSource` はインスタンス化
+    # （＝設定ソースが走るタイミング）にこのレジストリを読むため。
+    _extra_env_var_names.clear()
+    _extra_env_var_names.update(env_fields)
+    # 拡張の import 中に `get_config()` が踏まれていると、合成前の素の
+    # `AppConfig` がキャッシュに残り続けるため捨てる。
+    _default_config.cache_clear()
+
+    if not config_models and not env_fields:
+        return AppConfig()
+
+    env_model: type[EnvConfig] = EnvConfig
+    if env_fields:
+        env_model = create_model(
+            "ComposedEnvConfig",
+            __base__=EnvConfig,
+            **{name: (str | None, None) for name in env_fields},
+        )
+
+    field_definitions: dict[str, Any] = {"env": (env_model, ...)}
+    for section, model in config_models.items():
+        field_definitions[section] = _section_field(model)
+
+    composed = create_model("ComposedAppConfig", __base__=AppConfig, **field_definitions)
+    return composed()

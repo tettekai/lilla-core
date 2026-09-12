@@ -9,7 +9,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from lilla_core.core.error_notify import notify_error
 from lilla_core.ui.messages import t
-from lilla_core.utils.datetime_utils import local_now
+from lilla_core.utils.datetime_utils import local_now, local_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -22,13 +22,19 @@ def start_scheduler(tools: dict, bot, llm_tools: dict = None) -> None:
     on_ready が複数回呼ばれても重複登録しないようガードする。
     BackgroundScheduler を使用することで、Discord のイベントループと独立した
     スレッドでジョブを実行し、遅延を防ぐ。
+
+    crontab 式は `local_timezone()` が解決したタイムゾーン（`ui.timezone`、
+    未指定なら OS のローカル）で解釈する。`CronTrigger` はインスタンスとして
+    渡すとスケジューラの timezone を引き継がないため、スケジューラと同じ
+    タイムゾーンを明示的に渡す。
     """
     global _scheduler
     if _scheduler is not None:
         return
 
+    scheduler_timezone = local_timezone()
     _scheduler = BackgroundScheduler(
-        timezone='Asia/Tokyo',
+        timezone=scheduler_timezone,
         job_defaults={"misfire_grace_time": 3600, "coalesce": True},
     )
 
@@ -42,7 +48,12 @@ def start_scheduler(tools: dict, bot, llm_tools: dict = None) -> None:
             logger.warning("[TASK] %s has no schedule configured. Skipping", tool_name)
             continue
 
-        trigger = CronTrigger.from_crontab(schedule)
+        try:
+            trigger = CronTrigger.from_crontab(schedule, timezone=scheduler_timezone)
+        except Exception as e:
+            logger.warning("[TASK] %s has invalid cron %r. Skipping: %s", tool_name, schedule, e)
+            continue
+
         job_func = _make_job_func(tool_name, tool, bot, llm_tools or {})
         _scheduler.add_job(job_func, trigger, id=tool_name)
         logger.info("[TASK] Job registered: %s (schedule=%s)", tool_name, schedule)

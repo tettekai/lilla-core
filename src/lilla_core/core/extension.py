@@ -14,10 +14,14 @@
 コアが持つ内蔵デフォルト（`client_type="discord"` のプロンプトなど）との
 重複は衝突とみなさず、拡張側が優先される。
 
+設定の差分は `config_models()` / `env_fields()` で申告する。`load_extensions()`
+が全拡張の申告をマージし、`core/config.py` の `compose_config()` で 1 つの
+`AppConfig` へ組んでプロセスの設定に据える。ホストが `AppConfig` のサブクラスを
+書いて import 副作用で `set_config()` する仕組みは使わない（呼んでも合成結果で
+上書きされる）。そのため `LILLA_EXTENSIONS` の並び順は設定の合成に影響しない。
+
 `LILLA_EXTENSIONS` に並べたモジュールは同一プロセスで動く **信頼コード**
-であり、サンドボックスではない。ホストが `AppConfig` のサブクラスを使う場合、
-そのモジュールを先頭に置いて import 副作用で `set_config()` を呼ぶのは
-ホスト側の規約で、コアは順番を検証しない。
+であり、サンドボックスではない。
 """
 from __future__ import annotations
 
@@ -65,12 +69,32 @@ class Extension:
     name: str = ""
 
     def config_models(self) -> dict[str, type[BaseModel]]:
-        """予約。YAML セクション名 -> モデル。現時点でコアは読まない。"""
+        """この拡張が足す YAML セクションを「セクション名 -> モデル」で返す。
+
+        コアが起動時に `AppConfig` へ合成し、`get_config().<セクション名>` で
+        型付きで読めるようにする。セクションが必須かどうかはモデルから導出され、
+        全フィールドにデフォルトがあれば `lilla.yaml` に節が無くてもよく、必須
+        フィールドを 1 つでも持つなら節そのものが必須になる。
+        """
         return {}
 
     def env_fields(self) -> dict[str, str]:
-        """予約。`EnvConfig` のフィールド名 -> OS 環境変数名。現時点でコアは読まない。"""
+        """この拡張が足す秘匿フィールドを「フィールド名 -> OS 環境変数名」で返す。
+
+        コアが起動時に `EnvConfig` へ合成し、`get_config().env.<フィールド名>` で
+        読めるようにする。合成されるフィールドの型は常に `str | None`（既定値
+        `None`）で、必須フィールドや文字列以外の型は表現できない。
+        """
         return {}
+
+    def required_config_sections(self) -> list[str]:
+        """自分では提供しないが `get_config()` で読む YAML セクション名を返す。
+
+        どの拡張も提供しておらず、コア確定のセクションでもない名前を書いた場合は
+        ロード時に fail-fast する。存在の検査だけを行い、拡張どうしの依存を
+        自動で解決したり、読み込み順を並べ替えたりはしない。
+        """
+        return []
 
     def tool_roots(self) -> list[Path]:
         """`paths.tool_root` に足す LLM/task ツールの探索ディレクトリを返す。"""
@@ -113,6 +137,8 @@ class Extension:
 
 
 _extensions: list[Extension] = []
+_config_models: dict[str, Any] = {}
+_env_fields: dict[str, str] = {}
 _tool_context_providers: dict[str, ContextValueProvider] = {}
 _result_deliveries: dict[str, DeliveryFn] = {}
 _client_prompt_providers: dict[str, PromptProvider] = {}
@@ -176,25 +202,63 @@ def _validate_names(extensions: list[Extension]) -> None:
         seen.add(name)
 
 
+def _validate_required_sections(extensions: list[Extension], provided: set[str]) -> None:
+    """`required_config_sections()` が指す YAML セクションが実在することを検証する。
+
+    Args:
+        extensions: ロード順に並んだ拡張のリスト。
+        provided: 拡張が `config_models()` で提供するセクション名の集合。
+
+    Raises:
+        ValueError: 誰も提供しておらず、コア確定のセクションでもない名前を要求した場合。
+    """
+    from lilla_core.core.config import core_config_section_names
+
+    available = provided | set(core_config_section_names())
+    for ext in extensions:
+        for section in ext.required_config_sections():
+            if section not in available:
+                raise ValueError(
+                    f"Extension '{ext.name}' requires config section '{section}', "
+                    "but no loaded extension provides it"
+                )
+
+
 def set_extensions(extensions: list[Extension]) -> None:
     """拡張インスタンスのリストを検証してプロセスへ登録する。
 
     モジュールの import を伴わないため、テストから直接呼べる。
     `load_extensions()` は import 後にこの関数を呼ぶ。
 
+    設定の差分（`config_models()` / `env_fields()`）もここでマージ・検証するが、
+    `AppConfig` への合成そのものは行わない。プロセスの設定を差し替えるのは
+    `load_extensions()` の役目で、テストが拡張を登録するだけで設定を壊さずに済む。
+
     Args:
         extensions: ロード順に並んだ `Extension` インスタンス。
 
     Raises:
         TypeError: `Extension` のインスタンスでない要素が含まれる場合。
-        ValueError: 名前または貢献キーが衝突している場合。
+        ValueError: 名前または貢献キーが衝突している場合、コア確定のセクション名 /
+            `EnvConfig` フィールド名を提供した場合、または誰も提供していない
+            セクションを `required_config_sections()` が要求している場合。
     """
+    from lilla_core.core.config import core_config_section_names, core_env_field_names
+
     for ext in extensions:
         if not isinstance(ext, Extension):
             raise TypeError(
                 f"Expected an Extension instance, got {type(ext).__name__}"
             )
     _validate_names(extensions)
+
+    config_models = _merge_unique(
+        extensions, "config_models", "config model", reserved=core_config_section_names()
+    )
+    env_fields = _merge_unique(
+        extensions, "env_fields", "env field", reserved=core_env_field_names()
+    )
+    _validate_required_sections(extensions, set(config_models))
 
     tool_context = _merge_unique(extensions, "tool_context_providers", "tool context provider")
     deliveries = _merge_unique(
@@ -210,6 +274,10 @@ def set_extensions(extensions: list[Extension]) -> None:
 
     global _extensions
     _extensions = list(extensions)
+    _config_models.clear()
+    _config_models.update(config_models)
+    _env_fields.clear()
+    _env_fields.update(env_fields)
     _tool_context_providers.clear()
     _tool_context_providers.update(tool_context)
     _result_deliveries.clear()
@@ -228,8 +296,12 @@ def reset_extensions() -> None:
 def load_extensions(spec: str | None = None) -> list[Extension]:
     """`LILLA_EXTENSIONS` が指すモジュールを import して拡張を登録する。
 
+    登録のあと、拡張が申告した YAML セクションと秘匿フィールドを
+    `compose_config()` で `AppConfig` へ合成し、`set_config()` でプロセスの設定に
+    据える。拡張が 0 個、または申告が空なら素の `AppConfig` になる。
+
     コアの他の初期化（`get_config()` / コマンド・ツールのロード）より前に
-    呼ぶこと。拡張モジュールの import 副作用で `set_config()` が走るため。
+    呼ぶこと。ここで組んだ設定インスタンスを以降の `get_config()` が返すため。
 
     Args:
         spec: カンマ区切りの import パス。`None` なら `LILLA_EXTENSIONS` を読む。
@@ -241,7 +313,9 @@ def load_extensions(spec: str | None = None) -> list[Extension]:
         ImportError: モジュールを import できない場合。
         AttributeError: モジュールが `extension` 属性を持たない場合。
         TypeError: `extension` が `Extension` インスタンスでない場合。
-        ValueError: 名前または貢献キーが衝突している場合。
+        ValueError: 名前または貢献キーが衝突している場合、または
+            `required_config_sections()` が誰も提供しないセクションを要求した場合。
+        pydantic.ValidationError: 合成後のモデルで設定の検証に失敗した場合。
     """
     if spec is None:
         spec = os.environ.get(EXTENSIONS_ENV_VAR, "")
@@ -257,7 +331,12 @@ def load_extensions(spec: str | None = None) -> list[Extension]:
             )
         extensions.append(getattr(module, EXTENSION_ATTR))
 
+    # コアの他モジュールより先に拡張モジュールを import させるため、`config` の
+    # import は拡張の import が終わったここまで遅らせる。
+    from lilla_core.core.config import compose_config, set_config
+
     set_extensions(extensions)
+    set_config(compose_config(get_config_models(), get_env_fields()))
     if extensions:
         logger.info("Extensions loaded: %s", ", ".join(ext.name for ext in extensions))
     return get_extensions()
@@ -266,6 +345,16 @@ def load_extensions(spec: str | None = None) -> list[Extension]:
 def get_extensions() -> list[Extension]:
     """登録済み拡張のリストのコピーをロード順で返す。"""
     return list(_extensions)
+
+
+def get_config_models() -> dict[str, Any]:
+    """全拡張の YAML セクションモデルのマージ済み dict のコピーを返す。"""
+    return dict(_config_models)
+
+
+def get_env_fields() -> dict[str, str]:
+    """全拡張の秘匿フィールドのマージ済み dict のコピーを返す。"""
+    return dict(_env_fields)
 
 
 def get_startup_repos() -> list[StartupRepoFactory]:

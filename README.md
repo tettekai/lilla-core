@@ -42,6 +42,8 @@ nothing, so the core never depends on the presence of extensions.
   work, result delivery, client-specific prompts, conversation-start hooks, tool
   execution context, extra tool roots, and extra command packages)
 - User-facing Discord text is pulled from locale catalogs (`ja` / `en`)
+- One configurable timezone (`ui.timezone`) for schedules, "today", and the
+  current time shown to the LLM
 
 ## Requirements
 
@@ -63,6 +65,10 @@ python -m lilla_core.bot
 
 The directory pointed to by `CONFIG_ROOT` should contain `lilla.yaml` (non-secret
 structural config) and, if needed, `logging.yaml`. See `config.example/` for a sample.
+
+`lilla.yaml` must define at least one entry under `llm.providers`, and `llm.default`
+must match one of those provider names — otherwise startup fails with a
+`ValidationError`.
 
 > **Privacy note:** `config.example/logging.yaml` sets the root logger to `DEBUG`.
 > At that level, `core/http_util.py` logs request/response bodies to stdout, which
@@ -87,6 +93,27 @@ the core alone). Modules are loaded in the order given.
 export LILLA_EXTENSIONS=my_extension_package,another_pack
 python -m lilla_core.bot
 ```
+
+### Timezone
+
+`ui.timezone` in `lilla.yaml` decides the clock the bot treats as "now" and "today"
+for humans. The crontab expressions of scheduled tasks, the current time embedded in
+the system prompt, the conversation-history window, and relative date ranges such as
+`today` all follow it.
+
+- Omitted (or YAML `null`): the OS local timezone of the process.
+- An IANA name such as `Asia/Tokyo`: that timezone only. The OS timezone is ignored.
+- An empty string, or a name `zoneinfo` does not accept: startup fails. There is no
+  fallback, so a typo cannot silently shift every date by a day.
+
+In `utils/datetime_utils.py`, `local_timezone()`, `local_now()`, `to_jst_date()` and
+`jst_day_end_utc()` all resolve to that same timezone on every call, so the wall clock
+and the calendar date never disagree. The `JST` constant is the one exception: it stays
+at UTC+9 no matter what `ui.timezone` says, for code that needs Japan time explicitly.
+
+> **Note:** container images usually run with their OS timezone set to UTC. If you
+> leave `ui.timezone` unset there, cron schedules and "today" are UTC as well. Set it
+> explicitly whenever the dates matter.
 
 ### Discord bot setup
 
@@ -183,18 +210,56 @@ extension = MyExtension()
 | `tool_context_providers` | Values injected into the tool execution context |
 | `tool_roots` | Extra directories searched for tool `.py` files |
 | `command_packages` | Extra packages scanned for `@register_command` handlers |
-| `config_models` / `env_fields` | Reserved for config composition; not read yet |
+| `config_models` | YAML sections this extension adds to `AppConfig` |
+| `env_fields` | Secret fields this extension adds to `cfg.env` |
+| `required_config_sections` | YAML sections this extension reads but does not provide |
 
 Contribution keys must not collide **between extensions**: duplicate `Extension.name`,
-tool context keys, `client_type` keys, command names, or tool file names across
-different roots all fail fast at startup rather than silently picking a winner.
+config section names, env field names, tool context keys, `client_type` keys, command
+names, or tool file names across different roots all fail fast at startup rather than
+silently picking a winner.
 `client_type="discord"` is special in two ways: the core provides a built-in system
 prompt that an extension may override, and the core owns `!toolresult` delivery, so
 extensions cannot register a result delivery for it.
 
-Extensions may also define an `AppConfig` subclass and swap it in via `set_config()` as
-an import side effect of the module. Put that module first in `LILLA_EXTENSIONS`; the
-core does not verify the order.
+### Config composition
+
+An extension declares the config it adds, and the core composes one Pydantic model out
+of every declaration at startup. Writing an `AppConfig` subclass by hand and swapping it
+in via `set_config()` as an import side effect is no longer part of the contract: the
+composed instance replaces anything an extension sets during import, so the order of
+`LILLA_EXTENSIONS` does not affect config.
+
+```python
+class GoogleConfig(BaseModel):
+    client_id: str | None = None
+    redirect_uri: str = "http://localhost/google-callback"
+
+
+class MyExtension(Extension):
+    name = "my-extension"
+
+    def config_models(self):
+        return {"google": GoogleConfig}
+
+    def env_fields(self):
+        return {"google_client_secret": "GOOGLE_CLIENT_SECRET"}
+```
+
+`get_config().google.client_id` and `get_config().env.google_client_secret` are then
+readable process-wide.
+
+- A section is **required** when its model has at least one required field, and optional
+  otherwise. A required section missing from `lilla.yaml` fails at startup.
+- Composed env fields are always `str | None` with a default of `None`. The contract
+  carries no type, so required or non-string secrets cannot be expressed this way.
+- Providing a section name or an env field name twice fails fast, even when the two
+  models are identical. Core-owned names are reserved as well.
+- `required_config_sections()` lists sections the extension reads but does not provide,
+  such as a shared `google:` section owned by another pack. If nothing provides one, the
+  load fails and names the extension that asked for it. Dependencies between packs are
+  not resolved automatically, so document which extensions belong together and list them
+  all in `LILLA_EXTENSIONS`.
 
 Modules listed in `LILLA_EXTENSIONS` run as **trusted code** in the same process. This
 is not a sandbox.

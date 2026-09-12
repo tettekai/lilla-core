@@ -22,6 +22,8 @@ def mock_cfg() -> MagicMock:
     cfg.env.mongodb_uri = "mongodb://localhost:27017"
     cfg.mongodb.db_name = "test_db"
     cfg.memory.session_memory_ttl_hours = 3
+    # datetime_utils.local_timezone() が OS のローカルタイムゾーンへ解決するようにする
+    cfg.ui.timezone = None
     return cfg
 
 

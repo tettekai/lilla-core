@@ -1,0 +1,83 @@
+name: Label in-develop
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [develop]
+
+jobs:
+  label:
+    if: github.event.pull_request.merged
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
+      contents: read
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const issueNumbers = new Set();
+
+            // 1) GitHub が認識している closing references（GraphQL）
+            const query = `
+              query($owner: String!, $repo: String!, $number: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $number) {
+                    closingIssuesReferences(first: 50) {
+                      nodes {
+                        number
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+            try {
+              const result = await github.graphql(query, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                number: pr.number,
+              });
+              const nodes =
+                result.repository.pullRequest.closingIssuesReferences.nodes;
+              for (const node of nodes) {
+                issueNumbers.add(node.number);
+              }
+            } catch (error) {
+              core.warning(
+                `failed to fetch closingIssuesReferences: ${error.message}`
+              );
+            }
+
+            // 2) title + body を正規表現で拾う
+            const keywordPattern =
+              /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi;
+            const text = `${pr.title ?? ""}\n${pr.body ?? ""}`;
+            let match;
+            while ((match = keywordPattern.exec(text)) !== null) {
+              issueNumbers.add(parseInt(match[1], 10));
+            }
+
+            if (issueNumbers.size === 0) {
+              core.info("no linked issues found; nothing to label");
+              return;
+            }
+
+            // 3) 各 issue に in-develop を付与（404 やラベル失敗は warning のみ）
+            for (const issueNumber of issueNumbers) {
+              try {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                  labels: ["in-develop"],
+                });
+                core.info(`labeled issue #${issueNumber} with in-develop`);
+              } catch (error) {
+                core.warning(
+                  `failed to label issue #${issueNumber}: ${error.message}`
+                );
+              }
+            }
