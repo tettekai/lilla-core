@@ -204,17 +204,52 @@ extension = MyExtension()
 | `tool_context_providers` | ツール実行 context への値の注入 |
 | `tool_roots` | ツールの `.py` を探す追加ディレクトリ |
 | `command_packages` | `@register_command` を探す追加パッケージ |
-| `config_models` / `env_fields` | 設定合成用の予約。現時点でコアは読まない |
+| `config_models` | この拡張が `AppConfig` に足す YAML セクション |
+| `env_fields` | この拡張が `cfg.env` に足す秘匿フィールド |
+| `required_config_sections` | 自分では提供しないが読む YAML セクション |
 
-貢献キーは **拡張どうし** で衝突してはいけません。`Extension.name`・ツール context
-のキー・`client_type` のキー・コマンド名・複数ルートにまたがる同名ツールファイルの
-いずれも、静かに勝者を決めず起動時に fail-fast します。`client_type="discord"` だけは
+貢献キーは **拡張どうし** で衝突してはいけません。`Extension.name`・YAML セクション名・
+env フィールド名・ツール context のキー・`client_type` のキー・コマンド名・複数ルートに
+またがる同名ツールファイルのいずれも、静かに勝者を決めず起動時に fail-fast します。`client_type="discord"` だけは
 扱いが 2 点異なります。システムプロンプトはコアが内蔵デフォルトを持ち拡張が上書き
 でき、`!toolresult` の配送はコアが持つため拡張は登録できません。
 
-拡張は `AppConfig` のサブクラスを定義し、モジュールの import 副作用として
-`set_config()` で差し替えることもできます。そのモジュールは `LILLA_EXTENSIONS` の
-先頭に置いてください（コアは順番を検証しません）。
+### 設定の合成
+
+拡張は自分が足す設定を申告し、コアが起動時にすべての申告から 1 つの Pydantic
+モデルを組みます。`AppConfig` のサブクラスを手書きして、モジュールの import 副作用
+として `set_config()` で差し替える方式はもう契約に含みません。合成したインスタンスが
+拡張の差し込みを上書きするため、`LILLA_EXTENSIONS` の並び順は設定に影響しません。
+
+```python
+class GoogleConfig(BaseModel):
+    client_id: str | None = None
+    redirect_uri: str = "http://localhost/google-callback"
+
+
+class MyExtension(Extension):
+    name = "my-extension"
+
+    def config_models(self):
+        return {"google": GoogleConfig}
+
+    def env_fields(self):
+        return {"google_client_secret": "GOOGLE_CLIENT_SECRET"}
+```
+
+これで `get_config().google.client_id` と `get_config().env.google_client_secret` が
+プロセス全体から読めるようになります。
+
+- セクションは、モデルが必須フィールドを 1 つでも持てば **必須**、そうでなければ
+  省略可能になります。必須セクションが `lilla.yaml` に無ければ起動時に落ちます
+- 合成される env フィールドの型は常に `str | None`（既定値 `None`）です。契約が型を
+  運ばないため、必須フィールドや文字列以外の秘匿情報はこの経路では表現できません
+- 同じセクション名・同じ env フィールド名を 2 つの拡張が提供したら、たとえモデルが
+  同一でも fail-fast します。コア確定の名前も同様に予約済みです
+- `required_config_sections()` には、自分では提供しないが読むセクション名を並べます
+  （別のパックが持つ共有の `google:` セクションなど）。誰も提供していなければロードに
+  失敗し、要求した拡張の名前を示します。パック同士の依存は自動で解決しないため、
+  一緒に `LILLA_EXTENSIONS` へ並べる拡張は README などに書いて揃えてください
 
 `LILLA_EXTENSIONS` に並べたモジュールは同一プロセスで動く **信頼コード** です。
 サンドボックスではありません。

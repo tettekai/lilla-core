@@ -60,9 +60,16 @@ lilla-core は拡張が一切登録されていない状態でも Discord bot �
   新しく「今日」「いま」を扱うコードは `date.today()` / `datetime.now()` を直接書かず、
   `utils/datetime_utils.py` の `local_now()` / `local_timezone()` を通すこと
 - コアの汎用範囲を超える固有の設定フィールド（特定の外部サービス連携など）は `AppConfig` に
-  追加しない。拡張する側で `AppConfig` のサブクラスを定義して `set_config()` で差し替え、
-  YAML 由来のフィールドは `settings_customise_sources()` を override して独自の設定ソースを
-  追加する
+  追加しない。拡張する側が `Extension.config_models()`（YAML セクション名 → セクションモデル）と
+  `Extension.env_fields()`（`EnvConfig` のフィールド名 → OS 環境変数名）で申告し、
+  `load_extensions()` が `core/config.py` の `compose_config()` で 1 つの `AppConfig` へ合成する。
+  ホストが `AppConfig` のサブクラスを手書きして import 副作用で `set_config()` する方式は使わない
+  （呼んでも合成結果で上書きされる）
+- 合成の規則: セクションモデルが必須フィールドを 1 つでも持てばそのセクションは必須になり、
+  全フィールドにデフォルトがあれば `lilla.yaml` に節が無くてもよい。`env_fields()` で足す
+  フィールドの型は常に `str | None`（既定値 `None`）で、必須フィールドや文字列以外は表現できない
+- 自分では提供しないが読むセクションは `Extension.required_config_sections()` に並べる。
+  誰も提供しておらず、コア確定のセクションでもなければロード時に fail-fast する
 
 ## HTTPアクセスのルール
 - HTTPリクエストは必ずプロキシ経由で行う（プロキシ設定は `AppConfig` から自動適用される）
@@ -184,8 +191,8 @@ lilla-core 自体は起動スクリプトを持たない（ライブラリとし
 ### コア基盤 (`src/lilla_core/core/`)
 | ファイル | 役割 |
 |----------|------|
-| `config.py` | Pydantic ベースの設定管理（`AppConfig`）。`${CONFIG_ROOT}/lilla.yaml` はネスト構造のまま同じ形のセクションモデル（`cfg.discord.my_user_id` など）へ読み込み、`.env` / OS 環境変数は `EnvConfig`（`cfg.env.discord_token` など）へ読み込む（YAML の項目を環境変数で上書きする経路は持たない。YAML トップレベルの `env:` は警告して無視する）。複数 LLM プロバイダの動的選択に対応。`ui.locale`（`UiConfig`）は Discord に見せる文言のロケールを、`ui.timezone`（同じく `UiConfig`。IANA 名か未指定）は「人間側の今日 / いま」のタイムゾーンを決める（未指定なら OS のローカル。不正な名前・空文字はバリデーションで起動時に落とす）。コアの汎用範囲を超えるフィールドは持たず、拡張側は `AppConfig` のサブクラスで `settings_customise_sources()` を override して独自ソースを足す。`get_config()` / `set_config()` でプロセス全体の設定インスタンスを共有し、`set_config()` により拡張側で定義したサブクラスへ差し替え可能 |
-| `extension.py` | コアの外から機能を差し込むための `Extension` 基底クラスと、そのロード・参照 API。`Extension` は Adapter 型で、起動時リポジトリ・メッセージフック・起動処理（`setup`）・結果配送・クライアント固有プロンプト・会話開始フック・ツール実行 context プロバイダ・追加ツールルート・追加コマンドパッケージの各メソッドに「何も貢献しない」デフォルトを持つ。`load_extensions()` が `LILLA_EXTENSIONS` のモジュールを import して各 `extension` を集め、`set_extensions()` が貢献キーの衝突を検証して登録する（拡張どうしの重複は fail-fast）。`lilla_core/bot.py` が拡張モジュールを直接 import しないための唯一の橋渡し層 |
+| `config.py` | Pydantic ベースの設定管理（`AppConfig`）。`${CONFIG_ROOT}/lilla.yaml` はネスト構造のまま同じ形のセクションモデル（`cfg.discord.my_user_id` など）へ読み込み、`.env` / OS 環境変数は `EnvConfig`（`cfg.env.discord_token` など）へ読み込む（YAML の項目を環境変数で上書きする経路は持たない。YAML トップレベルの `env:` は警告して無視する）。複数 LLM プロバイダの動的選択に対応。`ui.locale`（`UiConfig`）は Discord に見せる文言のロケールを、`ui.timezone`（同じく `UiConfig`。IANA 名か未指定）は「人間側の今日 / いま」のタイムゾーンを決める（未指定なら OS のローカル。不正な名前・空文字はバリデーションで起動時に落とす）。コアの汎用範囲を超えるフィールドは持たず、拡張側が申告した YAML セクション・秘匿フィールドを `compose_config()` が `pydantic.create_model` で `AppConfig` / `EnvConfig` へ動的に足して 1 つのモデルに合成する（拡張分の OS 変数名はモジュールレベルの `_extra_env_var_names` に登録し、`EnvConfigSettingsSource` が `_VAR_NAMES` へ重ねて読む。pydantic のモデル本体に置いたアンダースコア始まりの属性はプライベート属性扱いになり `settings_customise_sources()` から読めないため、クラス属性ではなくモジュールのレジストリで持つ）。合成に使う名前の検査用に `core_config_section_names()` / `core_env_field_names()` を公開する。`get_config()` / `set_config()` でプロセス全体の設定インスタンスを共有し、通常は `load_extensions()` が合成結果を `set_config()` する |
+| `extension.py` | コアの外から機能を差し込むための `Extension` 基底クラスと、そのロード・参照 API。`Extension` は Adapter 型で、起動時リポジトリ・メッセージフック・起動処理（`setup`）・結果配送・クライアント固有プロンプト・会話開始フック・ツール実行 context プロバイダ・追加ツールルート・追加コマンドパッケージの各メソッドに「何も貢献しない」デフォルトを持つ。`load_extensions()` が `LILLA_EXTENSIONS` のモジュールを import して各 `extension` を集め、`set_extensions()` が貢献キーの衝突を検証して登録し、続けて `compose_config()` の結果を `set_config()` でプロセスの設定に据える（拡張どうしの重複は fail-fast）。設定の合成そのものは `core/config.py` に閉じており、このモジュールは pydantic の組み立て詳細を知らない。`set_extensions()` は登録と検証だけで設定を差し替えないため、テストは拡張を登録してもプロセスの設定を壊さない。`lilla_core/bot.py` が拡張モジュールを直接 import しないための唯一の橋渡し層 |
 | `exceptions.py` | `ReauthenticationRequiredError`（外部 API 再認証要求時）・`LLMError`（LLM 呼び出し失敗時）の例外定義 |
 | `error_notify.py` | コマンド実行系・定期タスク実行系のエラー出力を一元化する（`notify_error`）。ERROR ログと Discord のエラー通知チャンネル（`discord.error_channel`）の 2 箇所にのみ出力し、元チャンネルへの `message.reply()` は行わない（bot 間チャンネルで相手 bot が reply に反応するのを防ぐため）。チャンネル未設定・未発見・送信失敗時は WARNING ログのみで、例外は投げない |
 | `http_util.py` | 全 HTTP リクエストの共通ユーティリティ（`send_http_request` / `stream_http_request`）。プロキシ自動適用、リクエスト/レスポンスの秘匿情報（`client_secret` 等）・base64 画像のログマスキングつき |
@@ -321,7 +328,8 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
 起動スクリプト（LILLA_EXTENSIONS を設定。未指定でも起動可能）
   → lilla_core/bot.py 起動
   ├→ load_extensions()（LILLA_EXTENSIONS の各モジュールを import し、module.extension を
-  │    集めて衝突を検証。拡張側の set_config() は import 副作用。未指定ならスキップ）
+  │    集めて衝突を検証 → config_models() / env_fields() の申告を compose_config() で
+  │    AppConfig へ合成し set_config()。未指定でも合成は走り、素の AppConfig になる）
   ├→ 設定読み込み（get_config()）+ ログ設定（setup_logging）
   ├→ コマンド読み込み (commands.load_all_commands で commands/ と command_packages() を動的ロード)
   ├→ ツール読み込み (llm_tool_loader + task_tool_loader。探索ルートは tool_paths.resolve_tool_roots())
@@ -361,12 +369,16 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
 | `tool_context_providers` | `get_tool_context_providers`（全件） | ツール実行 context へ注入する値を context キー名ごとに供給する |
 | `tool_roots` | `get_tool_roots` | `paths.tool_root` に足すツール探索ディレクトリ（`allowed_tool_paths` は自動で広げない） |
 | `command_packages` | `get_command_packages` | `load_all_commands()` が追加で走査するパッケージ |
-| `config_models` / `env_fields` | （未使用） | 設定合成用の予約。今回のローダは読まない |
+| `config_models` | `get_config_models`（全件） | `AppConfig` に足す YAML セクション名 → セクションモデル |
+| `env_fields` | `get_env_fields`（全件） | `EnvConfig` に足すフィールド名 → OS 環境変数名 |
+| `required_config_sections` | `set_extensions` の検証 | 自分では提供しないが読む YAML セクション名 |
 
 ### 衝突は fail-fast
 拡張どうしで以下が重複したら、静かな後勝ちにせずロード時に例外を投げる。
 
 - `Extension.name`（未設定・空文字も落とす）
+- `config_models()` の YAML セクション名 / `env_fields()` のフィールド名
+  （コア確定の名前との重複も落とす）
 - ツール実行 context プロバイダのキー
 - `result_deliveries` / `client_prompt_providers` / `conversation_start_hooks` の `client_type`
 - `command_packages` 経由で登録されるコマンド名（`register_command` が検出）
@@ -383,7 +395,8 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
 エラー通知チャンネルへ出したうえで「処理済み」として扱う（プロセスは落とさない）。
 
 ### 起動順の規約
-ホストが `AppConfig` のサブクラスを使う場合、そのモジュールの import 副作用で
-`set_config()` を呼ぶ仕組みは残す。そのモジュールを `LILLA_EXTENSIONS` の先頭に置くのは
-ホスト側の規約で、コアは順番を検証しない。並べたモジュールは同一プロセスで動く
-**信頼コード** であり、サンドボックスではない。
+設定は `config_models()` / `env_fields()` の申告から合成するため、`LILLA_EXTENSIONS` の
+並び順は設定に影響しない（ホスト設定モジュールを先頭に置く規約は不要になった）。順序が
+効くのは `on_message` の連鎖・`setup()` の await 順・`tool_roots()` の探索順といった
+「ロード順に処理するもの」だけで、コアは順番を検証しない。並べたモジュールは同一
+プロセスで動く **信頼コード** であり、サンドボックスではない。
