@@ -371,9 +371,11 @@ Tools are loaded dynamically from `${TOOL_ROOT}/**/*.py` based on YAML config fi
 - If the YAML's `type` contains a dot (`type: lilla_google_calendar.tools.calendar_get`),
   it is an **import path**: the loader imports that module with `importlib` instead of
   searching the tool roots. This is how an installed package (for example an extension
-  published on PyPI) ships its tools. The module is a regular import, so relative imports
-  inside it work and no directory check applies; an import failure is logged as a
-  warning and only that tool is skipped, like a missing file.
+  published on PyPI) ships its tools. The module is a regular import: it is registered
+  in `sys.modules` under its dotted name (a stem-resolved file is executed as a
+  standalone module and is not), so relative imports inside it work and no directory
+  check applies. An import failure is logged as a warning and only that tool is
+  skipped, like a missing file.
 - The YAML may set `description` (overrides the schema's description),
   `supported_client_type` (defaults to `"all"`), a `cache` block, and other
   tool-specific keys — the latter must not collide with the runtime context keys

@@ -377,6 +377,31 @@ class TestLoadLlmToolsImportPath:
         assert result == {}
         assert "Failed to import tool module" in caplog.text
 
+    def test_import_path_module_without_schema_is_skipped(
+        self, llm_tool_loader, config_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        """import できても SCHEMA / execute が無ければ、そのツールだけ警告してスキップする（落ちない）。"""
+        import uuid
+
+        name = f"noschema_{uuid.uuid4().hex}"
+        site = tmp_path / "site-packages"
+        (site / name).mkdir(parents=True)
+        (site / name / "__init__.py").write_text("")
+        (site / name / "llm_bare.py").write_text("X = 1\n")
+        monkeypatch.syspath_prepend(str(site))
+        _write_yaml(config_root / "tools", "llm_bare.yaml", f"type: {name}.llm_bare\n")
+        # 正常なツールを後ろに置き、前のツールの失敗が全体を止めないことも確認する
+        schema = {"name": "ok", "description": "説明", "input_schema": {}}
+        _write_py(tmp_path / "root", "llm_ok.py", schema)
+        _write_yaml(config_root / "tools", "llm_ok.yaml", "type: llm_ok\n")
+
+        with caplog.at_level("WARNING"):
+            result = llm_tool_loader.load_llm_tools(tool_roots=[tmp_path / "root"], config_root=config_root)
+
+        assert "llm_bare" not in result
+        assert "llm_ok" in result
+        assert f"SCHEMA or execute not found: {name}.llm_bare" in caplog.text
+
     def test_stem_type_still_uses_file_search(
         self, llm_tool_loader, package: str, config_root: Path, tmp_path: Path
     ) -> None:

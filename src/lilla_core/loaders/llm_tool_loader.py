@@ -160,6 +160,8 @@ def load_llm_tools(
             logger.warning("Config file %s has no type. Skipping", config_path)
             continue
 
+        # `origin` は以降のログに出すツール本体の出所（ファイルパスまたは import パス）。
+        # 分岐ごとに必ず設定し、前のループの値を引きずらない。
         if tool_type == "self":
             py_file = _resolve_self_tool_file(Path(config_path))
             if py_file is None:
@@ -168,8 +170,10 @@ def load_llm_tools(
                     Path(config_path).with_suffix(".py"),
                 )
                 continue
+            origin = str(py_file)
             module = _load_llm_module(py_file, tool_dirs)
         elif is_import_path(tool_type):
+            origin = tool_type
             module = import_tool_module(tool_type)
         else:
             py_file = find_tool_file(tool_type, tool_roots)
@@ -178,6 +182,7 @@ def load_llm_tools(
                     "Tool file not found: %s.py (tool_roots=%s)", tool_type, tool_roots
                 )
                 continue
+            origin = str(py_file)
             module = _load_llm_module(py_file, tool_dirs)
         if module is None:
             continue
@@ -190,7 +195,7 @@ def load_llm_tools(
         execute: Callable | None = getattr(module, "execute", None)
 
         if schema is None or execute is None:
-            logger.warning("SCHEMA or execute not found: %s", py_file)
+            logger.warning("SCHEMA or execute not found: %s (%s)", origin, config_path)
             continue
 
         name = Path(config_path).stem
