@@ -89,6 +89,10 @@ lilla-core は拡張が一切登録されていない状態でも Discord bot �
 - 利用者に見える変更（API / 起動方法 / 設定 / 互換性）は、同じ PR で `CHANGELOG.md` の `[Unreleased]` に日本語で追記する。`[Unreleased]` セクションが無い場合はファイルの一番上に追加する。
 - テストやコメントのみの変更は CHANGELOG に書かない
 - `pyproject.toml` の version は触らない
+- `Extension` 契約を破壊的に変えるとき（メソッドのシグネチャ・戻り値の形・`*Context` の
+  フィールド・context キー・参照関数の削除や改名、フックのタイミング変更）は、同じ PR で
+  `core/extension.py` の `EXTENSION_API_VERSION` を上げ、CHANGELOG に **BREAKING** で書く。
+  メソッドや `*Context` フィールドの追加は非破壊で、バージョンは上げない
 
 # テスト
 - コードを変更したら、タスク終了前に必ず以下を実行して確認すること
@@ -403,6 +407,7 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
 | `required_env_fields` | `set_extensions` の検証 | 自分では提供しないが読む `EnvConfig` のフィールド名（コア確定のフィールドは常に利用可） |
 | `required_tool_context_keys` | `set_extensions` の検証 | 自分では提供しないが、自分のツールが読むツール実行 context のキー名（`client_type` / `call_tool` などコアの共通キーは常に利用可） |
 | `requires`（クラス属性） | `set_extensions` の検証 | 依存する拡張の `name` のタプル。未ロード、または自分より後ろに並んでいれば fail-fast |
+| `api_version`（クラス属性） | `set_extensions` の検証 | 拡張が書かれた契約バージョン（既定は `EXTENSION_API_VERSION`）。`SUPPORTED_EXTENSION_API_VERSIONS` に無い値、または整数以外は fail-fast |
 
 ### 衝突は fail-fast
 拡張どうしで以下が重複したら、静かな後勝ちにせずロード時に例外を投げる。

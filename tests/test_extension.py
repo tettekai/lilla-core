@@ -93,6 +93,7 @@ class TestExtensionDefaults:
         assert ext.client_prompt_providers() == {}
         assert ext.conversation_start_hooks() == {}
         assert ext.requires == ()
+        assert ext.api_version == ext_module.EXTENSION_API_VERSION
         assert ext.required_env_fields() == []
         assert ext.required_tool_context_keys() == []
 
@@ -336,6 +337,66 @@ class TestConfigContributions:
         use_extensions(make_extension("a", config_models={"alpha": SampleSectionConfig}))
 
         assert config_module().get_config() is sentinel
+
+
+# ---------------------------------------------------------------------------
+# TestApiVersion
+# ---------------------------------------------------------------------------
+
+
+class TestApiVersion:
+    """`api_version`（拡張が書かれた契約バージョン）の検証。"""
+
+    def test_current_version_is_supported(self) -> None:
+        """現在の契約バージョンは受け付ける集合に含まれる。"""
+        assert ext_module.EXTENSION_API_VERSION in ext_module.SUPPORTED_EXTENSION_API_VERSIONS
+
+    def test_default_passes(self, make_extension, use_extensions) -> None:
+        """宣言しない拡張は現在のバージョン扱いで通る。"""
+        use_extensions(make_extension("a"))
+
+        assert [e.name for e in ext_module.get_extensions()] == ["a"]
+
+    def test_explicit_current_version_passes(self, make_extension, use_extensions) -> None:
+        """現在のバージョンを明示しても通る。"""
+        ext = make_extension("a")
+        ext.api_version = ext_module.EXTENSION_API_VERSION
+
+        use_extensions(ext)
+
+        assert [e.name for e in ext_module.get_extensions()] == ["a"]
+
+    def test_unsupported_version_fails_fast(self, make_extension) -> None:
+        """受け付けないバージョンは、拡張名と両方のバージョンを含むエラーで落とす。"""
+        ext = make_extension("future-pack")
+        ext.api_version = ext_module.EXTENSION_API_VERSION + 1
+
+        with pytest.raises(
+            ValueError,
+            match=f"Extension 'future-pack' declares api_version "
+                  f"{ext_module.EXTENSION_API_VERSION + 1}, but this lilla-core supports",
+        ):
+            ext_module.set_extensions([ext])
+
+    @pytest.mark.parametrize("bad", ["1", 1.0, None, True])
+    def test_non_int_version_fails_fast(self, make_extension, bad) -> None:
+        """整数以外（文字列・浮動小数・None・bool）は落とす。"""
+        ext = make_extension("a")
+        ext.api_version = bad
+
+        with pytest.raises(ValueError, match="must define 'api_version' as an int"):
+            ext_module.set_extensions([ext])
+
+    def test_nothing_is_registered_when_version_check_fails(self, make_extension) -> None:
+        """バージョン検証に失敗しても、先に登録済みの内容は壊さない。"""
+        ext_module.set_extensions([make_extension("ok")])
+        ext = make_extension("b")
+        ext.api_version = 999
+
+        with pytest.raises(ValueError):
+            ext_module.set_extensions([ext])
+
+        assert [e.name for e in ext_module.get_extensions()] == ["ok"]
 
 
 # ---------------------------------------------------------------------------
