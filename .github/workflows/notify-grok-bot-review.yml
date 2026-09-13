@@ -2,6 +2,7 @@ name: Notify Grok Bot review
 
 # Ping Aqua's review routine. GitHub native webhooks cannot set the
 # Authorization header Grok Bot requires, so Actions POSTs instead.
+# Skip develop↔main sync/release PRs so they never wake the review routine.
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -9,8 +10,10 @@ on:
 jobs:
   notify:
     if: >
-      github.event.pull_request.user.login == 'tettekai' ||
-      github.event.pull_request.user.login == 'claude[bot]'
+      (github.event.pull_request.user.login == 'tettekai' ||
+       github.event.pull_request.user.login == 'claude[bot]') &&
+      !(github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.ref == 'develop') &&
+      !(github.event.pull_request.base.ref == 'develop' && github.event.pull_request.head.ref == 'main')
     runs-on: ubuntu-latest
     permissions:
       contents: read
