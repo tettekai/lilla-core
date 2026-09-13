@@ -41,7 +41,8 @@ nothing, so the core never depends on the presence of extensions.
   number of extensions loaded per process (extra repositories, message hooks, startup
   work, result delivery, client-specific prompts, conversation-start hooks, tool
   execution context, extra tool roots, and extra command packages)
-- User-facing Discord text is pulled from locale catalogs (`ja` / `en`)
+- User-facing Discord text is pulled from locale catalogs (`ja` / `en`); extensions can
+  ship their own catalogs under their own name
 - One configurable timezone (`ui.timezone`) for schedules, "today", and the
   current time shown to the LLM
 
@@ -211,6 +212,7 @@ extension = MyExtension()
 | `tool_context_providers` | Values injected into the tool execution context |
 | `tool_roots` | Extra directories searched for tool `.py` files |
 | `tool_config_roots` | Directories of default tool YAML files (`llm_*.yaml` / `task_*.yaml`) shipped by the extension. A YAML with the same stem in `${CONFIG_ROOT}/tools` replaces it wholesale; put `enabled: false` there to turn a bundled tool off |
+| `locale_dirs` | Directories of UI message catalogs (`{locale}.yaml`) shipped by the extension. The catalog's only top-level key must be the extension's `name` |
 | `command_packages` | Extra packages scanned for `@register_command` handlers |
 | `config_models` | YAML sections this extension adds to `AppConfig` |
 | `env_fields` | Secret fields this extension adds to `cfg.env` |
@@ -229,6 +231,19 @@ order, so several extensions can contribute to the same client.
 `client_type="discord"` is special in two ways: the core provides a built-in system
 prompt that is used only when no extension contributes one, and the core owns
 `!toolresult` delivery, so extensions cannot register a result delivery for it.
+
+Extensions may also ship their own Discord text through `locale_dirs()`. Each directory
+holds `{locale}.yaml` files named the same way as the core's (`ja.yaml`, `en.yaml`, ...),
+and the catalog's **only top-level key must be the extension's `name`**, so
+`name = "lilla-habits"` means a YAML with a single `lilla-habits:` node and calls such as
+`t("lilla-habits.notify.title")`. The core never prefixes keys for you: the key in the
+YAML and the key you pass to `t()` are the same string. `messages._load_catalog()` layers
+the extension catalogs onto the core one in load order, so lookups keep the usual
+"`ui.locale` → `ja` → the key itself" fallback and an extension that ships only `ja.yaml`
+still works under `ui.locale: en`. A catalog whose top-level key is not the extension
+name, or an extension whose name collides with a core top-level key (`selftest`, ...),
+fails fast with `ValueError`; a directory that does not exist logs a warning and is
+skipped, and a broken YAML is logged as an error and treated as empty for that locale.
 
 A client extension that drives `run_conversation()` itself may pass any object as
 `client_state` (for example its set of connected sockets). The core does not interpret

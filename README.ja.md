@@ -38,7 +38,8 @@ lilla-core は拡張を 1 つも読み込まない状態でも Discord bot と�
   複数の拡張を読み込める（追加リポジトリ、メッセージフック、起動処理、結果配送、
   クライアント固有プロンプト、会話開始フック、ツール実行 context、追加ツール
   ルート、追加コマンドパッケージ）
-- Discord に見せる文言はロケールカタログ（`ja` / `en`）から取得
+- Discord に見せる文言はロケールカタログ（`ja` / `en`）から取得。拡張も自分の名前で
+  カタログを同梱できる
 - 定期実行・「今日」・LLM に見せる現在時刻のタイムゾーンを `ui.timezone` で統一
 
 ## 動作要件
@@ -205,6 +206,7 @@ extension = MyExtension()
 | `tool_context_providers` | ツール実行 context への値の注入 |
 | `tool_roots` | ツールの `.py` を探す追加ディレクトリ |
 | `tool_config_roots` | 拡張が同梱する既定のツール YAML（`llm_*.yaml` / `task_*.yaml`）のディレクトリ。`${CONFIG_ROOT}/tools` に同じ stem の YAML があればそちらが丸ごと勝つ。同梱ツールを止めるにはそこに `enabled: false` の YAML を置く |
+| `locale_dirs` | 拡張が同梱する UI 文言カタログ（`{locale}.yaml`）のディレクトリ。カタログのトップレベルキーはその拡張の `name` ただ 1 つでなければならない |
 | `command_packages` | `@register_command` を探す追加パッケージ |
 | `config_models` | この拡張が `AppConfig` に足す YAML セクション |
 | `env_fields` | この拡張が `cfg.env` に足す秘匿フィールド |
@@ -222,6 +224,18 @@ env フィールド名・ツール context のキー・結果配送の `client_t
 `client_type="discord"` だけは扱いが 2 点異なります。システムプロンプトはコアが内蔵
 デフォルトを持ち、拡張が 1 つも出していないときだけそれを使います。`!toolresult` の
 配送はコアが持つため拡張は登録できません。
+
+拡張は `locale_dirs()` で Discord に見せる文言のカタログも同梱できます。各ディレクトリには
+コアと同じ命名の `{locale}.yaml`（`ja.yaml` / `en.yaml` など）を置き、カタログの
+**トップレベルのキーはその拡張の `name` ただ 1 つ** でなければなりません。`name = "lilla-habits"`
+なら YAML は `lilla-habits:` の 1 ノードだけを持ち、呼び出しは `t("lilla-habits.notify.title")`
+になります。コアが自動で prefix を付けることはせず、YAML 上のキーと `t()` に書くキーは
+同じ文字列です。`messages._load_catalog()` がコアのカタログへ拡張のカタログをロード順に
+重ねるため、解決順は従来どおり「`ui.locale` → `ja` → キー名そのもの」で、`ja.yaml` しか
+同梱していない拡張でも `ui.locale: en` で例外になりません。トップレベルキーが拡張名と
+異なるカタログや、拡張名がコアのトップレベルキー（`selftest` など）と衝突している場合は
+`ValueError` で fail-fast します。存在しないディレクトリは WARNING を出して読み飛ばし、
+壊れた YAML は ERROR ログを出してそのロケール分だけ空として扱います。
 
 `run_conversation()` を自分で呼ぶクライアント拡張は、任意のオブジェクトを
 `client_state` として渡せます（接続中ソケットの集合など）。コアは中身を解釈せず、

@@ -287,11 +287,12 @@ HTTP サーバー・ダッシュボードサーバー・WebSocket サーバー�
 
 ### UI 文言 (`src/lilla_core/ui/`・`src/lilla_core/locales/`)
 Discord に見せる短い文言のカタログ。表示言語は `lilla.yaml` の `ui.locale`（既定 `ja`）だけで
-決まり、OS の `LANG` や Discord 側の言語設定は見ない。
+決まり、OS の `LANG` や Discord 側の言語設定は見ない。拡張も `Extension.locale_dirs()` で
+同じ命名のカタログを同梱でき、コアのカタログへロード順に重ねて解決される。
 
 | ファイル | 役割 |
 |----------|------|
-| `ui/messages.py` | カタログから文言を取り出す `t(key, **params)`。`key` は `selftest.summary` のような安定した英語のドット区切りで、YAML 上も同じネストで持つ。`params` は文言中の `{ok}` などに埋める値。解決順は「`ui.locale` のカタログ → `ja` → キー名そのもの」で、どの段階でも例外は投げない（文言の欠落で応答自体が失われないため）。フォールバック時は英語の WARNING ログを 1 キーにつき 1 回だけ出す。ロケールをまたいで同じ文言を突き合わせるための `translations(key)`（承認依頼の区切り行の復元に使う）と、同梱カタログを列挙する `available_locales()` も提供する |
+| `ui/messages.py` | カタログから文言を取り出す `t(key, **params)`。`key` は `selftest.summary` のような安定した英語のドット区切りで、YAML 上も同じネストで持つ。`params` は文言中の `{ok}` などに埋める値。解決順は「`ui.locale` のカタログ → `ja` → キー名そのもの」で、どの段階でも例外は投げない（文言の欠落で応答自体が失われないため）。フォールバック時は英語の WARNING ログを 1 キーにつき 1 回だけ出す。ロケールをまたいで同じ文言を突き合わせるための `translations(key)`（承認依頼の区切り行の復元に使う）と、カタログを列挙する `available_locales()` も提供する。カタログはコア同梱分だけでなく、拡張が `Extension.locale_dirs()` で同梱した `{locale}.yaml` を `_load_catalog()` がロード順に重ねた合成結果で、`t()` / `translations()` / `available_locales()` はいずれも合成後を見る。拡張のカタログはトップレベルのキーがその拡張の `name` ただ 1 つでなければならず（`t("lilla-habits.notify.title")` の形。コアは prefix を付けない）、違反や拡張名とコアのトップレベルキーの衝突は `ValueError` で fail-fast する。存在しないディレクトリは WARNING で読み飛ばし、壊れた YAML は ERROR ログを出してそのロケール分だけ空として扱う。合成結果は登録済み拡張に依存するため、`core/extension.py` の `set_extensions()` / `reset_extensions()` が `clear_cache()` を呼んでキャッシュを捨てる（循環 import を避けるため `core/extension.py` 側は関数内の遅延 import）|
 | `locales/ja.yaml` | 日本語カタログ（既定ロケール） |
 | `locales/en.yaml` | 英語カタログ |
 
@@ -427,6 +428,7 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
 | `tool_context_providers` | `get_tool_context_providers`（全件）/ `build_tool_context` | ツール実行 context へ注入する値を context キー名ごとに供給する。LLM ツールと task ツールの両方に届く。コアが注入するキー（`client_type` / `llm_tools` / `client_state` / `discord_client` / `now` / `params` / `call_tool` など）は予約済みで、同名を提供するとロード時に落ちる |
 | `tool_roots` | `get_tool_roots` | `paths.tool_root` に足すツール探索ディレクトリ（ここに含めた時点でロード対象になり、別途の許可設定は要らない） |
 | `tool_config_roots` | `get_tool_config_roots` / `tool_paths.resolve_tool_config_files` | 拡張が同梱する既定のツール YAML（`llm_*.yaml` / `task_*.yaml`）のディレクトリ。ローダーは「拡張の同梱分（ロード順）→ `config_root/tools`」の順に集め、同じ stem は `config_root/tools` 側が丸ごと上書きする。拡張どうしの同じ stem は fail-fast。`enabled: false` の YAML はロードしない（同梱ツールを止めるには `config_root/tools` に同名で置く）。`type: self` の `.py` が同梱ディレクトリに置かれうるため、`resolve_tool_dirs()` にも含める |
+| `locale_dirs` | `get_locale_dirs` / `ui.messages._load_catalog` | 拡張が同梱する UI 文言カタログ（`{locale}.yaml`）のディレクトリ。トップレベルのキーはその拡張の `name` ただ 1 つでなければならず、違反・コアのトップレベルキーとの衝突は `ValueError` で fail-fast する。存在しないディレクトリは WARNING で読み飛ばす |
 | `command_packages` | `get_command_packages` | `load_all_commands()` が追加で走査するパッケージ |
 | `config_models` | `get_config_models`（全件） | `AppConfig` に足す YAML セクション名 → セクションモデル |
 | `env_fields` | `get_env_fields`（全件） | `EnvConfig` に足すフィールド名 → OS 環境変数名 |
@@ -449,6 +451,9 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
 - 複数のツールルートに同じ名前のツールファイルがあるとき（`find_tool_file` が検出）
 - 複数の拡張が同じ stem のツール YAML を同梱しているとき（`resolve_tool_config_files` が検出。
   `config_root/tools` の同名 YAML による上書きは衝突ではなく、利用者の設定が勝つ）
+- 拡張の UI 文言カタログのトップレベルキーがその拡張の `name` と異なるとき、または拡張名が
+  コアのカタログのトップレベルキー（`selftest` など）と同じとき（`ui/messages.py` の
+  `_load_catalog()` が検出。拡張どうしの衝突は `name` の重複検査で防がれる）
 
 コア内蔵のデフォルトとの重複は衝突にしない。`client_type="discord"` のシステム
 プロンプトは拡張が 1 つでも出していればそれら（連結）を使い、誰も出していなければ

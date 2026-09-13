@@ -200,6 +200,18 @@ class Extension:
         """
         return []
 
+    def locale_dirs(self) -> list[Path]:
+        """この拡張が同梱する UI 文言カタログ（`{locale}.yaml`）のディレクトリを返す。
+
+        ファイル名はコアと同じ `ja.yaml` / `en.yaml` などで、カタログの
+        **トップレベルのキーはこの拡張の `name` ただ 1 つ** でなければならない
+        （例: `name = "lilla-habits"` なら YAML は `lilla-habits:` の 1 ノードだけを
+        持ち、呼び出しは `t("lilla-habits.notify.title")` になる）。コアが自動で
+        prefix を付けることはしない。規約に反するカタログはカタログの読み込み時に
+        `ValueError` で落ちる。存在しないディレクトリは WARNING を出して読み飛ばす。
+        """
+        return []
+
     def command_packages(self) -> list[str]:
         """`load_all_commands()` が追加で走査するパッケージの import パスを返す。"""
         return []
@@ -534,10 +546,25 @@ def set_extensions(extensions: list[Extension]) -> None:
     _conversation_start_hooks.clear()
     _conversation_start_hooks.update(start_hooks)
 
+    _clear_message_catalog_cache()
+
+
+def _clear_message_catalog_cache() -> None:
+    """UI 文言カタログのキャッシュを捨てる。
+
+    合成カタログは登録済み拡張の `locale_dirs()` に依存するため、登録内容が
+    変わったら捨てる必要がある。`ui/messages.py` はこのモジュールを import
+    するので、循環 import を避けて関数内で遅延 import する。
+    """
+    from lilla_core.ui import messages
+
+    messages.clear_cache()
+
 
 def reset_extensions() -> None:
     """登録済みの拡張をすべて捨てる（テスト用）。"""
     set_extensions([])
+    _clear_message_catalog_cache()
 
 
 def load_extensions(spec: str | None = None) -> list[Extension]:
@@ -629,6 +656,17 @@ def get_tool_config_roots() -> list[tuple[str, Path]]:
     for ext in _extensions:
         roots.extend((ext.name, Path(root)) for root in ext.tool_config_roots())
     return roots
+
+
+def get_locale_dirs() -> list[tuple[str, Path]]:
+    """全拡張が同梱する UI 文言カタログのディレクトリを `(拡張名, ディレクトリ)` でロード順に返す。
+
+    拡張名は、カタログのトップレベルキーと突き合わせる名前空間の検査に使う。
+    """
+    dirs: list[tuple[str, Path]] = []
+    for ext in _extensions:
+        dirs.extend((ext.name, Path(directory)) for directory in ext.locale_dirs())
+    return dirs
 
 
 def get_command_packages() -> list[str]:

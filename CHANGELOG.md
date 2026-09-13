@@ -9,6 +9,16 @@
 
 ### Added
 
+- 拡張が UI 文言カタログを同梱できる `Extension.locale_dirs()` を追加。ディレクトリに
+  コアと同じ命名の `{locale}.yaml`（`ja.yaml` / `en.yaml` など）を置くと、
+  `lilla_core.ui.messages` がコアのカタログへロード順に重ねて解決する。カタログの
+  トップレベルのキーはその拡張の `name` ただ 1 つでなければならず（`name = "lilla-habits"` なら
+  `t("lilla-habits.notify.title")`。コアが prefix を付けることはしない）、違反や拡張名とコアの
+  トップレベルキーの衝突は `ValueError` で fail-fast する。存在しないディレクトリは WARNING を
+  出して読み飛ばし、壊れた YAML は ERROR ログを出してそのロケール分だけ空として扱う。
+  `t()` の解決順（`ui.locale` → `ja` → キー名）は従来どおりで、`ja.yaml` しか同梱していない
+  拡張でも `ui.locale: en` で例外にならない。`translations()` / `available_locales()` も
+  合成後のカタログを対象にする（メソッドの追加のみで非破壊。`EXTENSION_API_VERSION` は据え置き）
 - 拡張リポジトリ向けのテストヘルパー `lilla_core.testing` を追加。
   `use_extensions(*extensions, config_root=None)`（登録・設定合成・`set_config()` を行い、
   抜けるときに登録内容・設定インスタンス・`CONFIG_ROOT` を元へ戻すコンテキストマネージャ）と

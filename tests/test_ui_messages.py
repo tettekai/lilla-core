@@ -7,10 +7,12 @@
 
 import logging
 import re
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from lilla_core.core.extension import Extension
 from lilla_core.ui import messages
 
 #: カタログの値に含まれる `{name}` 形式のプレースホルダ。
@@ -215,3 +217,172 @@ class TestCatalogConsistency:
         for locale in messages.available_locales():
             for key, value in _flatten(messages._load_catalog(locale)).items():
                 assert isinstance(value, str), f"{locale}.yaml {key} is not a string"
+
+
+class SampleLocaleExtension(Extension):
+    """テスト用に UI 文言カタログを同梱する拡張。"""
+
+    name = "sample-locales"
+
+    def __init__(self, directory: Path) -> None:
+        """カタログのディレクトリを受け取る。
+
+        Args:
+            directory: `{locale}.yaml` を置いたディレクトリ。
+        """
+        self._directory = directory
+
+    def locale_dirs(self) -> list[Path]:
+        """同梱カタログのディレクトリを返す。"""
+        return [self._directory]
+
+
+@pytest.fixture
+def register_locale_extension():
+    """カタログ付きの拡張を登録し、後片付けで登録とキャッシュを元へ戻す。"""
+    from lilla_core.core.extension import reset_extensions, set_extensions
+
+    def _register(*extensions: Extension) -> None:
+        set_extensions(list(extensions))
+
+    yield _register
+    reset_extensions()
+    messages.clear_cache()
+
+
+def _write_catalog(directory: Path, locale: str, body: str) -> None:
+    """テスト用のカタログ YAML を書き出す。
+
+    Args:
+        directory: 書き出し先ディレクトリ。
+        locale: ロケール名（ファイル名になる）。
+        body: YAML の中身。
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{locale}.yaml").write_text(body, encoding="utf-8")
+
+
+class TestExtensionCatalogs:
+    """拡張が同梱したカタログの合成・名前空間・フォールバックの検証。"""
+
+    def test_resolves_extension_key(
+        self, tmp_path: Path, register_locale_extension, set_locale
+    ) -> None:
+        """拡張のカタログのキーを `t()` で解決できる。"""
+        _write_catalog(tmp_path, "ja", "sample-locales:\n  notify:\n    title: 'お知らせ: {name}'\n")
+        register_locale_extension(SampleLocaleExtension(tmp_path))
+        set_locale("ja")
+        assert messages.t("sample-locales.notify.title", name="散歩") == "お知らせ: 散歩"
+
+    def test_keeps_core_messages(
+        self, tmp_path: Path, register_locale_extension, set_locale
+    ) -> None:
+        """拡張のカタログを重ねてもコアの文言はそのまま解決できる。"""
+        _write_catalog(tmp_path, "ja", "sample-locales:\n  hello: 'こんにちは'\n")
+        register_locale_extension(SampleLocaleExtension(tmp_path))
+        set_locale("ja")
+        assert messages.t("command.enable_tools.done") == "通常会話のツールを再び有効にしました。"
+
+    def test_falls_back_to_ja_when_locale_is_missing(
+        self, tmp_path: Path, register_locale_extension, set_locale
+    ) -> None:
+        """拡張が `en.yaml` を持たない場合は `ja` へフォールバックする。"""
+        _write_catalog(tmp_path, "ja", "sample-locales:\n  hello: 'こんにちは'\n")
+        register_locale_extension(SampleLocaleExtension(tmp_path))
+        set_locale("en")
+        assert messages.t("sample-locales.hello") == "こんにちは"
+
+    def test_uses_key_itself_when_missing_everywhere(
+        self, tmp_path: Path, register_locale_extension, set_locale
+    ) -> None:
+        """どのカタログにも無いキーは例外を投げずキー名を返す。"""
+        _write_catalog(tmp_path, "ja", "sample-locales:\n  hello: 'こんにちは'\n")
+        register_locale_extension(SampleLocaleExtension(tmp_path))
+        set_locale("en")
+        assert messages.t("sample-locales.missing") == "sample-locales.missing"
+
+    def test_prefers_requested_locale(
+        self, tmp_path: Path, register_locale_extension, set_locale
+    ) -> None:
+        """`en.yaml` があれば `ui.locale` のカタログを優先する。"""
+        _write_catalog(tmp_path, "ja", "sample-locales:\n  hello: 'こんにちは'\n")
+        _write_catalog(tmp_path, "en", "sample-locales:\n  hello: 'hello'\n")
+        register_locale_extension(SampleLocaleExtension(tmp_path))
+        set_locale("en")
+        assert messages.t("sample-locales.hello") == "hello"
+
+    def test_rejects_top_level_key_other_than_the_extension_name(
+        self, tmp_path: Path, register_locale_extension, set_locale
+    ) -> None:
+        """トップレベルキーが拡張名と異なるカタログは `ValueError` で落ちる。"""
+        _write_catalog(tmp_path, "ja", "habits:\n  hello: 'こんにちは'\n")
+        register_locale_extension(SampleLocaleExtension(tmp_path))
+        set_locale("ja")
+        with pytest.raises(ValueError, match="top-level key"):
+            messages.t("sample-locales.hello")
+
+    def test_rejects_extension_name_colliding_with_a_core_key(
+        self, tmp_path: Path, register_locale_extension, set_locale
+    ) -> None:
+        """拡張名がコアのトップレベルキーと同じ場合は `ValueError` で落ちる。"""
+
+        class CollidingExtension(SampleLocaleExtension):
+            """コアのカタログのトップレベルキーと同じ名前を持つ拡張。"""
+
+            name = "selftest"
+
+        _write_catalog(tmp_path, "ja", "selftest:\n  hello: 'こんにちは'\n")
+        register_locale_extension(CollidingExtension(tmp_path))
+        set_locale("ja")
+        with pytest.raises(ValueError, match="collides"):
+            messages.t("selftest.summary")
+
+    def test_warns_once_for_a_missing_directory(
+        self,
+        tmp_path: Path,
+        register_locale_extension,
+        set_locale,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """存在しないディレクトリは WARNING を出して読み飛ばす。"""
+        register_locale_extension(SampleLocaleExtension(tmp_path / "missing"))
+        set_locale("ja")
+        with caplog.at_level(logging.WARNING, logger=messages.__name__):
+            assert messages.t("command.enable_tools.done") == (
+                "通常会話のツールを再び有効にしました。"
+            )
+            messages.t("command.enable_tools.done")
+        assert caplog.text.count("does not exist") == 1
+
+    def test_ignores_a_broken_catalog(
+        self,
+        tmp_path: Path,
+        register_locale_extension,
+        set_locale,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """YAML が壊れていても起動は落とさず、そのロケール分だけ空として扱う。"""
+        _write_catalog(tmp_path, "ja", "sample-locales:\n  - not: a mapping\n   bad indent\n")
+        register_locale_extension(SampleLocaleExtension(tmp_path))
+        set_locale("ja")
+        with caplog.at_level(logging.ERROR, logger=messages.__name__):
+            assert messages.t("sample-locales.hello") == "sample-locales.hello"
+        assert "Failed to load the message catalog" in caplog.text
+
+    def test_available_locales_include_extension_catalogs(
+        self, tmp_path: Path, register_locale_extension
+    ) -> None:
+        """`available_locales()` はコアと拡張のロケールの和集合を返す。"""
+        _write_catalog(tmp_path, "fr", "sample-locales:\n  hello: 'bonjour'\n")
+        register_locale_extension(SampleLocaleExtension(tmp_path))
+        assert {"ja", "en", "fr"} <= set(messages.available_locales())
+
+    def test_translations_cover_extension_catalogs(
+        self, tmp_path: Path, register_locale_extension, set_locale
+    ) -> None:
+        """`translations()` は拡張のカタログも横断して集める。"""
+        _write_catalog(tmp_path, "ja", "sample-locales:\n  hello: 'こんにちは'\n")
+        _write_catalog(tmp_path, "en", "sample-locales:\n  hello: 'hello'\n")
+        register_locale_extension(SampleLocaleExtension(tmp_path))
+        set_locale("en")
+        assert messages.translations("sample-locales.hello") == ["hello", "こんにちは"]
