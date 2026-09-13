@@ -9,6 +9,15 @@
 
 ### Added
 
+- `Extension.tool_config_roots()` を追加。拡張が既定のツール YAML（`llm_*.yaml` / `task_*.yaml`）を
+  同梱できるようになった。ローダーは「拡張の同梱分（ロード順）→ `${CONFIG_ROOT}/tools`」の順に
+  YAML を集め、同じ stem は `${CONFIG_ROOT}/tools` 側が丸ごと上書きする（利用者の設定が常に勝つ。
+  内容のマージはしない）。拡張どうしで同じ stem を同梱した場合は起動時に fail-fast する。
+  同梱 YAML が `type: self` なら同梱ディレクトリの同名 `.py` を読む
+- ツール YAML に `enabled: false` と書くとそのツールをロードしなくなった（同梱かどうかを問わない）。
+  拡張が同梱したツールを止めるには、`${CONFIG_ROOT}/tools` に同じ stem で `enabled: false` の
+  YAML を置く。`enabled` キーが無い、または `false` 以外の値なら従来どおりロードする
+
 - ツール YAML の `type` に import パス（`.` 区切りのモジュール名。例:
   `type: lilla_google_calendar.tools.calendar_get`）を書けるようになった。`.` を含む `type` は
   ツールルートを探索する代わりに `importlib` で解決し、LLM ツール・task ツールの両方で使える。

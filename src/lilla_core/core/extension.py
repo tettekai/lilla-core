@@ -189,6 +189,17 @@ class Extension:
         """`paths.tool_root` に足す LLM/task ツールの探索ディレクトリを返す。"""
         return []
 
+    def tool_config_roots(self) -> list[Path]:
+        """この拡張が同梱する既定のツール YAML（`llm_*.yaml` / `task_*.yaml`）のディレクトリを返す。
+
+        ローダーは「拡張の `tool_config_roots()`（ロード順）→ `${CONFIG_ROOT}/tools`」の
+        順に YAML を集め、同じファイル名（stem）は `${CONFIG_ROOT}/tools` 側が丸ごと
+        上書きする（利用者の設定が常に勝つ）。拡張どうしで同じ stem を同梱した場合は
+        fail-fast する。利用者が同梱ツールを無効化したいときは、`${CONFIG_ROOT}/tools` に
+        同名の YAML を置いて `enabled: false` と書く。
+        """
+        return []
+
     def command_packages(self) -> list[str]:
         """`load_all_commands()` が追加で走査するパッケージの import パスを返す。"""
         return []
@@ -606,6 +617,17 @@ def get_tool_roots() -> list[Path]:
     roots: list[Path] = []
     for ext in _extensions:
         roots.extend(ext.tool_roots())
+    return roots
+
+
+def get_tool_config_roots() -> list[tuple[str, Path]]:
+    """全拡張が同梱するツール YAML のディレクトリを `(拡張名, ディレクトリ)` でロード順に返す。
+
+    拡張名は、同じ stem を複数の拡張が同梱していたときのエラーメッセージに使う。
+    """
+    roots: list[tuple[str, Path]] = []
+    for ext in _extensions:
+        roots.extend((ext.name, Path(root)) for root in ext.tool_config_roots())
     return roots
 
 

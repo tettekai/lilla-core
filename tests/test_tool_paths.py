@@ -124,16 +124,108 @@ class TestResolveToolDirs:
     def test_defaults_come_from_config_and_extensions(
         self, mock_cfg: MagicMock, make_extension, use_extensions, tmp_path: Path
     ) -> None:
-        """省略時は `resolve_tool_roots()` と設定の `env.config_root` から導く。"""
+        """省略時は `resolve_tool_roots()` と設定の `env.config_root` から導く。
+
+        拡張が同梱した YAML のディレクトリ（`type: self` の `.py` が置かれうる）も含める。
+        """
         mock_cfg.paths.tool_root = tmp_path / "core"
         mock_cfg.env.config_root = tmp_path / "config"
-        use_extensions(make_extension("a", tool_roots=[tmp_path / "pack"]))
+        use_extensions(make_extension(
+            "a", tool_roots=[tmp_path / "pack"], tool_config_roots=[tmp_path / "pack_configs"]
+        ))
 
         assert tool_paths.resolve_tool_dirs() == [
             (tmp_path / "core").resolve(),
             (tmp_path / "pack").resolve(),
+            (tmp_path / "pack_configs").resolve(),
             (tmp_path / "config" / "tools").resolve(),
         ]
+
+
+class TestResolveToolConfigFiles:
+    """拡張が同梱した既定 YAML と `config_root/tools` の合成規則。"""
+
+    @staticmethod
+    def _touch(directory: Path, *names: str) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            (directory / name).write_text("type: x\n")
+
+    def test_user_dir_only_without_extensions(self, tmp_path: Path, use_extensions) -> None:
+        """拡張が 0 個なら `config_root/tools` だけを stem 順で返す（従来どおり）。"""
+        use_extensions()
+        self._touch(tmp_path / "tools", "llm_b.yaml", "llm_a.yaml", "task_x.yaml", "note.txt")
+
+        assert tool_paths.resolve_tool_config_files("llm_", tmp_path) == [
+            tmp_path / "tools" / "llm_a.yaml",
+            tmp_path / "tools" / "llm_b.yaml",
+        ]
+
+    def test_bundled_yaml_is_included(
+        self, tmp_path: Path, make_extension, use_extensions
+    ) -> None:
+        """拡張が同梱した YAML は、利用者側に無くても集められる。"""
+        pack = tmp_path / "pack" / "tool_configs"
+        self._touch(pack, "llm_pack.yaml")
+        use_extensions(make_extension("pack", tool_config_roots=[pack]))
+
+        assert tool_paths.resolve_tool_config_files("llm_", tmp_path) == [pack / "llm_pack.yaml"]
+
+    def test_user_yaml_overrides_bundled_one(
+        self, tmp_path: Path, make_extension, use_extensions
+    ) -> None:
+        """同じ stem は `config_root/tools` 側が丸ごと勝つ。"""
+        pack = tmp_path / "pack" / "tool_configs"
+        self._touch(pack, "llm_pack.yaml", "llm_other.yaml")
+        self._touch(tmp_path / "tools", "llm_pack.yaml")
+        use_extensions(make_extension("pack", tool_config_roots=[pack]))
+
+        assert tool_paths.resolve_tool_config_files("llm_", tmp_path) == [
+            pack / "llm_other.yaml",
+            tmp_path / "tools" / "llm_pack.yaml",
+        ]
+
+    def test_same_stem_in_two_extensions_fails_fast(
+        self, tmp_path: Path, make_extension, use_extensions
+    ) -> None:
+        """拡張どうしで同じ stem を同梱していたら、両方の拡張名を含めて落とす。"""
+        a = tmp_path / "a"
+        b = tmp_path / "b"
+        self._touch(a, "llm_dup.yaml")
+        self._touch(b, "llm_dup.yaml")
+        use_extensions(
+            make_extension("pack-a", tool_config_roots=[a]),
+            make_extension("pack-b", tool_config_roots=[b]),
+        )
+
+        with pytest.raises(ValueError, match="bundled by both extensions 'pack-a' and 'pack-b'"):
+            tool_paths.resolve_tool_config_files("llm_", tmp_path)
+
+    def test_missing_directories_are_skipped(
+        self, tmp_path: Path, make_extension, use_extensions
+    ) -> None:
+        """存在しないディレクトリは拡張側・利用者側とも読み飛ばす。"""
+        use_extensions(make_extension("pack", tool_config_roots=[tmp_path / "nope"]))
+
+        assert tool_paths.resolve_tool_config_files("llm_", tmp_path / "no_config") == []
+
+    def test_prefix_filters_kind(self, tmp_path: Path, make_extension, use_extensions) -> None:
+        """`llm_` と `task_` は別々に集める。"""
+        pack = tmp_path / "pack"
+        self._touch(pack, "llm_x.yaml", "task_y.yaml")
+        use_extensions(make_extension("pack", tool_config_roots=[pack]))
+
+        assert tool_paths.resolve_tool_config_files("task_", tmp_path) == [pack / "task_y.yaml"]
+
+
+class TestIsToolEnabled:
+    @pytest.mark.parametrize("config", [{}, {"enabled": True}, {"enabled": "no"}, {"enabled": 0}])
+    def test_enabled_unless_explicit_false(self, config: dict) -> None:
+        """`enabled: false` と明示したときだけ無効（それ以外の値では止めない）。"""
+        assert tool_paths.is_tool_enabled(config)
+
+    def test_explicit_false_disables(self) -> None:
+        assert not tool_paths.is_tool_enabled({"enabled": False})
 
 
 class TestIsImportPath:

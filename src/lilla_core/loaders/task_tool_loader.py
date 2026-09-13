@@ -1,4 +1,3 @@
-import glob
 import logging
 from pathlib import Path
 
@@ -10,6 +9,8 @@ from lilla_core.loaders.tool_paths import (
     find_tool_file,
     import_tool_module,
     is_import_path,
+    is_tool_enabled,
+    resolve_tool_config_files,
     resolve_tool_roots,
 )
 
@@ -19,12 +20,20 @@ tool_class_map = {}  # type名 -> クラス（キャッシュ）
 
 
 def _load_tool_configs(config_root: Path) -> list[tuple[str, dict]]:
-    """config_root/tools/task_*.yaml を読み込み、(ファイルパス, dict) のリストを返す。"""
-    tool_config_root = config_root / "tools"
+    """task ツールの YAML を読み込み、(ファイルパス, dict) のリストを返す。
+
+    集める YAML は `tool_paths.resolve_tool_config_files()` に従う（拡張が同梱した
+    既定 YAML → `config_root/tools` の順で、同じ stem は後者が丸ごと上書き）。
+    `enabled: false` の YAML は含めない。
+    """
     results = []
-    for config_path in glob.glob(str(tool_config_root / "task_*.yaml")):
+    for config_path in resolve_tool_config_files("task_", config_root):
         with open(config_path, "r", encoding="utf-8") as f:
-            results.append((config_path, yaml.safe_load(f)))
+            config = yaml.safe_load(f)
+        if not is_tool_enabled(config or {}):
+            logger.info("Task tool disabled by config: %s", config_path)
+            continue
+        results.append((str(config_path), config))
     return results
 
 

@@ -86,6 +86,7 @@ class TestExtensionDefaults:
         assert ext.config_models() == {}
         assert ext.env_fields() == {}
         assert ext.tool_roots() == []
+        assert ext.tool_config_roots() == []
         assert ext.command_packages() == []
         assert ext.startup_repos() == []
         assert ext.tool_context_providers() == {}
@@ -663,6 +664,19 @@ class TestAggregatedContributions:
         ])
 
         assert ext_module.get_startup_repos() == [first, second, third]
+
+    def test_tool_config_roots_carry_extension_names_in_load_order(self, make_extension) -> None:
+        """同梱 YAML のディレクトリは拡張名つきでロード順に返す。"""
+        ext_module.set_extensions([
+            make_extension("a", tool_config_roots=[Path("/one/tools")]),
+            make_extension("b", tool_config_roots=[Path("/two/tools"), Path("/three/tools")]),
+        ])
+
+        assert ext_module.get_tool_config_roots() == [
+            ("a", Path("/one/tools")),
+            ("b", Path("/two/tools")),
+            ("b", Path("/three/tools")),
+        ]
 
     def test_tool_roots_are_concatenated_in_load_order(self, make_extension) -> None:
         """ツール探索ルートはロード順に連結される。"""

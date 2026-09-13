@@ -209,6 +209,7 @@ extension = MyExtension()
 | `conversation_start_hooks` | Async hooks run before conversation handling starts, as `{client_type: [hook, ...]}`. Additive like the prompts. Each hook receives one `ConversationContext` (`client_type`, `client_state`, `discord_channel_id`, `llm_name`) |
 | `tool_context_providers` | Values injected into the tool execution context |
 | `tool_roots` | Extra directories searched for tool `.py` files |
+| `tool_config_roots` | Directories of default tool YAML files (`llm_*.yaml` / `task_*.yaml`) shipped by the extension. A YAML with the same stem in `${CONFIG_ROOT}/tools` replaces it wholesale; put `enabled: false` there to turn a bundled tool off |
 | `command_packages` | Extra packages scanned for `@register_command` handlers |
 | `config_models` | YAML sections this extension adds to `AppConfig` |
 | `env_fields` | Secret fields this extension adds to `cfg.env` |
@@ -356,6 +357,14 @@ Tools are loaded dynamically from `${TOOL_ROOT}/**/*.py` based on YAML config fi
 `${CONFIG_ROOT}/tools/`. Each YAML's file name stem becomes the tool's name, and its
 `type` field is used to locate the matching `.py` file (`loaders/llm_tool_loader.py` /
 `loaders/task_tool_loader.py` implement the details below).
+
+An extension can ship default YAML files through `tool_config_roots()`. The loader
+collects YAML from those directories first (in extension load order) and then from
+`${CONFIG_ROOT}/tools`; a file with the same stem in `${CONFIG_ROOT}/tools` replaces the
+bundled one wholesale (no merging), so your settings always win. Two extensions bundling
+the same stem fail at startup. To switch a bundled tool off, put a YAML with the same
+stem in `${CONFIG_ROOT}/tools` containing `enabled: false`; `enabled: false` disables any
+tool YAML, bundled or not.
 
 **LLM tools** (`${CONFIG_ROOT}/tools/llm_*.yaml`, implemented in
 `${TOOL_ROOT}/**/<type>.py`):
