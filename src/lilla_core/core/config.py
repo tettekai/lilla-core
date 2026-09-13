@@ -69,17 +69,10 @@ class DiscordConfig(BaseModel):
 class PathsConfig(BaseModel):
     """lilla.yaml の `paths:` セクション。"""
 
+    # ツールの `.py` を探すルート。ロードを許す範囲は「このルート + 拡張の `tool_roots()`
+    # + `config_root/tools`」から `loaders/tool_paths.py` が導き、別途のホワイトリスト設定
+    # は持たない（旧 `allowed_tool_paths` は読まず、YAML にあっても無視する）。
     tool_root: Path = Path("/app/tools")
-    allowed_tool_paths: str = "/app/tools,/app/config/tools"
-
-    @property
-    def allowed_tool_paths_list(self) -> list[Path]:
-        """カンマ区切りの `allowed_tool_paths` を解決済み Path のリストにして返す。"""
-        return [
-            Path(p.strip()).resolve()
-            for p in self.allowed_tool_paths.split(",")
-            if p.strip()
-        ]
 
 
 class MongodbConfig(BaseModel):

@@ -262,7 +262,12 @@ readable process-wide.
   all in `LILLA_EXTENSIONS`.
 
 Modules listed in `LILLA_EXTENSIONS` run as **trusted code** in the same process. This
-is not a sandbox.
+is not a sandbox. The same applies to every directory tools are loaded from:
+`paths.tool_root`, each extension's `tool_roots()`, and `${CONFIG_ROOT}/tools`. Anyone
+who can write there can run code inside the bot process, so there is no separate
+allow-list for tool paths. The loaders only verify that a resolved tool file still lies
+under one of those directories (a `type` containing `..` or a symlink pointing outside
+is refused).
 
 ## Tool contracts
 

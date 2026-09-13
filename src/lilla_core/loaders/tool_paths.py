@@ -11,6 +11,14 @@ LLM ツール（`llm_tool_loader`）と task ツール（`task_tool_loader`）�
 追加ルートは **ファイル探索だけ** に使い、`sys.path` へは挿入しない。
 拡張のツールが Python パッケージとして import される必要があるなら、
 インストール済みパッケージにすること。
+
+ツールの `.py` をロードしてよいディレクトリは `resolve_tool_dirs()` が返す
+「探索ルート + `config_root/tools`（`type: self` の置き場所）」で、これ以外の設定は
+持たない。`find_tool_file` は YAML の `type` を `rglob` のパターンとして使うため、
+`..` を含む `type` や、ルート内のシンボリックリンクが外を指す場合は解決後のパスが
+ルートの外へ出うる。ローダーは読み込む直前に `is_within_tool_dirs()` で解決後の
+パスを検査し、外へ出ていればロードしない。これは信頼境界ではなく不変条件の検査で、
+`CONFIG_ROOT` と各探索ルートへ書き込める者はコードを実行できる（`SECURITY.md`）。
 """
 from __future__ import annotations
 
@@ -39,6 +47,47 @@ def resolve_tool_roots() -> list[Path]:
         seen.add(resolved)
         unique.append(Path(root))
     return unique
+
+
+def resolve_tool_dirs(
+    tool_roots: list[Path] | None = None, config_root: Path | None = None
+) -> list[Path]:
+    """ツールの `.py` をロードしてよいディレクトリを解決済みのパスで返す。
+
+    探索ルート（`tool_roots`。省略時は `resolve_tool_roots()`）に、`type: self` の
+    `.py` が置かれる `config_root/tools`（省略時は設定の `env.config_root`）を足す。
+
+    Args:
+        tool_roots: 探索に使ったツールルート。`None` なら設定と拡張から解決する。
+        config_root: 設定ルート。`None` なら設定から取る。
+
+    Returns:
+        `resolve()` 済みのディレクトリのリスト（順序は探索ルート → `config_root/tools`）。
+    """
+    if tool_roots is None:
+        tool_roots = resolve_tool_roots()
+    if config_root is None:
+        config_root = get_config().env.config_root
+    return [Path(root).resolve() for root in tool_roots] + [
+        (Path(config_root) / "tools").resolve()
+    ]
+
+
+def is_within_tool_dirs(path: Path, tool_dirs: list[Path]) -> bool:
+    """`path` の解決後の位置が `tool_dirs` のいずれかの配下にあるかを返す。
+
+    `path` と各ディレクトリの両方を `resolve()` してから比較するため、`..` や
+    シンボリックリンクで探索ルートの外へ出たパスは `False` になる。
+
+    Args:
+        path: 検査するファイルパス。
+        tool_dirs: ロードを許すディレクトリ。
+
+    Returns:
+        いずれかの配下にあれば `True`。
+    """
+    resolved = Path(path).resolve()
+    return any(resolved.is_relative_to(Path(d).resolve()) for d in tool_dirs)
 
 
 def find_tool_file(tool_type: str, tool_roots: list[Path]) -> Path | None:
