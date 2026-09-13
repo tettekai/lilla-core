@@ -194,21 +194,43 @@ class TestValidation:
         with pytest.raises(ValueError, match="Duplicate tool context provider key"):
             ext_module.set_extensions([first, second])
 
-    def test_duplicate_client_prompt_client_type_raises(self, make_extension) -> None:
-        """client prompt provider の client_type 重複は fail-fast。"""
-        first = make_extension("a", client_prompt_providers={"web": lambda: "x"})
-        second = make_extension("b", client_prompt_providers={"web": lambda: "y"})
+    def test_client_prompt_providers_are_concatenated_in_load_order(
+        self, make_extension
+    ) -> None:
+        """同じ client_type のプロンプトプロバイダは排他にせず、ロード順に連結する。"""
+        p_a, p_b = (lambda: "a"), (lambda: "b")
+        first = make_extension("a", client_prompt_providers={"web": [p_a]})
+        second = make_extension("b", client_prompt_providers={"web": [p_b]})
 
-        with pytest.raises(ValueError, match="Duplicate client prompt provider key"):
-            ext_module.set_extensions([first, second])
+        ext_module.set_extensions([first, second])
 
-    def test_duplicate_conversation_start_hook_raises(self, make_extension) -> None:
-        """conversation start hook の client_type 重複は fail-fast。"""
-        first = make_extension("a", conversation_start_hooks={"web": AsyncMock()})
-        second = make_extension("b", conversation_start_hooks={"web": AsyncMock()})
+        assert ext_module.get_client_prompt_providers("web") == [p_a, p_b]
 
-        with pytest.raises(ValueError, match="Duplicate conversation start hook key"):
-            ext_module.set_extensions([first, second])
+    def test_conversation_start_hooks_are_concatenated_in_load_order(
+        self, make_extension
+    ) -> None:
+        """同じ client_type の会話開始フックは排他にせず、ロード順に連結する。"""
+        h_a, h_b = AsyncMock(), AsyncMock()
+        first = make_extension("a", conversation_start_hooks={"web": [h_a]})
+        second = make_extension("b", conversation_start_hooks={"web": [h_b, h_a]})
+
+        ext_module.set_extensions([first, second])
+
+        assert ext_module.get_conversation_start_hooks("web") == [h_a, h_b, h_a]
+
+    def test_client_prompt_provider_must_be_a_list(self, make_extension) -> None:
+        """旧契約（キー -> 関数 1 つ）のまま返した拡張はロード時に落とす。"""
+        ext = make_extension("a", client_prompt_providers={"web": lambda: "x"})
+
+        with pytest.raises(ValueError, match="must return a list for client prompt provider"):
+            ext_module.set_extensions([ext])
+
+    def test_conversation_start_hook_must_be_a_list(self, make_extension) -> None:
+        """旧契約（キー -> 関数 1 つ）のまま返した拡張はロード時に落とす。"""
+        ext = make_extension("a", conversation_start_hooks={"web": AsyncMock()})
+
+        with pytest.raises(ValueError, match="must return a list for conversation start hook"):
+            ext_module.set_extensions([ext])
 
     def test_duplicate_result_delivery_raises(self, make_extension) -> None:
         """result delivery の client_type 重複は fail-fast。"""
@@ -229,10 +251,10 @@ class TestValidation:
         """"discord" のプロンプトは内蔵デフォルトがあるだけで、上書きは許す。"""
         provider = lambda: "custom"
         ext_module.set_extensions(
-            [make_extension("a", client_prompt_providers={"discord": provider})]
+            [make_extension("a", client_prompt_providers={"discord": [provider]})]
         )
 
-        assert ext_module.get_client_prompt_provider("discord") is provider
+        assert ext_module.get_client_prompt_providers("discord") == [provider]
 
     def test_nothing_is_registered_when_validation_fails(self, make_extension) -> None:
         """検証に失敗したら登録内容を一切残さない。"""
@@ -437,11 +459,30 @@ class TestAggregatedContributions:
 
         assert ext_module.get_command_packages() == ["pkg.one", "pkg.two", "pkg.three"]
 
-    def test_lookups_return_none_when_unregistered(self) -> None:
-        """未登録の client_type はどの参照でも None。"""
+    def test_lookups_return_empty_when_unregistered(self) -> None:
+        """未登録の client_type は、排他の参照では None、加算式の参照では空リスト。"""
         assert ext_module.get_result_delivery("web") is None
-        assert ext_module.get_client_prompt_provider("web") is None
-        assert ext_module.get_conversation_start_hook("web") is None
+        assert ext_module.get_client_prompt_providers("web") == []
+        assert ext_module.get_conversation_start_hooks("web") == []
+
+    def test_hook_lists_are_copies(self, make_extension) -> None:
+        """加算式の参照の戻り値を書き換えても登録内容には影響しない。"""
+        hook = AsyncMock()
+        ext_module.set_extensions(
+            [make_extension("a", conversation_start_hooks={"web": [hook]})]
+        )
+
+        ext_module.get_conversation_start_hooks("web").clear()
+
+        assert ext_module.get_conversation_start_hooks("web") == [hook]
+
+    def test_conversation_context_is_immutable(self) -> None:
+        """`ConversationContext` は frozen で、フックが中身を差し替えられない。"""
+        ctx = ext_module.ConversationContext(client_type="web")
+
+        assert ctx.client_state is None
+        with pytest.raises(Exception):
+            ctx.client_state = {"x"}  # type: ignore[misc]
 
     def test_tool_context_providers_returns_a_copy(self, make_extension) -> None:
         """戻り値を書き換えても登録内容には影響しない。"""

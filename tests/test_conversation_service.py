@@ -1006,30 +1006,65 @@ class TestConversationStartHook:
         monkeypatch.setattr(conversation_service, "chat_to_llm", mock)
         return mock
 
-    async def test_registered_hook_is_awaited_with_ws_clients(
+    async def test_registered_hook_receives_conversation_context(
         self, conversation_service, _isolate_hooks, mock_chat: AsyncMock
     ) -> None:
-        """登録済みフックは ws_clients を渡して await される。"""
+        """登録済みフックは `ConversationContext` 1 つを渡して await される。"""
+        from lilla_core.core.extension import ConversationContext
+
         hook = AsyncMock()
-        _isolate_hooks(**{"lilla-client": hook})
-        ws_clients = {MagicMock()}
+        _isolate_hooks(**{"lilla-client": [hook]})
+        client_state = {MagicMock()}
 
         await conversation_service.run_conversation(
-            {}, client_type="lilla-client", ws_clients=ws_clients
+            {}, client_type="lilla-client", client_state=client_state, llm_name="grok"
         )
 
-        hook.assert_awaited_once_with(ws_clients)
+        hook.assert_awaited_once()
+        (ctx,), _ = hook.await_args
+        assert isinstance(ctx, ConversationContext)
+        assert ctx.client_type == "lilla-client"
+        assert ctx.client_state is client_state
+        assert ctx.llm_name == "grok"
+        assert ctx.discord_channel_id is None
 
-    async def test_hook_receives_none_when_no_ws_clients(
+    async def test_context_client_state_is_none_when_omitted(
         self, conversation_service, _isolate_hooks, mock_chat: AsyncMock
     ) -> None:
-        """ws_clients が渡されなければフックには None が渡る。"""
+        """client_state が渡されなければ context の client_state は None。"""
         hook = AsyncMock()
-        _isolate_hooks(**{"lilla-client": hook})
+        _isolate_hooks(**{"lilla-client": [hook]})
 
         await conversation_service.run_conversation({}, client_type="lilla-client")
 
-        hook.assert_awaited_once_with(None)
+        (ctx,), _ = hook.await_args
+        assert ctx.client_state is None
+
+    async def test_multiple_hooks_run_in_registered_order(
+        self, conversation_service, _isolate_hooks, mock_chat: AsyncMock
+    ) -> None:
+        """同じ client_type の複数フックは登録順に await される。"""
+        order = []
+        first = AsyncMock(side_effect=lambda ctx: order.append("first"))
+        second = AsyncMock(side_effect=lambda ctx: order.append("second"))
+        _isolate_hooks(**{"lilla-client": [first, second]})
+
+        await conversation_service.run_conversation({}, client_type="lilla-client")
+
+        assert order == ["first", "second"]
+
+    async def test_failing_hook_does_not_stop_later_hooks(
+        self, conversation_service, _isolate_hooks, mock_chat: AsyncMock
+    ) -> None:
+        """先のフックが例外を出しても後続のフックは実行される。"""
+        failing = AsyncMock(side_effect=RuntimeError("boom"))
+        later = AsyncMock()
+        _isolate_hooks(**{"lilla-client": [failing, later]})
+
+        result = await conversation_service.run_conversation({}, client_type="lilla-client")
+
+        later.assert_awaited_once()
+        assert result == "返答"
 
     @pytest.mark.parametrize("client_type", ["discord", "task"])
     async def test_hook_not_called_for_other_client_types(
@@ -1037,7 +1072,7 @@ class TestConversationStartHook:
     ) -> None:
         """別の client_type に登録されたフックは呼ばれない。"""
         hook = AsyncMock()
-        _isolate_hooks(**{"lilla-client": hook})
+        _isolate_hooks(**{"lilla-client": [hook]})
 
         await conversation_service.run_conversation({}, client_type=client_type)
 
@@ -1057,7 +1092,7 @@ class TestConversationStartHook:
     ) -> None:
         """フックが例外を送出しても run_conversation は通常どおり返答を返す。"""
         hook = AsyncMock(side_effect=RuntimeError("フック失敗"))
-        _isolate_hooks(**{"lilla-client": hook})
+        _isolate_hooks(**{"lilla-client": [hook]})
 
         result = await conversation_service.run_conversation({}, client_type="lilla-client")
 

@@ -143,8 +143,8 @@ def client_prompt_providers(mock_cfg: MagicMock, make_extension, use_extensions)
     use_extensions(make_extension(
         "prompt-pack",
         client_prompt_providers={
-            "discord": lambda: mock_cfg.discord_client_prompt,
-            "lilla-client": lambda: mock_cfg.lilla_client_prompt,
+            "discord": [lambda: mock_cfg.discord_client_prompt],
+            "lilla-client": [lambda: mock_cfg.lilla_client_prompt],
         },
     ))
 
@@ -436,7 +436,7 @@ class TestBuildSystemPrompt:
         """プロバイダは呼び出しのたびに評価される（値をキャッシュしない）。"""
         provider = MagicMock(side_effect=["1回目のプロンプト", "2回目のプロンプト"])
         use_extensions(make_extension(
-            "prompt-pack", client_prompt_providers={"discord": provider}
+            "prompt-pack", client_prompt_providers={"discord": [provider]}
         ))
 
         first = await manager.build_system_prompt(client_type="discord")
@@ -540,7 +540,7 @@ class TestResolveClientPrompt:
     def test_extension_provider_wins(self, mm_module, make_extension, use_extensions) -> None:
         """拡張が "discord" を出していればそれを使う。"""
         use_extensions(make_extension(
-            "pack", client_prompt_providers={"discord": lambda: "custom-discord-prompt"}
+            "pack", client_prompt_providers={"discord": [lambda: "custom-discord-prompt"]}
         ))
         assert mm_module._resolve_client_prompt("discord") == "custom-discord-prompt"
 
@@ -554,6 +554,26 @@ class TestResolveClientPrompt:
         monkeypatch.setattr(mm_module, "get_config", lambda: cfg)
         assert mm_module._resolve_client_prompt("discord") == "core-discord-prompt"
 
+    def test_multiple_providers_are_joined_in_load_order(
+        self, mm_module, make_extension, use_extensions
+    ) -> None:
+        """複数の拡張が同じ client_type に出したプロンプトは、ロード順に空行区切りで連結する。"""
+        use_extensions(
+            make_extension("a", client_prompt_providers={"discord": [lambda: "first"]}),
+            make_extension("b", client_prompt_providers={"discord": [lambda: "", lambda: "third"]}),
+        )
+        assert mm_module._resolve_client_prompt("discord") == "first\n\nthird"
+
+    def test_all_empty_providers_fall_back_to_nothing_not_core_default(
+        self, mm_module, make_extension, use_extensions, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """拡張が "discord" を出していれば、全て空でもコア内蔵へは戻らない。"""
+        use_extensions(make_extension("a", client_prompt_providers={"discord": [lambda: ""]}))
+        cfg = MagicMock()
+        cfg.discord_client_prompt = "core-discord-prompt"
+        monkeypatch.setattr(mm_module, "get_config", lambda: cfg)
+        assert mm_module._resolve_client_prompt("discord") == ""
+
     def test_no_prompt_for_other_client_types(self, mm_module, use_extensions) -> None:
         """内蔵デフォルトは "discord" だけで、他の client_type には付かない。"""
         use_extensions()
@@ -565,7 +585,7 @@ class TestResolveClientPrompt:
     ) -> None:
         """拡張が増やした client_type も同じ経路で解決できる。"""
         use_extensions(make_extension(
-            "pack", client_prompt_providers={"lilla-client": lambda: "lilla-client-prompt"}
+            "pack", client_prompt_providers={"lilla-client": [lambda: "lilla-client-prompt"]}
         ))
         assert mm_module._resolve_client_prompt("lilla-client") == "lilla-client-prompt"
 
@@ -575,7 +595,7 @@ class TestResolveClientPrompt:
         """プロバイダは呼ぶたびに評価される（戻り値をキャッシュしない）。"""
         values = iter(["first", "second"])
         use_extensions(make_extension(
-            "pack", client_prompt_providers={"discord": lambda: next(values)}
+            "pack", client_prompt_providers={"discord": [lambda: next(values)]}
         ))
         assert mm_module._resolve_client_prompt("discord") == "first"
         assert mm_module._resolve_client_prompt("discord") == "second"

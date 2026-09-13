@@ -26,6 +26,19 @@
 
 ### Changed
 
+- **BREAKING**: 会話開始フック（`Extension.conversation_start_hooks()`）の引数を、WebSocket
+  クライアント集合（`ws_clients`）から `ConversationContext`（`client_type` / `client_state` /
+  `discord_channel_id` / `llm_name`）1 つに変更した。あわせて `run_conversation()` の引数
+  `ws_clients` を `client_state` に、ツール実行 context のキー `ws_clients` を `client_state` に
+  改名した。コアは `client_state` の中身を解釈せず、クライアント拡張が渡した値をそのまま
+  フックとツールへ届ける（WebSocket はコアの概念ではないため）
+- **BREAKING**: `Extension.client_prompt_providers()` / `conversation_start_hooks()` の戻り値を
+  「`client_type` → 関数 1 つ」から「`client_type` → 関数のリスト」に変更し、同じ `client_type`
+  への登録を拡張どうしで排他にせず加算式にした。コアは全拡張分をロード順に連結し、プロンプトは
+  空でない戻り値を空行区切りで追記、フックは順に await する（1 件の失敗は後続を止めない）。
+  コアの参照 API も `get_client_prompt_providers()` / `get_conversation_start_hooks()`（複数形。
+  未登録なら空リスト）に改めた。旧契約のまま関数 1 つを返す拡張はロード時に落ちる。
+  `result_deliveries()` は従来どおり排他で、`"discord"` は予約のまま
 - **BREAKING**: `Extension.setup()` の引数を位置引数 3 つ（`tools, llm_tools, bot`）から
   `SetupContext` 1 つに変更した。`ctx.tools` / `ctx.llm_tools` / `ctx.bot` で従来と同じ値を、
   `ctx.config` でプロセスの設定（`get_config()` と同じインスタンス）を参照できる。

@@ -9,8 +9,10 @@
 `Extension` は Adapter 型で、全メソッドに「何もしない」デフォルトがある。
 拡張は使うものだけをオーバーライドする。
 
-貢献キーの衝突（`name` / ツール実行 context のキー / `client_type`）は
+貢献キーの衝突（`name` / ツール実行 context のキー / 結果配送の `client_type`）は
 **拡張どうし** のときロード時に fail-fast する。静かな後勝ちはしない。
+一方、クライアント固有プロンプトと会話開始フックは「同じ `client_type` に複数の
+拡張が足す」のが自然なため排他にせず、ロード順に連結する（加算式）。
 コアが持つ内蔵デフォルト（`client_type="discord"` のプロンプトなど）との
 重複は衝突とみなさず、拡張側が優先される。
 
@@ -50,7 +52,7 @@ _RESERVED_DELIVERY_CLIENT_TYPES = frozenset({"discord"})
 StartupRepoFactory = Callable[[], Any]
 DeliveryFn = Callable[[str], Awaitable[None]]
 PromptProvider = Callable[[], str]
-ConversationStartHook = Callable[[Any], Awaitable[None]]
+ConversationStartHook = Callable[["ConversationContext"], Awaitable[None]]
 ContextValueProvider = Callable[[], Any]
 
 
@@ -71,6 +73,25 @@ class SetupContext:
     bot: Any
     #: プロセス全体で共有する設定（`get_config()` と同じインスタンス）。
     config: Any
+
+
+@dataclass(frozen=True)
+class ConversationContext:
+    """会話開始フック（`Extension.conversation_start_hooks()`）に渡す会話 1 回分の文脈。
+
+    `SetupContext` と同じく、位置引数ではなく 1 つのオブジェクトで渡す。フィールドの
+    追加は非破壊、既存フィールドの削除・改名は破壊的変更として扱う。
+    """
+
+    #: 会話の送信元クライアント種別（`"discord"` や拡張が増やす種別）。
+    client_type: str
+    #: クライアント拡張が `run_conversation(client_state=...)` で渡した任意の状態
+    #: （接続中クライアントの集合など）。コアは中身を解釈しない。
+    client_state: Any = None
+    #: Discord からの会話ならそのチャンネル ID。
+    discord_channel_id: int | None = None
+    #: 使用する LLM プロバイダー名。`None` なら既定。
+    llm_name: str | None = None
 
 
 class Extension:
@@ -136,12 +157,20 @@ class Extension:
         """`!toolresult` の結果配送関数を `client_type` ごとに返す。"""
         return {}
 
-    def client_prompt_providers(self) -> dict[str, PromptProvider]:
-        """システムプロンプトへ追記する文字列のプロバイダを `client_type` ごとに返す。"""
+    def client_prompt_providers(self) -> dict[str, list[PromptProvider]]:
+        """システムプロンプトへ追記する文字列のプロバイダを `client_type` ごとにリストで返す。
+
+        同じ `client_type` に複数の拡張が足せる（加算式）。コアは全拡張分を
+        ロード順に連結し、各プロバイダの戻り値を空行区切りで追記する。
+        """
         return {}
 
-    def conversation_start_hooks(self) -> dict[str, ConversationStartHook]:
-        """`run_conversation` の冒頭で呼ばれるフックを `client_type` ごとに返す。"""
+    def conversation_start_hooks(self) -> dict[str, list[ConversationStartHook]]:
+        """`run_conversation` の冒頭で呼ばれるフックを `client_type` ごとにリストで返す。
+
+        同じ `client_type` に複数の拡張が足せる（加算式）。コアは全拡張分を
+        ロード順に連結し、`ConversationContext` を渡して順に await する。
+        """
         return {}
 
     async def on_message(self, message: Any) -> bool:
@@ -165,8 +194,8 @@ _config_models: dict[str, Any] = {}
 _env_fields: dict[str, str] = {}
 _tool_context_providers: dict[str, ContextValueProvider] = {}
 _result_deliveries: dict[str, DeliveryFn] = {}
-_client_prompt_providers: dict[str, PromptProvider] = {}
-_conversation_start_hooks: dict[str, ConversationStartHook] = {}
+_client_prompt_providers: dict[str, list[PromptProvider]] = {}
+_conversation_start_hooks: dict[str, list[ConversationStartHook]] = {}
 
 
 def _merge_unique(
@@ -205,6 +234,35 @@ def _merge_unique(
                 )
             owners[key] = ext.name
             merged[key] = value
+    return merged
+
+
+def _merge_lists(
+    extensions: list[Extension], method_name: str, label: str
+) -> dict[str, list[Any]]:
+    """各拡張の「キー -> リスト」貢献を、キーごとにロード順で連結する（加算式）。
+
+    Args:
+        extensions: ロード順に並んだ拡張のリスト。
+        method_name: 貢献を返すメソッド名（例: `"conversation_start_hooks"`）。
+        label: 例外メッセージに出す貢献の種類名。
+
+    Returns:
+        キーから連結済みリストへの dict。
+
+    Raises:
+        ValueError: 値がリスト（またはタプル）でない場合。旧契約の
+            「キー -> 関数 1 つ」の形をそのまま返した拡張をここで検出する。
+    """
+    merged: dict[str, list[Any]] = {}
+    for ext in extensions:
+        for key, values in getattr(ext, method_name)().items():
+            if not isinstance(values, (list, tuple)):
+                raise ValueError(
+                    f"Extension '{ext.name}' must return a list for {label} "
+                    f"'{key}', got {type(values).__name__}"
+                )
+            merged.setdefault(key, []).extend(values)
     return merged
 
 
@@ -291,8 +349,8 @@ def set_extensions(extensions: list[Extension]) -> None:
         "result delivery",
         reserved=_RESERVED_DELIVERY_CLIENT_TYPES,
     )
-    prompts = _merge_unique(extensions, "client_prompt_providers", "client prompt provider")
-    start_hooks = _merge_unique(
+    prompts = _merge_lists(extensions, "client_prompt_providers", "client prompt provider")
+    start_hooks = _merge_lists(
         extensions, "conversation_start_hooks", "conversation start hook"
     )
 
@@ -417,18 +475,18 @@ def get_result_delivery(client_type: str) -> DeliveryFn | None:
     return _result_deliveries.get(client_type)
 
 
-def get_client_prompt_provider(client_type: str) -> PromptProvider | None:
-    """`client_type` のクライアント固有プロンプトのプロバイダを返す。未登録なら `None`。
+def get_client_prompt_providers(client_type: str) -> list[PromptProvider]:
+    """`client_type` のクライアント固有プロンプトのプロバイダをロード順で返す。
 
-    見つからない場合、呼び出し側はコアの内蔵デフォルト（`"discord"` のみ）へ
-    フォールバックする。
+    未登録なら空リスト。空の場合、呼び出し側はコアの内蔵デフォルト
+    （`"discord"` のみ）へフォールバックする。
     """
-    return _client_prompt_providers.get(client_type)
+    return list(_client_prompt_providers.get(client_type, []))
 
 
-def get_conversation_start_hook(client_type: str) -> ConversationStartHook | None:
-    """`client_type` の会話開始フックを返す。未登録なら `None`。"""
-    return _conversation_start_hooks.get(client_type)
+def get_conversation_start_hooks(client_type: str) -> list[ConversationStartHook]:
+    """`client_type` の会話開始フックをロード順で返す。未登録なら空リスト。"""
+    return list(_conversation_start_hooks.get(client_type, []))
 
 
 async def run_setup_hooks(tools: Any, llm_tools: Any, bot: Any) -> None:

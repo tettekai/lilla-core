@@ -215,7 +215,7 @@ lilla-core 自体は起動スクリプトを持たない（ライブラリとし
 | ファイル | 役割 |
 |----------|------|
 | `config.py` | Pydantic ベースの設定管理（`AppConfig`）。`${CONFIG_ROOT}/lilla.yaml` はネスト構造のまま同じ形のセクションモデル（`cfg.discord.my_user_id` など）へ読み込み、`.env` / OS 環境変数は `EnvConfig`（`cfg.env.discord_token` など）へ読み込む（YAML の項目を環境変数で上書きする経路は持たない。YAML トップレベルの `env:` は警告して無視する）。複数 LLM プロバイダの動的選択に対応。`ui.locale`（`UiConfig`）は Discord に見せる文言のロケールを、`ui.timezone`（同じく `UiConfig`。IANA 名か未指定）は「人間側の今日 / いま」のタイムゾーンを決める（未指定なら OS のローカル。不正な名前・空文字はバリデーションで起動時に落とす）。コアの汎用範囲を超えるフィールドは持たず、拡張側が申告した YAML セクション・秘匿フィールドを `compose_config()` が `pydantic.create_model` で `AppConfig` / `EnvConfig` へ動的に足して 1 つのモデルに合成する（拡張分の OS 変数名はモジュールレベルの `_extra_env_var_names` に登録し、`EnvConfigSettingsSource` が `_VAR_NAMES` へ重ねて読む。pydantic のモデル本体に置いたアンダースコア始まりの属性はプライベート属性扱いになり `settings_customise_sources()` から読めないため、クラス属性ではなくモジュールのレジストリで持つ）。合成に使う名前の検査用に `core_config_section_names()` / `core_env_field_names()` を公開する。`get_config()` / `set_config()` でプロセス全体の設定インスタンスを共有し、通常は `load_extensions()` が合成結果を `set_config()` する |
-| `extension.py` | コアの外から機能を差し込むための `Extension` 基底クラスと、そのロード・参照 API。`Extension` は Adapter 型で、起動時リポジトリ・メッセージフック・起動処理（`setup`。引数は `SetupContext` 1 つ）・結果配送・クライアント固有プロンプト・会話開始フック・ツール実行 context プロバイダ・追加ツールルート・追加コマンドパッケージの各メソッドに「何も貢献しない」デフォルトを持つ。`load_extensions()` が `LILLA_EXTENSIONS` のモジュールを import して各 `extension` を集め、`set_extensions()` が貢献キーの衝突を検証して登録し、続けて `compose_config()` の結果を `set_config()` でプロセスの設定に据える（拡張どうしの重複は fail-fast）。設定の合成そのものは `core/config.py` に閉じており、このモジュールは pydantic の組み立て詳細を知らない。`set_extensions()` は登録と検証だけで設定を差し替えないため、テストは拡張を登録してもプロセスの設定を壊さない。`lilla_core/bot.py` が拡張モジュールを直接 import しないための唯一の橋渡し層 |
+| `extension.py` | コアの外から機能を差し込むための `Extension` 基底クラスと、そのロード・参照 API。`Extension` は Adapter 型で、起動時リポジトリ・メッセージフック・起動処理（`setup`。引数は `SetupContext` 1 つ）・結果配送・クライアント固有プロンプト（加算式）・会話開始フック（加算式。引数は `ConversationContext` 1 つ）・ツール実行 context プロバイダ・追加ツールルート・追加コマンドパッケージの各メソッドに「何も貢献しない」デフォルトを持つ。`load_extensions()` が `LILLA_EXTENSIONS` のモジュールを import して各 `extension` を集め、`set_extensions()` が貢献キーの衝突を検証して登録し、続けて `compose_config()` の結果を `set_config()` でプロセスの設定に据える（拡張どうしの重複は fail-fast）。設定の合成そのものは `core/config.py` に閉じており、このモジュールは pydantic の組み立て詳細を知らない。`set_extensions()` は登録と検証だけで設定を差し替えないため、テストは拡張を登録してもプロセスの設定を壊さない。`lilla_core/bot.py` が拡張モジュールを直接 import しないための唯一の橋渡し層 |
 | `exceptions.py` | `ReauthenticationRequiredError`（外部 API 再認証要求時）・`LLMError`（LLM 呼び出し失敗時）の例外定義 |
 | `error_notify.py` | コマンド実行系・定期タスク実行系のエラー出力を一元化する（`notify_error`）。ERROR ログと Discord のエラー通知チャンネル（`discord.error_channel_id`。チャンネル ID で指定し、`bot.get_channel()` による ID 解決のみを行う。名前によるギルド横断検索は行わない）の 2 箇所にのみ出力し、元チャンネルへの `message.reply()` は行わない（bot 間チャンネルで相手 bot が reply に反応するのを防ぐため）。チャンネル未設定・ID 不正・未発見・送信失敗時は WARNING ログのみで、例外は投げない |
 | `http_util.py` | 全 HTTP リクエストの共通ユーティリティ（`send_http_request` / `stream_http_request`）。プロキシ自動適用、リクエスト/レスポンスの秘匿情報（`client_secret` 等）・base64 画像のログマスキングつき |
@@ -267,8 +267,8 @@ HTTP サーバー・ダッシュボードサーバー・WebSocket サーバー�
 |----------|------|
 | `attachment_download.py` | Discord 添付ファイルのダウンロード共通処理（`download_attachment_bytes` / `resolve_proxy_settings` / `normalize_content_type`）。プロキシ設定を尊重して Discord CDN から取得する。画像添付（`services/image_attachment.py`）とコマンドの BODY 添付（`commands/attachment_body.py`）で共有する |
 | `image_attachment.py` | Discord の画像添付を LLM へ渡す `image_url` パート（data URL）へ変換する処理。対応 MIME タイプの絞り込み（`filter_image_attachments`）と、サイズ上限ガード付きのダウンロード＋base64 化（`build_image_content_parts`）を担う。上限は `AppConfig.bot.max_image_attachment_size_mb`（既定 8MB。未設定・不正値・0 以下なら既定値）で、ダウンロード前に `attachment.size` で早期に弾き、Discord 側の申告値を過信しないようダウンロード後の実バイト数でも再検証する。上限超過・ダウンロード失敗はいずれも `notify_error` で通知して None を返し（例外は呼び出し元へ伝播させない）、呼び出し元は会話処理そのものを中止する |
-| `conversation_service.py` | tool_call ループと会話履歴の読み書きを担う共通ロジック。Discord をはじめ、複数の対話クライアントのエントリポイントから再利用できる。LLM 最終応答の META ブロック（`actions`）を種別ごとにディスパッチして適用する（`set_session_memory` でセッションメモリを更新/クリア）。クライアント種別の判定は `"task"` かどうかだけで行い、それ以外の対話クライアント種別（`"discord"` や拡張が増やす種別）はコア側に列挙しない。会話開始フック（`extension.get_conversation_start_hook`）・ツール実行 context プロバイダ（`extension.get_tool_context_providers`）を経由して拡張の差し込みポイントを利用する |
-| `memory_manager.py` | 会話履歴・ユーザーメモ・セッションメモリを統合し、LLM 向けシステムプロンプトを構築する（`build_system_prompt`）。履歴の対象期間とタイムスタンプ表示、プロンプトに埋め込む現在時刻はいずれも `local_timezone()` の解決結果を使う。クライアント種別ごとのプロンプト追記は `_resolve_client_prompt()` が「拡張の `client_prompt_providers()` → コア内蔵（`"discord"` のみ）→ 付けない」の順で解決する。ツールキャッシュ（`tool_cache_repository`）の有効なレコードも `## Cached Tool Results` としてシステムプロンプトへ埋め込む |
+| `conversation_service.py` | tool_call ループと会話履歴の読み書きを担う共通ロジック。Discord をはじめ、複数の対話クライアントのエントリポイントから再利用できる。LLM 最終応答の META ブロック（`actions`）を種別ごとにディスパッチして適用する（`set_session_memory` でセッションメモリを更新/クリア）。クライアント種別の判定は `"task"` かどうかだけで行い、それ以外の対話クライアント種別（`"discord"` や拡張が増やす種別）はコア側に列挙しない。会話開始フック（`extension.get_conversation_start_hooks`。`ConversationContext` を組み立ててロード順に await する）・ツール実行 context プロバイダ（`extension.get_tool_context_providers`）を経由して拡張の差し込みポイントを利用する。呼び出し元クライアントが `client_state=` で渡した任意の状態は、コアでは解釈せずフックの `ConversationContext.client_state` とツール実行 context の `client_state` キーへそのまま載せる |
+| `memory_manager.py` | 会話履歴・ユーザーメモ・セッションメモリを統合し、LLM 向けシステムプロンプトを構築する（`build_system_prompt`）。履歴の対象期間とタイムスタンプ表示、プロンプトに埋め込む現在時刻はいずれも `local_timezone()` の解決結果を使う。クライアント種別ごとのプロンプト追記は `_resolve_client_prompt()` が「拡張の `client_prompt_providers()`（複数あればロード順に空行区切りで連結）→ コア内蔵（`"discord"` のみ。拡張が 1 つも出していないときだけ）→ 付けない」の順で解決する。ツールキャッシュ（`tool_cache_repository`）の有効なレコードも `## Cached Tool Results` としてシステムプロンプトへ埋め込む |
 | `message_splitter.py` | LLM 応答を `---SPLIT---` / 改行2つ / タイムスタンプ境界で分割し、意味のない断片とタイムスタンプ prefix を除去するユーティリティ（`split_response`） |
 | `message_util.py` | メッセージ送信ユーティリティ。フラグパース（`parse_message_flags`）・タイムスタンプ prefix の付与/除去（`prepend_timestamp_prefix` / `strip_timestamp_prefix`）・システムプロンプト埋め込み用セッションメモリブロックの整形（`format_session_memory_block`）・LLM 出力の META ブロック（JSON）の抽出（`extract_meta_block`）・外部エージェントとやりとりする FrontMatter 付きメッセージの組み立て/解釈（`build_correlation_frontmatter` / `parse_correlation_frontmatter`）・DM チャンネルの解決と Discord への送信（`resolve_dm_channel` / `send_to_discord`） |
 | `session_memory_manager.py` | 単一領域のセッションメモリ（作業の途中状態や一時的な意図）をプロセス内メモリで保持する。TTL 付き、MongoDB 永続化なし。更新は LLM 出力の META アクション `set_session_memory` 経由で行う |
@@ -387,8 +387,8 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
 | `on_message` | `dispatch_on_message` | `on_message` の冒頭でロード順に呼ばれる。`True` で以降を止める |
 | `setup` | `run_setup_hooks` | `main()` で `bot.start()` の前に順に await される非同期関数（HTTP サーバー等の起動など）。引数は `SetupContext`（frozen dataclass。`tools` / `llm_tools` / `bot` / `config`）1 つで、`run_setup_hooks` が 1 度だけ組み立てて全拡張へ同じインスタンスを渡す。フィールドの追加は非破壊、削除・改名は破壊的変更として扱う |
 | `result_deliveries` | `get_result_delivery` | `!toolresult` が結果を届ける先を `client_type` ごとに差し替える |
-| `client_prompt_providers` | `get_client_prompt_provider` | `client_type` ごとにシステムプロンプトへ追記する文字列を返すプロバイダ（呼ぶたびに評価される） |
-| `conversation_start_hooks` | `get_conversation_start_hook` | `run_conversation` の冒頭で `client_type` ごとに呼ばれる非同期関数 |
+| `client_prompt_providers` | `get_client_prompt_providers` | `client_type` ごとにシステムプロンプトへ追記する文字列を返すプロバイダの **リスト**（`{client_type: [provider, ...]}`）。加算式で、複数の拡張が同じ `client_type` に足せる。コアがロード順に連結し、`memory_manager._resolve_client_prompt()` が空でない戻り値を空行区切りで追記する（呼ぶたびに評価される） |
+| `conversation_start_hooks` | `get_conversation_start_hooks` | `run_conversation` の冒頭で `client_type` ごとに呼ばれる非同期関数の **リスト**。加算式。各フックは `ConversationContext`（frozen dataclass。`client_type` / `client_state` / `discord_channel_id` / `llm_name`）1 つを受け取り、ロード順に await される。1 件の失敗は DEBUG ログのみで、後続のフックも会話本体も止めない |
 | `tool_context_providers` | `get_tool_context_providers`（全件） | ツール実行 context へ注入する値を context キー名ごとに供給する |
 | `tool_roots` | `get_tool_roots` | `paths.tool_root` に足すツール探索ディレクトリ（ここに含めた時点でロード対象になり、別途の許可設定は要らない） |
 | `command_packages` | `get_command_packages` | `load_all_commands()` が追加で走査するパッケージ |
@@ -403,13 +403,14 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
 - `config_models()` の YAML セクション名 / `env_fields()` のフィールド名
   （コア確定の名前との重複も落とす）
 - ツール実行 context プロバイダのキー
-- `result_deliveries` / `client_prompt_providers` / `conversation_start_hooks` の `client_type`
+- `result_deliveries` の `client_type`（`client_prompt_providers` / `conversation_start_hooks` は
+  加算式で、同じ `client_type` に複数の拡張が足せる。値がリストでない場合だけ落とす）
 - `command_packages` 経由で登録されるコマンド名（`register_command` が検出）
 - 複数のツールルートに同じ名前のツールファイルがあるとき（`find_tool_file` が検出）
 
 コア内蔵のデフォルトとの重複は衝突にしない。`client_type="discord"` のシステム
-プロンプトは拡張が出していればそれを使い、誰も出していなければコアの
-`discord_client_prompt` を使う。逆に `"discord"` の `result_deliveries` はコアが
+プロンプトは拡張が 1 つでも出していればそれら（連結）を使い、誰も出していなければ
+コアの `discord_client_prompt` を使う。逆に `"discord"` の `result_deliveries` はコアが
 配送を持つ予約キーで、拡張が登録するとロード時に落ちる。
 
 ### `on_message` の実行時例外
