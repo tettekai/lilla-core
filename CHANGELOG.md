@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-13
+
 ### Added
 
 - `core/config.py` に `get_section(name, model, config=None)` を追加。拡張が
@@ -24,20 +26,6 @@
   `required_config_sections()` と同じ形で、自分では提供しないが読む `EnvConfig` の
   フィールド名 / ツール実行 context のキー名を並べると、誰も提供しておらずコア確定の
   名前でもない場合にロード時に fail-fast する
-- 拡張が申告した設定差分をコアが `AppConfig` へ合成するようになった。`Extension.config_models()`
-  に「YAML セクション名 → セクションモデル」を、`Extension.env_fields()` に「`EnvConfig` の
-  フィールド名 → OS 環境変数名」を返すと、`load_extensions()` が全拡張の申告を 1 つの Pydantic
-  モデルへ組み、`get_config().<セクション名>` / `get_config().env.<フィールド名>` で型付きで
-  読めるようになる。セクションはモデルが必須フィールドを持てば必須、全フィールドにデフォルトが
-  あれば省略可能。`env_fields()` で足すフィールドの型は常に `str | None`（既定値 `None`）
-- `Extension.required_config_sections()` を追加。自分では提供しないが読む YAML セクション名を
-  並べると、誰も提供しておらずコア確定のセクションでもない場合にロード時 fail-fast する
-  （メッセージに要求元の拡張名を含む）。拡張どうしの依存を自動解決する仕組みは持たない
-- 同名の YAML セクション・同名の `EnvConfig` フィールドを 2 つの拡張が提供した場合、および
-  コア確定の名前と重複した場合はロード時 fail-fast するようになった
-- `lilla.yaml` の `ui` に `timezone` を追加。「人間側の今日 / いま」に使うタイムゾーンを
-  IANA 名で指定する。未指定なら従来どおり OS のローカルタイムゾーンに従う。空文字や
-  `ZoneInfo` が受け付けない名前は、ロケールと違ってフォールバックせず起動時に失敗する
 
 ### Changed
 
@@ -87,6 +75,28 @@
   （`extra="ignore"` のため YAML に残っていても無視される）。`core/error_notify.py` /
   `handlers/approval_flow.py` はいずれも `bot.get_channel()` による ID 解決のみを行い、
   複数ギルドに同名チャンネルがあっても意図しないギルドへ送信しないようにするための変更
+
+## [0.3.0] - 2026-09-12
+
+### Added
+
+- 拡張が申告した設定差分をコアが `AppConfig` へ合成するようになった。`Extension.config_models()`
+  に「YAML セクション名 → セクションモデル」を、`Extension.env_fields()` に「`EnvConfig` の
+  フィールド名 → OS 環境変数名」を返すと、`load_extensions()` が全拡張の申告を 1 つの Pydantic
+  モデルへ組み、`get_config().<セクション名>` / `get_config().env.<フィールド名>` で型付きで
+  読めるようになる。セクションはモデルが必須フィールドを持てば必須、全フィールドにデフォルトが
+  あれば省略可能。`env_fields()` で足すフィールドの型は常に `str | None`（既定値 `None`）
+- `Extension.required_config_sections()` を追加。自分では提供しないが読む YAML セクション名を
+  並べると、誰も提供しておらずコア確定のセクションでもない場合にロード時 fail-fast する
+  （メッセージに要求元の拡張名を含む）。拡張どうしの依存を自動解決する仕組みは持たない
+- 同名の YAML セクション・同名の `EnvConfig` フィールドを 2 つの拡張が提供した場合、および
+  コア確定の名前と重複した場合はロード時 fail-fast するようになった
+- `lilla.yaml` の `ui` に `timezone` を追加。「人間側の今日 / いま」に使うタイムゾーンを
+  IANA 名で指定する。未指定なら従来どおり OS のローカルタイムゾーンに従う。空文字や
+  `ZoneInfo` が受け付けない名前は、ロケールと違ってフォールバックせず起動時に失敗する
+
+### Changed
+
 - **BREAKING**: ホストが `AppConfig` のサブクラスを手書きし、拡張モジュールの import 副作用で
   `set_config()` して差し替える方式を廃止した。`load_extensions()` が拡張の登録後に必ず設定を
   合成して `set_config()` するため、import 時に差し込んだインスタンスは上書きされる。設定の差分は
