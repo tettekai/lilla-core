@@ -263,3 +263,51 @@ class TestComposeNameValidation:
 
         with pytest.raises(ValueError, match="Invalid env field name"):
             compose_config({}, {name: "SOME_VAR"})
+
+
+class TestGetSection:
+    """`get_section()` による型付きのセクション取得。"""
+
+    def test_returns_declared_section_as_model(self, config_root) -> None:
+        """申告したセクションを、そのモデルの型で返す。"""
+        config_root("media:\n  default: idle.png\n")
+        cfg = compose_config({"media": MediaConfig}, {})
+
+        section = _config_module.get_section("media", MediaConfig, config=cfg)
+
+        assert isinstance(section, MediaConfig)
+        assert section.default == "idle.png"
+        assert section is cfg.media
+
+    def test_core_section_is_readable_too(self, config_root) -> None:
+        """コア確定のセクションにも同じ経路で使える。"""
+        config_root()
+        cfg = compose_config({}, {})
+
+        assert _config_module.get_section("ui", _config_module.UiConfig, config=cfg).locale == "ja"
+
+    def test_defaults_to_process_config(self, config_root) -> None:
+        """`config` を省略すると `get_config()` から読む。"""
+        config_root("media:\n  reset_minutes: 42\n")
+        cfg = compose_config({"media": MediaConfig}, {})
+        _config_module.set_config(cfg)
+        try:
+            assert _config_module.get_section("media", MediaConfig).reset_minutes == 42
+        finally:
+            _config_module.set_config(None)
+
+    def test_undeclared_section_fails(self, config_root) -> None:
+        """申告していない名前は、名前を含む ValueError で落とす。"""
+        config_root()
+        cfg = compose_config({}, {})
+
+        with pytest.raises(ValueError, match="Config section 'google' is not declared"):
+            _config_module.get_section("google", MediaConfig, config=cfg)
+
+    def test_wrong_model_fails(self, config_root) -> None:
+        """実際の値が渡したモデルのインスタンスでなければ落とす。"""
+        config_root("media:\n  default: idle.png\n")
+        cfg = compose_config({"media": MediaConfig}, {})
+
+        with pytest.raises(ValueError, match="is a MediaConfig, not HabitsConfig"):
+            _config_module.get_section("media", HabitsConfig, config=cfg)

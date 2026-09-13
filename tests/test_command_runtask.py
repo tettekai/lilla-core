@@ -30,7 +30,7 @@ def stub_llm_tools() -> dict:
 
 @pytest.fixture(autouse=True)
 def mock_notify_error(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
-    """エラー通知（ERROR ログ + error_channel）をモックに差し替える。"""
+    """エラー通知（ERROR ログ + error_channel_id）をモックに差し替える。"""
     mock = AsyncMock()
     monkeypatch.setattr(runtask, "notify_error", mock)
     return mock
@@ -150,6 +150,21 @@ class TestRunTask:
         await runtask.run_task("task_tool", tools, MagicMock())
         call_args = tools["task_tool"]["instance"].execute.call_args[0][0]
         assert call_args["llm_tools"] is stub_llm_tools
+
+    async def test_extension_context_providers_are_merged(
+        self, make_extension, use_extensions
+    ) -> None:
+        """拡張の tool_context_providers() の値が、コア確定キーと一緒に context へ入る。"""
+        client = MagicMock()
+        use_extensions(make_extension("pack", tool_context_providers={"google_client": lambda: client}))
+        tools = _make_tools()
+
+        await runtask.run_task("task_tool", tools, MagicMock(), params={"x": 1})
+
+        context = tools["task_tool"]["instance"].execute.call_args[0][0]
+        assert context["google_client"] is client
+        assert context["params"] == {"x": 1}
+        assert "discord_client" in context and "now" in context and "llm_tools" in context
 
     async def test_params_passed_through(self) -> None:
         """params が tool.execute の args に転送される。"""

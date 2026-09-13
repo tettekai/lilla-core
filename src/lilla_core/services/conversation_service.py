@@ -9,11 +9,13 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from typing import Any
 
 from lilla_core.core.config import get_config
 from lilla_core.core.extension import (
-    get_conversation_start_hook,
-    get_tool_context_providers,
+    ConversationContext,
+    build_tool_context,
+    get_conversation_start_hooks,
 )
 from lilla_core.core.runtime_state import is_tools_disabled
 from lilla_core.api.llm_client import chat_to_llm, chat_to_llm_with_tools
@@ -110,27 +112,15 @@ def build_tool_message_content(result: dict) -> str:
     return tool_content
 
 
-def build_tool_context() -> dict:
-    """ツール実行コンテキストを構築する。未設定・未利用のクライアントはスキップする。
-
-    context へ入れる値は各拡張の `tool_context_providers()` が返すプロバイダ
-    から集める。コアは登録内容を列挙するだけなので、ツール（＝必要なクライアント）
-    が増えても本関数を編集する必要はない。1 つのプロバイダが失敗してもそのキーが
-    欠けるだけで、他のプロバイダと呼び出し元の処理は妨げない。
-    """
-    context = {}
-    for name, provider in get_tool_context_providers().items():
-        try:
-            context[name] = provider()
-        except Exception as e:
-            logger.debug("Skipped initialization of %s: %s", name, e)
-    return context
+# `build_tool_context` は `core/extension.py` に実体があり、LLM ツールと task ツールの
+# 両方で共有する。ここから import できる名前は互換のため残している。
+__all__ = ["build_tool_context", "build_tool_message_content", "run_conversation"]
 
 
 async def run_conversation(
     llm_tools: dict,
     client_type: str = "discord",
-    ws_clients: set | None = None,
+    client_state: Any = None,
     discord_channel_id: int | None = None,
     llm_name: str | None = None,
     inject_user_content=None,
@@ -154,9 +144,11 @@ async def run_conversation(
         コアは "task" だけを非対話の種別として扱い、それ以外はすべて
         対話クライアントとみなす（拡張が対話クライアント種別を
         追加してもここの判定は変更不要）。
-    ws_clients : set, optional
-        接続中の WebSocket クライアントセット。拡張が WebSocket クライアントを
-        持つ場合、そこからの呼び出し時に渡す。
+    client_state : Any, optional
+        呼び出し元のクライアント拡張が、自分の会話開始フックとツールへ届けたい
+        任意の状態（接続中クライアントの集合など）。コアは中身を解釈せず、
+        `ConversationContext.client_state` とツール実行 context の
+        `client_state` キーにそのまま載せる。
     discord_channel_id : int, optional
         会話が行われている Discord チャンネルの ID。Discord からの呼び出し時に渡す。
         非同期依頼ツールなど、後から同じチャンネルへ結果を返すツールが参照する。
@@ -183,14 +175,22 @@ async def run_conversation(
         SessionMemoryManager へ反映）したうえで、本文から除去した文字列を返す。
     """
     # クライアント種別ごとの会話開始フック（拡張側のクライアント固有の前処理用）。
-    # 未登録の client_type では何もしない。フックの失敗は会話本体を
-    # 止めないよう握りつぶす。
-    hook = get_conversation_start_hook(client_type)
-    if hook is not None:
-        try:
-            await hook(ws_clients)
-        except Exception as e:
-            logger.debug("Skipped running conversation start hook: %s", e)
+    # 複数の拡張が同じ client_type に登録していればロード順に await する。
+    # 未登録の client_type では何もしない。フックの失敗は会話本体も後続の
+    # フックも止めないよう、1 件ずつ握りつぶす。
+    hooks = get_conversation_start_hooks(client_type)
+    if hooks:
+        ctx = ConversationContext(
+            client_type=client_type,
+            client_state=client_state,
+            discord_channel_id=discord_channel_id,
+            llm_name=llm_name,
+        )
+        for hook in hooks:
+            try:
+                await hook(ctx)
+            except Exception as e:
+                logger.debug("Skipped running conversation start hook: %s", e)
 
     # 「対話クライアントかどうか」の判定は "task" 以外かで行う。コアが知っておくべき
     # 非対話の種別は "task" だけで、対話クライアント側の値（"discord" や拡張が
@@ -222,8 +222,8 @@ async def run_conversation(
     context = build_tool_context()
     context["client_type"] = client_type
     context["llm_tools"] = llm_tools
-    if ws_clients is not None:
-        context["ws_clients"] = ws_clients
+    if client_state is not None:
+        context["client_state"] = client_state
     if discord_channel_id is not None:
         context["discord_channel_id"] = discord_channel_id
     if tool_call_notifier is not None:
@@ -236,12 +236,34 @@ async def run_conversation(
             messages, system_prompt=system_prompt, tools=tools_param, llm_name=llm_name
         )
 
-        if response["finish_reason"] == "tool_calls":
+        if response["tool_calls"]:
             messages.append(response["raw_message"])
             for tc in response["tool_calls"]:
                 arguments = tc["function"]["arguments"]
                 if isinstance(arguments, str):
-                    arguments = json.loads(arguments)
+                    try:
+                        arguments = json.loads(arguments)
+                    except json.JSONDecodeError as e:
+                        logger.warning(
+                            "Failed to parse tool call arguments as JSON (%s): %s",
+                            tc["function"]["name"],
+                            e,
+                        )
+                        error_message = f"引数の JSON が壊れています: {e}"
+                        result = {
+                            "success": False,
+                            "tool_name": tc["function"]["name"],
+                            "memory_entry": error_message,
+                            "data": None,
+                            "error": error_message,
+                        }
+                        tool_content = build_tool_message_content(result)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": tool_content,
+                        })
+                        continue
                 result = await execute_tool_call(
                     tc["function"]["name"],
                     arguments,

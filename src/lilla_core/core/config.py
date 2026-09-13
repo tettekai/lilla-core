@@ -4,7 +4,7 @@ import logging
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 from zoneinfo import ZoneInfo
 
 import yaml
@@ -62,24 +62,17 @@ class DiscordConfig(BaseModel):
     # 状態（未設定）のまま動き続けること自体が思想と矛盾するため、デフォルト値を
     # 持たせず起動時に fail-fast させる。
     my_user_id: str
-    error_channel: str | None = None
-    approval_channel: str = "lilla-approval"
+    error_channel_id: str | None = None
+    approval_channel_id: str | None = None
 
 
 class PathsConfig(BaseModel):
     """lilla.yaml の `paths:` セクション。"""
 
+    # ツールの `.py` を探すルート。ロードを許す範囲は「このルート + 拡張の `tool_roots()`
+    # + `config_root/tools`」から `loaders/tool_paths.py` が導き、別途のホワイトリスト設定
+    # は持たない（旧 `allowed_tool_paths` は読まず、YAML にあっても無視する）。
     tool_root: Path = Path("/app/tools")
-    allowed_tool_paths: str = "/app/tools,/app/config/tools"
-
-    @property
-    def allowed_tool_paths_list(self) -> list[Path]:
-        """カンマ区切りの `allowed_tool_paths` を解決済み Path のリストにして返す。"""
-        return [
-            Path(p.strip()).resolve()
-            for p in self.allowed_tool_paths.split(",")
-            if p.strip()
-        ]
 
 
 class MongodbConfig(BaseModel):
@@ -454,13 +447,52 @@ def get_config() -> AppConfig:
     `cfg = get_config()` のように書くと、その時点のインスタンスを固定して
     しまい、後から `set_config()` されても反映されなくなる。
 
-    型ヒント上は `AppConfig` を返すが、`extensions.py` が
-    `set_config(AppConfigEx())` を呼んでいる場合はサブクラスの
-    インスタンス（拡張フィールドを持つ）が返る（ダックタイピング）。
+    型ヒント上は `AppConfig` を返すが、実体は `compose_config()` が組んだ
+    サブクラスのインスタンスで、拡張が申告したセクションも属性として持つ
+    （ダックタイピング）。拡張のセクションを静的な型付きで読みたい場合は
+    `get_section()` を使う。
     """
     if _config_instance is not None:
         return _config_instance
     return _default_config()
+
+
+_SectionT = TypeVar("_SectionT", bound=BaseModel)
+
+
+def get_section(name: str, model: type[_SectionT], config: AppConfig | None = None) -> _SectionT:
+    """合成済み設定からセクションを取り出し、申告したモデルの型で返す。
+
+    拡張が `Extension.config_models()` で申告したセクションは `get_config().<名前>` で
+    読めるが、`get_config()` の戻り値の型は `AppConfig` のため静的には見えない。
+    本関数はセクション名とモデルを受け取り、実際の値がそのモデルのインスタンスで
+    あることを検証したうえで型付きで返す（`get_section("google", GoogleConfig).client_id`）。
+    コア確定のセクション（`get_section("ui", UiConfig)` など）にも使える。
+
+    Args:
+        name: YAML セクション名（`config_models()` のキー、またはコア確定の名前）。
+        model: そのセクションのモデルクラス。
+        config: 読み出す設定。`None` なら `get_config()`。
+
+    Returns:
+        `model` のインスタンス。
+
+    Raises:
+        ValueError: セクションが存在しない（申告漏れ・名前違い）、または実際の値が
+            `model` のインスタンスでない（別の拡張が同名を別モデルで提供している等）場合。
+    """
+    cfg = config if config is not None else get_config()
+    if name not in type(cfg).model_fields:
+        raise ValueError(
+            f"Config section '{name}' is not declared "
+            "(declare it via Extension.config_models() or check the name)"
+        )
+    value = getattr(cfg, name)
+    if not isinstance(value, model):
+        raise ValueError(
+            f"Config section '{name}' is a {type(value).__name__}, not {model.__name__}"
+        )
+    return value
 
 
 def core_config_section_names() -> frozenset[str]:

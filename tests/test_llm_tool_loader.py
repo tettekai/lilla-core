@@ -14,7 +14,6 @@ def mock_cfg() -> MagicMock:
     cfg = MagicMock()
     cfg.paths.tool_root = Path("/fake/tools")
     cfg.env.config_root = Path("/fake/config")
-    cfg.paths.allowed_tool_paths_list = [Path("/fake/tools"), Path("/fake/config")]
     return cfg
 
 
@@ -80,7 +79,6 @@ class TestLoadLlmTools:
         self, llm_tool_loader, tool_root: Path, config_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """llm_*.yaml が存在しないとき空 dict を返す。"""
-        monkeypatch.setattr(llm_tool_loader, "_get_allowed_paths", lambda: [tool_root])
         result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
         assert result == {}
 
@@ -89,7 +87,6 @@ class TestLoadLlmTools:
     ) -> None:
         """type フィールドなし YAML はスキップされる。"""
         _write_yaml(config_root / "tools", "llm_no_type.yaml", "description: test\n")
-        monkeypatch.setattr(llm_tool_loader, "_get_allowed_paths", lambda: [tool_root])
         result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
         assert result == {}
 
@@ -98,7 +95,6 @@ class TestLoadLlmTools:
     ) -> None:
         """対応する .py が見つからない → スキップ。"""
         _write_yaml(config_root / "tools", "llm_obsidian_write.yaml", "type: llm_obsidian_write\n")
-        monkeypatch.setattr(llm_tool_loader, "_get_allowed_paths", lambda: [tool_root])
         result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
         assert result == {}
 
@@ -109,7 +105,6 @@ class TestLoadLlmTools:
         schema = {"name": "obsidian_write", "description": "デフォルト説明", "input_schema": {}}
         _write_py(tool_root / "obsidian", "llm_obsidian_write.py", schema)
         _write_yaml(config_root / "tools", "llm_obsidian_write.yaml", "type: llm_obsidian_write\n")
-        monkeypatch.setattr(llm_tool_loader, "_get_allowed_paths", lambda: [tool_root])
 
         result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
 
@@ -128,7 +123,6 @@ class TestLoadLlmTools:
             "llm_obsidian_write.yaml",
             "type: llm_obsidian_write\ndescription: '上書き済み説明'\n",
         )
-        monkeypatch.setattr(llm_tool_loader, "_get_allowed_paths", lambda: [tool_root])
 
         result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
 
@@ -141,7 +135,6 @@ class TestLoadLlmTools:
         schema = {"name": "obsidian_write", "description": "デフォルト説明", "input_schema": {}}
         _write_py(tool_root / "obsidian", "llm_obsidian_write.py", schema)
         _write_yaml(config_root / "tools", "llm_obsidian_write.yaml", "type: llm_obsidian_write\n")
-        monkeypatch.setattr(llm_tool_loader, "_get_allowed_paths", lambda: [tool_root])
 
         result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
 
@@ -158,7 +151,6 @@ class TestLoadLlmTools:
             "llm_media_change.yaml",
             "type: llm_media_change\nsupported_client_type: lilla-client\n",
         )
-        monkeypatch.setattr(llm_tool_loader, "_get_allowed_paths", lambda: [tool_root])
         result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
         assert result["llm_media_change"]["supported_client_type"] == "lilla-client"
 
@@ -169,7 +161,6 @@ class TestLoadLlmTools:
         schema = {"name": "obsidian_write", "description": "テスト", "input_schema": {}}
         _write_py(tool_root / "obsidian", "llm_obsidian_write.py", schema)
         _write_yaml(config_root / "tools", "llm_obsidian_write.yaml", "type: llm_obsidian_write\n")
-        monkeypatch.setattr(llm_tool_loader, "_get_allowed_paths", lambda: [tool_root])
         result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
         assert result["llm_obsidian_write"]["supported_client_type"] == "all"
 
@@ -183,7 +174,6 @@ class TestLoadLlmTools:
         }
         _write_py(tool_root / "obsidian", "llm_obsidian_write.py", schema)
         _write_yaml(config_root / "tools", "llm_obsidian_write.yaml", "type: llm_obsidian_write\n")
-        monkeypatch.setattr(llm_tool_loader, "_get_allowed_paths", lambda: [tool_root])
 
         result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
 
@@ -199,7 +189,6 @@ class TestLoadLlmTools:
         }
         py_file = _write_py(tool_root / "obsidian", "llm_obsidian_write.py", schema)
         _write_yaml(config_root / "tools", "llm_obsidian_write.yaml", "type: llm_obsidian_write\n")
-        monkeypatch.setattr(llm_tool_loader, "_get_allowed_paths", lambda: [tool_root])
 
         llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
 
@@ -220,7 +209,6 @@ class TestLoadLlmTools:
             "llm_obsidian_write.yaml",
             "type: llm_obsidian_write\ndescription: '上書き'\n",
         )
-        monkeypatch.setattr(llm_tool_loader, "_get_allowed_paths", lambda: [tool_root])
 
         result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
 
@@ -235,7 +223,7 @@ class TestLoadLlmTools:
 
 
 class TestLoadLlmToolsFromExtensionRoots:
-    """拡張の `tool_roots()` から追加されたルートの探索とホワイトリスト。"""
+    """拡張の `tool_roots()` から追加されたルートの探索と、ルート外へ出るパスの拒否。"""
 
     @pytest.fixture()
     def config_root(self, llm_tool_loader, tmp_path: Path) -> Path:
@@ -263,9 +251,6 @@ class TestLoadLlmToolsFromExtensionRoots:
         schema = {"name": "extra", "description": "説明", "input_schema": {}}
         _write_py(pack_root, "llm_extra.py", schema)
         _write_yaml(config_root / "tools", "llm_extra.yaml", "type: llm_extra\n")
-        monkeypatch.setattr(
-            llm_tool_loader, "_get_allowed_paths", lambda: [core_root, pack_root]
-        )
 
         result = llm_tool_loader.load_llm_tools(
             tool_roots=[core_root, pack_root], config_root=config_root
@@ -273,18 +258,51 @@ class TestLoadLlmToolsFromExtensionRoots:
 
         assert "llm_extra" in result
 
-    def test_extension_root_outside_whitelist_is_rejected(
+    def test_extension_root_needs_no_extra_configuration(
         self, llm_tool_loader, core_root: Path, pack_root: Path, config_root: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """追加ルートでもホワイトリスト外なら読み込まない（自動で広げない）。"""
+        """追加ルートは探索ルートに含まれた時点でロード対象になる（別途の許可設定は不要）。"""
         schema = {"name": "extra", "description": "説明", "input_schema": {}}
         _write_py(pack_root, "llm_extra.py", schema)
         _write_yaml(config_root / "tools", "llm_extra.yaml", "type: llm_extra\n")
-        monkeypatch.setattr(llm_tool_loader, "_get_allowed_paths", lambda: [core_root])
 
         result = llm_tool_loader.load_llm_tools(
-            tool_roots=[core_root, pack_root], config_root=config_root
+            tool_roots=[pack_root], config_root=config_root
+        )
+
+        assert "llm_extra" in result
+
+    def test_symlink_escaping_the_roots_is_rejected(
+        self, llm_tool_loader, core_root: Path, config_root: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """ルート内のシンボリックリンクが外を指していれば、解決後のパスで弾いてロードしない。"""
+        schema = {"name": "extra", "description": "説明", "input_schema": {}}
+        outside = tmp_path / "outside"
+        _write_py(outside, "llm_extra.py", schema)
+        (core_root / "llm_extra.py").symlink_to(outside / "llm_extra.py")
+        _write_yaml(config_root / "tools", "llm_extra.yaml", "type: llm_extra\n")
+
+        result = llm_tool_loader.load_llm_tools(
+            tool_roots=[core_root], config_root=config_root
+        )
+
+        assert result == {}
+
+    def test_type_with_parent_segments_is_rejected(
+        self, llm_tool_loader, core_root: Path, config_root: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """YAML の `type` に `..` を含めてルートの外を指しても、解決後のパスで弾く。"""
+        schema = {"name": "extra", "description": "説明", "input_schema": {}}
+        _write_py(tmp_path / "outside", "llm_extra.py", schema)
+        _write_yaml(
+            config_root / "tools", "llm_extra.yaml", "type: ../outside/llm_extra\n"
+        )
+
+        result = llm_tool_loader.load_llm_tools(
+            tool_roots=[core_root], config_root=config_root
         )
 
         assert result == {}
@@ -298,9 +316,6 @@ class TestLoadLlmToolsFromExtensionRoots:
         _write_py(core_root, "llm_extra.py", schema)
         _write_py(pack_root, "llm_extra.py", schema)
         _write_yaml(config_root / "tools", "llm_extra.yaml", "type: llm_extra\n")
-        monkeypatch.setattr(
-            llm_tool_loader, "_get_allowed_paths", lambda: [core_root, pack_root]
-        )
 
         with pytest.raises(ValueError, match="multiple tool roots"):
             llm_tool_loader.load_llm_tools(
@@ -351,9 +366,6 @@ class TestLoadLlmToolsSelfType:
         tools_dir = config_root / "tools"
         _write_py(tools_dir, "llm_foo.py", schema)
         _write_yaml(tools_dir, "llm_foo.yaml", "type: self\n")
-        monkeypatch.setattr(
-            llm_tool_loader, "_get_allowed_paths", lambda: [tool_root, config_root]
-        )
 
         result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
 
@@ -366,9 +378,6 @@ class TestLoadLlmToolsSelfType:
     ) -> None:
         """type: self で対応する .py が存在しないとき例外を投げずスキップされる。"""
         _write_yaml(config_root / "tools", "llm_missing.yaml", "type: self\n")
-        monkeypatch.setattr(
-            llm_tool_loader, "_get_allowed_paths", lambda: [tool_root, config_root]
-        )
 
         result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
 
@@ -383,7 +392,6 @@ class TestLoadLlmToolsSelfType:
         _write_yaml(
             config_root / "tools", "llm_obsidian_write.yaml", "type: llm_obsidian_write\n"
         )
-        monkeypatch.setattr(llm_tool_loader, "_get_allowed_paths", lambda: [tool_root])
 
         result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
 
@@ -963,7 +971,6 @@ class TestLoadLlmToolsConfig:
             "llm_calendar_get.yaml",
             "type: llm_calendar_get\ncalendar_ids:\n  - cal1\n  - cal2\n",
         )
-        monkeypatch.setattr(llm_tool_loader, "_get_allowed_paths", lambda: [tool_root])
 
         result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
 
@@ -1016,7 +1023,6 @@ class TestValidateNoRuntimeKeyCollision:
             "llm_calendar_get.yaml",
             "type: llm_calendar_get\nllm_tools: broken\n",
         )
-        monkeypatch.setattr(llm_tool_loader, "_get_allowed_paths", lambda: [tool_root])
 
         with pytest.raises(ValueError) as exc_info:
             llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
@@ -1034,7 +1040,6 @@ class TestValidateNoRuntimeKeyCollision:
             "llm_calendar_get.yaml",
             "type: llm_calendar_get\ncalendar_ids:\n  - cal1\n",
         )
-        monkeypatch.setattr(llm_tool_loader, "_get_allowed_paths", lambda: [tool_root])
 
         result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
         assert "llm_calendar_get" in result
@@ -1073,10 +1078,10 @@ class TestValidateNoRuntimeKeyCollision:
         self, llm_tool_loader, provider_registry
     ) -> None:
         """provider 未登録（コア単独起動）でもコア自身のキーは検知する。"""
-        llm_tools = {"llm_foo": {"tool_config": {"ws_clients": "x"}}}
+        llm_tools = {"llm_foo": {"tool_config": {"client_state": "x"}}}
         with pytest.raises(ValueError) as exc_info:
             llm_tool_loader._validate_no_runtime_key_collision(llm_tools)
-        assert "ws_clients" in str(exc_info.value)
+        assert "client_state" in str(exc_info.value)
 
     def test_media_base_url_follows_provider_registration(
         self, llm_tool_loader, provider_registry
@@ -1132,7 +1137,6 @@ class TestValidateNoRuntimeKeyCollision:
             "llm_calendar_get.yaml",
             "type: llm_calendar_get\nobsidian_client: dummy\n",
         )
-        monkeypatch.setattr(llm_tool_loader, "_get_allowed_paths", lambda: [tool_root])
 
         result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
         assert "llm_calendar_get" in result

@@ -186,8 +186,8 @@ class MyExtension(Extension):
     def tool_context_providers(self):
         return {"my_client": get_my_client}
 
-    async def setup(self, tools, llm_tools, bot):
-        await start_my_http_server(llm_tools, tools, bot)
+    async def setup(self, ctx):
+        await start_my_http_server(ctx.llm_tools, ctx.tools, ctx.bot)
 
 
 extension = MyExtension()
@@ -197,22 +197,34 @@ extension = MyExtension()
 |----------|------|
 | `startup_repos` | `on_ready` で初期化する追加リポジトリファクトリ |
 | `on_message` | `on_message` の冒頭で呼ばれる。`True` を返すと以降の処理を止める |
-| `setup` | `bot.start()` の前に await される起動処理（HTTP サーバー等） |
+| `setup` | `bot.start()` の前に await される起動処理（HTTP サーバー等）。引数は `SetupContext` 1 つ（`tools` / `llm_tools` / `bot` / `config`）で、フィールドの追加は既存の拡張を壊さない |
 | `result_deliveries` | `!toolresult` の配送先を `client_type` ごとに指定 |
-| `client_prompt_providers` | `client_type` ごとのシステムプロンプト追記 |
-| `conversation_start_hooks` | 会話処理開始前のクライアント固有の前処理 |
+| `client_prompt_providers` | `client_type` ごとのシステムプロンプト追記。形は `{client_type: [プロバイダ, ...]}` の加算式で、複数の拡張が同じ `client_type` に足せる。コアがロード順に空行区切りで連結する |
+| `conversation_start_hooks` | 会話処理開始前に await される非同期フック。形は `{client_type: [フック, ...]}` でプロンプトと同じく加算式。各フックは `ConversationContext`（`client_type` / `client_state` / `discord_channel_id` / `llm_name`）1 つを受け取る |
 | `tool_context_providers` | ツール実行 context への値の注入 |
 | `tool_roots` | ツールの `.py` を探す追加ディレクトリ |
 | `command_packages` | `@register_command` を探す追加パッケージ |
 | `config_models` | この拡張が `AppConfig` に足す YAML セクション |
 | `env_fields` | この拡張が `cfg.env` に足す秘匿フィールド |
 | `required_config_sections` | 自分では提供しないが読む YAML セクション |
+| `required_env_fields` | 自分では提供しないが読む `cfg.env` のフィールド |
+| `required_tool_context_keys` | 自分では提供しないが、自分のツールが読むツール context のキー |
+| `requires`（クラス属性） | 依存する拡張の名前。ロード済みで、かつ `LILLA_EXTENSIONS` で自分より前に並んでいる必要がある |
+| `api_version`（クラス属性） | この拡張が書かれた `Extension` 契約のバージョン。既定はコアの現在の `EXTENSION_API_VERSION` で、受け付けない値はロード時に失敗する |
 
 貢献キーは **拡張どうし** で衝突してはいけません。`Extension.name`・YAML セクション名・
-env フィールド名・ツール context のキー・`client_type` のキー・コマンド名・複数ルートに
-またがる同名ツールファイルのいずれも、静かに勝者を決めず起動時に fail-fast します。`client_type="discord"` だけは
-扱いが 2 点異なります。システムプロンプトはコアが内蔵デフォルトを持ち拡張が上書き
-でき、`!toolresult` の配送はコアが持つため拡張は登録できません。
+env フィールド名・ツール context のキー・結果配送の `client_type`・コマンド名・複数ルートに
+またがる同名ツールファイルのいずれも、静かに勝者を決めず起動時に fail-fast します。
+クライアント固有プロンプトと会話開始フックだけは設計上の例外で、`client_type` ごとの
+リストをロード順に連結するため、複数の拡張が同じクライアントへ足せます。
+`client_type="discord"` だけは扱いが 2 点異なります。システムプロンプトはコアが内蔵
+デフォルトを持ち、拡張が 1 つも出していないときだけそれを使います。`!toolresult` の
+配送はコアが持つため拡張は登録できません。
+
+`run_conversation()` を自分で呼ぶクライアント拡張は、任意のオブジェクトを
+`client_state` として渡せます（接続中ソケットの集合など）。コアは中身を解釈せず、
+フックには `ConversationContext.client_state` として、LLM ツールには context の
+`client_state` キーとしてそのまま渡します。
 
 ### 設定の合成
 
@@ -238,7 +250,18 @@ class MyExtension(Extension):
 ```
 
 これで `get_config().google.client_id` と `get_config().env.google_client_secret` が
-プロセス全体から読めるようになります。
+プロセス全体から読めるようになります。`get_config()` の型は基底の `AppConfig` なので、
+型検査や補完のためにセクションをそのモデルの型で受け取りたいときは `get_section()` を
+使ってください。
+
+```python
+from lilla_core.core.config import get_section
+
+client_id = get_section("google", GoogleConfig).client_id
+```
+
+セクションが申告されていない場合や、値が渡したモデルのインスタンスでない場合は
+`ValueError` になります。名前の綴りを間違えても静かに空を返すことはありません。
 
 - セクションは、モデルが必須フィールドを 1 つでも持てば **必須**、そうでなければ
   省略可能になります。必須セクションが `lilla.yaml` に無ければ起動時に落ちます
@@ -247,12 +270,73 @@ class MyExtension(Extension):
 - 同じセクション名・同じ env フィールド名を 2 つの拡張が提供したら、たとえモデルが
   同一でも fail-fast します。コア確定の名前も同様に予約済みです
 - `required_config_sections()` には、自分では提供しないが読むセクション名を並べます
-  （別のパックが持つ共有の `google:` セクションなど）。誰も提供していなければロードに
-  失敗し、要求した拡張の名前を示します。パック同士の依存は自動で解決しないため、
-  一緒に `LILLA_EXTENSIONS` へ並べる拡張は README などに書いて揃えてください
+  （別のパックが持つ共有の `google:` セクションなど）。`required_env_fields()` と
+  `required_tool_context_keys()` は `cfg.env` のフィールドとツール context のキーについて
+  同じことをします。誰も提供しておらず、コア確定の名前でもなければロードに失敗し、
+  要求した拡張の名前を示します
+
+### 拡張どうしの依存
+
+依存する拡張は、クラス属性 `requires` に名前を並べて宣言します。コアはロード時に、
+それらが **ロード済みで、かつ `LILLA_EXTENSIONS` で自分より前に並んでいる** ことを
+検証します。メッセージフック・`setup()`・ツールルートはロード順に処理されるため、
+コアが並べ替えることはありません。
+
+```python
+class GoogleCalendarExtension(Extension):
+    name = "lilla-google-calendar"
+    requires = ("lilla-google-oauth",)
+
+    def required_config_sections(self):
+        return ["google"]
+
+    def required_env_fields(self):
+        return ["google_client_secret"]
+
+    def required_tool_context_keys(self):
+        return ["google_client"]
+```
+
+`requires` は「相手のパックが正しい順でロードされているか」を、`required_*` の各メソッドは
+「自分が読む具体的なものを誰かが提供しているか」を検証します。汎用の `validate()` フックは
+持たず、実行時の検査は `setup()` で行ってください。
 
 `LILLA_EXTENSIONS` に並べたモジュールは同一プロセスで動く **信頼コード** です。
-サンドボックスではありません。
+サンドボックスではありません。ツールを読み込むディレクトリ（`paths.tool_root`・
+各拡張の `tool_roots()`・`${CONFIG_ROOT}/tools`）も同じ扱いで、そこへ書き込める者は
+Bot のプロセス内でコードを実行できます。そのためツールパスの許可リストは別途持ちません。
+ローダーは、解決後のツールファイルがこれらのディレクトリの配下にあることだけを確認します
+（`..` を含む `type` や、外を指すシンボリックリンクは読み込みません）。
+
+### 拡張契約の互換性
+
+`lilla_core.core.extension.EXTENSION_API_VERSION` はこのコアが提供する `Extension`
+契約のバージョン、`SUPPORTED_EXTENSION_API_VERSIONS` はロード時に受け付けるバージョンの
+集合です。拡張は自分が書かれたバージョンを固定できます。
+
+```python
+from lilla_core.core.extension import EXTENSION_API_VERSION, Extension
+
+
+class MyExtension(Extension):
+    name = "my-extension"
+    api_version = 1  # 省略すると EXTENSION_API_VERSION
+```
+
+宣言したバージョンを受け付けない場合、`load_extensions()` は拡張名と両方のバージョンを
+示して失敗します。古い契約で書かれた拡張をそのまま読み込んで、起動後に壊れるのを
+防ぐためです。
+
+契約を変えるときの方針:
+
+- **非破壊（バージョンは上げない）**: `Extension` へのメソッド追加（必ず「何も貢献しない」
+  既定を持たせる）、`*Context` データクラス（`SetupContext` / `ConversationContext`）への
+  フィールド追加、参照関数やコア確定の context キーの追加
+- **破壊的（`EXTENSION_API_VERSION` を上げる）**: メソッドのシグネチャや戻り値の形の変更、
+  メソッド・`*Context` のフィールド・context キー・参照関数の削除や改名、フックが呼ばれる
+  タイミングの変更。こうした変更は `CHANGELOG.md` に **BREAKING** として記録します
+- 拡張パッケージは `lilla-core` をバージョン範囲で依存指定してください
+  （例: `lilla-core>=0.3,<0.4`）。破壊的なコアのリリースを気付かず取り込まないためです
 
 ## ツール契約
 
@@ -290,9 +374,12 @@ class MyExtension(Extension):
 **`execute` に渡される `context`** は呼び出し元によって内容が異なります。LLM
 ツールでは常に `client_type` と、入れ子呼び出し用のヘルパー
 `call_tool(tool_name, tool_input)` に加え、そのツールの YAML 固有のキーと、
-拡張の `tool_context_providers()` が返すキーが入ります。task ツールでは、
-スケジュール実行時は `discord_client` / `now` / `llm_tools` が、`!runtask` による
-手動実行時はさらに `params` が渡されます。
+拡張の `tool_context_providers()` が返すキー、そして呼び出し元クライアントが
+`run_conversation()` に渡した場合は `client_state` が入ります。task ツールにも同じく
+拡張が提供するキーが入り、加えてスケジュール実行時は `discord_client` / `now` /
+`llm_tools` が、`!runtask` による手動実行時はさらに `params` が渡されます。
+どちらのコア確定キーも予約済みで、`tool_context_providers()` が同じ名前を返す拡張は
+静かに上書きされる代わりにロード時に失敗します。
 
 ## コントリビュート
 

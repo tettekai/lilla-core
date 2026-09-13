@@ -92,9 +92,9 @@ def mock_cfg() -> MagicMock:
     cfg.env.mongodb_uri = "mongodb://localhost:27017"
     cfg.mongodb.db_name = "test_db"
     cfg.env.discord_token = "test-discord-token"
-    cfg.discord.error_channel = "error-log"
+    cfg.discord.error_channel_id = "555"
     cfg.discord.my_user_id = "12345"
-    cfg.discord.approval_channel = "lilla-approval"
+    cfg.discord.approval_channel_id = "999"
     return cfg
 
 
@@ -369,7 +369,7 @@ def discord_bot(
     lilla_core.handlers.message_handler._memory_manager = mock_memory_manager_instance
     discord_bot_mod.bot.user.mentioned_in.return_value = MagicMock()
     discord_bot_mod._config.discord.my_user_id = "12345"
-    discord_bot_mod._config.discord.approval_channel = "lilla-approval"
+    discord_bot_mod._config.discord.approval_channel_id = "999"
     discord_bot_mod.llm_tools = {}
     lilla_core.handlers.message_handler.run_conversation = AsyncMock(return_value="default reply")
     lilla_core.handlers.message_handler._discord_active_tasks.clear()
@@ -573,7 +573,7 @@ class TestOnMessage:
         """エラーチャンネルが未設定のときは返信も通知もしない"""
         discord_bot.bot.user.mentioned_in.return_value = True
         monkeypatch.setattr(discord_bot.message_handler, "run_conversation", AsyncMock(side_effect=Exception("LLM down")))
-        monkeypatch.setattr(discord_bot._config, "discord_error_channel", None)
+        monkeypatch.setattr(discord_bot._config.discord, "error_channel_id", None)
 
         mock_notify = AsyncMock()
         monkeypatch.setattr(discord_bot.message_handler, "notify_error", mock_notify)
@@ -921,7 +921,7 @@ class TestExternalCommandApproval:
         monkeypatch.setattr(discord_bot._config.discord, "my_user_id", "99999")
         external_message.author.id = 12345
         external_message.content = "!runtask xxx"
-        external_message.channel.name = "lilla-approval"
+        external_message.channel.id = 999
         mock_send = AsyncMock()
         monkeypatch.setattr(discord_bot.message_handler.approval_flow, "send_approval_request", mock_send)
 

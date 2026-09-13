@@ -7,6 +7,77 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-13
+
+### Added
+
+- `core/config.py` に `get_section(name, model, config=None)` を追加。拡張が
+  `config_models()` で申告したセクション（コア確定のセクションも可）を、申告したモデルの
+  型で取り出す。未申告の名前や、値がそのモデルのインスタンスでない場合は `ValueError`
+- `Extension` 契約のバージョン `EXTENSION_API_VERSION`（現在 1）と、ロード時に受け付ける
+  集合 `SUPPORTED_EXTENSION_API_VERSIONS` を `core/extension.py` に追加。拡張はクラス属性
+  `api_version` で自分が書かれたバージョンを宣言でき（既定は現在のバージョン）、受け付けない
+  値や整数以外を宣言した拡張は拡張名とバージョンを含むエラーでロード時に fail-fast する。
+  契約の互換性ポリシー（何が非破壊で何が破壊的か）を README に明文化した
+- `Extension.requires`（クラス属性。依存する拡張の `name` のタプル）を追加。依存先が
+  ロードされていない、または `LILLA_EXTENSIONS` で自分より後ろに並んでいる場合はロード時に
+  fail-fast する（コアは並べ替えない）。汎用の `validate()` フックは追加しない
+- `Extension.required_env_fields()` / `required_tool_context_keys()` を追加。
+  `required_config_sections()` と同じ形で、自分では提供しないが読む `EnvConfig` の
+  フィールド名 / ツール実行 context のキー名を並べると、誰も提供しておらずコア確定の
+  名前でもない場合にロード時に fail-fast する
+
+### Changed
+
+- task ツール（定期実行と `!runtask`）の実行 context にも、拡張の `tool_context_providers()`
+  の値が入るようになった。これまでは LLM ツールだけに注入され、task ツールは `discord_client` /
+  `now` / `llm_tools`（手動実行時は `params` も）の固定キーしか受け取れなかった。組み立ては
+  `core/extension.py` の `build_tool_context()` に一本化し（`services/conversation_service.py`
+  からの import は互換のため残す）、両経路で同じ注入モデルになる
+- **BREAKING**: コアがツール実行 context へ注入するキー（`client_type` / `llm_tools` /
+  `client_state` / `discord_channel_id` / `discord_client` / `now` / `params` / `call_tool` 等）を
+  予約キーにし、`tool_context_providers()` で同名を提供する拡張はロード時に fail-fast する
+  （これまではコアの注入で静かに上書きされていた）
+- **BREAKING**: 会話開始フック（`Extension.conversation_start_hooks()`）の引数を、WebSocket
+  クライアント集合（`ws_clients`）から `ConversationContext`（`client_type` / `client_state` /
+  `discord_channel_id` / `llm_name`）1 つに変更した。あわせて `run_conversation()` の引数
+  `ws_clients` を `client_state` に、ツール実行 context のキー `ws_clients` を `client_state` に
+  改名した。コアは `client_state` の中身を解釈せず、クライアント拡張が渡した値をそのまま
+  フックとツールへ届ける（WebSocket はコアの概念ではないため）
+- **BREAKING**: `Extension.client_prompt_providers()` / `conversation_start_hooks()` の戻り値を
+  「`client_type` → 関数 1 つ」から「`client_type` → 関数のリスト」に変更し、同じ `client_type`
+  への登録を拡張どうしで排他にせず加算式にした。コアは全拡張分をロード順に連結し、プロンプトは
+  空でない戻り値を空行区切りで追記、フックは順に await する（1 件の失敗は後続を止めない）。
+  コアの参照 API も `get_client_prompt_providers()` / `get_conversation_start_hooks()`（複数形。
+  未登録なら空リスト）に改めた。旧契約のまま関数 1 つを返す拡張はロード時に落ちる。
+  `result_deliveries()` は従来どおり排他で、`"discord"` は予約のまま
+- **BREAKING**: `Extension.setup()` の引数を位置引数 3 つ（`tools, llm_tools, bot`）から
+  `SetupContext` 1 つに変更した。`ctx.tools` / `ctx.llm_tools` / `ctx.bot` で従来と同じ値を、
+  `ctx.config` でプロセスの設定（`get_config()` と同じインスタンス）を参照できる。
+  今後フィールドを足しても既存の拡張の `setup()` を壊さないための変更。旧シグネチャの拡張は
+  起動時に `TypeError` で落ちる
+- **BREAKING**: `paths.allowed_tool_paths`（ツール実行パスのホワイトリスト）を撤去した。
+  ツールの `.py` は起動時に `paths.tool_root`・拡張の `tool_roots()`・`${CONFIG_ROOT}/tools`
+  の中だけで解決され、実行時にファイルパスが新たに解決される経路が無いため、`tool_root` の
+  設定ミスに対する重複した検査になっていた。また拡張の `tool_roots()` が自動で許可されず、
+  pip で入れた拡張のツールが `site-packages` 配下として静かにスキップされていた。YAML に
+  残っていても無視される（`PathsConfig` は既定で未知のキーを捨てる）。代わりに
+  `loaders/tool_paths.py` の `resolve_tool_dirs()` / `is_within_tool_dirs()` が、解決後の
+  ツールファイルが探索ルートか `${CONFIG_ROOT}/tools` の配下にあることを設定なしで検査する
+  （`..` を含む `type` や外を指すシンボリックリンクは読み込まない）。信頼境界は `SECURITY.md`
+  に明記した（`CONFIG_ROOT` と各ツールディレクトリは拡張モジュールと同じ信頼レベル）
+- `loaders/script_loader.py` の `load_script_function` / `load_script_class` に `tool_dirs`
+  引数を追加した。省略時は設定から導いたディレクトリで検査する
+- **BREAKING**: `lilla.yaml` の `discord:` セクションで、エラー通知・承認依頼の送信先チャンネルを
+  名前ではなく ID で指定するようになった。`error_channel`（チャンネル名）は `error_channel_id`
+  （チャンネル ID）へ、`approval_channel`（チャンネル名、既定 `lilla-approval`）は
+  `approval_channel_id`（チャンネル ID、既定なし）へそれぞれ置き換え、旧キー名は読まなくなった
+  （`extra="ignore"` のため YAML に残っていても無視される）。`core/error_notify.py` /
+  `handlers/approval_flow.py` はいずれも `bot.get_channel()` による ID 解決のみを行い、
+  複数ギルドに同名チャンネルがあっても意図しないギルドへ送信しないようにするための変更
+
+## [0.3.0] - 2026-09-12
+
 ### Added
 
 - 拡張が申告した設定差分をコアが `AppConfig` へ合成するようになった。`Extension.config_models()`
@@ -60,6 +131,15 @@
   登録したうえでスケジューラを起動する
 
 ## [0.2.0]
+
+### Fixed
+
+- `run_conversation` の tool_call ループが `finish_reason == "tool_calls"` のみで
+  分岐していたため、OpenAI 互換の一部プロバイダが `tool_calls` 付きで
+  `finish_reason: "stop"` を返すケースで呼び出しが無視され、空返信になっていたのを修正。
+  判定を `tool_calls` の有無に変更
+- tool_call の引数 JSON が壊れている場合に `json.loads` が例外を投げ、会話全体が
+  失敗していたのを修正。例外を捕捉し、ツールエラーとして LLM に返すように変更
 
 ### Changed
 

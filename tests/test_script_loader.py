@@ -12,10 +12,8 @@ import pytest
 
 @pytest.fixture
 def mock_cfg() -> MagicMock:
-    """script_loader が参照する AppConfig モック。"""
-    cfg = MagicMock()
-    cfg.paths.allowed_tool_paths_list = []  # ALLOWED_PATHS の初期値は空（autouse で上書き）
-    return cfg
+    """script_loader の周辺（`tool_paths`）が参照する AppConfig モック。"""
+    return MagicMock()
 
 
 @pytest.fixture
@@ -49,13 +47,15 @@ def write_script(tmp_path: Path, name: str, content: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# autouse フィクスチャ: tmp_path をホワイトリストに追加
+# autouse フィクスチャ: `tool_dirs` 省略時の既定を tmp_path にする
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture(autouse=True)
-def allow_tmp_path(script_loader, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(script_loader, "_get_allowed_paths", lambda: [tmp_path.resolve()])
+def default_tool_dirs_is_tmp_path(
+    script_loader, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(script_loader, "_default_tool_dirs", lambda: [tmp_path.resolve()])
 
 
 # ---------------------------------------------------------------------------
@@ -85,15 +85,34 @@ class TestLoadScriptFunction:
         assert callable(func)
         assert func() == "hello"
 
-    def test_path_outside_allowed_returns_none(self, script_loader, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """ホワイトリスト外のパス → None"""
+    def test_path_outside_tool_dirs_returns_none(self, script_loader, tmp_path: Path) -> None:
+        """`tool_dirs` の配下に無いパス → None"""
         other_dir = tmp_path / "other"
         other_dir.mkdir()
         script = write_script(other_dir, "tool.py", "def run(): pass\n")
-        # ホワイトリストを tmp_path/allowed のみに限定
         allowed = tmp_path / "allowed"
         allowed.mkdir()
-        monkeypatch.setattr(script_loader, "_get_allowed_paths", lambda: [allowed.resolve()])
+        assert script_loader.load_script_function(script, "run", tool_dirs=[allowed]) is None
+
+    def test_symlink_escaping_tool_dirs_returns_none(self, script_loader, tmp_path: Path) -> None:
+        """`tool_dirs` 内のシンボリックリンクが外を指す → 解決後のパスで弾いて None"""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        target = write_script(outside, "tool.py", "def run(): return 1\n")
+        allowed = tmp_path / "allowed"
+        allowed.mkdir()
+        link = allowed / "tool.py"
+        link.symlink_to(target)
+        assert script_loader.load_script_function(link, "run", tool_dirs=[allowed]) is None
+
+    def test_default_tool_dirs_used_when_omitted(
+        self, script_loader, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`tool_dirs` 省略時は `_default_tool_dirs()`（設定由来）で検査する"""
+        script = write_script(tmp_path, "tool.py", "def run(): return 1\n")
+        monkeypatch.setattr(
+            script_loader, "_default_tool_dirs", lambda: [(tmp_path / "elsewhere").resolve()]
+        )
         assert script_loader.load_script_function(script, "run") is None
 
     def test_nonexistent_file_returns_none(self, script_loader, tmp_path: Path) -> None:
@@ -164,8 +183,8 @@ class TestLoadScriptClass:
         )
         assert script_loader.load_script_class(script) is None
 
-    def test_path_outside_allowed_returns_none(self, script_loader, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """ホワイトリスト外のパス → None"""
+    def test_path_outside_tool_dirs_returns_none(self, script_loader, tmp_path: Path) -> None:
+        """`tool_dirs` の配下に無いパス → None"""
         other_dir = tmp_path / "other"
         other_dir.mkdir()
         script = write_script(
@@ -175,8 +194,7 @@ class TestLoadScriptClass:
         )
         allowed = tmp_path / "allowed"
         allowed.mkdir()
-        monkeypatch.setattr(script_loader, "_get_allowed_paths", lambda: [allowed.resolve()])
-        assert script_loader.load_script_class(script) is None
+        assert script_loader.load_script_class(script, tool_dirs=[allowed]) is None
 
     def test_nonexistent_file_returns_none(self, script_loader, tmp_path: Path) -> None:
         """存在しないファイル → None"""

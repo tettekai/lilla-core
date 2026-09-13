@@ -1,32 +1,55 @@
+"""外部 Python 関数・クラスを、ツール探索ディレクトリの配下に限ってロードするモジュール。
+
+ロードしてよいディレクトリは `loaders/tool_paths.py` の `resolve_tool_dirs()` が
+設定から導く（探索ルートと `config_root/tools`）。呼び出し側が探索に使った
+ルートを `tool_dirs` で渡せば、そのルートに閉じて検査する。
+"""
+from __future__ import annotations
+
 import importlib.util
 import logging
 from collections.abc import Callable
 from pathlib import Path
-
-from lilla_core.core.config import get_config
+from types import ModuleType
 
 logger = logging.getLogger(__name__)
 
 
-def _get_allowed_paths() -> list[Path]:
-    """ホワイトリストパスのリストを設定から都度読む。
+def _default_tool_dirs() -> list[Path]:
+    """`tool_dirs` が省略されたときに使う、ツールを置いてよいディレクトリを設定から都度導く。
 
-    import 時に固定すると、拡張が `set_config()` で差し替えた設定が
-    反映されないため、呼び出しのたびに読む。
+    import 時に固定すると、拡張のロード後に差し替えられた設定が反映されないため、
+    呼び出しのたびに解決する。
     """
-    return get_config().paths.allowed_tool_paths_list
+    from lilla_core.loaders.tool_paths import resolve_tool_dirs
+
+    return resolve_tool_dirs()
 
 
-def load_script_function(script_path: Path, function_name: str) -> Callable | None:
+def _load_module(script_path: Path, tool_dirs: list[Path] | None) -> ModuleType | None:
+    """`.py` ファイルをモジュールとして読み込んで返す。
+
+    解決後のパスが `tool_dirs`（省略時は `_default_tool_dirs()`）のいずれかの配下に
+    無い場合（`..` を含む `type` やシンボリックリンク経由で探索ルートの外へ出た場合）は
+    ERROR ログを出して `None` を返す。
+
+    Args:
+        script_path: ロードする `.py` ファイルのパス。
+        tool_dirs: ロードを許すディレクトリ。`None` なら設定から導く。
+
+    Returns:
+        読み込んだモジュール。配下に無い・存在しない・`.py` でない場合は `None`。
     """
-    指定パスの.pyから関数を安全にロードする。
-    ホワイトリストチェック付き。
-    """
+    from lilla_core.loaders.tool_paths import is_within_tool_dirs
+
     resolved_path = script_path.resolve()
-
-    # ホワイトリストチェック
-    if not any(resolved_path.is_relative_to(allowed) for allowed in _get_allowed_paths()):
-        logger.error("Path is not allowed: %s", resolved_path)
+    dirs = tool_dirs if tool_dirs is not None else _default_tool_dirs()
+    if not is_within_tool_dirs(resolved_path, dirs):
+        logger.error(
+            "Tool file resolves outside the tool directories: %s (dirs=%s)",
+            resolved_path,
+            [str(d) for d in dirs],
+        )
         return None
 
     if not resolved_path.exists() or resolved_path.suffix != ".py":
@@ -37,38 +60,54 @@ def load_script_function(script_path: Path, function_name: str) -> Callable | No
     spec = importlib.util.spec_from_file_location(module_name, str(resolved_path))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def load_script_function(
+    script_path: Path, function_name: str, tool_dirs: list[Path] | None = None
+) -> Callable | None:
+    """指定パスの `.py` から関数をロードする。
+
+    Args:
+        script_path: ロードする `.py` ファイルのパス。
+        function_name: 取り出す関数名。
+        tool_dirs: ロードを許すディレクトリ。`None` なら設定から導く。
+
+    Returns:
+        関数。配下に無い・ファイル不正・関数が無い場合は `None`。
+    """
+    module = _load_module(script_path, tool_dirs)
+    if module is None:
+        return None
 
     func = getattr(module, function_name, None)
     if not callable(func):
-        logger.warning("Function %s not found: %s", function_name, resolved_path)
+        logger.warning("Function %s not found: %s", function_name, script_path.resolve())
         return None
 
     return func
 
 
 def load_script_class(
-    script_path: Path, class_name: str | None = None
+    script_path: Path, class_name: str | None = None, tool_dirs: list[Path] | None = None
 ) -> type | None:
+    """指定パスの `.py` からクラスをロードする。
+
+    `class_name` 指定時はそのクラス、`None` 時は最初のツールらしいクラス
+    （`execute` メソッドを持つ型）を探す。
+
+    Args:
+        script_path: ロードする `.py` ファイルのパス。
+        class_name: 取り出すクラス名。`None` なら自動検出する。
+        tool_dirs: ロードを許すディレクトリ。`None` なら設定から導く。
+
+    Returns:
+        クラス。配下に無い・ファイル不正・クラスが無い場合は `None`。
     """
-    指定パスの.pyからクラスを安全にロードする。
-    class_name 指定時はそのクラス、None時は最初のツールっぽいクラスを探す。
-    ホワイトリストチェック付き。
-    """
+    module = _load_module(script_path, tool_dirs)
+    if module is None:
+        return None
     resolved_path = script_path.resolve()
-
-    # ホワイトリストチェック
-    if not any(resolved_path.is_relative_to(allowed) for allowed in _get_allowed_paths()):
-        logger.error("Path is not allowed: %s", resolved_path)
-        return None
-
-    if not resolved_path.exists() or resolved_path.suffix != ".py":
-        logger.warning("File not found or invalid: %s", resolved_path)
-        return None
-
-    module_name = resolved_path.stem
-    spec = importlib.util.spec_from_file_location(module_name, str(resolved_path))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
 
     if class_name:
         cls = getattr(module, class_name, None)

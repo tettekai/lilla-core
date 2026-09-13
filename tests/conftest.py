@@ -73,7 +73,7 @@ def make_extension():
     キーワード引数はメソッド名で、値が callable ならそのままメソッドとして
     差し込み、そうでなければ「その値を返すメソッド」として差し込む::
 
-        ext = make_extension("pack", client_prompt_providers={"discord": provider})
+        ext = make_extension("pack", client_prompt_providers={"discord": [provider]})
         ext = make_extension("pack", on_message=AsyncMock(return_value=True))
     """
     from lilla_core.core.extension import Extension

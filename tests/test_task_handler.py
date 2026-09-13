@@ -296,6 +296,42 @@ class TestRunTool:
         assert call_args["now"] is now
         assert call_args["llm_tools"] is llm_tools
 
+    async def test_extension_context_providers_are_merged(
+        self, make_extension, use_extensions
+    ) -> None:
+        """拡張の tool_context_providers() の値が、コア確定キーと一緒に context へ入る。"""
+        client = MagicMock()
+        use_extensions(make_extension("pack", tool_context_providers={"google_client": lambda: client}))
+        tool = MagicMock()
+        tool.execute = AsyncMock(return_value="ok")
+        bot = MagicMock()
+        now = datetime.now()
+
+        await task_handler._run_tool("test_tool", tool, bot, now, {})
+
+        context = tool.execute.call_args[0][0]
+        assert context["google_client"] is client
+        assert context["discord_client"] is bot
+        assert context["now"] is now
+
+    async def test_failing_provider_does_not_block_execution(
+        self, make_extension, use_extensions
+    ) -> None:
+        """プロバイダが失敗してもそのキーが欠けるだけで、ツール自体は実行される。"""
+
+        def _raise():
+            raise RuntimeError("not configured")
+
+        use_extensions(make_extension("pack", tool_context_providers={"google_client": _raise}))
+        tool = MagicMock()
+        tool.execute = AsyncMock(return_value="ok")
+
+        await task_handler._run_tool("test_tool", tool, MagicMock(), datetime.now(), {})
+
+        context = tool.execute.call_args[0][0]
+        assert "google_client" not in context
+        assert "discord_client" in context
+
     async def test_handles_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """ツール実行で例外が起きても外に漏れず、エラー通知が行われること。"""
         tool = MagicMock()

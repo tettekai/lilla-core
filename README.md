@@ -192,8 +192,8 @@ class MyExtension(Extension):
     def tool_context_providers(self):
         return {"my_client": get_my_client}
 
-    async def setup(self, tools, llm_tools, bot):
-        await start_my_http_server(llm_tools, tools, bot)
+    async def setup(self, ctx):
+        await start_my_http_server(ctx.llm_tools, ctx.tools, ctx.bot)
 
 
 extension = MyExtension()
@@ -203,24 +203,35 @@ extension = MyExtension()
 |----------|------|
 | `startup_repos` | Extra repository factories to initialize on `on_ready` |
 | `on_message` | Invoked at the start of `on_message`; return `True` to stop further handling |
-| `setup` | Startup work awaited before `bot.start()` (e.g. an HTTP server) |
+| `setup` | Startup work awaited before `bot.start()` (e.g. an HTTP server). Receives one `SetupContext` (`tools`, `llm_tools`, `bot`, `config`); new fields may be added without breaking existing extensions |
 | `result_deliveries` | Where `!toolresult` delivers results, per `client_type` |
-| `client_prompt_providers` | System prompt additions per `client_type` |
-| `conversation_start_hooks` | Client-specific preprocessing before conversation handling starts |
+| `client_prompt_providers` | System prompt additions per `client_type`, as `{client_type: [provider, ...]}`. Additive: several extensions may target the same `client_type`; the core concatenates them in load order, separated by blank lines |
+| `conversation_start_hooks` | Async hooks run before conversation handling starts, as `{client_type: [hook, ...]}`. Additive like the prompts. Each hook receives one `ConversationContext` (`client_type`, `client_state`, `discord_channel_id`, `llm_name`) |
 | `tool_context_providers` | Values injected into the tool execution context |
 | `tool_roots` | Extra directories searched for tool `.py` files |
 | `command_packages` | Extra packages scanned for `@register_command` handlers |
 | `config_models` | YAML sections this extension adds to `AppConfig` |
 | `env_fields` | Secret fields this extension adds to `cfg.env` |
 | `required_config_sections` | YAML sections this extension reads but does not provide |
+| `required_env_fields` | `cfg.env` fields this extension reads but does not provide |
+| `required_tool_context_keys` | Tool context keys this extension's tools read but does not provide |
+| `requires` (class attribute) | Names of extensions this one depends on; they must be loaded and listed earlier in `LILLA_EXTENSIONS` |
+| `api_version` (class attribute) | The `Extension` contract version this extension was written against. Defaults to the core's current `EXTENSION_API_VERSION`; an unsupported value fails at load |
 
 Contribution keys must not collide **between extensions**: duplicate `Extension.name`,
-config section names, env field names, tool context keys, `client_type` keys, command
-names, or tool file names across different roots all fail fast at startup rather than
-silently picking a winner.
+config section names, env field names, tool context keys, result-delivery `client_type`
+keys, command names, or tool file names across different roots all fail fast at startup
+rather than silently picking a winner. Client prompts and conversation start hooks are
+the exception by design: they are lists per `client_type` and are concatenated in load
+order, so several extensions can contribute to the same client.
 `client_type="discord"` is special in two ways: the core provides a built-in system
-prompt that an extension may override, and the core owns `!toolresult` delivery, so
-extensions cannot register a result delivery for it.
+prompt that is used only when no extension contributes one, and the core owns
+`!toolresult` delivery, so extensions cannot register a result delivery for it.
+
+A client extension that drives `run_conversation()` itself may pass any object as
+`client_state` (for example its set of connected sockets). The core does not interpret
+it: it is exposed to hooks as `ConversationContext.client_state` and to LLM tools as
+the `client_state` context key.
 
 ### Config composition
 
@@ -247,7 +258,18 @@ class MyExtension(Extension):
 ```
 
 `get_config().google.client_id` and `get_config().env.google_client_secret` are then
-readable process-wide.
+readable process-wide. Because `get_config()` is typed as the base `AppConfig`, use
+`get_section()` when you want the section back as its own model for type checking and
+completion:
+
+```python
+from lilla_core.core.config import get_section
+
+client_id = get_section("google", GoogleConfig).client_id
+```
+
+It raises `ValueError` when the section was never declared or is not an instance of the
+given model, so a misspelled name fails loudly instead of returning nothing.
 
 - A section is **required** when its model has at least one required field, and optional
   otherwise. A required section missing from `lilla.yaml` fails at startup.
@@ -256,13 +278,77 @@ readable process-wide.
 - Providing a section name or an env field name twice fails fast, even when the two
   models are identical. Core-owned names are reserved as well.
 - `required_config_sections()` lists sections the extension reads but does not provide,
-  such as a shared `google:` section owned by another pack. If nothing provides one, the
-  load fails and names the extension that asked for it. Dependencies between packs are
-  not resolved automatically, so document which extensions belong together and list them
-  all in `LILLA_EXTENSIONS`.
+  such as a shared `google:` section owned by another pack. `required_env_fields()` and
+  `required_tool_context_keys()` do the same for `cfg.env` fields and tool context keys.
+  If nothing provides a required name (and it is not a core-owned one), the load fails
+  and names the extension that asked for it.
+
+### Dependencies between extensions
+
+An extension declares the extensions it depends on in the `requires` class attribute.
+The core checks at load time that every name is loaded **and listed before** the
+dependent extension in `LILLA_EXTENSIONS`; it never reorders them, because message
+hooks, `setup()` and tool roots all run in load order.
+
+```python
+class GoogleCalendarExtension(Extension):
+    name = "lilla-google-calendar"
+    requires = ("lilla-google-oauth",)
+
+    def required_config_sections(self):
+        return ["google"]
+
+    def required_env_fields(self):
+        return ["google_client_secret"]
+
+    def required_tool_context_keys(self):
+        return ["google_client"]
+```
+
+`requires` answers "is the other pack loaded, in the right order?"; the `required_*`
+methods answer "does somebody provide the specific thing I read?". There is no generic
+`validate()` hook: run-time checks belong in `setup()`.
 
 Modules listed in `LILLA_EXTENSIONS` run as **trusted code** in the same process. This
-is not a sandbox.
+is not a sandbox. The same applies to every directory tools are loaded from:
+`paths.tool_root`, each extension's `tool_roots()`, and `${CONFIG_ROOT}/tools`. Anyone
+who can write there can run code inside the bot process, so there is no separate
+allow-list for tool paths. The loaders only verify that a resolved tool file still lies
+under one of those directories (a `type` containing `..` or a symlink pointing outside
+is refused).
+
+### Extension contract compatibility
+
+`lilla_core.core.extension.EXTENSION_API_VERSION` is the version of the `Extension`
+contract this core provides, and `SUPPORTED_EXTENSION_API_VERSIONS` is the set it
+accepts at load time. An extension may pin the version it was written against:
+
+```python
+from lilla_core.core.extension import EXTENSION_API_VERSION, Extension
+
+
+class MyExtension(Extension):
+    name = "my-extension"
+    api_version = 1  # or leave the default, which is EXTENSION_API_VERSION
+```
+
+If the declared version is not supported, `load_extensions()` fails and names the
+extension and both versions, instead of loading an extension written against an older
+contract and breaking later at run time.
+
+The policy for changing the contract:
+
+- **Non-breaking, no version bump**: adding a method to `Extension` (always with a
+  default that contributes nothing), adding a field to a `*Context` dataclass
+  (`SetupContext`, `ConversationContext`), adding a new lookup function or a new
+  core-owned context key.
+- **Breaking, bumps `EXTENSION_API_VERSION`**: changing a method's signature or the shape
+  of its return value, removing or renaming a method, a `*Context` field, a context key
+  or a lookup function, or changing when a hook is called. Such changes are recorded
+  under **BREAKING** in `CHANGELOG.md`.
+- Extension packages should depend on a version range of `lilla-core`
+  (for example `lilla-core>=0.3,<0.4`) so a breaking core release is not picked up
+  silently.
 
 ## Tool contracts
 
@@ -299,10 +385,13 @@ Tools are loaded dynamically from `${TOOL_ROOT}/**/*.py` based on YAML config fi
 
 **The `context` dict passed to `execute`** varies by call site. For LLM tools it always
 includes `client_type` and a nested-call helper `call_tool(tool_name, tool_input)`,
-plus any tool-specific keys from that tool's YAML, and any keys contributed by an
-extension's `tool_context_providers()`. For task tools, a scheduled run passes
-`discord_client` / `now` / `llm_tools`, and a manual `!runtask` run additionally passes
-`params`.
+plus any tool-specific keys from that tool's YAML, any keys contributed by an
+extension's `tool_context_providers()`, and `client_state` when the calling client
+passed one to `run_conversation()`. Task tools get the same extension-provided keys,
+plus `discord_client` / `now` / `llm_tools` on a scheduled run and additionally `params`
+on a manual `!runtask` run. The core-owned keys of both kinds are reserved: an
+extension whose `tool_context_providers()` returns one of them fails at load instead of
+being silently overwritten.
 
 ## Contributing
 
