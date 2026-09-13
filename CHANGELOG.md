@@ -9,6 +9,9 @@
 
 ### Added
 
+- `core/config.py` に `get_section(name, model, config=None)` を追加。拡張が
+  `config_models()` で申告したセクション（コア確定のセクションも可）を、申告したモデルの
+  型で取り出す。未申告の名前や、値がそのモデルのインスタンスでない場合は `ValueError`
 - `Extension` 契約のバージョン `EXTENSION_API_VERSION`（現在 1）と、ロード時に受け付ける
   集合 `SUPPORTED_EXTENSION_API_VERSIONS` を `core/extension.py` に追加。拡張はクラス属性
   `api_version` で自分が書かれたバージョンを宣言でき（既定は現在のバージョン）、受け付けない

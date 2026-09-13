@@ -250,7 +250,18 @@ class MyExtension(Extension):
 ```
 
 これで `get_config().google.client_id` と `get_config().env.google_client_secret` が
-プロセス全体から読めるようになります。
+プロセス全体から読めるようになります。`get_config()` の型は基底の `AppConfig` なので、
+型検査や補完のためにセクションをそのモデルの型で受け取りたいときは `get_section()` を
+使ってください。
+
+```python
+from lilla_core.core.config import get_section
+
+client_id = get_section("google", GoogleConfig).client_id
+```
+
+セクションが申告されていない場合や、値が渡したモデルのインスタンスでない場合は
+`ValueError` になります。名前の綴りを間違えても静かに空を返すことはありません。
 
 - セクションは、モデルが必須フィールドを 1 つでも持てば **必須**、そうでなければ
   省略可能になります。必須セクションが `lilla.yaml` に無ければ起動時に落ちます

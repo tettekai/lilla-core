@@ -258,7 +258,18 @@ class MyExtension(Extension):
 ```
 
 `get_config().google.client_id` and `get_config().env.google_client_secret` are then
-readable process-wide.
+readable process-wide. Because `get_config()` is typed as the base `AppConfig`, use
+`get_section()` when you want the section back as its own model for type checking and
+completion:
+
+```python
+from lilla_core.core.config import get_section
+
+client_id = get_section("google", GoogleConfig).client_id
+```
+
+It raises `ValueError` when the section was never declared or is not an instance of the
+given model, so a misspelled name fails loudly instead of returning nothing.
 
 - A section is **required** when its model has at least one required field, and optional
   otherwise. A required section missing from `lilla.yaml` fails at startup.
