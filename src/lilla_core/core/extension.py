@@ -64,6 +64,11 @@ SUPPORTED_EXTENSION_API_VERSIONS = frozenset({EXTENSION_API_VERSION})
 #: コア自身が配送を持つ `client_type`。拡張の `result_deliveries()` では使えない。
 _RESERVED_DELIVERY_CLIENT_TYPES = frozenset({"discord"})
 
+#: コアが task ツールの実行 context へ必ず注入するキー（`handlers/task_handler.py` /
+#: `commands/runtask.py`）。LLM ツール側の共通キーは `loaders/llm_tool_loader.py` の
+#: `_CORE_RUNTIME_CONTEXT_KEYS` が正で、両方をまとめたものが `_core_tool_context_keys()`。
+CORE_TASK_CONTEXT_KEYS = frozenset({"discord_client", "now", "llm_tools", "params"})
+
 # 型エイリアス（可読性向上目的のためだけ）
 StartupRepoFactory = Callable[[], Any]
 DeliveryFn = Callable[[str], Awaitable[None]]
@@ -416,12 +421,15 @@ def _validate_requires(extensions: list[Extension]) -> None:
 def _core_tool_context_keys() -> frozenset[str]:
     """コアが実行時にツール context へ必ず注入するキーの集合を返す。
 
-    `loaders/llm_tool_loader.py` の定義を正とし、`call_tool`（入れ子呼び出し用に
-    各階層で作り直される）も含める。循環 import を避けるため呼び出し時に読む。
+    LLM ツール側は `loaders/llm_tool_loader.py` の定義を正とし、`call_tool`（入れ子
+    呼び出し用に各階層で作り直される）も含める。task ツール側は
+    `CORE_TASK_CONTEXT_KEYS`。拡張の `tool_context_providers()` はこれらのキーを
+    提供できない（コアの注入で静かに上書きされるのを防ぐため、ロード時に落とす）。
+    循環 import を避けるため呼び出し時に読む。
     """
     from lilla_core.loaders.llm_tool_loader import _CORE_RUNTIME_CONTEXT_KEYS
 
-    return _CORE_RUNTIME_CONTEXT_KEYS | {"call_tool"}
+    return _CORE_RUNTIME_CONTEXT_KEYS | CORE_TASK_CONTEXT_KEYS | {"call_tool"}
 
 
 def set_extensions(extensions: list[Extension]) -> None:
@@ -476,12 +484,18 @@ def set_extensions(extensions: list[Extension]) -> None:
         set(env_fields) | set(core_env_field_names()),
     )
 
-    tool_context = _merge_unique(extensions, "tool_context_providers", "tool context provider")
+    core_context_keys = _core_tool_context_keys()
+    tool_context = _merge_unique(
+        extensions,
+        "tool_context_providers",
+        "tool context provider",
+        reserved=core_context_keys,
+    )
     _validate_required(
         extensions,
         "required_tool_context_keys",
         "tool context key",
-        set(tool_context) | set(_core_tool_context_keys()),
+        set(tool_context) | set(core_context_keys),
     )
     deliveries = _merge_unique(
         extensions,
@@ -608,6 +622,28 @@ def get_command_packages() -> list[str]:
 def get_tool_context_providers() -> dict[str, ContextValueProvider]:
     """ツール実行 context プロバイダのマージ済み dict のコピーを返す。"""
     return dict(_tool_context_providers)
+
+
+def build_tool_context() -> dict[str, Any]:
+    """登録済みプロバイダを評価し、ツール実行 context の拡張由来部分を組み立てて返す。
+
+    LLM ツール（`services/conversation_service.py`）と task ツール
+    （`handlers/task_handler.py` / `commands/runtask.py`）の両方がこの結果を土台にし、
+    そこへコア確定のキー（`client_type` / `discord_client` / `now` など）を重ねる。
+    コアは登録内容を列挙するだけなので、ツール（＝必要なクライアント）が増えても
+    本関数を編集する必要はない。1 つのプロバイダが失敗してもそのキーが欠けるだけで、
+    他のプロバイダと呼び出し元の処理は妨げない。
+
+    Returns:
+        context キー名から、プロバイダの戻り値への dict。
+    """
+    context: dict[str, Any] = {}
+    for name, provider in _tool_context_providers.items():
+        try:
+            context[name] = provider()
+        except Exception as e:
+            logger.debug("Skipped initialization of %s: %s", name, e)
+    return context
 
 
 def get_result_delivery(client_type: str) -> DeliveryFn | None:

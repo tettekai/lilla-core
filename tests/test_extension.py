@@ -190,6 +190,14 @@ class TestValidation:
         with pytest.raises(ValueError, match="Duplicate extension name"):
             ext_module.set_extensions([make_extension("same"), make_extension("same")])
 
+    @pytest.mark.parametrize("key", ["llm_tools", "client_type", "now", "discord_client", "params", "call_tool"])
+    def test_core_tool_context_key_is_reserved(self, make_extension, key: str) -> None:
+        """コアが注入する context キーは拡張から提供できない（静かな上書きを防ぐ）。"""
+        ext = make_extension("a", tool_context_providers={key: lambda: 1})
+
+        with pytest.raises(ValueError, match=f"reserved key '{key}'"):
+            ext_module.set_extensions([ext])
+
     def test_duplicate_tool_context_key_raises(self, make_extension) -> None:
         """ツール context プロバイダのキー重複は fail-fast。"""
         first = make_extension("a", tool_context_providers={"client": lambda: 1})

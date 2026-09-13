@@ -38,6 +38,15 @@
 
 ### Changed
 
+- task ツール（定期実行と `!runtask`）の実行 context にも、拡張の `tool_context_providers()`
+  の値が入るようになった。これまでは LLM ツールだけに注入され、task ツールは `discord_client` /
+  `now` / `llm_tools`（手動実行時は `params` も）の固定キーしか受け取れなかった。組み立ては
+  `core/extension.py` の `build_tool_context()` に一本化し（`services/conversation_service.py`
+  からの import は互換のため残す）、両経路で同じ注入モデルになる
+- **BREAKING**: コアがツール実行 context へ注入するキー（`client_type` / `llm_tools` /
+  `client_state` / `discord_channel_id` / `discord_client` / `now` / `params` / `call_tool` 等）を
+  予約キーにし、`tool_context_providers()` で同名を提供する拡張はロード時に fail-fast する
+  （これまではコアの注入で静かに上書きされていた）
 - **BREAKING**: 会話開始フック（`Extension.conversation_start_hooks()`）の引数を、WebSocket
   クライアント集合（`ws_clients`）から `ConversationContext`（`client_type` / `client_state` /
   `discord_channel_id` / `llm_name`）1 つに変更した。あわせて `run_conversation()` の引数

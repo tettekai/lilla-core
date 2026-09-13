@@ -376,9 +376,11 @@ Tools are loaded dynamically from `${TOOL_ROOT}/**/*.py` based on YAML config fi
 includes `client_type` and a nested-call helper `call_tool(tool_name, tool_input)`,
 plus any tool-specific keys from that tool's YAML, any keys contributed by an
 extension's `tool_context_providers()`, and `client_state` when the calling client
-passed one to `run_conversation()`. For task tools, a scheduled run passes
-`discord_client` / `now` / `llm_tools`, and a manual `!runtask` run additionally passes
-`params`.
+passed one to `run_conversation()`. Task tools get the same extension-provided keys,
+plus `discord_client` / `now` / `llm_tools` on a scheduled run and additionally `params`
+on a manual `!runtask` run. The core-owned keys of both kinds are reserved: an
+extension whose `tool_context_providers()` returns one of them fails at load instead of
+being silently overwritten.
 
 ## Contributing
 

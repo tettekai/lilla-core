@@ -8,6 +8,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from lilla_core.core.error_notify import notify_error
+from lilla_core.core.extension import build_tool_context
 from lilla_core.ui.messages import t
 from lilla_core.utils.datetime_utils import local_now, local_timezone
 
@@ -100,9 +101,14 @@ def _make_job_func(tool_name: str, tool, bot, llm_tools: dict):
 async def _run_tool(tool_name: str, tool, bot, now: datetime, llm_tools: dict) -> None:
     """ツールを非同期で実行する。
 
-    エラーは ERROR ログとエラー通知チャンネルに出力し、外部に伝播させない。
+    実行 context は、拡張の `tool_context_providers()` を評価した `build_tool_context()`
+    の結果に、コア確定の `discord_client` / `now` / `llm_tools` を重ねたもの
+    （LLM ツールと同じ注入モデル）。エラーは ERROR ログとエラー通知チャンネルに
+    出力し、外部に伝播させない。
     """
     try:
-        await tool.execute({"discord_client": bot, "now": now, "llm_tools": llm_tools})
+        context = build_tool_context()
+        context.update({"discord_client": bot, "now": now, "llm_tools": llm_tools})
+        await tool.execute(context)
     except Exception as e:
         await notify_error(bot, t("task.execution_error_title", tool=tool_name), e)

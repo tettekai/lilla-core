@@ -9,6 +9,7 @@ import logging
 
 from lilla_core.commands.registry import register_command
 from lilla_core.core.error_notify import notify_error
+from lilla_core.core.extension import build_tool_context
 from lilla_core.ui.messages import t
 from lilla_core.utils.datetime_utils import local_now
 
@@ -22,6 +23,10 @@ async def run_task(tool_name: str, tools: dict, bot, params: dict | None = None)
     `get_llm_tools()` からこの関数の中で直接取得して `tool.execute()` に渡す。
     これにより、`!runtask` と拡張側が用意する HTTP 経由の手動実行エンドポイント等の
     どちらの経路でも、APScheduler 経由の定期実行と同じ LLM ツールが使える。
+
+    実行 context は定期実行（`handlers/task_handler.py`）と同じく、拡張の
+    `tool_context_providers()` を評価した `build_tool_context()` の結果に、コア確定の
+    `discord_client` / `now` / `llm_tools` / `params` を重ねたもの。
 
     Args:
         tool_name: 実行するツール名（YAML ファイル名 stem）。
@@ -46,12 +51,14 @@ async def run_task(tool_name: str, tools: dict, bot, params: dict | None = None)
 
     now = local_now()
     try:
-        await tool.execute({
+        context = build_tool_context()
+        context.update({
             "discord_client": bot,
             "now": now,
             "llm_tools": get_llm_tools(),
             "params": params or {},
         })
+        await tool.execute(context)
     except Exception as e:
         await notify_error(bot, t("command.runtask.execution_error_title", tool=tool_name), e)
 
