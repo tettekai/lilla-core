@@ -37,6 +37,8 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # New work branches and PRs start from develop, not the default branch (main).
+          base_branch: develop
 
           # This is an optional setting that allows Claude to read CI results on PRs
           additional_permissions: |
