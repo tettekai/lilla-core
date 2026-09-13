@@ -210,6 +210,7 @@ extension = MyExtension()
 | `required_env_fields` | 自分では提供しないが読む `cfg.env` のフィールド |
 | `required_tool_context_keys` | 自分では提供しないが、自分のツールが読むツール context のキー |
 | `requires`（クラス属性） | 依存する拡張の名前。ロード済みで、かつ `LILLA_EXTENSIONS` で自分より前に並んでいる必要がある |
+| `api_version`（クラス属性） | この拡張が書かれた `Extension` 契約のバージョン。既定はコアの現在の `EXTENSION_API_VERSION` で、受け付けない値はロード時に失敗する |
 
 貢献キーは **拡張どうし** で衝突してはいけません。`Extension.name`・YAML セクション名・
 env フィールド名・ツール context のキー・結果配送の `client_type`・コマンド名・複数ルートに
@@ -295,6 +296,36 @@ class GoogleCalendarExtension(Extension):
 Bot のプロセス内でコードを実行できます。そのためツールパスの許可リストは別途持ちません。
 ローダーは、解決後のツールファイルがこれらのディレクトリの配下にあることだけを確認します
 （`..` を含む `type` や、外を指すシンボリックリンクは読み込みません）。
+
+### 拡張契約の互換性
+
+`lilla_core.core.extension.EXTENSION_API_VERSION` はこのコアが提供する `Extension`
+契約のバージョン、`SUPPORTED_EXTENSION_API_VERSIONS` はロード時に受け付けるバージョンの
+集合です。拡張は自分が書かれたバージョンを固定できます。
+
+```python
+from lilla_core.core.extension import EXTENSION_API_VERSION, Extension
+
+
+class MyExtension(Extension):
+    name = "my-extension"
+    api_version = 1  # 省略すると EXTENSION_API_VERSION
+```
+
+宣言したバージョンを受け付けない場合、`load_extensions()` は拡張名と両方のバージョンを
+示して失敗します。古い契約で書かれた拡張をそのまま読み込んで、起動後に壊れるのを
+防ぐためです。
+
+契約を変えるときの方針:
+
+- **非破壊（バージョンは上げない）**: `Extension` へのメソッド追加（必ず「何も貢献しない」
+  既定を持たせる）、`*Context` データクラス（`SetupContext` / `ConversationContext`）への
+  フィールド追加、参照関数やコア確定の context キーの追加
+- **破壊的（`EXTENSION_API_VERSION` を上げる）**: メソッドのシグネチャや戻り値の形の変更、
+  メソッド・`*Context` のフィールド・context キー・参照関数の削除や改名、フックが呼ばれる
+  タイミングの変更。こうした変更は `CHANGELOG.md` に **BREAKING** として記録します
+- 拡張パッケージは `lilla-core` をバージョン範囲で依存指定してください
+  （例: `lilla-core>=0.3,<0.4`）。破壊的なコアのリリースを気付かず取り込まないためです
 
 ## ツール契約
 

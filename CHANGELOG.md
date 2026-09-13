@@ -9,6 +9,11 @@
 
 ### Added
 
+- `Extension` 契約のバージョン `EXTENSION_API_VERSION`（現在 1）と、ロード時に受け付ける
+  集合 `SUPPORTED_EXTENSION_API_VERSIONS` を `core/extension.py` に追加。拡張はクラス属性
+  `api_version` で自分が書かれたバージョンを宣言でき（既定は現在のバージョン）、受け付けない
+  値や整数以外を宣言した拡張は拡張名とバージョンを含むエラーでロード時に fail-fast する。
+  契約の互換性ポリシー（何が非破壊で何が破壊的か）を README に明文化した
 - `Extension.requires`（クラス属性。依存する拡張の `name` のタプル）を追加。依存先が
   ロードされていない、または `LILLA_EXTENSIONS` で自分より後ろに並んでいる場合はロード時に
   fail-fast する（コアは並べ替えない）。汎用の `validate()` フックは追加しない

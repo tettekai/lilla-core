@@ -216,6 +216,7 @@ extension = MyExtension()
 | `required_env_fields` | `cfg.env` fields this extension reads but does not provide |
 | `required_tool_context_keys` | Tool context keys this extension's tools read but does not provide |
 | `requires` (class attribute) | Names of extensions this one depends on; they must be loaded and listed earlier in `LILLA_EXTENSIONS` |
+| `api_version` (class attribute) | The `Extension` contract version this extension was written against. Defaults to the core's current `EXTENSION_API_VERSION`; an unsupported value fails at load |
 
 Contribution keys must not collide **between extensions**: duplicate `Extension.name`,
 config section names, env field names, tool context keys, result-delivery `client_type`
@@ -304,6 +305,39 @@ who can write there can run code inside the bot process, so there is no separate
 allow-list for tool paths. The loaders only verify that a resolved tool file still lies
 under one of those directories (a `type` containing `..` or a symlink pointing outside
 is refused).
+
+### Extension contract compatibility
+
+`lilla_core.core.extension.EXTENSION_API_VERSION` is the version of the `Extension`
+contract this core provides, and `SUPPORTED_EXTENSION_API_VERSIONS` is the set it
+accepts at load time. An extension may pin the version it was written against:
+
+```python
+from lilla_core.core.extension import EXTENSION_API_VERSION, Extension
+
+
+class MyExtension(Extension):
+    name = "my-extension"
+    api_version = 1  # or leave the default, which is EXTENSION_API_VERSION
+```
+
+If the declared version is not supported, `load_extensions()` fails and names the
+extension and both versions, instead of loading an extension written against an older
+contract and breaking later at run time.
+
+The policy for changing the contract:
+
+- **Non-breaking, no version bump**: adding a method to `Extension` (always with a
+  default that contributes nothing), adding a field to a `*Context` dataclass
+  (`SetupContext`, `ConversationContext`), adding a new lookup function or a new
+  core-owned context key.
+- **Breaking, bumps `EXTENSION_API_VERSION`**: changing a method's signature or the shape
+  of its return value, removing or renaming a method, a `*Context` field, a context key
+  or a lookup function, or changing when a hook is called. Such changes are recorded
+  under **BREAKING** in `CHANGELOG.md`.
+- Extension packages should depend on a version range of `lilla-core`
+  (for example `lilla-core>=0.3,<0.4`) so a breaking core release is not picked up
+  silently.
 
 ## Tool contracts
 

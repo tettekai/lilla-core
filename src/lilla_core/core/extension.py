@@ -52,6 +52,15 @@ EXTENSIONS_ENV_VAR = "LILLA_EXTENSIONS"
 #: 各拡張モジュールが `Extension` インスタンスを export する属性名。
 EXTENSION_ATTR = "extension"
 
+#: このコアが提供する `Extension` 契約のバージョン。契約を破壊的に変えたとき
+#: （メソッドのシグネチャ・戻り値の形・context のフィールドの削除や改名）に上げる。
+#: メソッドや context フィールドの追加は非破壊なので上げない。
+EXTENSION_API_VERSION = 1
+
+#: このコアがロードを受け付ける契約バージョンの集合。旧バージョンとの互換層を
+#: 持つときはここへ足す。
+SUPPORTED_EXTENSION_API_VERSIONS = frozenset({EXTENSION_API_VERSION})
+
 #: コア自身が配送を持つ `client_type`。拡張の `result_deliveries()` では使えない。
 _RESERVED_DELIVERY_CLIENT_TYPES = frozenset({"discord"})
 
@@ -115,6 +124,11 @@ class Extension:
 
     #: 拡張の一意な名前。ログと衝突検査に使う。空文字・未設定はロード時に落とす。
     name: str = ""
+
+    #: この拡張が書かれた `Extension` 契約のバージョン。既定は現在のコアの
+    #: `EXTENSION_API_VERSION`。`SUPPORTED_EXTENSION_API_VERSIONS` に無い値を宣言した
+    #: 拡張はロード時に fail-fast する（古い契約のまま動いて起動後に壊れるのを防ぐ）。
+    api_version: int = EXTENSION_API_VERSION
 
     #: 依存する拡張の `name` のタプル。ここに並べた拡張がロードされていない、または
     #: `LILLA_EXTENSIONS` 上で自分より後ろに並んでいる場合はロード時に fail-fast する。
@@ -295,6 +309,29 @@ def _merge_lists(
     return merged
 
 
+def _validate_api_versions(extensions: list[Extension]) -> None:
+    """各拡張の `api_version` がこのコアの受け付ける契約バージョンであることを検証する。
+
+    Raises:
+        ValueError: `api_version` が整数でない、または
+            `SUPPORTED_EXTENSION_API_VERSIONS` に含まれない場合。
+    """
+    supported = ", ".join(str(v) for v in sorted(SUPPORTED_EXTENSION_API_VERSIONS))
+    for ext in extensions:
+        version = getattr(ext, "api_version", None)
+        if isinstance(version, bool) or not isinstance(version, int):
+            raise ValueError(
+                f"Extension '{ext.name}' must define 'api_version' as an int, "
+                f"got {version!r}"
+            )
+        if version not in SUPPORTED_EXTENSION_API_VERSIONS:
+            raise ValueError(
+                f"Extension '{ext.name}' declares api_version {version}, but this "
+                f"lilla-core supports only api_version {supported} "
+                f"(current: {EXTENSION_API_VERSION})"
+            )
+
+
 def _validate_names(extensions: list[Extension]) -> None:
     """`name` が設定済みかつ一意であることを検証する。
 
@@ -402,7 +439,8 @@ def set_extensions(extensions: list[Extension]) -> None:
 
     Raises:
         TypeError: `Extension` のインスタンスでない要素が含まれる場合。
-        ValueError: 名前または貢献キーが衝突している場合、コア確定のセクション名 /
+        ValueError: 名前または貢献キーが衝突している場合、`api_version` がこのコアの
+            受け付ける契約バージョンでない場合、コア確定のセクション名 /
             `EnvConfig` フィールド名を提供した場合、`requires` の拡張が未ロードか
             自分より後ろに並んでいる場合、または誰も提供していない名前を
             `required_config_sections()` / `required_env_fields()` /
@@ -416,6 +454,7 @@ def set_extensions(extensions: list[Extension]) -> None:
                 f"Expected an Extension instance, got {type(ext).__name__}"
             )
     _validate_names(extensions)
+    _validate_api_versions(extensions)
     _validate_requires(extensions)
 
     config_models = _merge_unique(
