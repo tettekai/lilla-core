@@ -20,6 +20,11 @@ import と同じく `sys.modules` に登録され、相対 import も使える�
 import できるパッケージは `LILLA_EXTENSIONS` のモジュールと同じ信頼レベルとみなし、
 ディレクトリの検査は行わない。
 
+ツール YAML（`llm_*.yaml` / `task_*.yaml`）は `resolve_tool_config_files()` が集める。
+拡張が `tool_config_roots()` で同梱した既定 YAML をロード順に読み、最後に
+`${CONFIG_ROOT}/tools` を重ねる。同じ stem は `${CONFIG_ROOT}/tools` 側が丸ごと
+上書きし（利用者の設定が常に勝つ）、拡張どうしの同じ stem は fail-fast する。
+
 ツールの `.py` をロードしてよいディレクトリは `resolve_tool_dirs()` が返す
 「探索ルート + `config_root/tools`（`type: self` の置き場所）」で、これ以外の設定は
 持たない。`find_tool_file` は YAML の `type` を `rglob` のパターンとして使うため、
@@ -36,7 +41,7 @@ from pathlib import Path
 from types import ModuleType
 
 from lilla_core.core.config import get_config
-from lilla_core.core.extension import get_tool_roots
+from lilla_core.core.extension import get_tool_config_roots, get_tool_roots
 
 logger = logging.getLogger(__name__)
 
@@ -81,9 +86,78 @@ def resolve_tool_dirs(
         tool_roots = resolve_tool_roots()
     if config_root is None:
         config_root = get_config().env.config_root
-    return [Path(root).resolve() for root in tool_roots] + [
-        (Path(config_root) / "tools").resolve()
-    ]
+    return (
+        [Path(root).resolve() for root in tool_roots]
+        + [root.resolve() for _name, root in get_tool_config_roots()]
+        + [(Path(config_root) / "tools").resolve()]
+    )
+
+
+def resolve_tool_config_files(prefix: str, config_root: Path | None = None) -> list[Path]:
+    """ロード対象のツール YAML を、上書き規則を適用したうえで stem 順に返す。
+
+    集める順序は「拡張の `tool_config_roots()`（ロード順）→ `${CONFIG_ROOT}/tools`」。
+    同じ stem の YAML が複数あるときは、`${CONFIG_ROOT}/tools` にあるものが拡張の
+    同梱分を丸ごと置き換える（内容のマージはしない）。拡張どうしで同じ stem を
+    同梱している場合はどちらを使うかが暗黙になるため fail-fast する。存在しない
+    ディレクトリは読み飛ばす。
+
+    Args:
+        prefix: 集める YAML のファイル名プレフィックス（`"llm_"` または `"task_"`）。
+        config_root: 設定ルート。`None` なら設定から取る。
+
+    Returns:
+        YAML ファイルパスのリスト（stem の昇順）。
+
+    Raises:
+        ValueError: 複数の拡張が同じ stem の YAML を同梱している場合。
+    """
+    if config_root is None:
+        config_root = get_config().env.config_root
+
+    selected: dict[str, Path] = {}
+    owners: dict[str, str] = {}
+    for ext_name, root in get_tool_config_roots():
+        if not root.is_dir():
+            continue
+        for path in sorted(root.glob(f"{prefix}*.yaml")):
+            stem = path.stem
+            if stem in owners:
+                raise ValueError(
+                    f"Tool config '{stem}.yaml' is bundled by both extensions "
+                    f"'{owners[stem]}' and '{ext_name}'"
+                )
+            owners[stem] = ext_name
+            selected[stem] = path
+
+    user_dir = Path(config_root) / "tools"
+    if user_dir.is_dir():
+        for path in sorted(user_dir.glob(f"{prefix}*.yaml")):
+            if path.stem in selected:
+                logger.info(
+                    "Tool config '%s.yaml' from %s overrides the one bundled by extension '%s'",
+                    path.stem, user_dir, owners[path.stem],
+                )
+            selected[path.stem] = path
+
+    return [selected[stem] for stem in sorted(selected)]
+
+
+def is_tool_enabled(config: dict) -> bool:
+    """ツール YAML の `enabled` キーを見て、そのツールをロードするかを返す。
+
+    `enabled: false` と明示したときだけ無効。キーが無い、または `false` 以外の値なら
+    有効とみなす（真偽値以外の値で静かに無効化されないようにするため）。
+    `${CONFIG_ROOT}/tools` に同名の YAML を置いて `enabled: false` と書けば、拡張が
+    同梱したツールを利用者側で止められる。
+
+    Args:
+        config: YAML から読んだ dict。
+
+    Returns:
+        ロードするなら `True`。
+    """
+    return config.get("enabled") is not False
 
 
 def is_within_tool_dirs(path: Path, tool_dirs: list[Path]) -> bool:

@@ -413,6 +413,73 @@ class TestLoadLlmToolsImportPath:
         assert result == {}
 
 
+class TestLoadLlmToolsBundledConfigs:
+    """拡張が同梱した既定 YAML のロードと、利用者側の上書き・無効化。"""
+
+    @pytest.fixture()
+    def config_root(self, llm_tool_loader, tmp_path: Path) -> Path:
+        cr = tmp_path / "config_root"
+        (cr / "tools").mkdir(parents=True)
+        return cr
+
+    @pytest.fixture()
+    def tool_root(self, llm_tool_loader, tmp_path: Path) -> Path:
+        root = tmp_path / "tool_root"
+        _write_py(root, "llm_pack.py", {"name": "pack", "description": "bundled", "input_schema": {}})
+        return root
+
+    @pytest.fixture()
+    def pack_configs(self, tmp_path: Path, make_extension, use_extensions) -> Path:
+        """`llm_pack.yaml` を同梱する拡張を登録し、そのディレクトリを返す。"""
+        configs = tmp_path / "pack" / "tool_configs"
+        configs.mkdir(parents=True)
+        _write_yaml(configs, "llm_pack.yaml", "type: llm_pack\ndescription: from pack\n")
+        use_extensions(make_extension("pack", tool_config_roots=[configs]))
+        return configs
+
+    def test_bundled_yaml_loads_without_user_config(
+        self, llm_tool_loader, pack_configs: Path, tool_root: Path, config_root: Path
+    ) -> None:
+        """利用者の `config_root/tools` に何も無くても、同梱 YAML だけでロードされる。"""
+        result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
+
+        assert "llm_pack" in result
+        assert result["llm_pack"]["schema"]["description"] == "from pack"
+
+    def test_user_yaml_replaces_bundled_yaml(
+        self, llm_tool_loader, pack_configs: Path, tool_root: Path, config_root: Path
+    ) -> None:
+        """同名 YAML を `config_root/tools` に置くと、その内容で丸ごと上書きされる。"""
+        _write_yaml(config_root / "tools", "llm_pack.yaml", "type: llm_pack\ndescription: mine\n")
+
+        result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
+
+        assert result["llm_pack"]["schema"]["description"] == "mine"
+
+    def test_user_can_disable_bundled_tool(
+        self, llm_tool_loader, pack_configs: Path, tool_root: Path, config_root: Path
+    ) -> None:
+        """`enabled: false` の同名 YAML を置くと、同梱ツールはロードされない。"""
+        _write_yaml(config_root / "tools", "llm_pack.yaml", "enabled: false\n")
+
+        result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
+
+        assert result == {}
+
+    def test_bundled_self_type_loads_py_next_to_yaml(
+        self, llm_tool_loader, make_extension, use_extensions, tmp_path: Path, config_root: Path
+    ) -> None:
+        """同梱 YAML が `type: self` なら、同梱ディレクトリの同名 `.py` を読める。"""
+        configs = tmp_path / "pack2" / "tool_configs"
+        _write_py(configs, "llm_selfy.py", {"name": "selfy", "description": "self", "input_schema": {}})
+        _write_yaml(configs, "llm_selfy.yaml", "type: self\n")
+        use_extensions(make_extension("pack2", tool_config_roots=[configs]))
+
+        result = llm_tool_loader.load_llm_tools(tool_roots=[tmp_path / "empty"], config_root=config_root)
+
+        assert "llm_selfy" in result
+
+
 class TestResolveSelfToolFile:
     """_resolve_self_tool_file の単体テスト。"""
 

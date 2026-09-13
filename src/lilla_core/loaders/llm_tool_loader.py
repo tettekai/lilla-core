@@ -5,7 +5,6 @@ LLM に渡す tools パラメータの構築と、tool_call の実行を担う�
 """
 from __future__ import annotations
 
-import glob
 import importlib.util
 import json
 import logging
@@ -23,7 +22,9 @@ from lilla_core.loaders.tool_paths import (
     find_tool_file,
     import_tool_module,
     is_import_path,
+    is_tool_enabled,
     is_within_tool_dirs,
+    resolve_tool_config_files,
     resolve_tool_dirs,
     resolve_tool_roots,
 )
@@ -118,7 +119,11 @@ def load_llm_tools(
     tool_roots: list[Path] | None = None,
     config_root: Path | None = None,
 ) -> dict[str, dict]:
-    """config/tools/llm_*.yaml を読み込み、対応するツールをロードして返す。
+    """ツール YAML（`llm_*.yaml`）を読み込み、対応するツールをロードして返す。
+
+    YAML は `tool_paths.resolve_tool_config_files()` が集める（拡張が同梱した既定
+    YAML → `config_root/tools` の順で、同じ stem は後者が丸ごと上書き）。
+    `enabled: false` の YAML はロードしない。
 
     各 YAML の type をもとに tools/**/llm_*.py を探してロードする。
     YAML に description がある場合は SCHEMA["description"] を上書きする。
@@ -147,13 +152,16 @@ def load_llm_tools(
     if config_root is None:
         config_root = get_config().env.config_root
 
-    tool_config_root = config_root / "tools"
     tool_dirs = resolve_tool_dirs(tool_roots, config_root)
     llm_tools: dict[str, dict] = {}
 
-    for config_path in glob.glob(str(tool_config_root / "llm_*.yaml")):
+    for config_path in resolve_tool_config_files("llm_", config_root):
         with open(config_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f) or {}
+
+        if not is_tool_enabled(config):
+            logger.info("LLM tool disabled by config: %s", config_path)
+            continue
 
         tool_type = config.get("type")
         if not tool_type:

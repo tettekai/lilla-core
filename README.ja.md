@@ -203,6 +203,7 @@ extension = MyExtension()
 | `conversation_start_hooks` | 会話処理開始前に await される非同期フック。形は `{client_type: [フック, ...]}` でプロンプトと同じく加算式。各フックは `ConversationContext`（`client_type` / `client_state` / `discord_channel_id` / `llm_name`）1 つを受け取る |
 | `tool_context_providers` | ツール実行 context への値の注入 |
 | `tool_roots` | ツールの `.py` を探す追加ディレクトリ |
+| `tool_config_roots` | 拡張が同梱する既定のツール YAML（`llm_*.yaml` / `task_*.yaml`）のディレクトリ。`${CONFIG_ROOT}/tools` に同じ stem の YAML があればそちらが丸ごと勝つ。同梱ツールを止めるにはそこに `enabled: false` の YAML を置く |
 | `command_packages` | `@register_command` を探す追加パッケージ |
 | `config_models` | この拡張が `AppConfig` に足す YAML セクション |
 | `env_fields` | この拡張が `cfg.env` に足す秘匿フィールド |
@@ -344,6 +345,14 @@ class MyExtension(Extension):
 から動的にロードされます。各 YAML のファイル名（stem）がツール名になり、`type`
 フィールドから対応する `.py` ファイルを探します（詳細は
 `loaders/llm_tool_loader.py` / `loaders/task_tool_loader.py` の実装を参照）。
+
+拡張は `tool_config_roots()` で既定の YAML を同梱できます。ローダーはまずそれらの
+ディレクトリ（拡張のロード順）から、次に `${CONFIG_ROOT}/tools` から YAML を集め、
+同じ stem のファイルが `${CONFIG_ROOT}/tools` にあれば同梱分を丸ごと置き換えます
+（内容のマージはしません）。利用者の設定が常に勝つ形です。2 つの拡張が同じ stem を
+同梱していると起動時に失敗します。同梱ツールを止めるには、`${CONFIG_ROOT}/tools` に
+同じ stem で `enabled: false` と書いた YAML を置いてください。`enabled: false` は
+同梱かどうかに関わらず、どのツール YAML でも無効化に使えます。
 
 **LLM ツール**（`${CONFIG_ROOT}/tools/llm_*.yaml`、実装は `${TOOL_ROOT}/**/<type>.py`）:
 
