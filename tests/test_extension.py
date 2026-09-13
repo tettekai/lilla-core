@@ -671,6 +671,25 @@ class TestAggregatedContributions:
             ("b", Path("/three/tools")),
         ]
 
+    def test_locale_dirs_carry_extension_names_in_load_order(self, make_extension) -> None:
+        """同梱カタログのディレクトリは拡張名つきでロード順に返す。"""
+        ext_module.set_extensions([
+            make_extension("a", locale_dirs=[Path("/one/locales")]),
+            make_extension("b", locale_dirs=[Path("/two/locales"), Path("/three/locales")]),
+        ])
+
+        assert ext_module.get_locale_dirs() == [
+            ("a", Path("/one/locales")),
+            ("b", Path("/two/locales")),
+            ("b", Path("/three/locales")),
+        ]
+
+    def test_locale_dirs_default_to_empty(self, make_extension) -> None:
+        """`locale_dirs()` を実装しない拡張は何も貢献しない。"""
+        ext_module.set_extensions([make_extension("a")])
+
+        assert ext_module.get_locale_dirs() == []
+
     def test_tool_roots_are_concatenated_in_load_order(self, make_extension) -> None:
         """ツール探索ルートはロード順に連結される。"""
         ext_module.set_extensions([
