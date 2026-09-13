@@ -360,6 +360,20 @@ YAML を置いた人だけが有効化する opt-in で、コアが自動で読�
 |----------|------|
 | `llm_current_datetime.py` | 現在日時を返すだけのサンプル LLM ツール。`SCHEMA` と `async def execute(input, context)` を持つ通常の LLM ツールで、`utils/datetime_utils.py` の `local_now()` を使う。有効化例は README（英・日）の「Tool contracts」節を参照 |
 
+### testing/ — 拡張リポジトリ向けのテストヘルパー (`src/lilla_core/testing/`)
+拡張を別リポジトリで開発するときに、どのリポジトリも書くことになる「自分の `Extension` を
+登録し、設定を合成し、テストが終わったらプロセスの状態を元へ戻す」セットアップを肩代わりする
+opt-in のヘルパー。**`__init__.py` は pytest を import しない**（pytest は
+`[project.optional-dependencies.dev]` にしかないため、本番依存に混ぜない）。pytest に触るのは
+`pytest_plugin.py` だけで、`pytest11` entry point による自動登録もしない（利用側の既存
+conftest と黙って干渉しうるため）。利用側は自分のルート `conftest.py` に
+`pytest_plugins = ["lilla_core.testing.pytest_plugin"]` と書いて読み込む。
+
+| ファイル | 役割 |
+|----------|------|
+| `__init__.py` | pytest 非依存のヘルパー。`use_extensions(*extensions, config_root=None)` は登録内容・設定インスタンス（`core/config.py` の `_config_instance`。`get_config()` は未設定でも既定を返すためモジュール変数を直接退避する）・OS 変数名のレジストリ・`CONFIG_ROOT` を退避してから `set_extensions()` → `compose_config()` → `set_config()` を行い、合成した `AppConfig` を yield して、抜けるとき（例外時も）すべて元へ戻すコンテキストマネージャ。`write_minimal_lilla_yaml(directory, ...)` はコアが必須にしている項目（`discord.my_user_id` / `llm.default` と対応する `llm.providers.<名前>` / `ui.timezone: Asia/Tokyo`）だけの `lilla.yaml` を書き出し、`extra` があれば同じネストで深いマージをする（拡張が必須にしているセクション用） |
+| `pytest_plugin.py` | 上記を包む function scope の fixture 2 つ。`lilla_config_root` は `tmp_path` に最小構成の `lilla.yaml` を書いて `CONFIG_ROOT` を向け、`DISCORD_TOKEN` が無ければダミー値を入れてそのディレクトリを返す。`lilla_extensions` は `register(*extensions) -> AppConfig` を返し、内部で `use_extensions()` に入って teardown でまとめて抜ける（複数回呼んだら後入れ先出しで戻す） |
+
 ## tests/ — テスト
 `tests/` 配下に各モジュールの単体テストを配置（pytest で実行）。`tests/repository/test_motor_client.py`
 のようにサブディレクトリを切ることもある。`tests/conftest.py` が `sys.path` に `src/` とリポジトリ

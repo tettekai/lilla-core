@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from lilla_core.core import extension as ext_module
 from lilla_core.core.extension import Extension
+from lilla_core.testing import use_extensions as use_extensions_cm
 
 
 def config_module():
@@ -32,19 +33,11 @@ def _isolate_registry():
 
     `load_extensions()` は設定の合成まで行い `set_config()` するため、拡張の
     登録内容だけでなくプロセスの設定インスタンスと OS 変数名のレジストリも
-    元へ戻す。
+    元へ戻す必要がある。その退避と復元はコアが拡張リポジトリ向けに公開している
+    `lilla_core.testing.use_extensions()` がそのまま担うので、そちらを使う。
     """
-    cfg = config_module()
-    saved = ext_module.get_extensions()
-    saved_config = cfg._config_instance
-    saved_var_names = dict(cfg._extra_env_var_names)
-    ext_module.reset_extensions()
-    yield
-    ext_module.set_extensions(saved)
-    cfg._config_instance = saved_config
-    cfg._extra_env_var_names.clear()
-    cfg._extra_env_var_names.update(saved_var_names)
-    cfg._default_config.cache_clear()
+    with use_extensions_cm():
+        yield
 
 
 class SampleSectionConfig(BaseModel):

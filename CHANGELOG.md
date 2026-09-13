@@ -9,6 +9,16 @@
 
 ### Added
 
+- 拡張リポジトリ向けのテストヘルパー `lilla_core.testing` を追加。
+  `use_extensions(*extensions, config_root=None)`（登録・設定合成・`set_config()` を行い、
+  抜けるときに登録内容・設定インスタンス・`CONFIG_ROOT` を元へ戻すコンテキストマネージャ）と
+  `write_minimal_lilla_yaml(directory, ...)`（コアが必須にしている項目だけの `lilla.yaml` を
+  書き出す。`extra` で拡張が必須にしているセクションを深いマージで足せる）を提供する。
+  `lilla_core.testing` 本体は pytest を import しないため、pytest の無い環境でも import できる
+- pytest 向けの fixture を `lilla_core.testing.pytest_plugin` に追加（`lilla_config_root` /
+  `lilla_extensions`）。`pytest11` entry point による自動登録はしないので、利用側は自分のルート
+  `conftest.py` に `pytest_plugins = ["lilla_core.testing.pytest_plugin"]` と書いて opt-in する
+
 - `Extension.tool_config_roots()` を追加。拡張が既定のツール YAML（`llm_*.yaml` / `task_*.yaml`）を
   同梱できるようになった。ローダーは「拡張の同梱分（ロード順）→ `${CONFIG_ROOT}/tools`」の順に
   YAML を集め、同じ stem は `${CONFIG_ROOT}/tools` 側が丸ごと上書きする（利用者の設定が常に勝つ。
