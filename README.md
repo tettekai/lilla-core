@@ -237,13 +237,16 @@ holds `{locale}.yaml` files named the same way as the core's (`ja.yaml`, `en.yam
 and the catalog's **only top-level key must be the extension's `name`**, so
 `name = "lilla-habits"` means a YAML with a single `lilla-habits:` node and calls such as
 `t("lilla-habits.notify.title")`. The core never prefixes keys for you: the key in the
-YAML and the key you pass to `t()` are the same string. `messages._load_catalog()` layers
-the extension catalogs onto the core one in load order, so lookups keep the usual
+YAML and the key you pass to `t()` are the same string. The core layers extension
+catalogs onto its own in load order, so lookups keep the usual
 "`ui.locale` → `ja` → the key itself" fallback and an extension that ships only `ja.yaml`
-still works under `ui.locale: en`. A catalog whose top-level key is not the extension
-name, or an extension whose name collides with a core top-level key (`selftest`, ...),
-fails fast with `ValueError`; a directory that does not exist logs a warning and is
-skipped, and a broken YAML is logged as an error and treated as empty for that locale.
+still works under `ui.locale: en`. If one extension returns several directories, its own
+node is merged shallowly in load order (a later directory wins on the same key). A
+catalog whose top-level key is not the extension name, or an extension whose name
+collides with a core top-level key (`selftest`, ...), fails fast with `ValueError` while
+the extensions are registered, so `t()` itself still never raises. A directory that does
+not exist logs a warning (once per locale) and is skipped, and a broken YAML is logged as
+an error and treated as empty for that locale.
 
 A client extension that drives `run_conversation()` itself may pass any object as
 `client_state` (for example its set of connected sockets). The core does not interpret

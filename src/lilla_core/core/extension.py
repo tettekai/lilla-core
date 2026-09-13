@@ -475,7 +475,8 @@ def set_extensions(extensions: list[Extension]) -> None:
             `EnvConfig` フィールド名を提供した場合、`requires` の拡張が未ロードか
             自分より後ろに並んでいる場合、または誰も提供していない名前を
             `required_config_sections()` / `required_env_fields()` /
-            `required_tool_context_keys()` が要求している場合。
+            `required_tool_context_keys()` が要求している場合、または
+            `locale_dirs()` のカタログが名前空間の規約に違反している場合。
     """
     from lilla_core.core.config import core_config_section_names, core_env_field_names
 
@@ -530,6 +531,7 @@ def set_extensions(extensions: list[Extension]) -> None:
     start_hooks = _merge_lists(
         extensions, "conversation_start_hooks", "conversation start hook"
     )
+    _validate_message_catalogs(extensions)
 
     global _extensions
     _extensions = list(extensions)
@@ -549,6 +551,27 @@ def set_extensions(extensions: list[Extension]) -> None:
     _clear_message_catalog_cache()
 
 
+def _validate_message_catalogs(extensions: list[Extension]) -> None:
+    """これから登録する拡張の UI 文言カタログを全ロケール分組み立てて検証する。
+
+    カタログは `t()` がキーを引くまで読まれないため、ここで一度組み立てておかないと
+    名前空間の規約違反が最初の文言参照（＝メッセージ処理の最中）まで表面化しない。
+    他の貢献キーの検証と同じくグローバルを書き換える前に行うので、失敗しても
+    壊れた登録は残らない。`ui/messages.py` はこのモジュールを import するので、
+    循環 import を避けて関数内で遅延 import する。
+
+    Args:
+        extensions: これから登録する `Extension` インスタンス（ロード順）。
+
+    Raises:
+        ValueError: 拡張のカタログのトップレベルキーがその拡張の `name` と異なる場合、
+            または拡張名がコアのカタログのトップレベルキーと衝突している場合。
+    """
+    from lilla_core.ui import messages
+
+    messages.validate_catalogs(get_locale_dirs(extensions))
+
+
 def _clear_message_catalog_cache() -> None:
     """UI 文言カタログのキャッシュを捨てる。
 
@@ -564,7 +587,6 @@ def _clear_message_catalog_cache() -> None:
 def reset_extensions() -> None:
     """登録済みの拡張をすべて捨てる（テスト用）。"""
     set_extensions([])
-    _clear_message_catalog_cache()
 
 
 def load_extensions(spec: str | None = None) -> list[Extension]:
@@ -658,13 +680,23 @@ def get_tool_config_roots() -> list[tuple[str, Path]]:
     return roots
 
 
-def get_locale_dirs() -> list[tuple[str, Path]]:
-    """全拡張が同梱する UI 文言カタログのディレクトリを `(拡張名, ディレクトリ)` でロード順に返す。
+def get_locale_dirs(
+    extensions: list[Extension] | None = None,
+) -> list[tuple[str, Path]]:
+    """拡張が同梱する UI 文言カタログのディレクトリを `(拡張名, ディレクトリ)` でロード順に返す。
 
     拡張名は、カタログのトップレベルキーと突き合わせる名前空間の検査に使う。
+
+    Args:
+        extensions: 対象の拡張。`None` なら登録済みのものを使う。`set_extensions()` が
+            登録前の検証で「これから登録する拡張」を渡す。
+
+    Returns:
+        `(拡張名, ディレクトリ)` のリスト。
     """
+    targets = _extensions if extensions is None else extensions
     dirs: list[tuple[str, Path]] = []
-    for ext in _extensions:
+    for ext in targets:
         dirs.extend((ext.name, Path(directory)) for directory in ext.locale_dirs())
     return dirs
 

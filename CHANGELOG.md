@@ -14,8 +14,10 @@
   `lilla_core.ui.messages` がコアのカタログへロード順に重ねて解決する。カタログの
   トップレベルのキーはその拡張の `name` ただ 1 つでなければならず（`name = "lilla-habits"` なら
   `t("lilla-habits.notify.title")`。コアが prefix を付けることはしない）、違反や拡張名とコアの
-  トップレベルキーの衝突は `ValueError` で fail-fast する。存在しないディレクトリは WARNING を
-  出して読み飛ばし、壊れた YAML は ERROR ログを出してそのロケール分だけ空として扱う。
+  トップレベルキーの衝突は、拡張の登録時（`set_extensions()`）に `ValueError` で fail-fast する
+  （`t()` 自体は従来どおり例外を投げない）。1 つの拡張が複数のディレクトリを返した場合は、その
+  拡張のノードをロード順に浅くマージする。存在しないディレクトリは WARNING を出して
+  （ロケールごとに 1 回）読み飛ばし、壊れた YAML は ERROR ログを出してそのロケール分だけ空として扱う。
   `t()` の解決順（`ui.locale` → `ja` → キー名）は従来どおりで、`ja.yaml` しか同梱していない
   拡張でも `ui.locale: en` で例外にならない。`translations()` / `available_locales()` も
   合成後のカタログを対象にする（メソッドの追加のみで非破壊。`EXTENSION_API_VERSION` は据え置き）

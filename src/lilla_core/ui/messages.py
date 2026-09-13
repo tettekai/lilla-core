@@ -14,7 +14,8 @@ Discord 側の言語設定は一切見ない（同じ Bot が常に同じ言語�
 同梱でき、コアのカタログへロード順に重ねた 1 つの辞書として解決される。
 拡張のカタログはトップレベルのキーがその拡張の `name` と一致していなければ
 ならず（例: `name = "lilla-habits"` なら `t("lilla-habits.notify.title")`）、
-違反していればカタログの読み込み時に `ValueError` で落とす。
+違反していれば拡張の登録時（`set_extensions()` が呼ぶ `validate_catalogs()`）に
+`ValueError` で落とす。
 
 解決順は「指定ロケール → `ja` → キー名そのもの」で、いずれの段階へ落ちても
 例外は投げない（文言の欠落で Bot の応答自体が失われないようにするため）。
@@ -89,6 +90,23 @@ def _core_locales() -> list[str]:
     )
 
 
+def _catalog_locales(locale_dirs: list[tuple[str, Path]]) -> list[str]:
+    """コア同梱分と渡されたディレクトリのロケール名を重複なく昇順で返す。
+
+    Args:
+        locale_dirs: `(拡張名, カタログディレクトリ)` のリスト。
+
+    Returns:
+        ロケール名のリスト。
+    """
+    locales = set(_core_locales())
+    for _name, directory in locale_dirs:
+        if not directory.is_dir():
+            continue
+        locales.update(path.stem for path in directory.glob("*.yaml"))
+    return sorted(locales)
+
+
 def available_locales() -> list[str]:
     """コアと全拡張のカタログとして存在するロケール名を昇順で返す。
 
@@ -96,12 +114,7 @@ def available_locales() -> list[str]:
         コア同梱分と拡張の `locale_dirs()` 配下の `*.yaml` のファイル名
         （拡張子なし）を重複なく集めたリスト。
     """
-    locales = set(_core_locales())
-    for name, directory in _extension_locale_dirs():
-        if not directory.is_dir():
-            continue
-        locales.update(path.stem for path in directory.glob("*.yaml"))
-    return sorted(locales)
+    return _catalog_locales(_extension_locale_dirs())
 
 
 def current_locale() -> str:
@@ -181,16 +194,23 @@ def _core_top_level_keys() -> frozenset[str]:
     return frozenset(keys)
 
 
-@lru_cache(maxsize=None)
-def _load_catalog(locale: str) -> dict[str, Any]:
-    """指定ロケールのカタログを読み込む（プロセス内でキャッシュする）。
+def _build_catalog(
+    locale: str, locale_dirs: list[tuple[str, Path]]
+) -> dict[str, Any]:
+    """コアのカタログへ、渡されたディレクトリのカタログをロード順に重ねて返す。
 
-    コアの `{locale}.yaml` に、各拡張の `{locale}.yaml` をロード順で重ねた
-    1 つの辞書を返す。拡張のカタログは「トップレベルのキーがその拡張の `name`
-    ただ 1 つ」という名前空間の規約を持つため、単純な辞書の合成で足りる。
+    拡張のカタログは「トップレベルのキーがその拡張の `name` ただ 1 つ」という
+    名前空間の規約を持つため、拡張どうしは単純な辞書の合成で足りる。1 つの拡張が
+    `locale_dirs()` で複数のディレクトリを返した場合は、その拡張のノードを
+    ロード順に **浅くマージ** する（同じ第 2 階層のキーは後のディレクトリが勝つ）。
+
+    存在しないディレクトリは WARNING を出して読み飛ばす。`_load_catalog()` の
+    `lru_cache` によりロケールごとに 1 回だけ評価されるため、警告もロケールごとに
+    1 回出る。
 
     Args:
         locale: ロケール名。
+        locale_dirs: `(拡張名, カタログディレクトリ)` のリスト。
 
     Returns:
         合成したカタログの辞書。存在しない・壊れている場合は空の辞書。
@@ -206,7 +226,7 @@ def _load_catalog(locale: str) -> dict[str, Any]:
 
     catalog = dict(_load_core_catalog(locale))
     core_keys = _core_top_level_keys()
-    for name, directory in _extension_locale_dirs():
+    for name, directory in locale_dirs:
         if name in core_keys:
             raise ValueError(
                 "Extension name collides with a top-level key of the core message catalog "
@@ -230,8 +250,59 @@ def _load_catalog(locale: str) -> dict[str, Any]:
                 "Extension message catalog must only have the extension name as its top-level "
                 f"key (extension={name}, locale={locale}, unexpected={unexpected})"
             )
-        catalog[name] = data[name]
+        node = data[name]
+        if not isinstance(node, dict):
+            logger.error(
+                "Extension message catalog node is not a mapping (extension=%s, locale=%s)",
+                name,
+                locale,
+            )
+            continue
+        existing = catalog.get(name)
+        if isinstance(existing, dict):
+            existing.update(node)
+        else:
+            catalog[name] = dict(node)
     return catalog
+
+
+@lru_cache(maxsize=None)
+def _load_catalog(locale: str) -> dict[str, Any]:
+    """登録済み拡張を含む指定ロケールのカタログを返す（プロセス内でキャッシュする）。
+
+    Args:
+        locale: ロケール名。
+
+    Returns:
+        合成したカタログの辞書。存在しない・壊れている場合は空の辞書。
+
+    Raises:
+        ValueError: 拡張のカタログが名前空間の規約に違反している場合。通常は
+            `set_extensions()` が登録時に `validate_catalogs()` で先に検出するため、
+            `t()` の経路からは到達しない。
+    """
+    return _build_catalog(locale, _extension_locale_dirs())
+
+
+def validate_catalogs(locale_dirs: list[tuple[str, Path]] | None = None) -> None:
+    """カタログを全ロケール分組み立て、名前空間の規約違反を検出する。
+
+    `_load_catalog()` はキーを引くまで評価されないため、これを呼ばないと規約違反が
+    最初の `t()` 呼び出し（＝メッセージ処理の最中）まで表面化しない。`set_extensions()`
+    が登録の前に呼ぶことで、ロード時の fail-fast にする。キャッシュには載せないので、
+    登録を差し替える前の検証にも使える。
+
+    Args:
+        locale_dirs: 検証する `(拡張名, カタログディレクトリ)` のリスト。`None` なら
+            登録済み拡張のものを使う。
+
+    Raises:
+        ValueError: いずれかのロケールのカタログが名前空間の規約に違反している場合。
+    """
+    dirs = _extension_locale_dirs() if locale_dirs is None else locale_dirs
+    for locale in _catalog_locales(dirs):
+        _build_catalog(locale, dirs)
+
 
 def _lookup(catalog: dict[str, Any], key: str) -> str | None:
     """ドット区切りのキーでカタログを辿り、文字列を取り出す。
