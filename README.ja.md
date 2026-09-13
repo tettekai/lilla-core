@@ -356,6 +356,13 @@ class MyExtension(Extension):
   `tool_support/tool_result.py` を参照）を返します。
 - YAML の `type` が `self` の場合、ローダーは `TOOL_ROOT` 配下の検索を行わず、
   YAML と同じディレクトリ・同名の `.py` をそのままロードします。
+- YAML の `type` にドットが含まれる場合（`type: lilla_google_calendar.tools.calendar_get`）は
+  **import パス** として扱い、ツールルートを探索する代わりに `importlib` でそのモジュールを
+  読み込みます。インストール済みパッケージ（PyPI で配布する拡張など）がツールを同梱する
+  ための経路です。通常の import なので、そのドット区切り名で `sys.modules` に登録され
+  （stem で解決したファイルは独立したモジュールとして実行され、登録されません）、
+  モジュール内の相対 import が使え、ディレクトリの検査も行いません。import に失敗した
+  場合はファイルが見つからないときと同じく警告を出し、そのツールだけ読み飛ばします。
 - YAML では `description`（スキーマの description を上書き）、
   `supported_client_type`（既定 `"all"`）、`cache` ブロック、その他ツール固有の
   キーを設定できます。ツール固有のキーは、下記の実行時コンテキストキーと衝突
@@ -370,6 +377,8 @@ class MyExtension(Extension):
   `async def execute(context: dict) -> None` を持つことが期待されます。
 - `schedule` は省略可能です。未設定のツールはスケジューラには登録されませんが、
   `!runtask` による手動実行は可能です。
+- `type` はこちらでも import パスを受け付けます（`type: some_package.tasks.daily_summary`）。
+  クラスはファイルから読む場合と同じ規則で、import したモジュールから探します。
 
 **`execute` に渡される `context`** は呼び出し元によって内容が異なります。LLM
 ツールでは常に `client_type` と、入れ子呼び出し用のヘルパー

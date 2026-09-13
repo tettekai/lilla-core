@@ -228,6 +228,30 @@ class TestResolveToolClass:
         result = task_tool_loader._resolve_tool_class("task_foo", [tmp_path], {})
         assert result is FakeClass
 
+    def test_import_path_uses_importlib_not_file_search(
+        self, task_tool_loader, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`.` を含む type は import パスとして解決し、ファイル探索も load_script_class も使わない。"""
+        FakeClass = _make_tool_class()
+        fake_module = MagicMock()
+        monkeypatch.setattr(task_tool_loader, "import_tool_module", lambda t: fake_module)
+        monkeypatch.setattr(task_tool_loader, "find_tool_class", lambda m: FakeClass if m is fake_module else None)
+        monkeypatch.setattr(
+            task_tool_loader, "load_script_class", lambda *a, **kw: pytest.fail("file loader must not be used")
+        )
+
+        result = task_tool_loader._resolve_tool_class("pkg.tools.task_foo", [tmp_path], {})
+
+        assert result is FakeClass
+
+    def test_import_path_failure_returns_none(
+        self, task_tool_loader, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """import に失敗したら None（そのツールだけスキップ）。"""
+        monkeypatch.setattr(task_tool_loader, "import_tool_module", lambda t: None)
+
+        assert task_tool_loader._resolve_tool_class("pkg.tools.task_foo", [tmp_path], {}) is None
+
     def test_returns_none_when_load_fails(
         self, task_tool_loader, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

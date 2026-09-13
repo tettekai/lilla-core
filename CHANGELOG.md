@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- ツール YAML の `type` に import パス（`.` 区切りのモジュール名。例:
+  `type: lilla_google_calendar.tools.calendar_get`）を書けるようになった。`.` を含む `type` は
+  ツールルートを探索する代わりに `importlib` で解決し、LLM ツール・task ツールの両方で使える。
+  インストール済みパッケージ（PyPI 配布の拡張など）がツールを同梱するための経路で、通常の
+  import のため相対 import が使え、ディレクトリの検査は行わない（インストール済みパッケージは
+  `LILLA_EXTENSIONS` と同じ信頼レベル）。import に失敗した場合はファイルが見つからないときと
+  同じく WARNING を出してそのツールだけスキップする。`.` を含まない `type` と `type: self` の
+  挙動は従来どおり
+
 ## [0.4.0] - 2026-09-13
 
 ### Added

@@ -5,8 +5,13 @@ from pathlib import Path
 import yaml
 
 from lilla_core.core.config import get_config
-from lilla_core.loaders.script_loader import load_script_class  # 共通ローダー使用（クラス版）
-from lilla_core.loaders.tool_paths import find_tool_file, resolve_tool_roots
+from lilla_core.loaders.script_loader import find_tool_class, load_script_class
+from lilla_core.loaders.tool_paths import (
+    find_tool_file,
+    import_tool_module,
+    is_import_path,
+    resolve_tool_roots,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,15 +33,22 @@ def _resolve_tool_class(
 ) -> type | None:
     """tool_type に対応するクラスを返す。キャッシュ済みなら再利用、なければロード。
 
-    同名のツールファイルが複数のツールルートにある場合は `find_tool_file` が
-    例外を投げる（どちらが使われるかを暗黙にしないため）。ロードは探索に使った
-    `tool_roots` の配下に閉じる（解決後のパスが外へ出ていればロードしない）。
+    `tool_type` が `.` を含む場合は import パスとみなして `importlib` で読み、
+    そのモジュールからツールクラスを探す。そうでなければ従来どおりツールルートを
+    ファイル名で探索する。同名のツールファイルが複数のツールルートにある場合は
+    `find_tool_file` が例外を投げる（どちらが使われるかを暗黙にしないため）。
+    ファイル探索の場合、ロードは探索に使った `tool_roots` の配下に閉じる
+    （解決後のパスが外へ出ていればロードしない）。
     """
     if tool_type not in class_map:
-        py_file = find_tool_file(tool_type, tool_roots)
-        if py_file is None:
-            return None
-        cls = load_script_class(py_file, tool_dirs=tool_roots)
+        if is_import_path(tool_type):
+            module = import_tool_module(tool_type)
+            cls = find_tool_class(module) if module is not None else None
+        else:
+            py_file = find_tool_file(tool_type, tool_roots)
+            if py_file is None:
+                return None
+            cls = load_script_class(py_file, tool_dirs=tool_roots)
         if not cls:
             return None
         class_map[tool_type] = cls

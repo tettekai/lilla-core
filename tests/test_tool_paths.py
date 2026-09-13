@@ -136,6 +136,59 @@ class TestResolveToolDirs:
         ]
 
 
+class TestIsImportPath:
+    @pytest.mark.parametrize("value", ["pkg.tools.llm_x", "a.b", "lilla_core.builtin_tools.x"])
+    def test_dotted_is_import_path(self, value: str) -> None:
+        """`.` を含めば import パス。"""
+        assert tool_paths.is_import_path(value)
+
+    @pytest.mark.parametrize("value", ["llm_x", "self", "task_foo"])
+    def test_plain_stem_is_not(self, value: str) -> None:
+        """`.` を含まなければファイル名 stem。"""
+        assert not tool_paths.is_import_path(value)
+
+
+class TestImportToolModule:
+    def test_imports_installed_module(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """import できるモジュールはそのまま返す（`sys.modules` にも通常どおり載る）。"""
+        import sys
+        import uuid
+
+        pkg = f"pkg_{uuid.uuid4().hex}"
+        (tmp_path / pkg / "tools").mkdir(parents=True)
+        (tmp_path / pkg / "__init__.py").write_text("")
+        (tmp_path / pkg / "tools" / "__init__.py").write_text("")
+        (tmp_path / pkg / "tools" / "llm_x.py").write_text("MARK = 1\n")
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        module = tool_paths.import_tool_module(f"{pkg}.tools.llm_x")
+
+        assert module is not None and module.MARK == 1
+        assert f"{pkg}.tools.llm_x" in sys.modules
+
+    def test_missing_module_returns_none_with_warning(self, caplog) -> None:
+        """モジュールが無ければ WARNING を出して None（起動は止めない）。"""
+        with caplog.at_level("WARNING"):
+            assert tool_paths.import_tool_module("no_such_pkg_xyz.tools.llm_x") is None
+        assert "Failed to import tool module 'no_such_pkg_xyz.tools.llm_x'" in caplog.text
+
+    def test_import_error_inside_module_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        """モジュール本体が import 中に例外を出しても None にして先へ進む。"""
+        import uuid
+
+        name = f"broken_{uuid.uuid4().hex}"
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "__init__.py").write_text("")
+        (tmp_path / name / "llm_x.py").write_text("raise RuntimeError('boom')\n")
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        with caplog.at_level("WARNING"):
+            assert tool_paths.import_tool_module(f"{name}.llm_x") is None
+        assert "boom" in caplog.text
+
+
 class TestIsWithinToolDirs:
     def test_file_under_a_dir_is_accepted(self, tmp_path: Path) -> None:
         """いずれかのディレクトリの配下なら True。"""

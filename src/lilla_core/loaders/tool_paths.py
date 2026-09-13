@@ -12,6 +12,14 @@ LLM ツール（`llm_tool_loader`）と task ツール（`task_tool_loader`）�
 拡張のツールが Python パッケージとして import される必要があるなら、
 インストール済みパッケージにすること。
 
+YAML の `type` が `.` を含む場合は import パスとみなし、ファイル探索ではなく
+`importlib.import_module` で解決する（`import_tool_module`）。インストール済みの
+パッケージ（PyPI 配布の拡張など）がツールを同梱するための経路で、モジュールは通常の
+import と同じく `sys.modules` に登録され、相対 import も使える。import に失敗した場合は
+ファイルが見つからないときと同じく WARNING を出してそのツールだけスキップする。
+import できるパッケージは `LILLA_EXTENSIONS` のモジュールと同じ信頼レベルとみなし、
+ディレクトリの検査は行わない。
+
 ツールの `.py` をロードしてよいディレクトリは `resolve_tool_dirs()` が返す
 「探索ルート + `config_root/tools`（`type: self` の置き場所）」で、これ以外の設定は
 持たない。`find_tool_file` は YAML の `type` を `rglob` のパターンとして使うため、
@@ -22,10 +30,15 @@ LLM ツール（`llm_tool_loader`）と task ツール（`task_tool_loader`）�
 """
 from __future__ import annotations
 
+import importlib
+import logging
 from pathlib import Path
+from types import ModuleType
 
 from lilla_core.core.config import get_config
 from lilla_core.core.extension import get_tool_roots
+
+logger = logging.getLogger(__name__)
 
 
 def resolve_tool_roots() -> list[Path]:
@@ -88,6 +101,41 @@ def is_within_tool_dirs(path: Path, tool_dirs: list[Path]) -> bool:
     """
     resolved = Path(path).resolve()
     return any(resolved.is_relative_to(Path(d).resolve()) for d in tool_dirs)
+
+
+def is_import_path(tool_type: str) -> bool:
+    """YAML の `type` が import パス（ドット区切りのモジュール名）かどうかを返す。
+
+    `.` を 1 つでも含めば import パスとみなす。ファイル名 stem による探索は
+    `{type}.py` を探すため、stem に `.` が含まれることは実用上ない。
+
+    Args:
+        tool_type: YAML の `type` 値。
+
+    Returns:
+        import パスなら `True`。
+    """
+    return "." in tool_type
+
+
+def import_tool_module(tool_type: str) -> ModuleType | None:
+    """import パス形式の `type` を `importlib.import_module` で解決して返す。
+
+    モジュールが無い、または import 中に例外が出た場合は、ファイルが見つからない
+    ときと同じ扱いで WARNING を出して `None` を返す（そのツールだけスキップし、
+    起動は止めない）。
+
+    Args:
+        tool_type: ドット区切りの import パス（例: `"lilla_google_calendar.tools.calendar_get"`）。
+
+    Returns:
+        import したモジュール。失敗時は `None`。
+    """
+    try:
+        return importlib.import_module(tool_type)
+    except Exception as e:
+        logger.warning("Failed to import tool module '%s': %s", tool_type, e, exc_info=True)
+        return None
 
 
 def find_tool_file(tool_type: str, tool_roots: list[Path]) -> Path | None:
