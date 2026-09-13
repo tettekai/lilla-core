@@ -1,7 +1,7 @@
 """承認フロー。
 
 handlers 配下の承認フロー共通部品。外部ユーザー（オーナー以外）から届いた
-コマンドを #lilla-approval チャンネルへ承認依頼として投稿し、承認 / 拒否
+コマンドを `discord.approval_channel_id` で設定した承認チャンネルへ承認依頼として投稿し、承認 / 拒否
 ボタンの押下を処理する共通ロジック。
 Discord の `on_message` / `on_interaction` の双方から再利用する。
 
@@ -167,7 +167,7 @@ def _build_approval_text(message: discord.Message, jump_url: str, full_command: 
 
 
 async def send_approval_request(bot, message: discord.Message, content: str) -> None:
-    """外部ユーザーからのコマンドを #lilla-approval に承認依頼として投稿する。
+    """外部ユーザーからのコマンドを設定済みの承認チャンネルに承認依頼として投稿する。
 
     投稿前に BODY（テキスト直書き／添付ファイル）を解決し、実行される内容の全文を
     承認依頼メッセージ自体に載せる。全文が `INLINE_COMMAND_LIMIT` を超える場合は、
@@ -182,11 +182,17 @@ async def send_approval_request(bot, message: discord.Message, content: str) -> 
         message: 承認対象となった元のメッセージ。
         content: 承認後に実行されるコマンド文字列（BODY 解決前）。
     """
-    approval_channel = discord.utils.get(
-        bot.get_all_channels(), name=_config.discord.approval_channel
-    )
+    approval_channel_id = _config.discord.approval_channel_id
+    if not approval_channel_id:
+        logger.warning("Cannot send approval request because approval channel is not configured")
+        return
+    try:
+        approval_channel = bot.get_channel(int(approval_channel_id))
+    except (TypeError, ValueError):
+        logger.warning("Approval channel ID is invalid: %s", approval_channel_id)
+        return
     if approval_channel is None:
-        logger.warning("Approval channel not found: %s", _config.discord.approval_channel)
+        logger.warning("Approval channel not found: %s", approval_channel_id)
         return
 
     full_command = await resolve_full_command(message, content, bot)

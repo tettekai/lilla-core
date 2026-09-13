@@ -1,5 +1,10 @@
 discord:
   my_user_id: "XXXXXXXXX"
+  # エラー通知・承認依頼の送信先チャンネル ID（Discord のチャンネル snowflake）。
+  # 名前ではなく ID で一意に指定する（同名チャンネルが他ギルドにあっても誤送信しない）。
+  # 未設定ならそれぞれスキップされる。
+  # error_channel_id: "XXXXXXXXX"
+  # approval_channel_id: "XXXXXXXXX"
 
 ui:
   locale: ja

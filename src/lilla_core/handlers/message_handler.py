@@ -74,8 +74,9 @@ async def handle_message(message, bot, tools, llm_tools, message_hook) -> None:
         # DM は対象外
         if isinstance(message.channel, discord.DMChannel):
             return
-        # #lilla-approval チャンネル自体への書き込みは対象外（ループ防止）
-        if message.channel.name == _config.discord.approval_channel:
+        # 承認チャンネル自体への書き込みは対象外（ループ防止）
+        approval_channel_id = _config.discord.approval_channel_id
+        if approval_channel_id and str(message.channel.id) == str(approval_channel_id):
             return
         # 既知コマンド、または外部エージェントからの結果メッセージなら承認フローへ。
         # それ以外は無視する。

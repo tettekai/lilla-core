@@ -26,6 +26,13 @@
 
 ### Changed
 
+- **BREAKING**: `lilla.yaml` の `discord:` セクションで、エラー通知・承認依頼の送信先チャンネルを
+  名前ではなく ID で指定するようになった。`error_channel`（チャンネル名）は `error_channel_id`
+  （チャンネル ID）へ、`approval_channel`（チャンネル名、既定 `lilla-approval`）は
+  `approval_channel_id`（チャンネル ID、既定なし）へそれぞれ置き換え、旧キー名は読まなくなった
+  （`extra="ignore"` のため YAML に残っていても無視される）。`core/error_notify.py` /
+  `handlers/approval_flow.py` はいずれも `bot.get_channel()` による ID 解決のみを行い、
+  複数ギルドに同名チャンネルがあっても意図しないギルドへ送信しないようにするための変更
 - **BREAKING**: ホストが `AppConfig` のサブクラスを手書きし、拡張モジュールの import 副作用で
   `set_config()` して差し替える方式を廃止した。`load_extensions()` が拡張の登録後に必ず設定を
   合成して `set_config()` するため、import 時に差し込んだインスタンスは上書きされる。設定の差分は

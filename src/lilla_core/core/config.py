@@ -62,8 +62,8 @@ class DiscordConfig(BaseModel):
     # 状態（未設定）のまま動き続けること自体が思想と矛盾するため、デフォルト値を
     # 持たせず起動時に fail-fast させる。
     my_user_id: str
-    error_channel: str | None = None
-    approval_channel: str = "lilla-approval"
+    error_channel_id: str | None = None
+    approval_channel_id: str | None = None
 
 
 class PathsConfig(BaseModel):
