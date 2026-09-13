@@ -92,6 +92,9 @@ class TestExtensionDefaults:
         assert ext.result_deliveries() == {}
         assert ext.client_prompt_providers() == {}
         assert ext.conversation_start_hooks() == {}
+        assert ext.requires == ()
+        assert ext.required_env_fields() == []
+        assert ext.required_tool_context_keys() == []
 
     async def test_on_message_default_is_false(self) -> None:
         """デフォルトの `on_message` は「処理しなかった」を返す。"""
@@ -333,6 +336,157 @@ class TestConfigContributions:
         use_extensions(make_extension("a", config_models={"alpha": SampleSectionConfig}))
 
         assert config_module().get_config() is sentinel
+
+
+# ---------------------------------------------------------------------------
+# TestRequires
+# ---------------------------------------------------------------------------
+
+
+class TestRequires:
+    """`requires`（依存する拡張名）の検証。"""
+
+    def test_dependency_listed_before_is_accepted(self, make_extension, use_extensions) -> None:
+        """依存先が自分より前に並んでいれば通る。"""
+        oauth = make_extension("lilla-google-oauth")
+        calendar = make_extension("lilla-google-calendar", requires=("lilla-google-oauth",))
+        calendar.requires = ("lilla-google-oauth",)
+
+        use_extensions(oauth, calendar)
+
+        assert [e.name for e in ext_module.get_extensions()] == [
+            "lilla-google-oauth", "lilla-google-calendar",
+        ]
+
+    def test_missing_dependency_fails_fast(self, make_extension) -> None:
+        """依存先がロードされていなければ、要求元と依存先の名前つきで落とす。"""
+        calendar = make_extension("lilla-google-calendar")
+        calendar.requires = ("lilla-google-oauth",)
+
+        with pytest.raises(
+            ValueError,
+            match="Extension 'lilla-google-calendar' requires extension 'lilla-google-oauth', "
+                  "but it is not listed in LILLA_EXTENSIONS",
+        ):
+            ext_module.set_extensions([calendar])
+
+    def test_dependency_listed_after_fails_fast(self, make_extension) -> None:
+        """依存先が自分より後ろに並んでいれば落とす（自動並べ替えはしない）。"""
+        oauth = make_extension("lilla-google-oauth")
+        calendar = make_extension("lilla-google-calendar")
+        calendar.requires = ("lilla-google-oauth",)
+
+        with pytest.raises(ValueError, match="which must be listed before it"):
+            ext_module.set_extensions([calendar, oauth])
+
+    def test_self_dependency_fails_fast(self, make_extension) -> None:
+        """自分自身への依存は「前に並んでいない」として落とす。"""
+        ext = make_extension("a")
+        ext.requires = ("a",)
+
+        with pytest.raises(ValueError, match="which must be listed before it"):
+            ext_module.set_extensions([ext])
+
+    def test_requires_must_be_a_tuple_of_names(self, make_extension) -> None:
+        """文字列 1 つをそのまま書いた場合（タプルにし忘れ）は落とす。"""
+        ext = make_extension("a")
+        ext.requires = "lilla-google-oauth"
+
+        with pytest.raises(ValueError, match="must define 'requires' as a tuple"):
+            ext_module.set_extensions([ext])
+
+    def test_list_is_accepted_as_requires(self, make_extension, use_extensions) -> None:
+        """リストで書いても通る。"""
+        base = make_extension("base")
+        ext = make_extension("b")
+        ext.requires = ["base"]
+
+        use_extensions(base, ext)
+
+        assert [e.name for e in ext_module.get_extensions()] == ["base", "b"]
+
+    def test_nothing_is_registered_when_requires_fails(self, make_extension) -> None:
+        """依存の検証に失敗したら登録内容を一切残さない。"""
+        ext_module.set_extensions([make_extension("ok", tool_context_providers={"a": lambda: 1})])
+        broken = make_extension("b")
+        broken.requires = ("missing",)
+
+        with pytest.raises(ValueError):
+            ext_module.set_extensions([broken])
+
+        assert [e.name for e in ext_module.get_extensions()] == ["ok"]
+        assert set(ext_module.get_tool_context_providers()) == {"a"}
+
+
+# ---------------------------------------------------------------------------
+# TestRequiredEnvFields / TestRequiredToolContextKeys
+# ---------------------------------------------------------------------------
+
+
+class TestRequiredEnvFields:
+    """`required_env_fields()` の存在検査。"""
+
+    def test_field_provided_by_another_extension_is_accepted(
+        self, make_extension, use_extensions
+    ) -> None:
+        """他の拡張が `env_fields()` で提供していれば要求できる。"""
+        use_extensions(
+            make_extension("consumer", required_env_fields=["google_client_secret"]),
+            make_extension("provider", env_fields={"google_client_secret": "GOOGLE_CLIENT_SECRET"}),
+        )
+
+        assert ext_module.get_env_fields() == {"google_client_secret": "GOOGLE_CLIENT_SECRET"}
+
+    def test_core_field_is_always_available(self, make_extension, use_extensions) -> None:
+        """コア確定の `EnvConfig` フィールドは誰も提供しなくても要求できる。"""
+        use_extensions(make_extension("consumer", required_env_fields=["discord_token"]))
+
+        assert ext_module.get_env_fields() == {}
+
+    def test_unprovided_field_fails_fast(self, make_extension) -> None:
+        """誰も提供していないフィールドを要求したら、要求元の名前つきで落とす。"""
+        with pytest.raises(
+            ValueError,
+            match="Extension 'consumer' requires env field 'google_client_secret'",
+        ):
+            ext_module.set_extensions([
+                make_extension("consumer", required_env_fields=["google_client_secret"]),
+            ])
+
+
+class TestRequiredToolContextKeys:
+    """`required_tool_context_keys()` の存在検査。"""
+
+    def test_key_provided_by_another_extension_is_accepted(
+        self, make_extension, use_extensions
+    ) -> None:
+        """他の拡張が `tool_context_providers()` で提供していれば要求できる。"""
+        provider = lambda: "client"
+        use_extensions(
+            make_extension("consumer", required_tool_context_keys=["google_client"]),
+            make_extension("provider", tool_context_providers={"google_client": provider}),
+        )
+
+        assert ext_module.get_tool_context_providers() == {"google_client": provider}
+
+    @pytest.mark.parametrize("key", ["client_type", "llm_tools", "call_tool", "client_state"])
+    def test_core_runtime_key_is_always_available(
+        self, make_extension, use_extensions, key: str
+    ) -> None:
+        """コアが実行時に注入する共通キーは誰も提供しなくても要求できる。"""
+        use_extensions(make_extension("consumer", required_tool_context_keys=[key]))
+
+        assert ext_module.get_tool_context_providers() == {}
+
+    def test_unprovided_key_fails_fast(self, make_extension) -> None:
+        """誰も提供していないキーを要求したら、要求元の名前つきで落とす。"""
+        with pytest.raises(
+            ValueError,
+            match="Extension 'consumer' requires tool context key 'google_client'",
+        ):
+            ext_module.set_extensions([
+                make_extension("consumer", required_tool_context_keys=["google_client"]),
+            ])
 
 
 # ---------------------------------------------------------------------------

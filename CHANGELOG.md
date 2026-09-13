@@ -9,6 +9,13 @@
 
 ### Added
 
+- `Extension.requires`（クラス属性。依存する拡張の `name` のタプル）を追加。依存先が
+  ロードされていない、または `LILLA_EXTENSIONS` で自分より後ろに並んでいる場合はロード時に
+  fail-fast する（コアは並べ替えない）。汎用の `validate()` フックは追加しない
+- `Extension.required_env_fields()` / `required_tool_context_keys()` を追加。
+  `required_config_sections()` と同じ形で、自分では提供しないが読む `EnvConfig` の
+  フィールド名 / ツール実行 context のキー名を並べると、誰も提供しておらずコア確定の
+  名前でもない場合にロード時に fail-fast する
 - 拡張が申告した設定差分をコアが `AppConfig` へ合成するようになった。`Extension.config_models()`
   に「YAML セクション名 → セクションモデル」を、`Extension.env_fields()` に「`EnvConfig` の
   フィールド名 → OS 環境変数名」を返すと、`load_extensions()` が全拡張の申告を 1 つの Pydantic

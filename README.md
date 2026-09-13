@@ -213,6 +213,9 @@ extension = MyExtension()
 | `config_models` | YAML sections this extension adds to `AppConfig` |
 | `env_fields` | Secret fields this extension adds to `cfg.env` |
 | `required_config_sections` | YAML sections this extension reads but does not provide |
+| `required_env_fields` | `cfg.env` fields this extension reads but does not provide |
+| `required_tool_context_keys` | Tool context keys this extension's tools read but does not provide |
+| `requires` (class attribute) | Names of extensions this one depends on; they must be loaded and listed earlier in `LILLA_EXTENSIONS` |
 
 Contribution keys must not collide **between extensions**: duplicate `Extension.name`,
 config section names, env field names, tool context keys, result-delivery `client_type`
@@ -263,10 +266,36 @@ readable process-wide.
 - Providing a section name or an env field name twice fails fast, even when the two
   models are identical. Core-owned names are reserved as well.
 - `required_config_sections()` lists sections the extension reads but does not provide,
-  such as a shared `google:` section owned by another pack. If nothing provides one, the
-  load fails and names the extension that asked for it. Dependencies between packs are
-  not resolved automatically, so document which extensions belong together and list them
-  all in `LILLA_EXTENSIONS`.
+  such as a shared `google:` section owned by another pack. `required_env_fields()` and
+  `required_tool_context_keys()` do the same for `cfg.env` fields and tool context keys.
+  If nothing provides a required name (and it is not a core-owned one), the load fails
+  and names the extension that asked for it.
+
+### Dependencies between extensions
+
+An extension declares the extensions it depends on in the `requires` class attribute.
+The core checks at load time that every name is loaded **and listed before** the
+dependent extension in `LILLA_EXTENSIONS`; it never reorders them, because message
+hooks, `setup()` and tool roots all run in load order.
+
+```python
+class GoogleCalendarExtension(Extension):
+    name = "lilla-google-calendar"
+    requires = ("lilla-google-oauth",)
+
+    def required_config_sections(self):
+        return ["google"]
+
+    def required_env_fields(self):
+        return ["google_client_secret"]
+
+    def required_tool_context_keys(self):
+        return ["google_client"]
+```
+
+`requires` answers "is the other pack loaded, in the right order?"; the `required_*`
+methods answer "does somebody provide the specific thing I read?". There is no generic
+`validate()` hook: run-time checks belong in `setup()`.
 
 Modules listed in `LILLA_EXTENSIONS` run as **trusted code** in the same process. This
 is not a sandbox. The same applies to every directory tools are loaded from:

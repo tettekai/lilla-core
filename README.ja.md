@@ -207,6 +207,9 @@ extension = MyExtension()
 | `config_models` | この拡張が `AppConfig` に足す YAML セクション |
 | `env_fields` | この拡張が `cfg.env` に足す秘匿フィールド |
 | `required_config_sections` | 自分では提供しないが読む YAML セクション |
+| `required_env_fields` | 自分では提供しないが読む `cfg.env` のフィールド |
+| `required_tool_context_keys` | 自分では提供しないが、自分のツールが読むツール context のキー |
+| `requires`（クラス属性） | 依存する拡張の名前。ロード済みで、かつ `LILLA_EXTENSIONS` で自分より前に並んでいる必要がある |
 
 貢献キーは **拡張どうし** で衝突してはいけません。`Extension.name`・YAML セクション名・
 env フィールド名・ツール context のキー・結果配送の `client_type`・コマンド名・複数ルートに
@@ -255,9 +258,36 @@ class MyExtension(Extension):
 - 同じセクション名・同じ env フィールド名を 2 つの拡張が提供したら、たとえモデルが
   同一でも fail-fast します。コア確定の名前も同様に予約済みです
 - `required_config_sections()` には、自分では提供しないが読むセクション名を並べます
-  （別のパックが持つ共有の `google:` セクションなど）。誰も提供していなければロードに
-  失敗し、要求した拡張の名前を示します。パック同士の依存は自動で解決しないため、
-  一緒に `LILLA_EXTENSIONS` へ並べる拡張は README などに書いて揃えてください
+  （別のパックが持つ共有の `google:` セクションなど）。`required_env_fields()` と
+  `required_tool_context_keys()` は `cfg.env` のフィールドとツール context のキーについて
+  同じことをします。誰も提供しておらず、コア確定の名前でもなければロードに失敗し、
+  要求した拡張の名前を示します
+
+### 拡張どうしの依存
+
+依存する拡張は、クラス属性 `requires` に名前を並べて宣言します。コアはロード時に、
+それらが **ロード済みで、かつ `LILLA_EXTENSIONS` で自分より前に並んでいる** ことを
+検証します。メッセージフック・`setup()`・ツールルートはロード順に処理されるため、
+コアが並べ替えることはありません。
+
+```python
+class GoogleCalendarExtension(Extension):
+    name = "lilla-google-calendar"
+    requires = ("lilla-google-oauth",)
+
+    def required_config_sections(self):
+        return ["google"]
+
+    def required_env_fields(self):
+        return ["google_client_secret"]
+
+    def required_tool_context_keys(self):
+        return ["google_client"]
+```
+
+`requires` は「相手のパックが正しい順でロードされているか」を、`required_*` の各メソッドは
+「自分が読む具体的なものを誰かが提供しているか」を検証します。汎用の `validate()` フックは
+持たず、実行時の検査は `setup()` で行ってください。
 
 `LILLA_EXTENSIONS` に並べたモジュールは同一プロセスで動く **信頼コード** です。
 サンドボックスではありません。ツールを読み込むディレクトリ（`paths.tool_root`・

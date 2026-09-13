@@ -69,7 +69,12 @@ lilla-core は拡張が一切登録されていない状態でも Discord bot �
   全フィールドにデフォルトがあれば `lilla.yaml` に節が無くてもよい。`env_fields()` で足す
   フィールドの型は常に `str | None`（既定値 `None`）で、必須フィールドや文字列以外は表現できない
 - 自分では提供しないが読むセクションは `Extension.required_config_sections()` に並べる。
-  誰も提供しておらず、コア確定のセクションでもなければロード時に fail-fast する
+  誰も提供しておらず、コア確定のセクションでもなければロード時に fail-fast する。
+  秘匿フィールドとツール実行 context キーも同じ形で `required_env_fields()` /
+  `required_tool_context_keys()` に並べる
+- 他の拡張に依存する場合はクラス属性 `requires`（拡張名のタプル）で宣言する。依存先が
+  未ロード、または `LILLA_EXTENSIONS` で自分より後ろに並んでいればロード時に fail-fast する
+  （コアは並べ替えない）。汎用の `validate()` フックは持たず、実行時の検査は `setup()` で行う
 
 ## HTTPアクセスのルール
 - HTTPリクエストは必ずプロキシ経由で行う（プロキシ設定は `AppConfig` から自動適用される）
@@ -395,6 +400,9 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
 | `config_models` | `get_config_models`（全件） | `AppConfig` に足す YAML セクション名 → セクションモデル |
 | `env_fields` | `get_env_fields`（全件） | `EnvConfig` に足すフィールド名 → OS 環境変数名 |
 | `required_config_sections` | `set_extensions` の検証 | 自分では提供しないが読む YAML セクション名 |
+| `required_env_fields` | `set_extensions` の検証 | 自分では提供しないが読む `EnvConfig` のフィールド名（コア確定のフィールドは常に利用可） |
+| `required_tool_context_keys` | `set_extensions` の検証 | 自分では提供しないが、自分のツールが読むツール実行 context のキー名（`client_type` / `call_tool` などコアの共通キーは常に利用可） |
+| `requires`（クラス属性） | `set_extensions` の検証 | 依存する拡張の `name` のタプル。未ロード、または自分より後ろに並んでいれば fail-fast |
 
 ### 衝突は fail-fast
 拡張どうしで以下が重複したら、静かな後勝ちにせずロード時に例外を投げる。
@@ -422,5 +430,6 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
 設定は `config_models()` / `env_fields()` の申告から合成するため、`LILLA_EXTENSIONS` の
 並び順は設定に影響しない（ホスト設定モジュールを先頭に置く規約は不要になった）。順序が
 効くのは `on_message` の連鎖・`setup()` の await 順・`tool_roots()` の探索順といった
-「ロード順に処理するもの」だけで、コアは順番を検証しない。並べたモジュールは同一
+「ロード順に処理するもの」だけ。コアが検証するのは `requires` で宣言された依存先が
+自分より前に並んでいることまでで、自動で並べ替えはしない。並べたモジュールは同一
 プロセスで動く **信頼コード** であり、サンドボックスではない。
