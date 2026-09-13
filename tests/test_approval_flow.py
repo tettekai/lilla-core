@@ -70,7 +70,7 @@ def _make_interaction(approval_message: MagicMock) -> MagicMock:
 def mock_config(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     """承認フローが参照する設定をモックに差し替える。"""
     cfg = MagicMock()
-    cfg.discord.approval_channel = "lilla-approval"
+    cfg.discord.approval_channel_id = "999"
     cfg.discord.my_user_id = "99999"
     monkeypatch.setattr(approval_flow, "_config", cfg)
     return cfg
@@ -102,18 +102,17 @@ def mock_notify_error(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
 
 @pytest.fixture
 def approval_channel() -> MagicMock:
-    """#lilla-approval チャンネルのモックを返す。"""
+    """承認チャンネルのモックを返す。"""
     channel = MagicMock()
-    channel.name = "lilla-approval"
     channel.send = AsyncMock()
     return channel
 
 
 @pytest.fixture
 def bot(approval_channel: MagicMock) -> MagicMock:
-    """承認チャンネルを持つ Discord クライアントのモックを返す。"""
+    """承認チャンネルを ID で解決できる Discord クライアントのモックを返す。"""
     mock_bot = MagicMock()
-    mock_bot.get_all_channels.return_value = [approval_channel]
+    mock_bot.get_channel.return_value = approval_channel
     return mock_bot
 
 
@@ -251,14 +250,25 @@ class TestSendApprovalRequest:
         mock_notify_error.assert_awaited_once()
 
     async def test_skips_when_approval_channel_missing(self, bot: MagicMock) -> None:
-        """承認チャンネルが無い場合は何もしない。"""
-        bot.get_all_channels.return_value = []
+        """承認チャンネルが ID で見つからない場合は何もしない。"""
+        bot.get_channel.return_value = None
         message = _make_external_message("!runtask x")
 
         await approval_flow.send_approval_request(bot, message, "!runtask x")
 
         # 例外を投げずに終了すること以外に副作用が無いことを確認する
-        bot.get_all_channels.assert_called_once()
+        bot.get_channel.assert_called_once_with(999)
+
+    async def test_skips_when_approval_channel_id_not_configured(
+        self, bot: MagicMock, mock_config: MagicMock
+    ) -> None:
+        """承認チャンネル ID が未設定の場合は何もしない。"""
+        mock_config.discord.approval_channel_id = None
+        message = _make_external_message("!runtask x")
+
+        await approval_flow.send_approval_request(bot, message, "!runtask x")
+
+        bot.get_channel.assert_not_called()
 
     async def test_marks_jump_url_as_reference_only(
         self, bot: MagicMock, approval_channel: MagicMock

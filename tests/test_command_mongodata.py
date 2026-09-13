@@ -59,7 +59,7 @@ def _patch_mongo(monkeypatch: pytest.MonkeyPatch, config: MagicMock):
 
 @pytest.fixture(autouse=True)
 def mock_notify_error(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
-    """エラー通知（ERROR ログ + error_channel）をモックに差し替える。
+    """エラー通知（ERROR ログ + error_channel_id）をモックに差し替える。
 
     BODY 解決（`commands.attachment_body`）側の通知も同じモックへ集約する。
     """

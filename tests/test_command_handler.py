@@ -48,7 +48,7 @@ def isolated_registry(monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture()
 def mock_notify_error(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
-    """エラー通知（ERROR ログ + error_channel）をモックに差し替える。"""
+    """エラー通知（ERROR ログ + error_channel_id）をモックに差し替える。"""
     mock = AsyncMock()
     monkeypatch.setattr(command_handler, "notify_error", mock)
     return mock
