@@ -350,6 +350,16 @@ Discord に見せる短い文言のカタログ。表示言語は `lilla.yaml` �
 | `tool_response_ex.py` | ツール実行結果 dict（`success` / `tool_name` / `data` / `error` 形式）を便利に扱う薄いラッパー（`ToolResponseEx`、opt-in） |
 | `date_range.py` | `today` / `yesterday` / `tomorrow` / `last_N_days` / `next_N_days` / `this_week` / `last_week` / `YYYY-MM-DD` / `YYYY-MM-DD/YYYY-MM-DD` 形式の日付範囲 Value Object（`DateRange`。週は日曜始まり・土曜終わり）と、時刻まで指定できる `DateTimeRange`。相対指定の基準日は `local_timezone()` が解決したタイムゾーンのカレンダー日付 |
 
+### builtin_tools/ — コア組み込みのサンプル LLM ツール (`src/lilla_core/builtin_tools/`)
+個人データ・外部サービス依存の無い、コア単体でも動くサンプルツールを置く場所。`pip install`
+するだけで使える組み込みツールの実例で、ツール YAML の `type` にドット区切りの import パス
+（`loaders/tool_paths.py` の `is_import_path`）を指定して参照する。`${CONFIG_ROOT}/tools/` に
+YAML を置いた人だけが有効化する opt-in で、コアが自動で読み込むことはない。
+
+| ファイル | 役割 |
+|----------|------|
+| `llm_current_datetime.py` | 現在日時を返すだけのサンプル LLM ツール。`SCHEMA` と `async def execute(input, context)` を持つ通常の LLM ツールで、`utils/datetime_utils.py` の `local_now()` を使う。有効化例は README（英・日）の「Tool contracts」節を参照 |
+
 ## tests/ — テスト
 `tests/` 配下に各モジュールの単体テストを配置（pytest で実行）。`tests/repository/test_motor_client.py`
 のようにサブディレクトリを切ることもある。`tests/conftest.py` が `sys.path` に `src/` とリポジトリ

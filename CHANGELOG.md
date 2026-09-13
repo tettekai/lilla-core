@@ -27,6 +27,11 @@
   同じく WARNING を出してそのツールだけスキップする。`.` を含まない `type` と `type: self` の
   挙動は従来どおり
 
+- コア組み込みのサンプル LLM ツール `lilla_core.builtin_tools.llm_current_datetime` を追加。
+  個人データ・外部サービスへの依存を持たない軽量なツールで、`${CONFIG_ROOT}/tools/` に
+  `type: lilla_core.builtin_tools.llm_current_datetime` の YAML を置くと opt-in で有効化できる
+  （コアは自動では読み込まない）。import パス指定でコア組み込みツールを使う実例として README に記載
+
 ## [0.4.0] - 2026-09-13
 
 ### Added
