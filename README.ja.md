@@ -364,9 +364,11 @@ class MyExtension(Extension):
 ツールでは常に `client_type` と、入れ子呼び出し用のヘルパー
 `call_tool(tool_name, tool_input)` に加え、そのツールの YAML 固有のキーと、
 拡張の `tool_context_providers()` が返すキー、そして呼び出し元クライアントが
-`run_conversation()` に渡した場合は `client_state` が入ります。task ツールでは、
-スケジュール実行時は `discord_client` / `now` / `llm_tools` が、`!runtask` による
-手動実行時はさらに `params` が渡されます。
+`run_conversation()` に渡した場合は `client_state` が入ります。task ツールにも同じく
+拡張が提供するキーが入り、加えてスケジュール実行時は `discord_client` / `now` /
+`llm_tools` が、`!runtask` による手動実行時はさらに `params` が渡されます。
+どちらのコア確定キーも予約済みで、`tool_context_providers()` が同じ名前を返す拡張は
+静かに上書きされる代わりにロード時に失敗します。
 
 ## コントリビュート
 

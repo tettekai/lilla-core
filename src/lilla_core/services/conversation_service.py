@@ -14,8 +14,8 @@ from typing import Any
 from lilla_core.core.config import get_config
 from lilla_core.core.extension import (
     ConversationContext,
+    build_tool_context,
     get_conversation_start_hooks,
-    get_tool_context_providers,
 )
 from lilla_core.core.runtime_state import is_tools_disabled
 from lilla_core.api.llm_client import chat_to_llm, chat_to_llm_with_tools
@@ -112,21 +112,9 @@ def build_tool_message_content(result: dict) -> str:
     return tool_content
 
 
-def build_tool_context() -> dict:
-    """ツール実行コンテキストを構築する。未設定・未利用のクライアントはスキップする。
-
-    context へ入れる値は各拡張の `tool_context_providers()` が返すプロバイダ
-    から集める。コアは登録内容を列挙するだけなので、ツール（＝必要なクライアント）
-    が増えても本関数を編集する必要はない。1 つのプロバイダが失敗してもそのキーが
-    欠けるだけで、他のプロバイダと呼び出し元の処理は妨げない。
-    """
-    context = {}
-    for name, provider in get_tool_context_providers().items():
-        try:
-            context[name] = provider()
-        except Exception as e:
-            logger.debug("Skipped initialization of %s: %s", name, e)
-    return context
+# `build_tool_context` は `core/extension.py` に実体があり、LLM ツールと task ツールの
+# 両方で共有する。ここから import できる名前は互換のため残している。
+__all__ = ["build_tool_context", "build_tool_message_content", "run_conversation"]
 
 
 async def run_conversation(
