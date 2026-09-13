@@ -323,6 +323,71 @@ class TestLoadLlmToolsFromExtensionRoots:
             )
 
 
+class TestLoadLlmToolsImportPath:
+    """`type` に import パス（`.` 区切り）を書いた場合の解決。"""
+
+    @pytest.fixture()
+    def config_root(self, llm_tool_loader, tmp_path: Path) -> Path:
+        cr = tmp_path / "config_root"
+        (cr / "tools").mkdir(parents=True)
+        return cr
+
+    @pytest.fixture()
+    def package(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+        """`site-packages` 相当の場所に、ツールを同梱したパッケージを置いて import 可能にする。"""
+        import uuid
+
+        name = f"lilla_pack_{uuid.uuid4().hex}"
+        site = tmp_path / "site-packages"
+        (site / name / "tools").mkdir(parents=True)
+        (site / name / "__init__.py").write_text("")
+        (site / name / "tools" / "__init__.py").write_text("HELPER = 'shared'\n")
+        (site / name / "tools" / "llm_extra.py").write_text(
+            "from . import HELPER\n"
+            "SCHEMA = {'name': 'extra', 'description': HELPER, 'input_schema': {}}\n\n"
+            "async def execute(input, context):\n    return 'ok'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.syspath_prepend(str(site))
+        return name
+
+    def test_loads_tool_via_import_path(
+        self, llm_tool_loader, package: str, config_root: Path, tmp_path: Path
+    ) -> None:
+        """import パスで書いたツールは、探索ルートの外（インストール先）にあってもロードできる。"""
+        _write_yaml(config_root / "tools", "llm_extra.yaml", f"type: {package}.tools.llm_extra\n")
+
+        result = llm_tool_loader.load_llm_tools(
+            tool_roots=[tmp_path / "unrelated_root"], config_root=config_root
+        )
+
+        assert "llm_extra" in result
+        # 相対 import が効いている（トップレベルモジュール扱いではない）
+        assert result["llm_extra"]["schema"]["description"] == "shared"
+
+    def test_unimportable_path_is_skipped(
+        self, llm_tool_loader, config_root: Path, tmp_path: Path, caplog
+    ) -> None:
+        """import できない type は WARNING を出してそのツールだけ読み飛ばす。"""
+        _write_yaml(config_root / "tools", "llm_extra.yaml", "type: no_such_pkg_xyz.tools.llm_extra\n")
+
+        with caplog.at_level("WARNING"):
+            result = llm_tool_loader.load_llm_tools(tool_roots=[tmp_path], config_root=config_root)
+
+        assert result == {}
+        assert "Failed to import tool module" in caplog.text
+
+    def test_stem_type_still_uses_file_search(
+        self, llm_tool_loader, package: str, config_root: Path, tmp_path: Path
+    ) -> None:
+        """`.` を含まない type は従来どおりファイル探索で、パッケージの中は見ない。"""
+        _write_yaml(config_root / "tools", "llm_extra.yaml", "type: llm_extra\n")
+
+        result = llm_tool_loader.load_llm_tools(tool_roots=[tmp_path / "empty"], config_root=config_root)
+
+        assert result == {}
+
+
 class TestResolveSelfToolFile:
     """_resolve_self_tool_file の単体テスト。"""
 

@@ -107,28 +107,43 @@ def load_script_class(
     module = _load_module(script_path, tool_dirs)
     if module is None:
         return None
-    resolved_path = script_path.resolve()
+    return find_tool_class(module, class_name, str(script_path.resolve()))
 
+
+def _is_tool_class(obj: object) -> bool:
+    """`execute` メソッドを持つ型（ツールクラス）かどうかを返す。"""
+    return isinstance(obj, type) and callable(getattr(obj, "execute", None))
+
+
+def find_tool_class(
+    module: ModuleType, class_name: str | None = None, origin: str | None = None
+) -> type | None:
+    """読み込み済みモジュールからツールクラスを取り出す。
+
+    ファイルから読んだモジュール（`load_script_class`）と、import パスで読んだ
+    モジュール（`task_tool_loader`）の両方で共有する。
+
+    Args:
+        module: 探索対象のモジュール。
+        class_name: 取り出すクラス名。`None` なら `execute` を持つ最初の型を返す。
+        origin: ログに出す出所（ファイルパスや import パス）。省略時はモジュール名。
+
+    Returns:
+        ツールクラス。見つからない・不正な場合は `None`。
+    """
+    where = origin or getattr(module, "__name__", repr(module))
     if class_name:
         cls = getattr(module, class_name, None)
-        if not (
-            isinstance(cls, type)
-            and hasattr(cls, "execute")
-            and callable(getattr(cls, "execute"))
-        ):
-            logger.warning("Class %s not found or invalid: %s", class_name, resolved_path)
+        if not _is_tool_class(cls):
+            logger.warning("Class %s not found or invalid: %s", class_name, where)
             return None
         return cls
 
     # class_name None時は最初のツールクラスを探す
     for attr_name in dir(module):
         attr = getattr(module, attr_name)
-        if (
-            isinstance(attr, type)
-            and hasattr(attr, "execute")
-            and callable(getattr(attr, "execute"))
-        ):
+        if _is_tool_class(attr):
             return attr
 
-    logger.warning("Tool class not found: %s", resolved_path)
+    logger.warning("Tool class not found: %s", where)
     return None

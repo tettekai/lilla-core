@@ -368,6 +368,12 @@ Tools are loaded dynamically from `${TOOL_ROOT}/**/*.py` based on YAML config fi
   see `tool_support/tool_result.py` for the helper constructors).
 - If the YAML's `type` is `self`, the loader skips searching `TOOL_ROOT` and instead
   loads the `.py` file next to the YAML with the same stem.
+- If the YAML's `type` contains a dot (`type: lilla_google_calendar.tools.calendar_get`),
+  it is an **import path**: the loader imports that module with `importlib` instead of
+  searching the tool roots. This is how an installed package (for example an extension
+  published on PyPI) ships its tools. The module is a regular import, so relative imports
+  inside it work and no directory check applies; an import failure is logged as a
+  warning and only that tool is skipped, like a missing file.
 - The YAML may set `description` (overrides the schema's description),
   `supported_client_type` (defaults to `"all"`), a `cache` block, and other
   tool-specific keys — the latter must not collide with the runtime context keys
@@ -382,6 +388,8 @@ Tools are loaded dynamically from `${TOOL_ROOT}/**/*.py` based on YAML config fi
   expression string) attributes, plus `async def execute(context: dict) -> None`.
 - `schedule` is optional — a tool without it is not registered with the scheduler, but
   can still be run manually via `!runtask`.
+- `type` accepts an import path here too (`type: some_package.tasks.daily_summary`); the
+  class is looked up in the imported module the same way as in a file.
 
 **The `context` dict passed to `execute`** varies by call site. For LLM tools it always
 includes `client_type` and a nested-call helper `call_tool(tool_name, tool_input)`,

@@ -137,6 +137,36 @@ class TestLoadScriptFunction:
 
 
 # ---------------------------------------------------------------------------
+# TestFindToolClass
+# ---------------------------------------------------------------------------
+
+
+class TestFindToolClass:
+    def _module(self, script_loader, tmp_path: Path, source: str):
+        """テスト用の .py を書いて `_load_module` で読み込んだモジュールを返す。"""
+        script = write_script(tmp_path, "mod.py", source)
+        return script_loader._load_module(script, [tmp_path])
+
+    def test_finds_named_class(self, script_loader, tmp_path: Path) -> None:
+        """class_name 指定で該当クラスを返す。"""
+        module = self._module(script_loader, tmp_path, "class T:\n    def execute(self): pass\n")
+        assert script_loader.find_tool_class(module, "T") is module.T
+
+    def test_auto_detects_first_tool_class(self, script_loader, tmp_path: Path) -> None:
+        """class_name 省略時は execute を持つ最初の型を返す。"""
+        module = self._module(
+            script_loader, tmp_path, "class NotTool:\n    pass\nclass T:\n    def execute(self): pass\n"
+        )
+        assert script_loader.find_tool_class(module) is module.T
+
+    def test_returns_none_when_absent(self, script_loader, tmp_path: Path) -> None:
+        """ツールクラスが無ければ None。"""
+        module = self._module(script_loader, tmp_path, "X = 1\n")
+        assert script_loader.find_tool_class(module) is None
+        assert script_loader.find_tool_class(module, "Missing") is None
+
+
+# ---------------------------------------------------------------------------
 # TestLoadScriptClass
 # ---------------------------------------------------------------------------
 
