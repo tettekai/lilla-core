@@ -28,6 +28,7 @@ from __future__ import annotations
 import importlib
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
@@ -51,6 +52,25 @@ DeliveryFn = Callable[[str], Awaitable[None]]
 PromptProvider = Callable[[], str]
 ConversationStartHook = Callable[[Any], Awaitable[None]]
 ContextValueProvider = Callable[[], Any]
+
+
+@dataclass(frozen=True)
+class SetupContext:
+    """`Extension.setup()` に渡す起動時の文脈。
+
+    位置引数を並べる代わりに 1 つのオブジェクトで渡すことで、後からフィールドを
+    足しても既存の拡張の `setup()` シグネチャを壊さない（フィールド追加は非破壊、
+    既存フィールドの削除・改名は破壊的変更として扱う）。
+    """
+
+    #: task ツールのレジストリ（`load_all_tools()` の戻り値）。
+    tools: Any
+    #: LLM ツールのレジストリ（`get_llm_tools()` の戻り値）。
+    llm_tools: Any
+    #: Discord クライアント。
+    bot: Any
+    #: プロセス全体で共有する設定（`get_config()` と同じインスタンス）。
+    config: Any
 
 
 class Extension:
@@ -131,8 +151,12 @@ class Extension:
         """
         return False
 
-    async def setup(self, tools: Any, llm_tools: Any, bot: Any) -> None:
-        """`bot.start()` の前に await される起動処理。例外は fail-fast。"""
+    async def setup(self, ctx: SetupContext) -> None:
+        """`bot.start()` の前に await される起動処理。例外は fail-fast。
+
+        Args:
+            ctx: ツールレジストリ・Discord クライアント・設定をまとめた起動時の文脈。
+        """
         return None
 
 
@@ -408,9 +432,21 @@ def get_conversation_start_hook(client_type: str) -> ConversationStartHook | Non
 
 
 async def run_setup_hooks(tools: Any, llm_tools: Any, bot: Any) -> None:
-    """全拡張の `setup()` をロード順に await する。例外はそのまま伝播させる。"""
+    """全拡張の `setup()` をロード順に await する。例外はそのまま伝播させる。
+
+    `SetupContext` はここで 1 つだけ組み立て、全拡張へ同じインスタンスを渡す。
+    `config` は呼び出し時点の `get_config()`（拡張の申告を合成済みのもの）。
+
+    Args:
+        tools: task ツールのレジストリ。
+        llm_tools: LLM ツールのレジストリ。
+        bot: Discord クライアント。
+    """
+    from lilla_core.core.config import get_config
+
+    ctx = SetupContext(tools=tools, llm_tools=llm_tools, bot=bot, config=get_config())
     for ext in _extensions:
-        await ext.setup(tools, llm_tools, bot)
+        await ext.setup(ctx)
 
 
 async def dispatch_on_message(message: Any, bot: Any = None) -> bool:

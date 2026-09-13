@@ -26,6 +26,11 @@
 
 ### Changed
 
+- **BREAKING**: `Extension.setup()` の引数を位置引数 3 つ（`tools, llm_tools, bot`）から
+  `SetupContext` 1 つに変更した。`ctx.tools` / `ctx.llm_tools` / `ctx.bot` で従来と同じ値を、
+  `ctx.config` でプロセスの設定（`get_config()` と同じインスタンス）を参照できる。
+  今後フィールドを足しても既存の拡張の `setup()` を壊さないための変更。旧シグネチャの拡張は
+  起動時に `TypeError` で落ちる
 - **BREAKING**: `paths.allowed_tool_paths`（ツール実行パスのホワイトリスト）を撤去した。
   ツールの `.py` は起動時に `paths.tool_root`・拡張の `tool_roots()`・`${CONFIG_ROOT}/tools`
   の中だけで解決され、実行時にファイルパスが新たに解決される経路が無いため、`tool_root` の

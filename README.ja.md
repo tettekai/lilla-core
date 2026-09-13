@@ -186,8 +186,8 @@ class MyExtension(Extension):
     def tool_context_providers(self):
         return {"my_client": get_my_client}
 
-    async def setup(self, tools, llm_tools, bot):
-        await start_my_http_server(llm_tools, tools, bot)
+    async def setup(self, ctx):
+        await start_my_http_server(ctx.llm_tools, ctx.tools, ctx.bot)
 
 
 extension = MyExtension()
@@ -197,7 +197,7 @@ extension = MyExtension()
 |----------|------|
 | `startup_repos` | `on_ready` で初期化する追加リポジトリファクトリ |
 | `on_message` | `on_message` の冒頭で呼ばれる。`True` を返すと以降の処理を止める |
-| `setup` | `bot.start()` の前に await される起動処理（HTTP サーバー等） |
+| `setup` | `bot.start()` の前に await される起動処理（HTTP サーバー等）。引数は `SetupContext` 1 つ（`tools` / `llm_tools` / `bot` / `config`）で、フィールドの追加は既存の拡張を壊さない |
 | `result_deliveries` | `!toolresult` の配送先を `client_type` ごとに指定 |
 | `client_prompt_providers` | `client_type` ごとのシステムプロンプト追記 |
 | `conversation_start_hooks` | 会話処理開始前のクライアント固有の前処理 |
