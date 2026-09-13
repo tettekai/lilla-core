@@ -16,6 +16,13 @@
 コアが持つ内蔵デフォルト（`client_type="discord"` のプロンプトなど）との
 重複は衝突とみなさず、拡張側が優先される。
 
+拡張どうしの依存は宣言的に書く。`requires` に依存する拡張の `name` を並べると、
+その拡張がロード済みで、かつ `LILLA_EXTENSIONS` 上で自分より前に並んでいることを
+ロード時に検証する（自動並べ替えはしない）。他の拡張が提供する YAML セクション・
+秘匿フィールド・ツール実行 context キーを読むだけなら、`required_config_sections()` /
+`required_env_fields()` / `required_tool_context_keys()` で「誰かが提供していること」を
+検証させる。汎用の `validate()` フックは持たず、実行時の検査は `setup()` で行う。
+
 設定の差分は `config_models()` / `env_fields()` で申告する。`load_extensions()`
 が全拡張の申告をマージし、`core/config.py` の `compose_config()` で 1 つの
 `AppConfig` へ組んでプロセスの設定に据える。ホストが `AppConfig` のサブクラスを
@@ -109,6 +116,11 @@ class Extension:
     #: 拡張の一意な名前。ログと衝突検査に使う。空文字・未設定はロード時に落とす。
     name: str = ""
 
+    #: 依存する拡張の `name` のタプル。ここに並べた拡張がロードされていない、または
+    #: `LILLA_EXTENSIONS` 上で自分より後ろに並んでいる場合はロード時に fail-fast する。
+    #: コアは順序を並べ替えないため、利用者が正しい順に並べる。
+    requires: tuple[str, ...] = ()
+
     def config_models(self) -> dict[str, type[BaseModel]]:
         """この拡張が足す YAML セクションを「セクション名 -> モデル」で返す。
 
@@ -133,7 +145,24 @@ class Extension:
 
         どの拡張も提供しておらず、コア確定のセクションでもない名前を書いた場合は
         ロード時に fail-fast する。存在の検査だけを行い、拡張どうしの依存を
-        自動で解決したり、読み込み順を並べ替えたりはしない。
+        自動で解決したり、読み込み順を並べ替えたりはしない（順序は `requires`）。
+        """
+        return []
+
+    def required_env_fields(self) -> list[str]:
+        """自分では提供しないが `get_config().env` で読む秘匿フィールド名を返す。
+
+        どの拡張も `env_fields()` で提供しておらず、コア確定の `EnvConfig` フィールドでも
+        ない名前を書いた場合はロード時に fail-fast する。
+        """
+        return []
+
+    def required_tool_context_keys(self) -> list[str]:
+        """自分では提供しないが、自分のツールが実行 context から読むキー名を返す。
+
+        どの拡張も `tool_context_providers()` で提供しておらず、コアが実行時に注入する
+        共通キー（`client_type` / `call_tool` など）でもない名前を書いた場合はロード時に
+        fail-fast する。
         """
         return []
 
@@ -284,26 +313,78 @@ def _validate_names(extensions: list[Extension]) -> None:
         seen.add(name)
 
 
-def _validate_required_sections(extensions: list[Extension], provided: set[str]) -> None:
-    """`required_config_sections()` が指す YAML セクションが実在することを検証する。
+def _validate_required(
+    extensions: list[Extension], method_name: str, label: str, available: set[str]
+) -> None:
+    """各拡張の「要求側の申告」が、誰かの提供またはコア確定の名前で満たされることを検証する。
+
+    `required_config_sections()` / `required_env_fields()` / `required_tool_context_keys()`
+    の 3 つが同じ形で使う。存在の検査だけを行い、提供側の並び順は問わない。
 
     Args:
         extensions: ロード順に並んだ拡張のリスト。
-        provided: 拡張が `config_models()` で提供するセクション名の集合。
+        method_name: 要求する名前のリストを返すメソッド名。
+        label: 例外メッセージに出す種類名（例: `"config section"`）。
+        available: 提供済みの名前とコア確定の名前を合わせた集合。
 
     Raises:
-        ValueError: 誰も提供しておらず、コア確定のセクションでもない名前を要求した場合。
+        ValueError: 誰も提供しておらず、コア確定の名前でもない名前を要求した場合。
     """
-    from lilla_core.core.config import core_config_section_names
-
-    available = provided | set(core_config_section_names())
     for ext in extensions:
-        for section in ext.required_config_sections():
-            if section not in available:
+        for key in getattr(ext, method_name)():
+            if key not in available:
                 raise ValueError(
-                    f"Extension '{ext.name}' requires config section '{section}', "
+                    f"Extension '{ext.name}' requires {label} '{key}', "
                     "but no loaded extension provides it"
                 )
+
+
+def _validate_requires(extensions: list[Extension]) -> None:
+    """`requires` が指す拡張がロード済みで、かつ自分より前に並んでいることを検証する。
+
+    コアは順序を並べ替えない。`on_message` の連鎖・`setup()` の await 順・
+    `tool_roots()` の探索順は「ロード順」に依存するため、依存先が先に来るよう
+    利用者が `LILLA_EXTENSIONS` を並べる。
+
+    Args:
+        extensions: ロード順に並んだ拡張のリスト。
+
+    Raises:
+        ValueError: `requires` が文字列のタプル / リストでない場合、依存先が
+            ロードされていない場合、または依存先が自分より後ろに並んでいる場合。
+    """
+    position = {ext.name: index for index, ext in enumerate(extensions)}
+    for index, ext in enumerate(extensions):
+        requires = getattr(ext, "requires", ())
+        if not isinstance(requires, (tuple, list)) or not all(
+            isinstance(name, str) for name in requires
+        ):
+            raise ValueError(
+                f"Extension '{ext.name}' must define 'requires' as a tuple of "
+                f"extension names, got {requires!r}"
+            )
+        for name in requires:
+            if name not in position:
+                raise ValueError(
+                    f"Extension '{ext.name}' requires extension '{name}', "
+                    f"but it is not listed in {EXTENSIONS_ENV_VAR}"
+                )
+            if position[name] >= index:
+                raise ValueError(
+                    f"Extension '{ext.name}' requires extension '{name}', "
+                    f"which must be listed before it in {EXTENSIONS_ENV_VAR}"
+                )
+
+
+def _core_tool_context_keys() -> frozenset[str]:
+    """コアが実行時にツール context へ必ず注入するキーの集合を返す。
+
+    `loaders/llm_tool_loader.py` の定義を正とし、`call_tool`（入れ子呼び出し用に
+    各階層で作り直される）も含める。循環 import を避けるため呼び出し時に読む。
+    """
+    from lilla_core.loaders.llm_tool_loader import _CORE_RUNTIME_CONTEXT_KEYS
+
+    return _CORE_RUNTIME_CONTEXT_KEYS | {"call_tool"}
 
 
 def set_extensions(extensions: list[Extension]) -> None:
@@ -322,8 +403,10 @@ def set_extensions(extensions: list[Extension]) -> None:
     Raises:
         TypeError: `Extension` のインスタンスでない要素が含まれる場合。
         ValueError: 名前または貢献キーが衝突している場合、コア確定のセクション名 /
-            `EnvConfig` フィールド名を提供した場合、または誰も提供していない
-            セクションを `required_config_sections()` が要求している場合。
+            `EnvConfig` フィールド名を提供した場合、`requires` の拡張が未ロードか
+            自分より後ろに並んでいる場合、または誰も提供していない名前を
+            `required_config_sections()` / `required_env_fields()` /
+            `required_tool_context_keys()` が要求している場合。
     """
     from lilla_core.core.config import core_config_section_names, core_env_field_names
 
@@ -333,6 +416,7 @@ def set_extensions(extensions: list[Extension]) -> None:
                 f"Expected an Extension instance, got {type(ext).__name__}"
             )
     _validate_names(extensions)
+    _validate_requires(extensions)
 
     config_models = _merge_unique(
         extensions, "config_models", "config model", reserved=core_config_section_names()
@@ -340,9 +424,26 @@ def set_extensions(extensions: list[Extension]) -> None:
     env_fields = _merge_unique(
         extensions, "env_fields", "env field", reserved=core_env_field_names()
     )
-    _validate_required_sections(extensions, set(config_models))
+    _validate_required(
+        extensions,
+        "required_config_sections",
+        "config section",
+        set(config_models) | set(core_config_section_names()),
+    )
+    _validate_required(
+        extensions,
+        "required_env_fields",
+        "env field",
+        set(env_fields) | set(core_env_field_names()),
+    )
 
     tool_context = _merge_unique(extensions, "tool_context_providers", "tool context provider")
+    _validate_required(
+        extensions,
+        "required_tool_context_keys",
+        "tool context key",
+        set(tool_context) | set(_core_tool_context_keys()),
+    )
     deliveries = _merge_unique(
         extensions,
         "result_deliveries",
@@ -395,8 +496,8 @@ def load_extensions(spec: str | None = None) -> list[Extension]:
         ImportError: モジュールを import できない場合。
         AttributeError: モジュールが `extension` 属性を持たない場合。
         TypeError: `extension` が `Extension` インスタンスでない場合。
-        ValueError: 名前または貢献キーが衝突している場合、または
-            `required_config_sections()` が誰も提供しないセクションを要求した場合。
+        ValueError: 名前または貢献キーが衝突している場合、`requires` の依存が
+            満たされない場合、または `required_*()` が誰も提供しない名前を要求した場合。
         pydantic.ValidationError: 合成後のモデルで設定の検証に失敗した場合。
     """
     if spec is None:
