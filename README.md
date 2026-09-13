@@ -192,8 +192,8 @@ class MyExtension(Extension):
     def tool_context_providers(self):
         return {"my_client": get_my_client}
 
-    async def setup(self, tools, llm_tools, bot):
-        await start_my_http_server(llm_tools, tools, bot)
+    async def setup(self, ctx):
+        await start_my_http_server(ctx.llm_tools, ctx.tools, ctx.bot)
 
 
 extension = MyExtension()
@@ -203,7 +203,7 @@ extension = MyExtension()
 |----------|------|
 | `startup_repos` | Extra repository factories to initialize on `on_ready` |
 | `on_message` | Invoked at the start of `on_message`; return `True` to stop further handling |
-| `setup` | Startup work awaited before `bot.start()` (e.g. an HTTP server) |
+| `setup` | Startup work awaited before `bot.start()` (e.g. an HTTP server). Receives one `SetupContext` (`tools`, `llm_tools`, `bot`, `config`); new fields may be added without breaking existing extensions |
 | `result_deliveries` | Where `!toolresult` delivers results, per `client_type` |
 | `client_prompt_providers` | System prompt additions per `client_type` |
 | `conversation_start_hooks` | Client-specific preprocessing before conversation handling starts |

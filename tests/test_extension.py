@@ -99,7 +99,8 @@ class TestExtensionDefaults:
 
     async def test_setup_default_does_nothing(self) -> None:
         """デフォルトの `setup` は何もせず None を返す。"""
-        assert await Extension().setup({}, {}, MagicMock()) is None
+        ctx = ext_module.SetupContext(tools={}, llm_tools={}, bot=MagicMock(), config=MagicMock())
+        assert await Extension().setup(ctx) is None
 
 
 # ---------------------------------------------------------------------------
@@ -472,7 +473,43 @@ class TestRunSetupHooks:
         await ext_module.run_setup_hooks(tools, llm_tools, bot)
 
         assert order == ["a", "b"]
-        first.assert_awaited_once_with(tools, llm_tools, bot)
+        first.assert_awaited_once()
+        (ctx,), _ = first.await_args
+        assert isinstance(ctx, ext_module.SetupContext)
+        assert ctx.tools is tools
+        assert ctx.llm_tools is llm_tools
+        assert ctx.bot is bot
+
+    async def test_context_carries_process_config(self, make_extension) -> None:
+        """`SetupContext.config` は呼び出し時点の `get_config()` と同じインスタンス。"""
+        from lilla_core.core.config import get_config
+
+        setup = AsyncMock()
+        ext_module.set_extensions([make_extension("a", setup=setup)])
+
+        await ext_module.run_setup_hooks({}, {}, MagicMock())
+
+        (ctx,), _ = setup.await_args
+        assert ctx.config is get_config()
+
+    async def test_same_context_is_shared_by_all_extensions(self, make_extension) -> None:
+        """全拡張へ同じ `SetupContext` インスタンスを渡す。"""
+        first, second = AsyncMock(), AsyncMock()
+        ext_module.set_extensions([
+            make_extension("a", setup=first),
+            make_extension("b", setup=second),
+        ])
+
+        await ext_module.run_setup_hooks({}, {}, MagicMock())
+
+        assert first.await_args.args[0] is second.await_args.args[0]
+
+    async def test_context_is_immutable(self) -> None:
+        """`SetupContext` は frozen で、拡張が中身を差し替えられない。"""
+        ctx = ext_module.SetupContext(tools={}, llm_tools={}, bot=MagicMock(), config=MagicMock())
+
+        with pytest.raises(Exception):
+            ctx.tools = {"x": 1}  # type: ignore[misc]
 
     async def test_exception_propagates(self, make_extension) -> None:
         """`setup()` の例外は握りつぶさず起動を止める。"""
