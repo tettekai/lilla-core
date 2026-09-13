@@ -8,7 +8,7 @@
 - load_all_tools             : 上記の組み合わせ（統合テスト）
 
 対象外:
-- load_script_class の実ファイルロード経路（ALLOWED_PATHS 絡み、script_loader テストで検証済み）
+- load_script_class の実ファイルロード経路（script_loader テストで検証済み）
 """
 from __future__ import annotations
 
@@ -223,7 +223,7 @@ class TestResolveToolClass:
         py_file = tmp_path / "schedule" / "task_foo.py"
         py_file.parent.mkdir(parents=True)
         py_file.touch()
-        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path: FakeClass)
+        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path, **kw: FakeClass)
 
         result = task_tool_loader._resolve_tool_class("task_foo", [tmp_path], {})
         assert result is FakeClass
@@ -234,7 +234,7 @@ class TestResolveToolClass:
         """ファイルが存在しても load_script_class が None を返す → None"""
         py_file = tmp_path / "task_foo.py"
         py_file.touch()
-        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path: None)
+        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path, **kw: None)
 
         result = task_tool_loader._resolve_tool_class("task_foo", [tmp_path], {})
         assert result is None
@@ -244,7 +244,7 @@ class TestResolveToolClass:
     ) -> None:
         """rglob でファイルが見つからない → None（load_script_class は呼ばれない）"""
         called = []
-        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path: called.append(path) or None)
+        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path, **kw: called.append(path) or None)
 
         result = task_tool_loader._resolve_tool_class("task_foo", [tmp_path], {})
         assert result is None
@@ -258,7 +258,7 @@ class TestResolveToolClass:
         py_file = tmp_path / "schedule" / "task_foo.py"
         py_file.parent.mkdir(parents=True)
         py_file.touch()
-        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path: captured.append(path) or None)
+        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path, **kw: captured.append(path) or None)
 
         task_tool_loader._resolve_tool_class("task_foo", [tmp_path], {})
         assert captured[0] == py_file
@@ -271,7 +271,7 @@ class TestResolveToolClass:
         py_file = tmp_path / "task_foo.py"
         py_file.touch()
 
-        def fake_load(path):
+        def fake_load(path, **kw):
             nonlocal call_count
             call_count += 1
             return _make_tool_class()
@@ -290,7 +290,7 @@ class TestResolveToolClass:
         FakeClass = _make_tool_class()
         class_map = {"task_foo": FakeClass}
         # load_script_class が呼ばれたら失敗させる
-        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path: None)
+        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path, **kw: None)
 
         result = task_tool_loader._resolve_tool_class("task_foo", [tmp_path], class_map)
         assert result is FakeClass
@@ -329,7 +329,7 @@ class TestLoadAllTools:
     ) -> None:
         """type フィールドなし YAML → スキップ（空 dict）"""
         _write_yaml(config_root / "tools", "task_no_type.yaml", "name: No Type\n")
-        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path: None)
+        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path, **kw: None)
 
         result = task_tool_loader.load_all_tools(
             tool_roots=[tool_root], config_root=config_root, class_map={}
@@ -345,7 +345,7 @@ class TestLoadAllTools:
     ) -> None:
         """対応する .py が見つからない → スキップ"""
         _write_yaml(config_root / "tools", "task_tool.yaml", "type: task_foo\n")
-        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path: None)
+        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path, **kw: None)
 
         result = task_tool_loader.load_all_tools(
             tool_roots=[tool_root], config_root=config_root, class_map={}
@@ -366,7 +366,7 @@ class TestLoadAllTools:
         py_file = tool_root / "task_foo.py"
         tool_root.mkdir(parents=True)
         py_file.touch()
-        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path: _make_tool_class())
+        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path, **kw: _make_tool_class())
 
         result = task_tool_loader.load_all_tools(
             tool_roots=[tool_root], config_root=config_root, class_map={}
@@ -385,7 +385,7 @@ class TestLoadAllTools:
         py_file = tool_root / "task_foo.py"
         tool_root.mkdir(parents=True)
         py_file.touch()
-        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path: _make_tool_class())
+        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path, **kw: _make_tool_class())
 
         result = task_tool_loader.load_all_tools(
             tool_roots=[tool_root], config_root=config_root, class_map={}
@@ -406,7 +406,7 @@ class TestLoadAllTools:
         py_file = tool_root / "task_foo.py"
         tool_root.mkdir(parents=True)
         py_file.touch()
-        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path: _make_tool_class())
+        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path, **kw: _make_tool_class())
 
         result = task_tool_loader.load_all_tools(
             tool_roots=[tool_root], config_root=config_root, class_map={}
@@ -426,7 +426,7 @@ class TestLoadAllTools:
         py_file = tool_root / "task_foo.py"
         tool_root.mkdir(parents=True)
         py_file.touch()
-        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path: _make_tool_class())
+        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path, **kw: _make_tool_class())
 
         before = dict(task_tool_loader.tool_class_map)
         task_tool_loader.load_all_tools(

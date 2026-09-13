@@ -26,6 +26,18 @@
 
 ### Changed
 
+- **BREAKING**: `paths.allowed_tool_paths`（ツール実行パスのホワイトリスト）を撤去した。
+  ツールの `.py` は起動時に `paths.tool_root`・拡張の `tool_roots()`・`${CONFIG_ROOT}/tools`
+  の中だけで解決され、実行時にファイルパスが新たに解決される経路が無いため、`tool_root` の
+  設定ミスに対する重複した検査になっていた。また拡張の `tool_roots()` が自動で許可されず、
+  pip で入れた拡張のツールが `site-packages` 配下として静かにスキップされていた。YAML に
+  残っていても無視される（`PathsConfig` は既定で未知のキーを捨てる）。代わりに
+  `loaders/tool_paths.py` の `resolve_tool_dirs()` / `is_within_tool_dirs()` が、解決後の
+  ツールファイルが探索ルートか `${CONFIG_ROOT}/tools` の配下にあることを設定なしで検査する
+  （`..` を含む `type` や外を指すシンボリックリンクは読み込まない）。信頼境界は `SECURITY.md`
+  に明記した（`CONFIG_ROOT` と各ツールディレクトリは拡張モジュールと同じ信頼レベル）
+- `loaders/script_loader.py` の `load_script_function` / `load_script_class` に `tool_dirs`
+  引数を追加した。省略時は設定から導いたディレクトリで検査する
 - **BREAKING**: `lilla.yaml` の `discord:` セクションで、エラー通知・承認依頼の送信先チャンネルを
   名前ではなく ID で指定するようになった。`error_channel`（チャンネル名）は `error_channel_id`
   （チャンネル ID）へ、`approval_channel`（チャンネル名、既定 `lilla-approval`）は

@@ -27,4 +27,3 @@ llm:
 
 paths:
   tool_root: /tmp/lilla-tools
-  allowed_tool_paths: /tmp/lilla-tools

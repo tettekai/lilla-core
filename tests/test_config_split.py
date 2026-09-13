@@ -200,14 +200,15 @@ class TestProxyConfig:
 
 
 class TestPathsConfig:
-    """`paths` セクションのヘルパー。"""
+    """`paths` セクション。"""
 
-    def test_allowed_tool_paths_list_splits_and_resolves(self) -> None:
-        paths = _config_module.PathsConfig(allowed_tool_paths="/app/tools, /app/config/tools")
-        assert paths.allowed_tool_paths_list == [
-            Path("/app/tools"),
-            Path("/app/config/tools"),
-        ]
+    def test_legacy_allowed_tool_paths_is_ignored(self) -> None:
+        """撤去済みの `allowed_tool_paths` が YAML に残っていても起動は落ちない（読みもしない）。"""
+        paths = _config_module.PathsConfig(
+            tool_root="/app/tools", allowed_tool_paths="/app/tools,/app/config/tools"
+        )
+        assert paths.tool_root == Path("/app/tools")
+        assert not hasattr(paths, "allowed_tool_paths")
 
 
 class TestUiConfig:

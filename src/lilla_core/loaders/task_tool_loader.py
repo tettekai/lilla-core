@@ -29,13 +29,14 @@ def _resolve_tool_class(
     """tool_type に対応するクラスを返す。キャッシュ済みなら再利用、なければロード。
 
     同名のツールファイルが複数のツールルートにある場合は `find_tool_file` が
-    例外を投げる（どちらが使われるかを暗黙にしないため）。
+    例外を投げる（どちらが使われるかを暗黙にしないため）。ロードは探索に使った
+    `tool_roots` の配下に閉じる（解決後のパスが外へ出ていればロードしない）。
     """
     if tool_type not in class_map:
         py_file = find_tool_file(tool_type, tool_roots)
         if py_file is None:
             return None
-        cls = load_script_class(py_file)
+        cls = load_script_class(py_file, tool_dirs=tool_roots)
         if not cls:
             return None
         class_map[tool_type] = cls

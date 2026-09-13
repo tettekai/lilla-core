@@ -107,3 +107,76 @@ class TestFindToolFile:
 
         assert found is not None
         assert found.name == "llm_dup.py"
+
+
+class TestResolveToolDirs:
+    def test_appends_config_tools_dir_to_given_roots(self, tmp_path: Path) -> None:
+        """渡した探索ルートの後ろに `config_root/tools` を足し、すべて解決済みで返す。"""
+        root = tmp_path / "tools"
+        root.mkdir()
+        config_root = tmp_path / "config"
+
+        assert tool_paths.resolve_tool_dirs([root], config_root) == [
+            root.resolve(),
+            (config_root / "tools").resolve(),
+        ]
+
+    def test_defaults_come_from_config_and_extensions(
+        self, mock_cfg: MagicMock, make_extension, use_extensions, tmp_path: Path
+    ) -> None:
+        """省略時は `resolve_tool_roots()` と設定の `env.config_root` から導く。"""
+        mock_cfg.paths.tool_root = tmp_path / "core"
+        mock_cfg.env.config_root = tmp_path / "config"
+        use_extensions(make_extension("a", tool_roots=[tmp_path / "pack"]))
+
+        assert tool_paths.resolve_tool_dirs() == [
+            (tmp_path / "core").resolve(),
+            (tmp_path / "pack").resolve(),
+            (tmp_path / "config" / "tools").resolve(),
+        ]
+
+
+class TestIsWithinToolDirs:
+    def test_file_under_a_dir_is_accepted(self, tmp_path: Path) -> None:
+        """いずれかのディレクトリの配下なら True。"""
+        target = tmp_path / "tools" / "sub" / "llm_x.py"
+        target.parent.mkdir(parents=True)
+        target.touch()
+
+        assert tool_paths.is_within_tool_dirs(target, [tmp_path / "tools"])
+
+    def test_file_outside_is_rejected(self, tmp_path: Path) -> None:
+        """どのディレクトリの配下でもなければ False。"""
+        (tmp_path / "tools").mkdir()
+        outside = tmp_path / "outside.py"
+        outside.touch()
+
+        assert not tool_paths.is_within_tool_dirs(outside, [tmp_path / "tools"])
+
+    def test_parent_segments_are_resolved_before_checking(self, tmp_path: Path) -> None:
+        """`..` を含むパスは解決してから比較する（ルートを抜ける経路を許さない）。"""
+        (tmp_path / "tools").mkdir()
+        outside = tmp_path / "outside.py"
+        outside.touch()
+        sneaky = tmp_path / "tools" / ".." / "outside.py"
+
+        assert not tool_paths.is_within_tool_dirs(sneaky, [tmp_path / "tools"])
+
+    def test_symlink_is_resolved_before_checking(self, tmp_path: Path) -> None:
+        """ルート内のシンボリックリンクが外を指していれば False。"""
+        root = tmp_path / "tools"
+        root.mkdir()
+        outside = tmp_path / "outside.py"
+        outside.touch()
+        link = root / "llm_x.py"
+        link.symlink_to(outside)
+
+        assert not tool_paths.is_within_tool_dirs(link, [root])
+
+    def test_unresolved_dirs_are_resolved_too(self, tmp_path: Path) -> None:
+        """ディレクトリ側に `..` があっても解決してから比較する。"""
+        target = tmp_path / "tools" / "llm_x.py"
+        target.parent.mkdir()
+        target.touch()
+
+        assert tool_paths.is_within_tool_dirs(target, [tmp_path / "other" / ".." / "tools"])

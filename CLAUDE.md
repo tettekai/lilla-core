@@ -302,8 +302,8 @@ Discord に見せる短い文言のカタログ。表示言語は `lilla.yaml` �
 |----------|------|
 | `llm_tool_loader.py` | `${CONFIG_ROOT}/tools/llm_*.yaml` と、`loaders/tool_paths.py` が解決したツールルート配下の `llm_*.py`（および `type: self` の場合は YAML と同名の `.py`）を動的に読み込む。LLM に渡す tools パラメータの構築（`build_tools_param`）と tool_call の実行（`execute_tool_call`）を担う。実行時にツールへ注入される context には `call_tool`（入れ子呼び出し用。深さ上限 `MAX_TOOL_CALL_DEPTH=5`）を自動的に加える。`tool_config` が実行時共通キー（`client_type` 等。拡張の `tool_context_providers()` が返すキー名も含む）と衝突していないか起動時に検証し、衝突時は fail-fast する（`_validate_no_runtime_key_collision`）。ツール設定の `cache.mode`（`disable` / `enable` / `auto`）に応じた実行結果の MongoDB キャッシュ保存（`_save_tool_cache`）、`client_type == "discord"` かつ通知コールバックが注入されている場合のツール呼び出しログ送信（`_notify_tool_call`）も担う |
 | `task_tool_loader.py` | `${CONFIG_ROOT}/tools/task_*.yaml` と、`loaders/tool_paths.py` が解決したツールルート配下の Python クラスを動的に読み込む（`load_all_tools`）。定期実行タスクのクラスマップをキャッシュし、ファイル名プレフィックス（`task_` / `llm_` / `system_`）からトリガー種別を判定する |
-| `script_loader.py` | ホワイトリスト検証（`AppConfig.paths.allowed_tool_paths_list`。拡張のロード後に差し替えられた設定を読むため、import 時ではなく呼び出しのたびに取得する）付きで外部 Python 関数・クラスを安全にロードする（`load_script_function` / `load_script_class`） |
-| `tool_paths.py` | ツール探索ルートの解決（`resolve_tool_roots`。`paths.tool_root` の後に拡張の `tool_roots()` をロード順で足す）と、ツールファイルの検索（`find_tool_file`）。同名ファイルが複数ルートにあれば fail-fast し、1 ルート内の重複は従来どおり先頭マッチを使う。追加ルートはファイル探索専用で、`sys.path` へ入れるのは `paths.tool_root` の親だけ |
+| `script_loader.py` | 外部 Python 関数・クラスをロードする（`load_script_function` / `load_script_class`）。ロードしてよい範囲は `tool_dirs` 引数（呼び出し側が探索に使ったルート）か、省略時は `tool_paths.resolve_tool_dirs()`（設定から都度導く。import 時に固定しない）で決め、解決後のパスがその配下に無ければ ERROR ログを出して `None` を返す |
+| `tool_paths.py` | ツール探索ルートの解決（`resolve_tool_roots`。`paths.tool_root` の後に拡張の `tool_roots()` をロード順で足す）と、ツールファイルの検索（`find_tool_file`）。同名ファイルが複数ルートにあれば fail-fast し、1 ルート内の重複は従来どおり先頭マッチを使う。追加ルートはファイル探索専用で、`sys.path` へ入れるのは `paths.tool_root` の親だけ。ツールの `.py` をロードしてよいディレクトリは `resolve_tool_dirs()`（探索ルート + `config_root/tools`）が返し、`is_within_tool_dirs()` が解決後のパスがその配下にあることを検査する（`..` を含む `type` や外を指すシンボリックリンクを弾く）。これは信頼境界ではなく不変条件の検査で、`allowed_tool_paths` のようなホワイトリスト設定は持たない（`CONFIG_ROOT` と各ツールディレクトリへ書き込める者はコードを実行できる。`SECURITY.md` 参照） |
 
 ### 外部APIクライアント (`src/lilla_core/api/`)
 特定の外部サービス向けの API クライアントはこのリポジトリには置かず、拡張側に実装する想定。
@@ -390,7 +390,7 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
 | `client_prompt_providers` | `get_client_prompt_provider` | `client_type` ごとにシステムプロンプトへ追記する文字列を返すプロバイダ（呼ぶたびに評価される） |
 | `conversation_start_hooks` | `get_conversation_start_hook` | `run_conversation` の冒頭で `client_type` ごとに呼ばれる非同期関数 |
 | `tool_context_providers` | `get_tool_context_providers`（全件） | ツール実行 context へ注入する値を context キー名ごとに供給する |
-| `tool_roots` | `get_tool_roots` | `paths.tool_root` に足すツール探索ディレクトリ（`allowed_tool_paths` は自動で広げない） |
+| `tool_roots` | `get_tool_roots` | `paths.tool_root` に足すツール探索ディレクトリ（ここに含めた時点でロード対象になり、別途の許可設定は要らない） |
 | `command_packages` | `get_command_packages` | `load_all_commands()` が追加で走査するパッケージ |
 | `config_models` | `get_config_models`（全件） | `AppConfig` に足す YAML セクション名 → セクションモデル |
 | `env_fields` | `get_env_fields`（全件） | `EnvConfig` に足すフィールド名 → OS 環境変数名 |

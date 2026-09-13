@@ -19,7 +19,12 @@ import yaml
 
 from lilla_core.core.config import get_config
 from lilla_core.core.extension import get_tool_context_providers
-from lilla_core.loaders.tool_paths import find_tool_file, resolve_tool_roots
+from lilla_core.loaders.tool_paths import (
+    find_tool_file,
+    is_within_tool_dirs,
+    resolve_tool_dirs,
+    resolve_tool_roots,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,29 +55,33 @@ def _ensure_tool_root_on_sys_path() -> None:
         sys.path.insert(0, parent)
 
 
-def _get_allowed_paths() -> list[Path]:
-    """設定からホワイトリストパスのリストを返す。"""
-    return get_config().paths.allowed_tool_paths_list
+def _load_llm_module(script_path: Path, tool_dirs: list[Path]):
+    """Python モジュールをロードして返す。
 
-
-def _load_llm_module(script_path: Path):
-    """ホワイトリスト検証付きで Python モジュールをロードして返す。
+    解決後のパスが `tool_dirs`（探索ルートと `config_root/tools`）のいずれかの
+    配下に無い場合（`..` を含む `type` やシンボリックリンク経由で外へ出た場合）は
+    ERROR ログを出してロードしない。
 
     Parameters
     ----------
     script_path : Path
         ロードする .py ファイルのパス
+    tool_dirs : list[Path]
+        ロードを許すディレクトリ（`resolve_tool_dirs()` の戻り値）
 
     Returns
     -------
     module | None
-        ロード済みモジュール。ホワイトリスト外またはファイル不正の場合は None。
+        ロード済みモジュール。配下に無い、またはファイル不正の場合は None。
     """
     resolved_path = script_path.resolve()
-    allowed_paths = _get_allowed_paths()
 
-    if not any(resolved_path.is_relative_to(allowed) for allowed in allowed_paths):
-        logger.error("Path is not allowed: %s", resolved_path)
+    if not is_within_tool_dirs(resolved_path, tool_dirs):
+        logger.error(
+            "Tool file resolves outside the tool directories: %s (dirs=%s)",
+            resolved_path,
+            [str(d) for d in tool_dirs],
+        )
         return None
 
     if not resolved_path.exists() or resolved_path.suffix != ".py":
@@ -134,6 +143,7 @@ def load_llm_tools(
         config_root = get_config().env.config_root
 
     tool_config_root = config_root / "tools"
+    tool_dirs = resolve_tool_dirs(tool_roots, config_root)
     llm_tools: dict[str, dict] = {}
 
     for config_path in glob.glob(str(tool_config_root / "llm_*.yaml")):
@@ -161,7 +171,7 @@ def load_llm_tools(
                 )
                 continue
 
-        module = _load_llm_module(py_file)
+        module = _load_llm_module(py_file, tool_dirs)
         if module is None:
             continue
 
