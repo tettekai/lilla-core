@@ -1,0 +1,31 @@
+name: Notify Grok Bot review
+
+# Ping Aqua's review routine. GitHub native webhooks cannot set the
+# Authorization header Grok Bot requires, so Actions POSTs instead.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  notify:
+    if: >
+      github.event.pull_request.user.login == 'tettekai' ||
+      github.event.pull_request.user.login == 'claude[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: POST pull_request payload to Grok Bot
+        env:
+          WEBHOOK_URL: ${{ secrets.GROK_BOT_WEBHOOK_URL }}
+          WEBHOOK_AUTHORIZATION: ${{ secrets.GROK_BOT_WEBHOOK_AUTHORIZATION }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WEBHOOK_URL}" ] || [ -z "${WEBHOOK_AUTHORIZATION}" ]; then
+            echo "Missing GROK_BOT_WEBHOOK_URL or GROK_BOT_WEBHOOK_AUTHORIZATION" >&2
+            exit 1
+          fi
+          curl -fsS -X POST "${WEBHOOK_URL}" \
+            -H "Authorization: ${WEBHOOK_AUTHORIZATION}" \
+            -H "Content-Type: application/json" \
+            --data-binary @"${GITHUB_EVENT_PATH}"
