@@ -390,6 +390,14 @@ tool YAML, bundled or not.
   tool-specific keys — the latter must not collide with the runtime context keys
   below (checked at startup; a collision raises at load time).
 
+`lilla_core` ships one built-in sample tool as a concrete example of the import-path
+form: `lilla_core/builtin_tools/llm_current_datetime.py`. It is not enabled by
+default — opt in by adding this YAML to `${CONFIG_ROOT}/tools/llm_current_datetime.yaml`:
+
+```yaml
+type: lilla_core.builtin_tools.llm_current_datetime
+```
+
 **Task tools** (`${CONFIG_ROOT}/tools/task_*.yaml`, implemented in
 `${TOOL_ROOT}/**/<type>.py`):
 

@@ -377,6 +377,15 @@ class MyExtension(Extension):
   キーを設定できます。ツール固有のキーは、下記の実行時コンテキストキーと衝突
   してはいけません（起動時に検証され、衝突時は fail-fast します）。
 
+`lilla_core` は import パス形式の具体例として、組み込みのサンプルツールを 1 つ
+同梱しています: `lilla_core/builtin_tools/llm_current_datetime.py`。既定では有効化
+されていません。`${CONFIG_ROOT}/tools/llm_current_datetime.yaml` に以下の YAML を
+置くと opt-in で有効化できます:
+
+```yaml
+type: lilla_core.builtin_tools.llm_current_datetime
+```
+
 **task ツール**（`${CONFIG_ROOT}/tools/task_*.yaml`、実装は
 `${TOOL_ROOT}/**/<type>.py`）:
 
