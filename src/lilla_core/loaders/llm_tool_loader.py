@@ -39,7 +39,7 @@ MAX_TOOL_CALL_DEPTH = 5  # 将来的に core.config 側で設定可能にして�
 _CORE_RUNTIME_CONTEXT_KEYS = frozenset({
     "client_type",
     "llm_tools",
-    "ws_clients",
+    "client_state",
     "discord_channel_id",
     _TOOL_CALL_NOTIFIER_KEY,
 })

@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 
 from lilla_core.core.config import AppConfig, get_config
-from lilla_core.core.extension import get_client_prompt_provider
+from lilla_core.core.extension import get_client_prompt_providers
 from lilla_core.services.message_util import format_session_memory_block, prepend_timestamp_prefix
 from lilla_core.services.session_memory_manager import get_session_memory_manager
 from lilla_core.utils.datetime_utils import local_now
@@ -16,7 +16,8 @@ def _resolve_client_prompt(client_type: str) -> str:
     解決順は次のとおり。プロバイダは呼ぶたびに評価される（＝ファイルを
     読み直す）ため、戻り値はキャッシュしない。
 
-    1. 拡張の `client_prompt_providers()` に `client_type` があればそれを使う
+    1. 拡張の `client_prompt_providers()` に `client_type` があれば、全プロバイダを
+       ロード順に評価し、空でない戻り値を空行区切りで連結して使う
     2. 誰も出していなければ、`"discord"` のときだけコア内蔵の
        `discord_client_prompt` を使う
     3. どちらにも該当しなければ何も付けない
@@ -27,9 +28,10 @@ def _resolve_client_prompt(client_type: str) -> str:
     Returns:
         追記するプロンプト本文。付けるものが無ければ空文字列。
     """
-    provider = get_client_prompt_provider(client_type)
-    if provider is not None:
-        return provider()
+    providers = get_client_prompt_providers(client_type)
+    if providers:
+        parts = [text for text in (provider() for provider in providers) if text]
+        return "\n\n".join(parts)
     if client_type == "discord":
         return get_config().discord_client_prompt
     return ""

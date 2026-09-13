@@ -199,8 +199,8 @@ extension = MyExtension()
 | `on_message` | `on_message` の冒頭で呼ばれる。`True` を返すと以降の処理を止める |
 | `setup` | `bot.start()` の前に await される起動処理（HTTP サーバー等）。引数は `SetupContext` 1 つ（`tools` / `llm_tools` / `bot` / `config`）で、フィールドの追加は既存の拡張を壊さない |
 | `result_deliveries` | `!toolresult` の配送先を `client_type` ごとに指定 |
-| `client_prompt_providers` | `client_type` ごとのシステムプロンプト追記 |
-| `conversation_start_hooks` | 会話処理開始前のクライアント固有の前処理 |
+| `client_prompt_providers` | `client_type` ごとのシステムプロンプト追記。形は `{client_type: [プロバイダ, ...]}` の加算式で、複数の拡張が同じ `client_type` に足せる。コアがロード順に空行区切りで連結する |
+| `conversation_start_hooks` | 会話処理開始前に await される非同期フック。形は `{client_type: [フック, ...]}` でプロンプトと同じく加算式。各フックは `ConversationContext`（`client_type` / `client_state` / `discord_channel_id` / `llm_name`）1 つを受け取る |
 | `tool_context_providers` | ツール実行 context への値の注入 |
 | `tool_roots` | ツールの `.py` を探す追加ディレクトリ |
 | `command_packages` | `@register_command` を探す追加パッケージ |
@@ -209,10 +209,18 @@ extension = MyExtension()
 | `required_config_sections` | 自分では提供しないが読む YAML セクション |
 
 貢献キーは **拡張どうし** で衝突してはいけません。`Extension.name`・YAML セクション名・
-env フィールド名・ツール context のキー・`client_type` のキー・コマンド名・複数ルートに
-またがる同名ツールファイルのいずれも、静かに勝者を決めず起動時に fail-fast します。`client_type="discord"` だけは
-扱いが 2 点異なります。システムプロンプトはコアが内蔵デフォルトを持ち拡張が上書き
-でき、`!toolresult` の配送はコアが持つため拡張は登録できません。
+env フィールド名・ツール context のキー・結果配送の `client_type`・コマンド名・複数ルートに
+またがる同名ツールファイルのいずれも、静かに勝者を決めず起動時に fail-fast します。
+クライアント固有プロンプトと会話開始フックだけは設計上の例外で、`client_type` ごとの
+リストをロード順に連結するため、複数の拡張が同じクライアントへ足せます。
+`client_type="discord"` だけは扱いが 2 点異なります。システムプロンプトはコアが内蔵
+デフォルトを持ち、拡張が 1 つも出していないときだけそれを使います。`!toolresult` の
+配送はコアが持つため拡張は登録できません。
+
+`run_conversation()` を自分で呼ぶクライアント拡張は、任意のオブジェクトを
+`client_state` として渡せます（接続中ソケットの集合など）。コアは中身を解釈せず、
+フックには `ConversationContext.client_state` として、LLM ツールには context の
+`client_state` キーとしてそのまま渡します。
 
 ### 設定の合成
 
@@ -294,7 +302,8 @@ Bot のプロセス内でコードを実行できます。そのためツール�
 **`execute` に渡される `context`** は呼び出し元によって内容が異なります。LLM
 ツールでは常に `client_type` と、入れ子呼び出し用のヘルパー
 `call_tool(tool_name, tool_input)` に加え、そのツールの YAML 固有のキーと、
-拡張の `tool_context_providers()` が返すキーが入ります。task ツールでは、
+拡張の `tool_context_providers()` が返すキー、そして呼び出し元クライアントが
+`run_conversation()` に渡した場合は `client_state` が入ります。task ツールでは、
 スケジュール実行時は `discord_client` / `now` / `llm_tools` が、`!runtask` による
 手動実行時はさらに `params` が渡されます。
 

@@ -1078,10 +1078,10 @@ class TestValidateNoRuntimeKeyCollision:
         self, llm_tool_loader, provider_registry
     ) -> None:
         """provider 未登録（コア単独起動）でもコア自身のキーは検知する。"""
-        llm_tools = {"llm_foo": {"tool_config": {"ws_clients": "x"}}}
+        llm_tools = {"llm_foo": {"tool_config": {"client_state": "x"}}}
         with pytest.raises(ValueError) as exc_info:
             llm_tool_loader._validate_no_runtime_key_collision(llm_tools)
-        assert "ws_clients" in str(exc_info.value)
+        assert "client_state" in str(exc_info.value)
 
     def test_media_base_url_follows_provider_registration(
         self, llm_tool_loader, provider_registry

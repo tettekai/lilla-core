@@ -9,10 +9,12 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from typing import Any
 
 from lilla_core.core.config import get_config
 from lilla_core.core.extension import (
-    get_conversation_start_hook,
+    ConversationContext,
+    get_conversation_start_hooks,
     get_tool_context_providers,
 )
 from lilla_core.core.runtime_state import is_tools_disabled
@@ -130,7 +132,7 @@ def build_tool_context() -> dict:
 async def run_conversation(
     llm_tools: dict,
     client_type: str = "discord",
-    ws_clients: set | None = None,
+    client_state: Any = None,
     discord_channel_id: int | None = None,
     llm_name: str | None = None,
     inject_user_content=None,
@@ -154,9 +156,11 @@ async def run_conversation(
         コアは "task" だけを非対話の種別として扱い、それ以外はすべて
         対話クライアントとみなす（拡張が対話クライアント種別を
         追加してもここの判定は変更不要）。
-    ws_clients : set, optional
-        接続中の WebSocket クライアントセット。拡張が WebSocket クライアントを
-        持つ場合、そこからの呼び出し時に渡す。
+    client_state : Any, optional
+        呼び出し元のクライアント拡張が、自分の会話開始フックとツールへ届けたい
+        任意の状態（接続中クライアントの集合など）。コアは中身を解釈せず、
+        `ConversationContext.client_state` とツール実行 context の
+        `client_state` キーにそのまま載せる。
     discord_channel_id : int, optional
         会話が行われている Discord チャンネルの ID。Discord からの呼び出し時に渡す。
         非同期依頼ツールなど、後から同じチャンネルへ結果を返すツールが参照する。
@@ -183,14 +187,22 @@ async def run_conversation(
         SessionMemoryManager へ反映）したうえで、本文から除去した文字列を返す。
     """
     # クライアント種別ごとの会話開始フック（拡張側のクライアント固有の前処理用）。
-    # 未登録の client_type では何もしない。フックの失敗は会話本体を
-    # 止めないよう握りつぶす。
-    hook = get_conversation_start_hook(client_type)
-    if hook is not None:
-        try:
-            await hook(ws_clients)
-        except Exception as e:
-            logger.debug("Skipped running conversation start hook: %s", e)
+    # 複数の拡張が同じ client_type に登録していればロード順に await する。
+    # 未登録の client_type では何もしない。フックの失敗は会話本体も後続の
+    # フックも止めないよう、1 件ずつ握りつぶす。
+    hooks = get_conversation_start_hooks(client_type)
+    if hooks:
+        ctx = ConversationContext(
+            client_type=client_type,
+            client_state=client_state,
+            discord_channel_id=discord_channel_id,
+            llm_name=llm_name,
+        )
+        for hook in hooks:
+            try:
+                await hook(ctx)
+            except Exception as e:
+                logger.debug("Skipped running conversation start hook: %s", e)
 
     # 「対話クライアントかどうか」の判定は "task" 以外かで行う。コアが知っておくべき
     # 非対話の種別は "task" だけで、対話クライアント側の値（"discord" や拡張が
@@ -222,8 +234,8 @@ async def run_conversation(
     context = build_tool_context()
     context["client_type"] = client_type
     context["llm_tools"] = llm_tools
-    if ws_clients is not None:
-        context["ws_clients"] = ws_clients
+    if client_state is not None:
+        context["client_state"] = client_state
     if discord_channel_id is not None:
         context["discord_channel_id"] = discord_channel_id
     if tool_call_notifier is not None:

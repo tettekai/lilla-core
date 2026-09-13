@@ -205,8 +205,8 @@ extension = MyExtension()
 | `on_message` | Invoked at the start of `on_message`; return `True` to stop further handling |
 | `setup` | Startup work awaited before `bot.start()` (e.g. an HTTP server). Receives one `SetupContext` (`tools`, `llm_tools`, `bot`, `config`); new fields may be added without breaking existing extensions |
 | `result_deliveries` | Where `!toolresult` delivers results, per `client_type` |
-| `client_prompt_providers` | System prompt additions per `client_type` |
-| `conversation_start_hooks` | Client-specific preprocessing before conversation handling starts |
+| `client_prompt_providers` | System prompt additions per `client_type`, as `{client_type: [provider, ...]}`. Additive: several extensions may target the same `client_type`; the core concatenates them in load order, separated by blank lines |
+| `conversation_start_hooks` | Async hooks run before conversation handling starts, as `{client_type: [hook, ...]}`. Additive like the prompts. Each hook receives one `ConversationContext` (`client_type`, `client_state`, `discord_channel_id`, `llm_name`) |
 | `tool_context_providers` | Values injected into the tool execution context |
 | `tool_roots` | Extra directories searched for tool `.py` files |
 | `command_packages` | Extra packages scanned for `@register_command` handlers |
@@ -215,12 +215,19 @@ extension = MyExtension()
 | `required_config_sections` | YAML sections this extension reads but does not provide |
 
 Contribution keys must not collide **between extensions**: duplicate `Extension.name`,
-config section names, env field names, tool context keys, `client_type` keys, command
-names, or tool file names across different roots all fail fast at startup rather than
-silently picking a winner.
+config section names, env field names, tool context keys, result-delivery `client_type`
+keys, command names, or tool file names across different roots all fail fast at startup
+rather than silently picking a winner. Client prompts and conversation start hooks are
+the exception by design: they are lists per `client_type` and are concatenated in load
+order, so several extensions can contribute to the same client.
 `client_type="discord"` is special in two ways: the core provides a built-in system
-prompt that an extension may override, and the core owns `!toolresult` delivery, so
-extensions cannot register a result delivery for it.
+prompt that is used only when no extension contributes one, and the core owns
+`!toolresult` delivery, so extensions cannot register a result delivery for it.
+
+A client extension that drives `run_conversation()` itself may pass any object as
+`client_state` (for example its set of connected sockets). The core does not interpret
+it: it is exposed to hooks as `ConversationContext.client_state` and to LLM tools as
+the `client_state` context key.
 
 ### Config composition
 
@@ -304,8 +311,9 @@ Tools are loaded dynamically from `${TOOL_ROOT}/**/*.py` based on YAML config fi
 
 **The `context` dict passed to `execute`** varies by call site. For LLM tools it always
 includes `client_type` and a nested-call helper `call_tool(tool_name, tool_input)`,
-plus any tool-specific keys from that tool's YAML, and any keys contributed by an
-extension's `tool_context_providers()`. For task tools, a scheduled run passes
+plus any tool-specific keys from that tool's YAML, any keys contributed by an
+extension's `tool_context_providers()`, and `client_state` when the calling client
+passed one to `run_conversation()`. For task tools, a scheduled run passes
 `discord_client` / `now` / `llm_tools`, and a manual `!runtask` run additionally passes
 `params`.
 
