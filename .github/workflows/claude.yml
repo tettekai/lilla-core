@@ -12,6 +12,8 @@ on:
 
 jobs:
   claude:
+    # This repository is public, so keep the owner check: an outside @claude
+    # would otherwise start a job with write permissions and burn tokens.
     if: |
       github.actor == github.repository_owner && (
         (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
@@ -23,12 +25,12 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      issues: read
+      issues: write
       id-token: write
       actions: read # Required for Claude to read CI results on PRs
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
@@ -50,4 +52,53 @@ jobs:
           # Optional: Add claude_args to customize behavior and configuration
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
-          # claude_args: '--allowed-tools Bash(gh pr *)'
+          # claude_args: '--max-turns 5'
+
+      # Claude often stops at a Compare link, and GITHUB_TOKEN is not permitted to
+      # create PRs (createPullRequest) for Actions-triggered runs. Instead, ask Grok
+      # Bot's dedicated PR-create webhook to open the PR (author becomes the repo
+      # owner, and notify-grok-bot-review keeps working as-is). This uses its own
+      # secrets, separate from the review-notification GROK_BOT_WEBHOOK_* ones.
+      # Only for Issue-originated runs (not comments on an existing PR).
+      - name: Notify Grok Bot to create PR after Claude finishes
+        if: |
+          steps.claude.outputs.branch_name != '' &&
+          github.event.issue != null &&
+          github.event.issue.pull_request == null
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.claude.outputs.branch_name }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO: ${{ github.repository }}
+          WEBHOOK_URL: ${{ secrets.GROK_BOT_PR_CREATE_WEBHOOK_URL }}
+          WEBHOOK_AUTHORIZATION: ${{ secrets.GROK_BOT_PR_CREATE_WEBHOOK_AUTHORIZATION }}
+        run: |
+          set -euo pipefail
+          existing="$(gh pr list --head "${BRANCH}" --state open --json number --jq 'length')"
+          if [ "${existing}" != "0" ]; then
+            echo "Open PR already exists for ${BRANCH}; skipping webhook"
+            exit 0
+          fi
+
+          if [ -z "${WEBHOOK_URL}" ] || [ -z "${WEBHOOK_AUTHORIZATION}" ]; then
+            echo "Missing GROK_BOT_PR_CREATE_WEBHOOK_URL or GROK_BOT_PR_CREATE_WEBHOOK_AUTHORIZATION" >&2
+            exit 1
+          fi
+
+          jq -n \
+            --arg owner "${OWNER}" \
+            --arg repo "${REPO_NAME}" \
+            --arg repository "${REPO}" \
+            --argjson issue_number "${ISSUE_NUMBER}" \
+            --arg branch "${BRANCH}" \
+            --arg title "${ISSUE_TITLE}" \
+            '{action:"create_pr", owner:$owner, repo:$repo, repository:$repository, issue_number:$issue_number, branch:$branch, base:"develop", title:$title}' \
+            > /tmp/event.json
+
+          curl -fsS -X POST "${WEBHOOK_URL}" \
+            -H "Authorization: ${WEBHOOK_AUTHORIZATION}" \
+            -H "Content-Type: application/json" \
+            --data-binary @/tmp/event.json
