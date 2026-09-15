@@ -140,11 +140,12 @@ async def test_xxx(with_mocked_modules, mock_llm_client):
 守っていても取りこぼした汚染がある場合の保険であり、これに頼ってルール自体を省略しないこと。
 
 ## ブランチ戦略
-- main / developブランチへの直接pushは禁止（必ずPR経由でマージすること）
-- mainには触れない
-- デフォルトはdevelopブランチから作業ブランチを作り、developへのPRを作成すること
-- featureブランチを使う場合は都度指示する
-- featureブランチ名: `feature/#{issue番号}-{概要}`
+- main / develop への直接 push は禁止。必ず PR 経由でマージする
+- 普段は main に触れない
+- 普段: develop の最新から作業ブランチを切り、develop 向け PR を作る
+- 作業ブランチ名: `issue-{番号}-{概要}`
+- 大きな変更で長期ブランチを使うのは、指示があったときだけ。そのときは長期ブランチから作業ブランチを切り、長期ブランチ向け PR にする
+- 長期ブランチ名: `feature/{番号}-{概要}`
 
 ## Git commit messages
 
