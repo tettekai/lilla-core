@@ -189,6 +189,29 @@ class Extension:
         """`paths.tool_root` に足す LLM/task ツールの探索ディレクトリを返す。"""
         return []
 
+    def tool_config_roots(self) -> list[Path]:
+        """この拡張が同梱する既定のツール YAML（`llm_*.yaml` / `task_*.yaml`）のディレクトリを返す。
+
+        ローダーは「拡張の `tool_config_roots()`（ロード順）→ `${CONFIG_ROOT}/tools`」の
+        順に YAML を集め、同じファイル名（stem）は `${CONFIG_ROOT}/tools` 側が丸ごと
+        上書きする（利用者の設定が常に勝つ）。拡張どうしで同じ stem を同梱した場合は
+        fail-fast する。利用者が同梱ツールを無効化したいときは、`${CONFIG_ROOT}/tools` に
+        同名の YAML を置いて `enabled: false` と書く。
+        """
+        return []
+
+    def locale_dirs(self) -> list[Path]:
+        """この拡張が同梱する UI 文言カタログ（`{locale}.yaml`）のディレクトリを返す。
+
+        ファイル名はコアと同じ `ja.yaml` / `en.yaml` などで、カタログの
+        **トップレベルのキーはこの拡張の `name` ただ 1 つ** でなければならない
+        （例: `name = "lilla-habits"` なら YAML は `lilla-habits:` の 1 ノードだけを
+        持ち、呼び出しは `t("lilla-habits.notify.title")` になる）。コアが自動で
+        prefix を付けることはしない。規約に反するカタログはカタログの読み込み時に
+        `ValueError` で落ちる。存在しないディレクトリは WARNING を出して読み飛ばす。
+        """
+        return []
+
     def command_packages(self) -> list[str]:
         """`load_all_commands()` が追加で走査するパッケージの import パスを返す。"""
         return []
@@ -452,7 +475,8 @@ def set_extensions(extensions: list[Extension]) -> None:
             `EnvConfig` フィールド名を提供した場合、`requires` の拡張が未ロードか
             自分より後ろに並んでいる場合、または誰も提供していない名前を
             `required_config_sections()` / `required_env_fields()` /
-            `required_tool_context_keys()` が要求している場合。
+            `required_tool_context_keys()` が要求している場合、または
+            `locale_dirs()` のカタログが名前空間の規約に違反している場合。
     """
     from lilla_core.core.config import core_config_section_names, core_env_field_names
 
@@ -507,6 +531,7 @@ def set_extensions(extensions: list[Extension]) -> None:
     start_hooks = _merge_lists(
         extensions, "conversation_start_hooks", "conversation start hook"
     )
+    _validate_message_catalogs(extensions)
 
     global _extensions
     _extensions = list(extensions)
@@ -522,6 +547,41 @@ def set_extensions(extensions: list[Extension]) -> None:
     _client_prompt_providers.update(prompts)
     _conversation_start_hooks.clear()
     _conversation_start_hooks.update(start_hooks)
+
+    _clear_message_catalog_cache()
+
+
+def _validate_message_catalogs(extensions: list[Extension]) -> None:
+    """これから登録する拡張の UI 文言カタログを全ロケール分組み立てて検証する。
+
+    カタログは `t()` がキーを引くまで読まれないため、ここで一度組み立てておかないと
+    名前空間の規約違反が最初の文言参照（＝メッセージ処理の最中）まで表面化しない。
+    他の貢献キーの検証と同じくグローバルを書き換える前に行うので、失敗しても
+    壊れた登録は残らない。`ui/messages.py` はこのモジュールを import するので、
+    循環 import を避けて関数内で遅延 import する。
+
+    Args:
+        extensions: これから登録する `Extension` インスタンス（ロード順）。
+
+    Raises:
+        ValueError: 拡張のカタログのトップレベルキーがその拡張の `name` と異なる場合、
+            または拡張名がコアのカタログのトップレベルキーと衝突している場合。
+    """
+    from lilla_core.ui import messages
+
+    messages.validate_catalogs(get_locale_dirs(extensions))
+
+
+def _clear_message_catalog_cache() -> None:
+    """UI 文言カタログのキャッシュを捨てる。
+
+    合成カタログは登録済み拡張の `locale_dirs()` に依存するため、登録内容が
+    変わったら捨てる必要がある。`ui/messages.py` はこのモジュールを import
+    するので、循環 import を避けて関数内で遅延 import する。
+    """
+    from lilla_core.ui import messages
+
+    messages.clear_cache()
 
 
 def reset_extensions() -> None:
@@ -607,6 +667,38 @@ def get_tool_roots() -> list[Path]:
     for ext in _extensions:
         roots.extend(ext.tool_roots())
     return roots
+
+
+def get_tool_config_roots() -> list[tuple[str, Path]]:
+    """全拡張が同梱するツール YAML のディレクトリを `(拡張名, ディレクトリ)` でロード順に返す。
+
+    拡張名は、同じ stem を複数の拡張が同梱していたときのエラーメッセージに使う。
+    """
+    roots: list[tuple[str, Path]] = []
+    for ext in _extensions:
+        roots.extend((ext.name, Path(root)) for root in ext.tool_config_roots())
+    return roots
+
+
+def get_locale_dirs(
+    extensions: list[Extension] | None = None,
+) -> list[tuple[str, Path]]:
+    """拡張が同梱する UI 文言カタログのディレクトリを `(拡張名, ディレクトリ)` でロード順に返す。
+
+    拡張名は、カタログのトップレベルキーと突き合わせる名前空間の検査に使う。
+
+    Args:
+        extensions: 対象の拡張。`None` なら登録済みのものを使う。`set_extensions()` が
+            登録前の検証で「これから登録する拡張」を渡す。
+
+    Returns:
+        `(拡張名, ディレクトリ)` のリスト。
+    """
+    targets = _extensions if extensions is None else extensions
+    dirs: list[tuple[str, Path]] = []
+    for ext in targets:
+        dirs.extend((ext.name, Path(directory)) for directory in ext.locale_dirs())
+    return dirs
 
 
 def get_command_packages() -> list[str]:

@@ -140,11 +140,14 @@ async def test_xxx(with_mocked_modules, mock_llm_client):
 守っていても取りこぼした汚染がある場合の保険であり、これに頼ってルール自体を省略しないこと。
 
 ## ブランチ戦略
-- main / developブランチへの直接pushは禁止（必ずPR経由でマージすること）
-- mainには触れない
-- デフォルトはdevelopブランチから作業ブランチを作り、developへのPRを作成すること
-- featureブランチを使う場合は都度指示する
-- featureブランチ名: `feature/#{issue番号}-{概要}`
+- main / develop への直接 push は禁止。必ず PR 経由でマージする
+- 普段は main に触れない
+- 普段: develop の最新から作業ブランチを切り、develop 向け PR を作る
+- 作業ブランチを自分で切るとき: `issue-{番号}-{概要}`
+- すでに作業ブランチが割り当てられているとき（例: Claude Code Actions の `claude/issue-{番号}-…`）は、そのブランチのまま進める。リネームしない。別名を要求しない。違反ともみなさない
+- Issue 本文や実装依頼コメントで、作業ブランチ名を指定しない（base が特殊なときだけ base を書く）
+- 大きな変更で長期ブランチを使うのは、指示があったときだけ。そのときは長期ブランチから作業ブランチを切り、長期ブランチ向け PR にする
+- 長期ブランチ名: `feature/{番号}-{概要}`
 
 ## Git commit messages
 
@@ -287,11 +290,12 @@ HTTP サーバー・ダッシュボードサーバー・WebSocket サーバー�
 
 ### UI 文言 (`src/lilla_core/ui/`・`src/lilla_core/locales/`)
 Discord に見せる短い文言のカタログ。表示言語は `lilla.yaml` の `ui.locale`（既定 `ja`）だけで
-決まり、OS の `LANG` や Discord 側の言語設定は見ない。
+決まり、OS の `LANG` や Discord 側の言語設定は見ない。拡張も `Extension.locale_dirs()` で
+同じ命名のカタログを同梱でき、コアのカタログへロード順に重ねて解決される。
 
 | ファイル | 役割 |
 |----------|------|
-| `ui/messages.py` | カタログから文言を取り出す `t(key, **params)`。`key` は `selftest.summary` のような安定した英語のドット区切りで、YAML 上も同じネストで持つ。`params` は文言中の `{ok}` などに埋める値。解決順は「`ui.locale` のカタログ → `ja` → キー名そのもの」で、どの段階でも例外は投げない（文言の欠落で応答自体が失われないため）。フォールバック時は英語の WARNING ログを 1 キーにつき 1 回だけ出す。ロケールをまたいで同じ文言を突き合わせるための `translations(key)`（承認依頼の区切り行の復元に使う）と、同梱カタログを列挙する `available_locales()` も提供する |
+| `ui/messages.py` | カタログから文言を取り出す `t(key, **params)`。`key` は `selftest.summary` のような安定した英語のドット区切りで、YAML 上も同じネストで持つ。`params` は文言中の `{ok}` などに埋める値。解決順は「`ui.locale` のカタログ → `ja` → キー名そのもの」で、どの段階でも例外は投げない（文言の欠落で応答自体が失われないため）。フォールバック時は英語の WARNING ログを 1 キーにつき 1 回だけ出す。ロケールをまたいで同じ文言を突き合わせるための `translations(key)`（承認依頼の区切り行の復元に使う）と、カタログを列挙する `available_locales()` も提供する。カタログはコア同梱分だけでなく、拡張が `Extension.locale_dirs()` で同梱した `{locale}.yaml` を `_load_catalog()` がロード順に重ねた合成結果で、`t()` / `translations()` / `available_locales()` はいずれも合成後を見る。1 つの拡張が複数ディレクトリを返した場合、その拡張のノードはロード順に浅くマージする（同じキーは後のディレクトリが勝つ）。拡張のカタログはトップレベルのキーがその拡張の `name` ただ 1 つでなければならず（`t("lilla-habits.notify.title")` の形。コアは prefix を付けない）、違反や拡張名とコアのトップレベルキーの衝突は `ValueError` で fail-fast する。ただし検出は `t()` の呼び出し時ではなく **拡張の登録時** で、`set_extensions()` がグローバルを書き換える前に `validate_catalogs(locale_dirs)` で全ロケール分を組み立てて検証する（`t()` は従来どおり例外を投げず、失敗しても壊れた登録は残らない）。存在しないディレクトリは WARNING で読み飛ばし（`lru_cache` によりロケールごとに 1 回）、壊れた YAML と「拡張名の下が辞書でない」カタログは ERROR ログを出してそのロケール分だけ空として扱う。合成結果は登録済み拡張に依存するため、`set_extensions()` は登録後に `clear_cache()` も呼ぶ（循環 import を避けるため `core/extension.py` 側は関数内の遅延 import）|
 | `locales/ja.yaml` | 日本語カタログ（既定ロケール） |
 | `locales/en.yaml` | 英語カタログ |
 
@@ -311,10 +315,10 @@ Discord に見せる短い文言のカタログ。表示言語は `lilla.yaml` �
 ### ツール・スクリプトローダー群 (`src/lilla_core/loaders/`)
 | ファイル | 役割 |
 |----------|------|
-| `llm_tool_loader.py` | `${CONFIG_ROOT}/tools/llm_*.yaml` と、`loaders/tool_paths.py` が解決したツールルート配下の `llm_*.py`（および `type: self` の場合は YAML と同名の `.py`）を動的に読み込む。LLM に渡す tools パラメータの構築（`build_tools_param`）と tool_call の実行（`execute_tool_call`）を担う。実行時にツールへ注入される context には `call_tool`（入れ子呼び出し用。深さ上限 `MAX_TOOL_CALL_DEPTH=5`）を自動的に加える。`tool_config` が実行時共通キー（`client_type` 等。拡張の `tool_context_providers()` が返すキー名も含む）と衝突していないか起動時に検証し、衝突時は fail-fast する（`_validate_no_runtime_key_collision`）。ツール設定の `cache.mode`（`disable` / `enable` / `auto`）に応じた実行結果の MongoDB キャッシュ保存（`_save_tool_cache`）、`client_type == "discord"` かつ通知コールバックが注入されている場合のツール呼び出しログ送信（`_notify_tool_call`）も担う |
-| `task_tool_loader.py` | `${CONFIG_ROOT}/tools/task_*.yaml` と、`loaders/tool_paths.py` が解決したツールルート配下の Python クラスを動的に読み込む（`load_all_tools`）。定期実行タスクのクラスマップをキャッシュし、ファイル名プレフィックス（`task_` / `llm_` / `system_`）からトリガー種別を判定する |
-| `script_loader.py` | 外部 Python 関数・クラスをロードする（`load_script_function` / `load_script_class`）。ロードしてよい範囲は `tool_dirs` 引数（呼び出し側が探索に使ったルート）か、省略時は `tool_paths.resolve_tool_dirs()`（設定から都度導く。import 時に固定しない）で決め、解決後のパスがその配下に無ければ ERROR ログを出して `None` を返す |
-| `tool_paths.py` | ツール探索ルートの解決（`resolve_tool_roots`。`paths.tool_root` の後に拡張の `tool_roots()` をロード順で足す）と、ツールファイルの検索（`find_tool_file`）。同名ファイルが複数ルートにあれば fail-fast し、1 ルート内の重複は従来どおり先頭マッチを使う。追加ルートはファイル探索専用で、`sys.path` へ入れるのは `paths.tool_root` の親だけ。ツールの `.py` をロードしてよいディレクトリは `resolve_tool_dirs()`（探索ルート + `config_root/tools`）が返し、`is_within_tool_dirs()` が解決後のパスがその配下にあることを検査する（`..` を含む `type` や外を指すシンボリックリンクを弾く）。これは信頼境界ではなく不変条件の検査で、`allowed_tool_paths` のようなホワイトリスト設定は持たない（`CONFIG_ROOT` と各ツールディレクトリへ書き込める者はコードを実行できる。`SECURITY.md` 参照） |
+| `llm_tool_loader.py` | `tool_paths.resolve_tool_config_files("llm_")` が集めた YAML（拡張の同梱分 + `${CONFIG_ROOT}/tools/llm_*.yaml`。`enabled: false` は除外）と、`loaders/tool_paths.py` が解決したツールルート配下の `llm_*.py`（`type: self` の場合は YAML と同名の `.py`、`type` が `.` を含む場合は import パスとして `importlib` で読んだモジュール）を動的に読み込む。LLM に渡す tools パラメータの構築（`build_tools_param`）と tool_call の実行（`execute_tool_call`）を担う。実行時にツールへ注入される context には `call_tool`（入れ子呼び出し用。深さ上限 `MAX_TOOL_CALL_DEPTH=5`）を自動的に加える。`tool_config` が実行時共通キー（`client_type` 等。拡張の `tool_context_providers()` が返すキー名も含む）と衝突していないか起動時に検証し、衝突時は fail-fast する（`_validate_no_runtime_key_collision`）。ツール設定の `cache.mode`（`disable` / `enable` / `auto`）に応じた実行結果の MongoDB キャッシュ保存（`_save_tool_cache`）、`client_type == "discord"` かつ通知コールバックが注入されている場合のツール呼び出しログ送信（`_notify_tool_call`）も担う |
+| `task_tool_loader.py` | `tool_paths.resolve_tool_config_files("task_")` が集めた YAML（拡張の同梱分 + `${CONFIG_ROOT}/tools/task_*.yaml`。`enabled: false` は除外）と、`loaders/tool_paths.py` が解決したツールルート配下の Python クラス（`type` が `.` を含む場合は import パスで読んだモジュールのクラス）を動的に読み込む（`load_all_tools`）。定期実行タスクのクラスマップをキャッシュし、ファイル名プレフィックス（`task_` / `llm_` / `system_`）からトリガー種別を判定する |
+| `script_loader.py` | 外部 Python 関数・クラスをロードする（`load_script_function` / `load_script_class`）。読み込み済みモジュールからツールクラス（`execute` を持つ型）を探す `find_tool_class` はファイル経由・import パス経由の両方で共有する。ロードしてよい範囲は `tool_dirs` 引数（呼び出し側が探索に使ったルート）か、省略時は `tool_paths.resolve_tool_dirs()`（設定から都度導く。import 時に固定しない）で決め、解決後のパスがその配下に無ければ ERROR ログを出して `None` を返す |
+| `tool_paths.py` | ツール探索ルートの解決（`resolve_tool_roots`。`paths.tool_root` の後に拡張の `tool_roots()` をロード順で足す）と、ツールファイルの検索（`find_tool_file`）。ツール YAML の収集は `resolve_tool_config_files(prefix, config_root)` が担い、拡張の `tool_config_roots()`（ロード順）→ `config_root/tools` の順で集めて同じ stem は後者が丸ごと上書き、拡張どうしの同じ stem は fail-fast する。`is_tool_enabled()` は `enabled: false` と明示した YAML だけを無効と判定する。YAML の `type` が `.` を含むかで import パスかどうかを判定し（`is_import_path`）、import パスなら `importlib` で解決する（`import_tool_module`。失敗は WARNING でそのツールだけスキップ。インストール済みパッケージは `LILLA_EXTENSIONS` と同じ信頼レベルなのでディレクトリ検査はしない）。同名ファイルが複数ルートにあれば fail-fast し、1 ルート内の重複は従来どおり先頭マッチを使う。追加ルートはファイル探索専用で、`sys.path` へ入れるのは `paths.tool_root` の親だけ。ツールの `.py` をロードしてよいディレクトリは `resolve_tool_dirs()`（探索ルート + `config_root/tools`）が返し、`is_within_tool_dirs()` が解決後のパスがその配下にあることを検査する（`..` を含む `type` や外を指すシンボリックリンクを弾く）。これは信頼境界ではなく不変条件の検査で、`allowed_tool_paths` のようなホワイトリスト設定は持たない（`CONFIG_ROOT` と各ツールディレクトリへ書き込める者はコードを実行できる。`SECURITY.md` 参照） |
 
 ### 外部APIクライアント (`src/lilla_core/api/`)
 特定の外部サービス向けの API クライアントはこのリポジトリには置かず、拡張側に実装する想定。
@@ -349,6 +353,30 @@ Discord に見せる短い文言のカタログ。表示言語は `lilla.yaml` �
 | `context_ex.py` | `execute(input, context)` の `context`(dict) を便利に扱う薄いラッパー（`ContextEx`、opt-in）。`call_tool` の注入を前提とし、ローダー側の dict ベース処理には影響しない |
 | `tool_response_ex.py` | ツール実行結果 dict（`success` / `tool_name` / `data` / `error` 形式）を便利に扱う薄いラッパー（`ToolResponseEx`、opt-in） |
 | `date_range.py` | `today` / `yesterday` / `tomorrow` / `last_N_days` / `next_N_days` / `this_week` / `last_week` / `YYYY-MM-DD` / `YYYY-MM-DD/YYYY-MM-DD` 形式の日付範囲 Value Object（`DateRange`。週は日曜始まり・土曜終わり）と、時刻まで指定できる `DateTimeRange`。相対指定の基準日は `local_timezone()` が解決したタイムゾーンのカレンダー日付 |
+
+### builtin_tools/ — コア組み込みのサンプル LLM ツール (`src/lilla_core/builtin_tools/`)
+個人データ・外部サービス依存の無い、コア単体でも動くサンプルツールを置く場所。`pip install`
+するだけで使える組み込みツールの実例で、ツール YAML の `type` にドット区切りの import パス
+（`loaders/tool_paths.py` の `is_import_path`）を指定して参照する。`${CONFIG_ROOT}/tools/` に
+YAML を置いた人だけが有効化する opt-in で、コアが自動で読み込むことはない。
+
+| ファイル | 役割 |
+|----------|------|
+| `llm_current_datetime.py` | 現在日時を返すだけのサンプル LLM ツール。`SCHEMA` と `async def execute(input, context)` を持つ通常の LLM ツールで、`utils/datetime_utils.py` の `local_now()` を使う。有効化例は README（英・日）の「Tool contracts」節を参照 |
+
+### testing/ — 拡張リポジトリ向けのテストヘルパー (`src/lilla_core/testing/`)
+拡張を別リポジトリで開発するときに、どのリポジトリも書くことになる「自分の `Extension` を
+登録し、設定を合成し、テストが終わったらプロセスの状態を元へ戻す」セットアップを肩代わりする
+opt-in のヘルパー。**`__init__.py` は pytest を import しない**（pytest は
+`[project.optional-dependencies.dev]` にしかないため、本番依存に混ぜない）。pytest に触るのは
+`pytest_plugin.py` だけで、`pytest11` entry point による自動登録もしない（利用側の既存
+conftest と黙って干渉しうるため）。利用側は自分のルート `conftest.py` に
+`pytest_plugins = ["lilla_core.testing.pytest_plugin"]` と書いて読み込む。
+
+| ファイル | 役割 |
+|----------|------|
+| `__init__.py` | pytest 非依存のヘルパー。`use_extensions(*extensions, config_root=None)` は登録内容・設定インスタンス（`core/config.py` の `_config_instance`。`get_config()` は未設定でも既定を返すためモジュール変数を直接退避する）・OS 変数名のレジストリ・`CONFIG_ROOT` を退避してから `set_extensions()` → `compose_config()` → `set_config()` を行い、合成した `AppConfig` を yield して、抜けるとき（例外時も）すべて元へ戻すコンテキストマネージャ。`write_minimal_lilla_yaml(directory, ...)` はコアが必須にしている項目（`discord.my_user_id` / `llm.default` と対応する `llm.providers.<名前>` / `ui.timezone: Asia/Tokyo`）だけの `lilla.yaml` を書き出し、`extra` があれば同じネストで深いマージをする（拡張が必須にしているセクション用） |
+| `pytest_plugin.py` | 上記を包む function scope の fixture 2 つ。`lilla_config_root` は `tmp_path` に最小構成の `lilla.yaml` を書いて `CONFIG_ROOT` を向け、`DISCORD_TOKEN` が無ければダミー値を入れてそのディレクトリを返す。`lilla_extensions` は `register(*extensions) -> AppConfig` を返し、内部で `use_extensions()` に入って teardown でまとめて抜ける（複数回呼んだら後入れ先出しで戻す） |
 
 ## tests/ — テスト
 `tests/` 配下に各モジュールの単体テストを配置（pytest で実行）。`tests/repository/test_motor_client.py`
@@ -402,6 +430,8 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
 | `conversation_start_hooks` | `get_conversation_start_hooks` | `run_conversation` の冒頭で `client_type` ごとに呼ばれる非同期関数の **リスト**。加算式。各フックは `ConversationContext`（frozen dataclass。`client_type` / `client_state` / `discord_channel_id` / `llm_name`）1 つを受け取り、ロード順に await される。1 件の失敗は DEBUG ログのみで、後続のフックも会話本体も止めない |
 | `tool_context_providers` | `get_tool_context_providers`（全件）/ `build_tool_context` | ツール実行 context へ注入する値を context キー名ごとに供給する。LLM ツールと task ツールの両方に届く。コアが注入するキー（`client_type` / `llm_tools` / `client_state` / `discord_client` / `now` / `params` / `call_tool` など）は予約済みで、同名を提供するとロード時に落ちる |
 | `tool_roots` | `get_tool_roots` | `paths.tool_root` に足すツール探索ディレクトリ（ここに含めた時点でロード対象になり、別途の許可設定は要らない） |
+| `tool_config_roots` | `get_tool_config_roots` / `tool_paths.resolve_tool_config_files` | 拡張が同梱する既定のツール YAML（`llm_*.yaml` / `task_*.yaml`）のディレクトリ。ローダーは「拡張の同梱分（ロード順）→ `config_root/tools`」の順に集め、同じ stem は `config_root/tools` 側が丸ごと上書きする。拡張どうしの同じ stem は fail-fast。`enabled: false` の YAML はロードしない（同梱ツールを止めるには `config_root/tools` に同名で置く）。`type: self` の `.py` が同梱ディレクトリに置かれうるため、`resolve_tool_dirs()` にも含める |
+| `locale_dirs` | `get_locale_dirs(extensions=None)` / `ui.messages.validate_catalogs` | 拡張が同梱する UI 文言カタログ（`{locale}.yaml`）のディレクトリ。トップレベルのキーはその拡張の `name` ただ 1 つでなければならず、違反・コアのトップレベルキーとの衝突は登録時に `ValueError` で fail-fast する。1 つの拡張が複数返したらロード順に浅くマージする。存在しないディレクトリは WARNING で読み飛ばす（ロケールごとに 1 回） |
 | `command_packages` | `get_command_packages` | `load_all_commands()` が追加で走査するパッケージ |
 | `config_models` | `get_config_models`（全件） | `AppConfig` に足す YAML セクション名 → セクションモデル |
 | `env_fields` | `get_env_fields`（全件） | `EnvConfig` に足すフィールド名 → OS 環境変数名 |
@@ -422,6 +452,12 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
   加算式で、同じ `client_type` に複数の拡張が足せる。値がリストでない場合だけ落とす）
 - `command_packages` 経由で登録されるコマンド名（`register_command` が検出）
 - 複数のツールルートに同じ名前のツールファイルがあるとき（`find_tool_file` が検出）
+- 複数の拡張が同じ stem のツール YAML を同梱しているとき（`resolve_tool_config_files` が検出。
+  `config_root/tools` の同名 YAML による上書きは衝突ではなく、利用者の設定が勝つ）
+- 拡張の UI 文言カタログのトップレベルキーがその拡張の `name` と異なるとき、または拡張名が
+  コアのカタログのトップレベルキー（`selftest` など）と同じとき（`set_extensions()` が
+  `ui/messages.py` の `validate_catalogs()` で登録前に検出。拡張どうしの衝突は `name` の
+  重複検査で防がれる）
 
 コア内蔵のデフォルトとの重複は衝突にしない。`client_type="discord"` のシステム
 プロンプトは拡張が 1 つでも出していればそれら（連結）を使い、誰も出していなければ

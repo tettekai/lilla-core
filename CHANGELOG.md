@@ -9,6 +9,51 @@
 
 ### Added
 
+- 拡張が UI 文言カタログを同梱できる `Extension.locale_dirs()` を追加。ディレクトリに
+  コアと同じ命名の `{locale}.yaml`（`ja.yaml` / `en.yaml` など）を置くと、
+  `lilla_core.ui.messages` がコアのカタログへロード順に重ねて解決する。カタログの
+  トップレベルのキーはその拡張の `name` ただ 1 つでなければならず（`name = "lilla-habits"` なら
+  `t("lilla-habits.notify.title")`。コアが prefix を付けることはしない）、違反や拡張名とコアの
+  トップレベルキーの衝突は、拡張の登録時（`set_extensions()`）に `ValueError` で fail-fast する
+  （`t()` 自体は従来どおり例外を投げない）。1 つの拡張が複数のディレクトリを返した場合は、その
+  拡張のノードをロード順に浅くマージする。存在しないディレクトリは WARNING を出して
+  （ロケールごとに 1 回）読み飛ばし、壊れた YAML は ERROR ログを出してそのロケール分だけ空として扱う。
+  `t()` の解決順（`ui.locale` → `ja` → キー名）は従来どおりで、`ja.yaml` しか同梱していない
+  拡張でも `ui.locale: en` で例外にならない。`translations()` / `available_locales()` も
+  合成後のカタログを対象にする（メソッドの追加のみで非破壊。`EXTENSION_API_VERSION` は据え置き）
+- 拡張リポジトリ向けのテストヘルパー `lilla_core.testing` を追加。
+  `use_extensions(*extensions, config_root=None)`（登録・設定合成・`set_config()` を行い、
+  抜けるときに登録内容・設定インスタンス・`CONFIG_ROOT` を元へ戻すコンテキストマネージャ）と
+  `write_minimal_lilla_yaml(directory, ...)`（コアが必須にしている項目だけの `lilla.yaml` を
+  書き出す。`extra` で拡張が必須にしているセクションを深いマージで足せる）を提供する。
+  `lilla_core.testing` 本体は pytest を import しないため、pytest の無い環境でも import できる
+- pytest 向けの fixture を `lilla_core.testing.pytest_plugin` に追加（`lilla_config_root` /
+  `lilla_extensions`）。`pytest11` entry point による自動登録はしないので、利用側は自分のルート
+  `conftest.py` に `pytest_plugins = ["lilla_core.testing.pytest_plugin"]` と書いて opt-in する
+
+- `Extension.tool_config_roots()` を追加。拡張が既定のツール YAML（`llm_*.yaml` / `task_*.yaml`）を
+  同梱できるようになった。ローダーは「拡張の同梱分（ロード順）→ `${CONFIG_ROOT}/tools`」の順に
+  YAML を集め、同じ stem は `${CONFIG_ROOT}/tools` 側が丸ごと上書きする（利用者の設定が常に勝つ。
+  内容のマージはしない）。拡張どうしで同じ stem を同梱した場合は起動時に fail-fast する。
+  同梱 YAML が `type: self` なら同梱ディレクトリの同名 `.py` を読む
+- ツール YAML に `enabled: false` と書くとそのツールをロードしなくなった（同梱かどうかを問わない）。
+  拡張が同梱したツールを止めるには、`${CONFIG_ROOT}/tools` に同じ stem で `enabled: false` の
+  YAML を置く。`enabled` キーが無い、または `false` 以外の値なら従来どおりロードする
+
+- ツール YAML の `type` に import パス（`.` 区切りのモジュール名。例:
+  `type: lilla_google_calendar.tools.calendar_get`）を書けるようになった。`.` を含む `type` は
+  ツールルートを探索する代わりに `importlib` で解決し、LLM ツール・task ツールの両方で使える。
+  インストール済みパッケージ（PyPI 配布の拡張など）がツールを同梱するための経路で、通常の
+  import のため相対 import が使え、ディレクトリの検査は行わない（インストール済みパッケージは
+  `LILLA_EXTENSIONS` と同じ信頼レベル）。import に失敗した場合はファイルが見つからないときと
+  同じく WARNING を出してそのツールだけスキップする。`.` を含まない `type` と `type: self` の
+  挙動は従来どおり
+
+- コア組み込みのサンプル LLM ツール `lilla_core.builtin_tools.llm_current_datetime` を追加。
+  個人データ・外部サービスへの依存を持たない軽量なツールで、`${CONFIG_ROOT}/tools/` に
+  `type: lilla_core.builtin_tools.llm_current_datetime` の YAML を置くと opt-in で有効化できる
+  （コアは自動では読み込まない）。import パス指定でコア組み込みツールを使う実例として README に記載
+
 - `lilla.yaml` の `discord.channels` に登録チャンネルのリストを追加。`name`（設定上の
   別名）・`channel_id`（snowflake 文字列）・`mention_optional`（既定 `false`）を並べると、
   `mention_optional: true` のチャンネルではオーナーのメンションなしの発言にも応答する。
