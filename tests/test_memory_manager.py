@@ -628,3 +628,42 @@ class TestGetMemoryManager:
             first = mm_module.get_memory_manager()
             second = mm_module.get_memory_manager()
         assert first is second
+
+
+class TestRegisteredChannelSection:
+    """登録チャンネルでの会話にだけチャンネル名の一節が付くことを検証する。"""
+
+    @pytest.fixture
+    def registered_channels(self, mock_cfg: MagicMock):
+        """`discord.channels` に 1 件登録された状態の設定モックを返す。"""
+        entry = MagicMock()
+        entry.name = "dev"
+        entry.channel_id = "100"
+        entry.mention_optional = True
+        mock_cfg.discord.find_channel_by_id = MagicMock(
+            side_effect=lambda channel_id: entry if str(channel_id) == "100" else None
+        )
+        return mock_cfg
+
+    async def test_registered_channel_name_is_included(
+        self, manager, registered_channels, mock_conv_repo, mock_memo_repo,
+        mock_tool_cache_repo, mock_session_memory,
+    ) -> None:
+        result = await manager.build_system_prompt(discord_channel_id=100)
+        assert "## Current Channel" in result
+        assert '"dev"' in result
+
+    async def test_unregistered_channel_has_no_section(
+        self, manager, registered_channels, mock_conv_repo, mock_memo_repo,
+        mock_tool_cache_repo, mock_session_memory,
+    ) -> None:
+        result = await manager.build_system_prompt(discord_channel_id=999)
+        assert "## Current Channel" not in result
+
+    async def test_no_channel_id_has_no_section(
+        self, manager, registered_channels, mock_conv_repo, mock_memo_repo,
+        mock_tool_cache_repo, mock_session_memory,
+    ) -> None:
+        """DM や Discord 以外の呼び出し（`discord_channel_id` 未指定）では出さない。"""
+        result = await manager.build_system_prompt()
+        assert "## Current Channel" not in result

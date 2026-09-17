@@ -108,14 +108,51 @@ class MemoryManager:
             result.append({"role": msg["role"], "content": new_content})
         return result
 
-    async def build_system_prompt(self, extra_prompt: str = "", client_type: str = "") -> str:
+    def _resolve_registered_channel_section(self, discord_channel_id: int | None) -> str:
+        """「今この登録チャンネルにいる」旨の短い一節を返す。
+
+        `discord.channels` に登録されたチャンネルでの会話のときだけ本文を返し、
+        未登録チャンネル・DM・Discord 以外の呼び出し（`discord_channel_id` が
+        `None`）では空文字列を返す。会話履歴そのものは登録の有無によらず全
+        チャンネル横断のままなので、「ここだけの履歴ではない」ことも併せて伝える。
+
+        Args:
+            discord_channel_id: 会話が行われている Discord チャンネル ID。
+
+        Returns:
+            システムプロンプトへ追記する一節。付けるものが無ければ空文字列。
+        """
+        if discord_channel_id is None:
+            return ""
+        entry = self._config.discord.find_channel_by_id(discord_channel_id)
+        if entry is None:
+            return ""
+        return (
+            "## Current Channel\n"
+            f'You are talking in the registered Discord channel "{entry.name}". '
+            "The conversation history below spans every channel and DM, not just this one."
+        )
+
+    async def build_system_prompt(
+        self,
+        extra_prompt: str = "",
+        client_type: str = "",
+        discord_channel_id: int | None = None,
+    ) -> str:
         """systemプロンプトを組み立てて返す。
 
         base_prompt に以下を順に追記する:
         1. クライアント固有プロンプト（`_resolve_client_prompt` で解決できた場合のみ付与）
-        2. 動的メモリ（有効なuser_memosが存在する場合のみ）
-        3. セッションメモリ（有効なセッションメモリが存在する場合のみ）
-        4. 現在日時と時刻付き会話履歴
+        2. 登録チャンネルの一節（`discord.channels` に登録されたチャンネルでの会話のみ）
+        3. 動的メモリ（有効なuser_memosが存在する場合のみ）
+        4. セッションメモリ（有効なセッションメモリが存在する場合のみ）
+        5. 現在日時と時刻付き会話履歴
+
+        Args:
+            extra_prompt: base_prompt の直後に追記する文字列（会話プロンプトなど）。
+            client_type: クライアント固有プロンプトの解決に使うクライアント種別。
+            discord_channel_id: 会話が行われている Discord チャンネル ID。登録
+                チャンネルの一節の解決に使う。
         """
         memos = await self._memo_repo.get_active()
         memo_section = ""
@@ -134,6 +171,7 @@ class MemoryManager:
         time_section = f"Current time: {now_str}"
 
         client_prompt = _resolve_client_prompt(client_type)
+        channel_section = self._resolve_registered_channel_section(discord_channel_id)
 
         base = self._config.system_prompt
         if client_prompt:
@@ -141,6 +179,8 @@ class MemoryManager:
         if extra_prompt:
             base = base + "\n\n" + extra_prompt
         parts = [base]
+        if channel_section:
+            parts.append(channel_section)
         if memo_section:
             parts.append(memo_section)
         if session_memory_section:

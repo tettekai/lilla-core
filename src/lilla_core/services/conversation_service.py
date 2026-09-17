@@ -200,7 +200,11 @@ async def run_conversation(
 
     memory_manager = get_memory_manager()
     extra = _config.conversation_prompt if client_type != "task" else ""
-    system_prompt = await memory_manager.build_system_prompt(extra_prompt=extra, client_type=client_type)
+    system_prompt = await memory_manager.build_system_prompt(
+        extra_prompt=extra,
+        client_type=client_type,
+        discord_channel_id=discord_channel_id,
+    )
     history = await memory_manager.load_conversation_history_with_timestamps()
 
     if override_last_user_content is not None and history and history[-1]["role"] == "user":
