@@ -11,7 +11,7 @@ on:
     types: [submitted]
 
 jobs:
-  claude:
+  gate:
     # This repository is public, so keep the owner check: an outside @claude
     # would otherwise start a job with write permissions and burn tokens.
     if: |
@@ -21,6 +21,151 @@ jobs:
         (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
         (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
       )
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      # Blocks the run on outside input (an `auto` issue authored or
+      # commented on by someone other than the owner, or any untrusted
+      # conversation/review/line comment on a PR) and on exceeding the
+      # review-invocation limit while a PR is under `grok-bot-reviewing`.
+      - name: Check outside input and review invocation limit
+        id: check
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const repoOwnerLogin = context.payload.repository.owner.login;
+            const trusted = new Set([repoOwnerLogin, "claude[bot]", "github-actions[bot]"]);
+            const isTrusted = (login) => trusted.has(login);
+
+            const isIssueEvent =
+              context.eventName === "issues" ||
+              (context.eventName === "issue_comment" && !context.payload.issue.pull_request);
+
+            if (isIssueEvent) {
+              const issue = context.payload.issue;
+              const labels = issue.labels.map((l) => l.name);
+
+              let ok = true;
+              if (labels.includes("auto")) {
+                ok = isTrusted(issue.user.login);
+                if (ok) {
+                  const comments = await github.paginate(github.rest.issues.listComments, {
+                    owner,
+                    repo,
+                    issue_number: issue.number,
+                    per_page: 100,
+                  });
+                  ok = comments.every((c) => isTrusted(c.user.login));
+                }
+              }
+
+              if (!ok) {
+                core.notice("outside input on auto issue; halting");
+                try {
+                  await github.rest.issues.addLabels({
+                    owner,
+                    repo,
+                    issue_number: issue.number,
+                    labels: ["auto-halted"],
+                  });
+                } catch (error) {
+                  core.warning(`failed to add auto-halted label: ${error.message}`);
+                }
+                core.setOutput("should_run", "false");
+                return;
+              }
+
+              try {
+                await github.rest.issues.addLabels({
+                  owner,
+                  repo,
+                  issue_number: issue.number,
+                  labels: ["auto-started"],
+                });
+              } catch (error) {
+                core.warning(`failed to add auto-started label: ${error.message}`);
+              }
+              core.setOutput("should_run", "true");
+              return;
+            }
+
+            // PR path: issue_comment on a PR, pull_request_review_comment, pull_request_review.
+            const prNumber =
+              context.eventName === "issue_comment"
+                ? context.payload.issue.number
+                : context.payload.pull_request.number;
+
+            const [issueComments, reviewComments, reviews] = await Promise.all([
+              github.paginate(github.rest.issues.listComments, {
+                owner,
+                repo,
+                issue_number: prNumber,
+                per_page: 100,
+              }),
+              github.paginate(github.rest.pulls.listReviewComments, {
+                owner,
+                repo,
+                pull_number: prNumber,
+                per_page: 100,
+              }),
+              github.paginate(github.rest.pulls.listReviews, {
+                owner,
+                repo,
+                pull_number: prNumber,
+                per_page: 100,
+              }),
+            ]);
+
+            const authors = [
+              ...issueComments.map((c) => c.user.login),
+              ...reviewComments.map((c) => c.user.login),
+              ...reviews.map((r) => r.user.login),
+            ];
+            if (!authors.every(isTrusted)) {
+              core.notice("outside input on PR conversation/review; not launching");
+              core.setOutput("should_run", "false");
+              return;
+            }
+
+            const pr = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+            const prLabels = pr.data.labels.map((l) => l.name);
+            if (prLabels.includes("grok-bot-reviewing")) {
+              // Approximates "number of times Claude was woken up" by counting
+              // @claude mentions across conversation/review comments/review
+              // bodies. Edited reviews never retrigger this workflow because
+              // pull_request_review only listens for `submitted`.
+              const mentionCount =
+                issueComments.filter((c) => c.body && c.body.includes("@claude")).length +
+                reviewComments.filter((c) => c.body && c.body.includes("@claude")).length +
+                reviews.filter((r) => r.body && r.body.includes("@claude")).length;
+              if (mentionCount > 3) {
+                core.notice("review invocation limit exceeded; halting");
+                try {
+                  await github.rest.issues.addLabels({
+                    owner,
+                    repo,
+                    issue_number: prNumber,
+                    labels: ["grok-bot-review-exhausted"],
+                  });
+                } catch (error) {
+                  core.warning(`failed to add grok-bot-review-exhausted label: ${error.message}`);
+                }
+                core.setOutput("should_run", "false");
+                return;
+              }
+            }
+
+            core.setOutput("should_run", "true");
+
+  claude:
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write

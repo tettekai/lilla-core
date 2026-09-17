@@ -1,0 +1,36 @@
+name: Clear review label on approve
+
+# Once Grok Bot approves a PR (grok-bot-approved), the review cycle is over,
+# so drop grok-bot-reviewing to unblock a fresh @claude review round later.
+on:
+  pull_request:
+    types: [labeled]
+
+jobs:
+  clear:
+    if: github.event.label.name == 'grok-bot-approved'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - name: Remove grok-bot-reviewing label
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr.labels.some((l) => l.name === "grok-bot-reviewing")) {
+              core.info("grok-bot-reviewing not present; nothing to remove");
+              return;
+            }
+            try {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                name: "grok-bot-reviewing",
+              });
+              core.info(`removed grok-bot-reviewing from #${pr.number}`);
+            } catch (error) {
+              core.warning(`failed to remove grok-bot-reviewing: ${error.message}`);
+            }
