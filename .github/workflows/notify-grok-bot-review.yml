@@ -1,6 +1,6 @@
 name: Notify Grok Bot review
 
-# Ping Aqua's review routine. GitHub native webhooks cannot set the
+# Ping Grok Bot's review routine. GitHub native webhooks cannot set the
 # Authorization header Grok Bot requires, so Actions POSTs instead.
 # Skip develop↔main sync/release PRs so they never wake the review routine.
 on:
@@ -11,24 +11,79 @@ jobs:
   notify:
     if: >
       (github.event.pull_request.user.login == 'tettekai' ||
-       github.event.pull_request.user.login == 'claude[bot]') &&
+       github.event.pull_request.user.login == 'claude[bot]' ||
+       github.event.pull_request.user.login == 'github-actions[bot]') &&
       !(github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.ref == 'develop') &&
       !(github.event.pull_request.base.ref == 'develop' && github.event.pull_request.head.ref == 'main')
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      issues: write
+      pull-requests: write
     steps:
-      - name: POST pull_request payload to Grok Bot
+      # If the review is already exhausted, neither the label nor the
+      # webhook should fire again (the PR is waiting for a human to take
+      # over once grok-bot-reviewing is cleared).
+      - name: Add grok-bot-reviewing label
+        id: reviewing
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const labels = context.payload.pull_request.labels.map((l) => l.name);
+            if (labels.includes("grok-bot-review-exhausted")) {
+              core.notice("review already exhausted; skipping label and webhook");
+              core.setOutput("skip", "true");
+              return;
+            }
+            core.setOutput("skip", "false");
+            try {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                labels: ["grok-bot-reviewing"],
+              });
+            } catch (error) {
+              core.warning(`failed to add grok-bot-reviewing label: ${error.message}`);
+            }
+
+      - name: POST minimal payload to Grok Bot
+        if: steps.reviewing.outputs.skip != 'true'
         env:
           WEBHOOK_URL: ${{ secrets.GROK_BOT_WEBHOOK_URL }}
           WEBHOOK_AUTHORIZATION: ${{ secrets.GROK_BOT_WEBHOOK_AUTHORIZATION }}
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BASE: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD: ${{ github.event.pull_request.head.ref }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_ACTION: ${{ github.event.action }}
         run: |
           set -euo pipefail
           if [ -z "${WEBHOOK_URL}" ] || [ -z "${WEBHOOK_AUTHORIZATION}" ]; then
             echo "Missing GROK_BOT_WEBHOOK_URL or GROK_BOT_WEBHOOK_AUTHORIZATION" >&2
             exit 1
           fi
+
+          jq -n \
+            --arg owner "${OWNER}" \
+            --arg repo "${REPO_NAME}" \
+            --arg repository "${REPO}" \
+            --argjson pr_number "${PR_NUMBER}" \
+            --arg title "${PR_TITLE}" \
+            --arg base "${PR_BASE}" \
+            --arg head "${PR_HEAD}" \
+            --arg url "${PR_URL}" \
+            --arg author "${PR_AUTHOR}" \
+            --arg pr_action "${PR_ACTION}" \
+            '{action:"review", owner:$owner, repo:$repo, repository:$repository, pr_number:$pr_number, title:$title, base:$base, head:$head, url:$url, author:$author, pr_action:$pr_action}' \
+            > /tmp/event.json
+
           curl -fsS -X POST "${WEBHOOK_URL}" \
             -H "Authorization: ${WEBHOOK_AUTHORIZATION}" \
             -H "Content-Type: application/json" \
-            --data-binary @"${GITHUB_EVENT_PATH}"
+            --data-binary @/tmp/event.json
