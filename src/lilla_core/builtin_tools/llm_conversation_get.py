@@ -60,7 +60,7 @@ SCHEMA = {
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "取得する最大件数（デフォルト: 30、最大: 30）",
+                    "description": "取得する最大件数（デフォルト: 30、最小: 1、最大: 30）",
                 },
             },
             "required": [],
@@ -70,6 +70,29 @@ SCHEMA = {
 
 #: `limit` の上限（LLM が大きな値を渡してもここで頭打ちにする）。
 MAX_LIMIT = 30
+
+
+def _resolve_limit(value) -> int:
+    """`limit` を 1〜`MAX_LIMIT` の整数へ正規化する。
+
+    MongoDB の `limit(0)` は「制限なし」と同等で、負数もまた別の意味を持つため、
+    上限だけを見る `min()` では LLM が `0` や負数を渡したときに上限をすり抜けて
+    会話履歴を丸ごと返してしまう。常に正の整数へ丸め、整数として解釈できない値は
+    既定値（`MAX_LIMIT`）として扱う。
+
+    Args:
+        value: ツール入力の `limit`（未指定なら `None`）。
+
+    Returns:
+        1 以上 `MAX_LIMIT` 以下の整数。
+    """
+    if value is None:
+        return MAX_LIMIT
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return MAX_LIMIT
+    return max(1, min(parsed, MAX_LIMIT))
 
 
 def _content_to_text(content) -> str:
@@ -147,7 +170,7 @@ async def execute(input: dict, context: dict) -> dict:
         query = input.get("query")
         role = input.get("role", "all")
         channel_name = input.get("channel_name")
-        limit = min(int(input.get("limit", MAX_LIMIT)), MAX_LIMIT)
+        limit = _resolve_limit(input.get("limit"))
 
         discord_channel_id = None
         if channel_name:

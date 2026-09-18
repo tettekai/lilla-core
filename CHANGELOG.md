@@ -80,7 +80,7 @@
   インデックスを張るようにした
 - コア組み込みの LLM ツール `lilla_core.builtin_tools.llm_conversation_get` を追加。
   会話履歴を期間（`datetime_range`）・キーワード（`query`。スペース区切りの AND）・
-  発言者（`role`）・件数（`limit`。既定・上限とも 30）で検索する。
+  発言者（`role`）・件数（`limit`。既定・上限とも 30 で、0 や負数は 1 へ丸める）で検索する。
   `${CONFIG_ROOT}/tools/` に `type: lilla_core.builtin_tools.llm_conversation_get` の
   YAML を置いた場合だけ有効になる opt-in（LLM へ見せるツール名は YAML のファイル名）。
   任意パラメータ `channel_name` に `discord.channels` の登録名を渡すと、その

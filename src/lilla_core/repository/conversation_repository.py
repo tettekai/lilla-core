@@ -143,7 +143,8 @@ class ConversationRepository:
             keywords: すべて含むべきキーワードのリスト。`None` / 空なら絞り込まない。
             role: 絞り込む発言者（`"user"` / `"assistant"` など）。`None` なら絞り込まない。
             discord_channel_id: 絞り込む Discord チャンネル ID。`None` なら全チャンネル横断。
-            limit: 返す最大件数。
+            limit: 返す最大件数。MongoDB の仕様上 `0` は「制限なし」と同等に
+                なるため、利用者入力を渡す呼び出し元が正の整数へ正規化すること。
 
         Returns:
             {"message": {...}, "time": datetime} のリスト（新しい順）。

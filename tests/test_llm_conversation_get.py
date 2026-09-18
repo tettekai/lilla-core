@@ -178,6 +178,24 @@ class TestLlmConversationGet:
 
         assert mock_repo.search.await_args.kwargs["limit"] == tool.MAX_LIMIT
 
+    @pytest.mark.parametrize("raw", [0, -1, -100])
+    async def test_non_positive_limit_is_normalized_to_one(
+        self, tool, mock_repo: MagicMock, raw: int
+    ) -> None:
+        """0 や負数の limit は 1 へ丸める（MongoDB の limit(0) は制限なしのため）。"""
+        await tool.execute({"limit": raw}, {})
+
+        assert mock_repo.search.await_args.kwargs["limit"] == 1
+
+    @pytest.mark.parametrize("raw", ["abc", None, [5]])
+    async def test_non_integer_limit_falls_back_to_default(
+        self, tool, mock_repo: MagicMock, raw
+    ) -> None:
+        """整数として解釈できない limit は既定値へ落とす。"""
+        await tool.execute({"limit": raw}, {})
+
+        assert mock_repo.search.await_args.kwargs["limit"] == tool.MAX_LIMIT
+
     async def test_formats_results_in_local_timezone(
         self, tool, mock_repo: MagicMock
     ) -> None:
