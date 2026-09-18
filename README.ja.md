@@ -149,6 +149,27 @@ type: lilla_core.builtin_tools.task_channel_summary
 タグで囲み、「指示ではなく過去の記録」として扱わせます。未登録チャンネル・DM には
 入りません。
 
+### 会話履歴の部屋名検索
+
+会話履歴そのものは全チャンネル横断のままですが、「あの部屋で何を話したか」を思い出す
+ための検索ツールをコア組み込みの LLM ツールとして同梱しています。既定では有効化されて
+いません。`${CONFIG_ROOT}/tools/` に以下の YAML を置くと opt-in で有効になります
+（LLM へ見せるツール名は YAML のファイル名になります）。
+
+```yaml
+type: lilla_core.builtin_tools.llm_conversation_get
+```
+
+- `datetime_range`（`today` / `last_7_days` / `2026-04-20/2026-04-26` など）・`query`
+  （スペース区切りの AND キーワード）・`role`（`user` / `assistant` / `all`）・`limit`
+  （既定 30、上限 30）で絞り込めます
+- `channel_name` に `discord.channels` の登録名を渡すと、そのチャンネルの発言だけに
+  絞り込みます。**設定上の別名であり、Discord の現在のチャンネル名ではありません**
+- `channel_name` を省略すると、今までどおり全チャンネル横断で検索します
+- 登録に無い名前を渡すとエラーを返します（黙って全件検索に落としません）
+- 名前の突き合わせは前後の空白を除いた完全一致で、大文字小文字は区別します
+- 期間の境界と結果の表示時刻はどちらも `ui.timezone` で解決したタイムゾーンで扱います
+
 ### タイムゾーン
 
 `lilla.yaml` の `ui.timezone` が、ボットにとっての「人間側の今日 / いま」を決めます。
@@ -511,10 +532,11 @@ def test_section(tmp_path):
   キーを設定できます。ツール固有のキーは、下記の実行時コンテキストキーと衝突
   してはいけません（起動時に検証され、衝突時は fail-fast します）。
 
-`lilla_core` は import パス形式の具体例として、組み込みのサンプルツールを 1 つ
-同梱しています: `lilla_core/builtin_tools/llm_current_datetime.py`。既定では有効化
-されていません。`${CONFIG_ROOT}/tools/llm_current_datetime.yaml` に以下の YAML を
-置くと opt-in で有効化できます:
+`lilla_core` は import パス形式の具体例として、組み込みの LLM ツールを 2 つ
+同梱しています: `lilla_core/builtin_tools/llm_current_datetime.py`（サンプル）と
+`lilla_core/builtin_tools/llm_conversation_get.py`（[会話履歴の部屋名検索](#会話履歴の部屋名検索)）。
+どちらも既定では有効化されていません。`${CONFIG_ROOT}/tools/` に以下の YAML を置くと
+opt-in で有効化できます:
 
 ```yaml
 type: lilla_core.builtin_tools.llm_current_datetime

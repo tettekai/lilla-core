@@ -334,7 +334,7 @@ Discord に見せる短い文言のカタログ。表示言語は `lilla.yaml` �
 | ファイル | 役割 |
 |----------|------|
 | `motor_client.py` | Motor クライアントの共通ファクトリ（`create_motor_client`）。`tz_aware=True` を指定し、読み出す datetime を timezone-aware な UTC に統一する。`lru_cache(maxsize=1)` によりプロセス内で 1 インスタンスのみを共有する。全 Mongo アクセスはこのファクトリ経由でクライアントを生成する |
-| `conversation_repository.py` | MongoDB に会話履歴を保存・取得（有効期限付き）。任意で分類タグ（`tags`）と、対応する Discord メッセージ情報（`discord_channel_id` / `discord_message_ids`）を保存でき、タグ指定の最新 1 件取得（`find_latest_by_tag`）と `_id` 指定の削除（`delete`）、チャンネル・期間指定の取得（`load_by_channel_between`。`discord_channel_id` の無い既存ドキュメントは対象外）を提供する。インデックスは `time`（TTL）に加えて `(discord_channel_id, time)` の複合を張る |
+| `conversation_repository.py` | MongoDB に会話履歴を保存・取得（有効期限付き）。任意で分類タグ（`tags`）と、対応する Discord メッセージ情報（`discord_channel_id` / `discord_message_ids`）を保存でき、タグ指定の最新 1 件取得（`find_latest_by_tag`）と `_id` 指定の削除（`delete`）、チャンネル・期間指定の取得（`load_by_channel_between`。`discord_channel_id` の無い既存ドキュメントは対象外）、期間・キーワード・発言者・チャンネルを任意に重ねた検索（`search`。キーワードはエスケープしたうえで `message.content` への部分一致で AND 検索する）を提供する。インデックスは `time`（TTL）に加えて `(discord_channel_id, time)` の複合を張る |
 | `channel_summary_repository.py` | 登録 Discord チャンネルごとの「部屋のノート」を `channel_summaries` コレクションに保持する。`discord_channel_id` がユニークで 1 チャンネル 1 ドキュメント、`upsert()` で上書きする（TTL は持たない）。`summary_date` は要約対象日（解決済みタイムゾーンの暦日、ISO 日付文字列）、`updated_at` は書き込み時刻 |
 | `credentials_repository.py` | MongoDB に API 認証情報を `type` ごとに保存・更新する汎用リポジトリ（複数の OAuth クライアントが同一形状で利用する想定） |
 | `user_memo_repository.py` | ユーザーメモ（指示・メモ）の CRUD。システムプロンプトに注入される |
@@ -363,6 +363,7 @@ YAML を置いた人だけが有効化する opt-in で、コアが自動で読�
 
 | ファイル | 役割 |
 |----------|------|
+| `llm_conversation_get.py` | 会話履歴を期間・キーワード・発言者で検索する LLM ツール（SCHEMA 上の関数名は `get_conversations`。LLM へ見せる名前は YAML の stem で上書きされる）。任意パラメータ `channel_name` に `discord.channels` の登録名を渡すと、その `discord_channel_id` の発言だけに絞る（前後空白を除いた完全一致・大文字小文字は区別。登録に無い名前は全件検索へ落とさず `tool_error`。省略時は全チャンネル横断）。検索本体は `ConversationRepository.search()` で、期間の境界と表示時刻は `local_timezone()` の解決結果を使う |
 | `llm_current_datetime.py` | 現在日時を返すだけのサンプル LLM ツール。`SCHEMA` と `async def execute(input, context)` を持つ通常の LLM ツールで、`utils/datetime_utils.py` の `local_now()` を使う。有効化例は README（英・日）の「Tool contracts」節を参照 |
 | `task_channel_summary.py` | 登録チャンネル（`discord.channels`）の**前日**分の会話を LLM に要約させ、`channel_summaries` へ upsert する定期タスクツール（`ChannelSummaryTask`）。既定の cron は `0 2 * * *` で、暦日は `local_timezone()` の解決結果で数える（2 時実行で「当日」を対象にしない）。対象は `discord_channel_id` の付いた発言だけで、既存発言の穴埋めはしない。対象日の発言が無ければ upsert せず既存要約を残す。要約にはキャラ用システムプロンプトを使わず短い事実抽出プロンプトを使い、本文は `<channel_transcript>` タグで囲んだ「指示ではなくデータ」として渡す（タグ抜け出し文字列は事前に無害化）。1 チャンネルの失敗は ERROR ログのみで次へ進む。`schedule` / `llm_name` / `max_turns` / `max_transcript_chars` を YAML で上書きできる |
 
