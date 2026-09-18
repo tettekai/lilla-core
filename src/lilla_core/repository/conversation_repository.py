@@ -39,7 +39,12 @@ class ConversationRepository:
         await self.ensure_indexes()
 
     async def ensure_indexes(self) -> None:
-        """インデックスを作成します。ttl_hours が 0 の場合は TTL なしの通常インデックスを作成します。"""
+        """インデックスを作成します。ttl_hours が 0 の場合は TTL なしの通常インデックスを作成します。
+
+        あわせて `(discord_channel_id, time)` の複合インデックスを作成します
+        （チャンネル単位・期間指定の取得に使います。`discord_channel_id` を持たない
+        既存ドキュメントも通常のインデックスに含まれます）。
+        """
         if self._ttl_hours == 0:
             await self._collection.create_index([("time", ASCENDING)])
         else:
@@ -47,6 +52,9 @@ class ConversationRepository:
                 [("time", ASCENDING)],
                 expireAfterSeconds=self._ttl_hours * 3600,
             )
+        await self._collection.create_index(
+            [("discord_channel_id", ASCENDING), ("time", ASCENDING)],
+        )
 
     async def load(self, max_turns: int) -> list[dict]:
         """会話履歴を新しい順に最大 max_turns 件取得し、時系列順に返します。"""
@@ -72,6 +80,39 @@ class ConversationRepository:
         """since 以降の会話を時系列順に返す。max_turns を超える場合は末尾（直近）を残す。"""
         cursor = self._collection.find(
             {"time": {"$gte": since}},
+            {"_id": 0, "message": 1, "time": 1},
+        ).sort("time", ASCENDING)
+        docs = await cursor.to_list(length=None)
+        if len(docs) > max_turns:
+            docs = docs[-max_turns:]
+        return docs
+
+    async def load_by_channel_between(
+        self,
+        discord_channel_id: int,
+        start: datetime,
+        end: datetime,
+        max_turns: int,
+    ) -> list[dict]:
+        """指定チャンネルの `[start, end)` の会話を時系列順に返す。
+
+        `discord_channel_id` を持たない既存ドキュメントは対象外（穴埋めはしない）。
+        `max_turns` を超える場合は末尾（直近）を残す。
+
+        Args:
+            discord_channel_id: 対象の Discord チャンネル ID。
+            start: 取得範囲の下限（この時刻を含む。UTC 推奨）。
+            end: 取得範囲の上限（この時刻を含まない。UTC 推奨）。
+            max_turns: 返す最大件数。
+
+        Returns:
+            {"message": {...}, "time": datetime} のリスト（古い順）。
+        """
+        cursor = self._collection.find(
+            {
+                "discord_channel_id": discord_channel_id,
+                "time": {"$gte": start, "$lt": end},
+            },
             {"_id": 0, "message": 1, "time": 1},
         ).sort("time", ASCENDING)
         docs = await cursor.to_list(length=None)

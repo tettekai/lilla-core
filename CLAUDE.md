@@ -282,7 +282,7 @@ HTTP サーバー・ダッシュボードサーバー・WebSocket サーバー�
 | `attachment_download.py` | Discord 添付ファイルのダウンロード共通処理（`download_attachment_bytes` / `resolve_proxy_settings` / `normalize_content_type`）。プロキシ設定を尊重して Discord CDN から取得する。画像添付（`services/image_attachment.py`）とコマンドの BODY 添付（`commands/attachment_body.py`）で共有する |
 | `image_attachment.py` | Discord の画像添付を LLM へ渡す `image_url` パート（data URL）へ変換する処理。対応 MIME タイプの絞り込み（`filter_image_attachments`）と、サイズ上限ガード付きのダウンロード＋base64 化（`build_image_content_parts`）を担う。上限は `AppConfig.bot.max_image_attachment_size_mb`（既定 8MB。未設定・不正値・0 以下なら既定値）で、ダウンロード前に `attachment.size` で早期に弾き、Discord 側の申告値を過信しないようダウンロード後の実バイト数でも再検証する。上限超過・ダウンロード失敗はいずれも `notify_error` で通知して None を返し（例外は呼び出し元へ伝播させない）、呼び出し元は会話処理そのものを中止する |
 | `conversation_service.py` | tool_call ループと会話履歴の読み書きを担う共通ロジック。Discord をはじめ、複数の対話クライアントのエントリポイントから再利用できる。LLM 最終応答の META ブロック（`actions`）を種別ごとにディスパッチして適用する（`set_session_memory` でセッションメモリを更新/クリア）。クライアント種別の判定は `"task"` かどうかだけで行い、それ以外の対話クライアント種別（`"discord"` や拡張が増やす種別）はコア側に列挙しない。会話開始フック（`extension.get_conversation_start_hooks`。`ConversationContext` を組み立ててロード順に await する）・ツール実行 context プロバイダ（`extension.build_tool_context`。実体は `core/extension.py` にあり、ここからも import できる）を経由して拡張の差し込みポイントを利用する。呼び出し元クライアントが `client_state=` で渡した任意の状態は、コアでは解釈せずフックの `ConversationContext.client_state` とツール実行 context の `client_state` キーへそのまま載せる |
-| `memory_manager.py` | 会話履歴・ユーザーメモ・セッションメモリを統合し、LLM 向けシステムプロンプトを構築する（`build_system_prompt`）。履歴の対象期間とタイムスタンプ表示、プロンプトに埋め込む現在時刻はいずれも `local_timezone()` の解決結果を使う。クライアント種別ごとのプロンプト追記は `_resolve_client_prompt()` が「拡張の `client_prompt_providers()`（複数あればロード順に空行区切りで連結）→ コア内蔵（`"discord"` のみ。拡張が 1 つも出していないときだけ）→ 付けない」の順で解決する。ツールキャッシュ（`tool_cache_repository`）の有効なレコードも `## Cached Tool Results` としてシステムプロンプトへ埋め込む |
+| `memory_manager.py` | 会話履歴・ユーザーメモ・セッションメモリを統合し、LLM 向けシステムプロンプトを構築する（`build_system_prompt`）。履歴の対象期間とタイムスタンプ表示、プロンプトに埋め込む現在時刻はいずれも `local_timezone()` の解決結果を使う。クライアント種別ごとのプロンプト追記は `_resolve_client_prompt()` が「拡張の `client_prompt_providers()`（複数あればロード順に空行区切りで連結）→ コア内蔵（`"discord"` のみ。拡張が 1 つも出していないときだけ）→ 付けない」の順で解決する。ツールキャッシュ（`tool_cache_repository`）の有効なレコードも `## Cached Tool Results` としてシステムプロンプトへ埋め込む。登録チャンネルでの会話では `channel_summaries` の要約（部屋のノート）を `## Channel Note` として差し込む（`_resolve_channel_summary_section`。`summary_date` を併記し、本文は信頼しないコンテキストとして `<channel_note>` タグで囲む。未登録チャンネル・DM には出さず、取得に失敗しても WARNING ログのみでプロンプト組み立ては続行する） |
 | `message_splitter.py` | LLM 応答を `---SPLIT---` / 改行2つ / タイムスタンプ境界で分割し、意味のない断片とタイムスタンプ prefix を除去するユーティリティ（`split_response`） |
 | `message_util.py` | メッセージ送信ユーティリティ。フラグパース（`parse_message_flags`）・タイムスタンプ prefix の付与/除去（`prepend_timestamp_prefix` / `strip_timestamp_prefix`）・システムプロンプト埋め込み用セッションメモリブロックの整形（`format_session_memory_block`）・LLM 出力の META ブロック（JSON）の抽出（`extract_meta_block`）・外部エージェントとやりとりする FrontMatter 付きメッセージの組み立て/解釈（`build_correlation_frontmatter` / `parse_correlation_frontmatter`）・DM チャンネルの解決と Discord への送信（`resolve_dm_channel` / `send_to_discord`） |
 | `session_memory_manager.py` | 単一領域のセッションメモリ（作業の途中状態や一時的な意図）をプロセス内メモリで保持する。TTL 付き、MongoDB 永続化なし。更新は LLM 出力の META アクション `set_session_memory` 経由で行う |
@@ -316,7 +316,7 @@ Discord に見せる短い文言のカタログ。表示言語は `lilla.yaml` �
 | ファイル | 役割 |
 |----------|------|
 | `llm_tool_loader.py` | `tool_paths.resolve_tool_config_files("llm_")` が集めた YAML（拡張の同梱分 + `${CONFIG_ROOT}/tools/llm_*.yaml`。`enabled: false` は除外）と、`loaders/tool_paths.py` が解決したツールルート配下の `llm_*.py`（`type: self` の場合は YAML と同名の `.py`、`type` が `.` を含む場合は import パスとして `importlib` で読んだモジュール）を動的に読み込む。LLM に渡す tools パラメータの構築（`build_tools_param`）と tool_call の実行（`execute_tool_call`）を担う。実行時にツールへ注入される context には `call_tool`（入れ子呼び出し用。深さ上限 `MAX_TOOL_CALL_DEPTH=5`）を自動的に加える。`tool_config` が実行時共通キー（`client_type` 等。拡張の `tool_context_providers()` が返すキー名も含む）と衝突していないか起動時に検証し、衝突時は fail-fast する（`_validate_no_runtime_key_collision`）。ツール設定の `cache.mode`（`disable` / `enable` / `auto`）に応じた実行結果の MongoDB キャッシュ保存（`_save_tool_cache`）、`client_type == "discord"` かつ通知コールバックが注入されている場合のツール呼び出しログ送信（`_notify_tool_call`）も担う |
-| `task_tool_loader.py` | `tool_paths.resolve_tool_config_files("task_")` が集めた YAML（拡張の同梱分 + `${CONFIG_ROOT}/tools/task_*.yaml`。`enabled: false` は除外）と、`loaders/tool_paths.py` が解決したツールルート配下の Python クラス（`type` が `.` を含む場合は import パスで読んだモジュールのクラス）を動的に読み込む（`load_all_tools`）。定期実行タスクのクラスマップをキャッシュし、ファイル名プレフィックス（`task_` / `llm_` / `system_`）からトリガー種別を判定する |
+| `task_tool_loader.py` | `tool_paths.resolve_tool_config_files("task_")` が集めた YAML（拡張の同梱分 + `${CONFIG_ROOT}/tools/task_*.yaml`。`enabled: false` は除外）と、`loaders/tool_paths.py` が解決したツールルート配下の Python クラス（`type` が `.` を含む場合は import パスで読んだモジュールのクラス）を動的に読み込む（`load_all_tools`）。定期実行タスクのクラスマップをキャッシュし、トリガー種別は YAML のファイル名 stem のプレフィックス（`task_` / `llm_` / `system_`）から判定する（`type` から判定すると import パス指定のツールが `other` になってしまうため） |
 | `script_loader.py` | 外部 Python 関数・クラスをロードする（`load_script_function` / `load_script_class`）。読み込み済みモジュールからツールクラス（`execute` を持つ型）を探す `find_tool_class` はファイル経由・import パス経由の両方で共有する。ロードしてよい範囲は `tool_dirs` 引数（呼び出し側が探索に使ったルート）か、省略時は `tool_paths.resolve_tool_dirs()`（設定から都度導く。import 時に固定しない）で決め、解決後のパスがその配下に無ければ ERROR ログを出して `None` を返す |
 | `tool_paths.py` | ツール探索ルートの解決（`resolve_tool_roots`。`paths.tool_root` の後に拡張の `tool_roots()` をロード順で足す）と、ツールファイルの検索（`find_tool_file`）。ツール YAML の収集は `resolve_tool_config_files(prefix, config_root)` が担い、拡張の `tool_config_roots()`（ロード順）→ `config_root/tools` の順で集めて同じ stem は後者が丸ごと上書き、拡張どうしの同じ stem は fail-fast する。`is_tool_enabled()` は `enabled: false` と明示した YAML だけを無効と判定する。YAML の `type` が `.` を含むかで import パスかどうかを判定し（`is_import_path`）、import パスなら `importlib` で解決する（`import_tool_module`。失敗は WARNING でそのツールだけスキップ。インストール済みパッケージは `LILLA_EXTENSIONS` と同じ信頼レベルなのでディレクトリ検査はしない）。同名ファイルが複数ルートにあれば fail-fast し、1 ルート内の重複は従来どおり先頭マッチを使う。追加ルートはファイル探索専用で、`sys.path` へ入れるのは `paths.tool_root` の親だけ。ツールの `.py` をロードしてよいディレクトリは `resolve_tool_dirs()`（探索ルート + `config_root/tools`）が返し、`is_within_tool_dirs()` が解決後のパスがその配下にあることを検査する（`..` を含む `type` や外を指すシンボリックリンクを弾く）。これは信頼境界ではなく不変条件の検査で、`allowed_tool_paths` のようなホワイトリスト設定は持たない（`CONFIG_ROOT` と各ツールディレクトリへ書き込める者はコードを実行できる。`SECURITY.md` 参照） |
 
@@ -334,7 +334,8 @@ Discord に見せる短い文言のカタログ。表示言語は `lilla.yaml` �
 | ファイル | 役割 |
 |----------|------|
 | `motor_client.py` | Motor クライアントの共通ファクトリ（`create_motor_client`）。`tz_aware=True` を指定し、読み出す datetime を timezone-aware な UTC に統一する。`lru_cache(maxsize=1)` によりプロセス内で 1 インスタンスのみを共有する。全 Mongo アクセスはこのファクトリ経由でクライアントを生成する |
-| `conversation_repository.py` | MongoDB に会話履歴を保存・取得（有効期限付き）。任意で分類タグ（`tags`）と、対応する Discord メッセージ情報（`discord_channel_id` / `discord_message_ids`）を保存でき、タグ指定の最新 1 件取得（`find_latest_by_tag`）と `_id` 指定の削除（`delete`）を提供する |
+| `conversation_repository.py` | MongoDB に会話履歴を保存・取得（有効期限付き）。任意で分類タグ（`tags`）と、対応する Discord メッセージ情報（`discord_channel_id` / `discord_message_ids`）を保存でき、タグ指定の最新 1 件取得（`find_latest_by_tag`）と `_id` 指定の削除（`delete`）、チャンネル・期間指定の取得（`load_by_channel_between`。`discord_channel_id` の無い既存ドキュメントは対象外）を提供する。インデックスは `time`（TTL）に加えて `(discord_channel_id, time)` の複合を張る |
+| `channel_summary_repository.py` | 登録 Discord チャンネルごとの「部屋のノート」を `channel_summaries` コレクションに保持する。`discord_channel_id` がユニークで 1 チャンネル 1 ドキュメント、`upsert()` で上書きする（TTL は持たない）。`summary_date` は要約対象日（解決済みタイムゾーンの暦日、ISO 日付文字列）、`updated_at` は書き込み時刻 |
 | `credentials_repository.py` | MongoDB に API 認証情報を `type` ごとに保存・更新する汎用リポジトリ（複数の OAuth クライアントが同一形状で利用する想定） |
 | `user_memo_repository.py` | ユーザーメモ（指示・メモ）の CRUD。システムプロンプトに注入される |
 | `tool_cache_repository.py` | ツール実行結果を `tool_cache` コレクションに TTL 付きでキャッシュ・取得する |
@@ -354,8 +355,8 @@ Discord に見せる短い文言のカタログ。表示言語は `lilla.yaml` �
 | `tool_response_ex.py` | ツール実行結果 dict（`success` / `tool_name` / `data` / `error` 形式）を便利に扱う薄いラッパー（`ToolResponseEx`、opt-in） |
 | `date_range.py` | `today` / `yesterday` / `tomorrow` / `last_N_days` / `next_N_days` / `this_week` / `last_week` / `YYYY-MM-DD` / `YYYY-MM-DD/YYYY-MM-DD` 形式の日付範囲 Value Object（`DateRange`。週は日曜始まり・土曜終わり）と、時刻まで指定できる `DateTimeRange`。相対指定の基準日は `local_timezone()` が解決したタイムゾーンのカレンダー日付 |
 
-### builtin_tools/ — コア組み込みのサンプル LLM ツール (`src/lilla_core/builtin_tools/`)
-個人データ・外部サービス依存の無い、コア単体でも動くサンプルツールを置く場所。`pip install`
+### builtin_tools/ — コア組み込みツール (`src/lilla_core/builtin_tools/`)
+個人データ・外部サービス依存の無い、コア単体でも動くツールを置く場所。`pip install`
 するだけで使える組み込みツールの実例で、ツール YAML の `type` にドット区切りの import パス
 （`loaders/tool_paths.py` の `is_import_path`）を指定して参照する。`${CONFIG_ROOT}/tools/` に
 YAML を置いた人だけが有効化する opt-in で、コアが自動で読み込むことはない。
@@ -363,6 +364,7 @@ YAML を置いた人だけが有効化する opt-in で、コアが自動で読�
 | ファイル | 役割 |
 |----------|------|
 | `llm_current_datetime.py` | 現在日時を返すだけのサンプル LLM ツール。`SCHEMA` と `async def execute(input, context)` を持つ通常の LLM ツールで、`utils/datetime_utils.py` の `local_now()` を使う。有効化例は README（英・日）の「Tool contracts」節を参照 |
+| `task_channel_summary.py` | 登録チャンネル（`discord.channels`）の**前日**分の会話を LLM に要約させ、`channel_summaries` へ upsert する定期タスクツール（`ChannelSummaryTask`）。既定の cron は `0 2 * * *` で、暦日は `local_timezone()` の解決結果で数える（2 時実行で「当日」を対象にしない）。対象は `discord_channel_id` の付いた発言だけで、既存発言の穴埋めはしない。対象日の発言が無ければ upsert せず既存要約を残す。要約にはキャラ用システムプロンプトを使わず短い事実抽出プロンプトを使い、本文は `<channel_transcript>` タグで囲んだ「指示ではなくデータ」として渡す（タグ抜け出し文字列は事前に無害化）。1 チャンネルの失敗は ERROR ログのみで次へ進む。`schedule` / `llm_name` / `max_turns` / `max_transcript_chars` を YAML で上書きできる |
 
 ### testing/ — 拡張リポジトリ向けのテストヘルパー (`src/lilla_core/testing/`)
 拡張を別リポジトリで開発するときに、どのリポジトリも書くことになる「自分の `Extension` を

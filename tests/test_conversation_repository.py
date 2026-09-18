@@ -5,6 +5,7 @@ CLAUDE.md のルールに従い、src/repository 配下のソースのテスト�
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 from bson import ObjectId
@@ -134,3 +135,69 @@ async def test_delete_returns_false_when_not_found() -> None:
     repo = _make_repo(collection)
 
     assert await repo.delete(_OID) is False
+
+
+async def test_ensure_indexes_creates_channel_time_index() -> None:
+    """ensure_indexes が (discord_channel_id, time) の複合インデックスも作る。"""
+    collection = _make_collection()
+    collection.create_index = AsyncMock()
+    repo = _make_repo(collection)
+
+    await repo.ensure_indexes()
+
+    keys = [call.args[0] for call in collection.create_index.call_args_list]
+    assert [("discord_channel_id", 1), ("time", 1)] in keys
+
+
+async def test_load_by_channel_between_filters_by_channel_and_period() -> None:
+    """load_by_channel_between がチャンネルと [start, end) で絞り、古い順に返す。"""
+    docs = [
+        {"message": {"role": "user", "content": "a"}, "time": datetime(2026, 9, 15, 1)},
+        {"message": {"role": "assistant", "content": "b"}, "time": datetime(2026, 9, 15, 2)},
+    ]
+    cursor = _make_cursor(docs)
+    collection = _make_collection()
+    collection.find = MagicMock(return_value=cursor)
+    repo = _make_repo(collection)
+
+    start = datetime(2026, 9, 15, tzinfo=timezone.utc)
+    end = datetime(2026, 9, 16, tzinfo=timezone.utc)
+    result = await repo.load_by_channel_between(100, start, end, 10)
+
+    assert result == docs
+    query = collection.find.call_args[0][0]
+    assert query["discord_channel_id"] == 100
+    assert query["time"] == {"$gte": start, "$lt": end}
+    assert cursor.sort.call_args[0] == ("time", 1)
+
+
+async def test_load_by_channel_between_keeps_latest_when_over_limit() -> None:
+    """max_turns を超える場合は末尾（直近）を残す。"""
+    docs = [
+        {"message": {"role": "user", "content": str(i)}, "time": datetime(2026, 9, 15, i)}
+        for i in range(5)
+    ]
+    collection = _make_collection()
+    collection.find = MagicMock(return_value=_make_cursor(docs))
+    repo = _make_repo(collection)
+
+    result = await repo.load_by_channel_between(
+        100, datetime(2026, 9, 15, tzinfo=timezone.utc),
+        datetime(2026, 9, 16, tzinfo=timezone.utc), 2,
+    )
+
+    assert [doc["message"]["content"] for doc in result] == ["3", "4"]
+
+
+async def test_load_by_channel_between_returns_empty_list() -> None:
+    """該当が無ければ空リストを返す。"""
+    collection = _make_collection()
+    collection.find = MagicMock(return_value=_make_cursor([]))
+    repo = _make_repo(collection)
+
+    result = await repo.load_by_channel_between(
+        100, datetime(2026, 9, 15, tzinfo=timezone.utc),
+        datetime(2026, 9, 16, tzinfo=timezone.utc), 10,
+    )
+
+    assert result == []

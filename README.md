@@ -125,6 +125,38 @@ A conversation in a registered channel gets a short line in the system prompt sa
 bot is currently in that channel (unregistered channels and DMs do not get it). The
 conversation history itself still spans every channel and DM, registered or not.
 
+### Channel notes (nightly summary)
+
+A registered channel can also keep a short "note of the room": a factual summary of what
+was said there on a given day, which outlives the TTL of the conversation history. The
+core ships the batch that writes it as a built-in task tool, disabled until you opt in
+by adding this YAML to `${CONFIG_ROOT}/tools/task_channel_summary.yaml`:
+
+```yaml
+type: lilla_core.builtin_tools.task_channel_summary
+# schedule: "0 2 * * *"      # default; interpreted in ui.timezone
+# llm_name: summarizer       # default: llm.default
+# max_turns: 500             # messages read per channel
+# max_transcript_chars: 20000
+```
+
+- On each run it loops over `discord.channels` and summarizes **yesterday** (the
+  calendar day in `ui.timezone`), so a 2 a.m. run does not summarize a day that only
+  holds 00:00–02:00
+- Only messages stored with a `discord_channel_id` are read; existing rows without one
+  are left alone (no backfill)
+- If a channel has nothing on the target day, its existing note is kept as is
+- The summary is produced with a short fact-extraction prompt, not the bot's character
+  prompt, and the transcript is passed as data inside `<channel_transcript>` tags
+- Notes are stored in the `channel_summaries` collection, one document per channel
+  (`discord_channel_id` is unique, and each run upserts it)
+- With `discord.channels` empty, or without that YAML, nothing changes
+
+When a conversation happens in a registered channel that has a note, the note is
+inserted into the system prompt together with its `summary_date`, wrapped in
+`<channel_note>` tags as untrusted context — past information, never instructions.
+Unregistered channels and DMs never get it.
+
 ### Timezone
 
 `ui.timezone` in `lilla.yaml` decides the clock the bot treats as "now" and "today"
@@ -514,7 +546,13 @@ type: lilla_core.builtin_tools.llm_current_datetime
 - `schedule` is optional — a tool without it is not registered with the scheduler, but
   can still be run manually via `!runtask`.
 - `type` accepts an import path here too (`type: some_package.tasks.daily_summary`); the
-  class is looked up in the imported module the same way as in a file.
+  class is looked up in the imported module the same way as in a file. The trigger kind
+  comes from the YAML's file name, not from `type`, so an import-path task tool is still
+  a `task` tool and can be run with `!runtask`.
+
+`lilla_core` ships one built-in task tool: `lilla_core/builtin_tools/task_channel_summary.py`,
+the nightly channel-note batch described under
+[Channel notes](#channel-notes-nightly-summary). Like the LLM sample it is opt-in.
 
 **The `context` dict passed to `execute`** varies by call site. For LLM tools it always
 includes `client_type` and a nested-call helper `call_tool(tool_name, tool_input)`,

@@ -62,6 +62,22 @@
 - `DiscordConfig.find_channel_by_id()` / `find_channel_by_name()` を追加。登録チャンネルの
   エントリを Discord のチャンネル ID（int / str）や設定上の別名（前後空白を除いた完全一致・
   大文字小文字は区別）から引ける
+- 登録チャンネルの「部屋のノート」を持つ `channel_summaries` コレクションと
+  `repository/channel_summary_repository.py` を追加。1 チャンネル 1 ドキュメント
+  （`discord_channel_id` がユニーク）で、起動時に `init_collection()` される
+- コア組み込みのタスクツール `lilla_core.builtin_tools.task_channel_summary` を追加。
+  登録チャンネル（`discord.channels`）ごとに**前日**（`ui.timezone` の暦日）の会話を LLM に
+  要約させ、`channel_summaries` へ upsert する。既定の cron は `0 2 * * *`。
+  `${CONFIG_ROOT}/tools/task_channel_summary.yaml` に
+  `type: lilla_core.builtin_tools.task_channel_summary` を置いた場合だけ有効になる opt-in で、
+  `discord.channels` が空、または YAML が無ければ何もしない。対象は `discord_channel_id` の
+  付いた発言だけ（既存発言の穴埋めはしない）で、対象日の発言が無ければ既存の要約を残す。
+  要約にはキャラクター用のシステムプロンプトを使わず、短い事実抽出用のプロンプトを使い、
+  本文は `<channel_transcript>` タグで囲んだ「指示ではなくデータ」として渡す。
+  `schedule` / `llm_name` / `max_turns` / `max_transcript_chars` を YAML で上書きできる
+- `ConversationRepository.load_by_channel_between()` を追加（チャンネルと期間で絞った
+  会話履歴の取得）。あわせて `conversations` に `(discord_channel_id, time)` の複合
+  インデックスを張るようにした
 
 ### Changed
 
@@ -73,6 +89,16 @@
   そのまま渡す
 - Discord 経由のユーザー発言も、アシスタント返信と同様に `discord_channel_id` つきで
   会話履歴へ保存するようにした（既存レコードの補完は行わない）
+- 登録チャンネルでの会話では、その部屋の要約（`channel_summaries`）があればシステム
+  プロンプトへ `## Channel Note` として差し込むようにした。`summary_date` を併記し、
+  本文は信頼しないコンテキストとして `<channel_note>` タグで囲む（未登録チャンネル・DM には
+  出さない）。`load_conversation_history_with_timestamps()` の挙動は変えていない
+
+### Fixed
+
+- task ツールのトリガー種別を、`type` ではなく YAML のファイル名 stem から判定するように
+  修正した。`type` に import パス（`type: some_package.tasks.daily_summary`）を書いた
+  task ツールが `trigger: other` と判定され、`!runtask` から実行できなかった
 
 ## [0.4.0] - 2026-09-13
 

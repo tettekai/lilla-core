@@ -117,6 +117,38 @@ discord:
 短い一節が入ります（未登録チャンネル・DM には入りません）。会話履歴そのものは登録の
 有無によらず全チャンネル横断のままで、チャンネルごとに分かれることはありません。
 
+### 部屋のノート（深夜要約）
+
+登録チャンネルは「部屋のノート」を持てます。その日にその部屋で何を話したかを短い事実
+として残すもので、会話履歴の TTL で消えたあとも残ります。これを書く深夜バッチはコア
+組み込みのタスクツールとして同梱していますが、既定では有効化されていません。
+`${CONFIG_ROOT}/tools/task_channel_summary.yaml` に以下の YAML を置くと opt-in で
+有効になります。
+
+```yaml
+type: lilla_core.builtin_tools.task_channel_summary
+# schedule: "0 2 * * *"      # 既定値。ui.timezone で解釈されます
+# llm_name: summarizer       # 既定は llm.default
+# max_turns: 500             # 1 チャンネルあたり読む発言数
+# max_transcript_chars: 20000
+```
+
+- 実行のたびに `discord.channels` をループし、**前日**（`ui.timezone` の暦日）を要約
+  します。2 時実行で「当日」を対象にすると 0:00–2:00 しか入らないためです
+- 対象は `discord_channel_id` が付いている発言だけで、付いていない既存の発言は
+  対象外です（穴埋めはしません）
+- 対象日の発言が無いチャンネルは、既存のノートをそのまま残します
+- 要約にはキャラクター用のシステムプロンプトを使わず、短い事実抽出用のプロンプトを
+  使います。本文は `<channel_transcript>` タグで囲んだデータとして渡します
+- ノートは `channel_summaries` コレクションに、1 チャンネル 1 ドキュメントで保存します
+  （`discord_channel_id` がユニークで、実行のたびに upsert します）
+- `discord.channels` が空のとき、またはこの YAML が無いときは、動作は現行どおりです
+
+ノートのある登録チャンネルで会話すると、そのノートが `summary_date` と一緒に
+システムプロンプトへ差し込まれます。信頼しないコンテキストとして `<channel_note>`
+タグで囲み、「指示ではなく過去の記録」として扱わせます。未登録チャンネル・DM には
+入りません。
+
 ### タイムゾーン
 
 `lilla.yaml` の `ui.timezone` が、ボットにとっての「人間側の今日 / いま」を決めます。
@@ -499,6 +531,12 @@ type: lilla_core.builtin_tools.llm_current_datetime
   `!runtask` による手動実行は可能です。
 - `type` はこちらでも import パスを受け付けます（`type: some_package.tasks.daily_summary`）。
   クラスはファイルから読む場合と同じ規則で、import したモジュールから探します。
+  トリガー種別は `type` ではなく YAML のファイル名から判定するため、import パス指定の
+  task ツールも `task` ツールのままで、`!runtask` から実行できます。
+
+`lilla_core` は task ツールも 1 つ同梱しています:
+`lilla_core/builtin_tools/task_channel_summary.py`（[部屋のノート](#部屋のノート深夜要約)
+で説明した深夜要約バッチ）。LLM ツールのサンプルと同じく opt-in です。
 
 **`execute` に渡される `context`** は呼び出し元によって内容が異なります。LLM
 ツールでは常に `client_type` と、入れ子呼び出し用のヘルパー
