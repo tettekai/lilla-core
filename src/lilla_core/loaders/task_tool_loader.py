@@ -64,13 +64,26 @@ def _resolve_tool_class(
     return class_map.get(tool_type)
 
 
-def _build_tool_entry(instance, tool_type: str, config: dict) -> dict:
-    """インスタンスからツールメタデータ dict を生成する（純粋関数）。"""
+def _build_tool_entry(instance, name: str, config: dict) -> dict:
+    """インスタンスからツールメタデータ dict を生成する（純粋関数）。
+
+    トリガー種別は YAML のファイル名 stem（＝ツール名）から判定する。`type` から
+    導くと、import パス指定（`type: some.pkg.daily_summary`）のツールがどの
+    プレフィックスにも当たらず `other` になってしまうため。
+
+    Args:
+        instance: 生成済みのツールインスタンス。
+        name: YAML のファイル名 stem（ツール名）。
+        config: ツールの YAML 設定（現状は未使用）。
+
+    Returns:
+        ツールメタデータ dict。
+    """
     return {
         "instance": instance,
         "description": getattr(instance, "description", ""),
         "category": getattr(instance, "category", "unknown"),
-        "trigger": _get_trigger_from_filename(tool_type),
+        "trigger": _get_trigger_from_filename(name),
         "scheduled": bool(getattr(instance, "schedule", None)),
     }
 
@@ -105,7 +118,7 @@ def load_all_tools(
         config["_yaml_path"] = config_path
         name = Path(config_path).stem
         instance = cls(config, name)
-        tools[name] = _build_tool_entry(instance, tool_type, config)
+        tools[name] = _build_tool_entry(instance, name, config)
         logger.info("Tool loaded: %s (%s)", name, tool_type)
 
     return tools

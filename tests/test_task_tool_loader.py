@@ -121,7 +121,7 @@ class TestBuildToolEntry:
         entry = task_tool_loader._build_tool_entry(instance, "task_foo", {})
         assert entry["category"] == "schedule"
 
-    def test_trigger_derived_from_tool_type(self, task_tool_loader) -> None:
+    def test_trigger_derived_from_tool_name(self, task_tool_loader) -> None:
         instance = MagicMock()
         entry = task_tool_loader._build_tool_entry(instance, "task_foo", {})
         assert entry["trigger"] == "task"
