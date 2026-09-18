@@ -50,6 +50,36 @@ class LlmProviderConfig(BaseModel):
     extra_params: dict[str, Any] = {}
 
 
+class DiscordChannelConfig(BaseModel):
+    """lilla.yaml の `discord.channels:` に並べる 1 チャンネル分の登録エントリ。
+
+    `name` は設定上の別名で、Discord 側の現在のチャンネル名と一致していなくてよい
+    （リネームされても設定を追随させずに済む）。`channel_id` は既存の
+    `approval_channel_id` などと同じ snowflake 文字列で、YAML では引用符で囲むこと。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+    channel_id: str
+    # メンションなしでも会話を始めてよいチャンネルかどうか。既定は `False` で、
+    # 登録しただけでは受信条件は現行（メンション or DM）のまま変わらない。
+    mention_optional: bool = False
+
+    @field_validator("name", "channel_id")
+    @classmethod
+    def _strip_required_text(cls, value: str) -> str:
+        """前後の空白を除いた値を返し、空になるものは起動時に落とす。
+
+        名前解決は「前後空白を除いた完全一致（大文字小文字は区別する）」で行うため、
+        突き合わせの基準を揃えるべく保持する値の側を正規化しておく。
+        """
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("discord.channels entries must have a non-empty name and channel_id")
+        return stripped
+
+
 class DiscordConfig(BaseModel):
     """lilla.yaml の `discord:` セクション（コア確定分）。"""
 
@@ -64,6 +94,63 @@ class DiscordConfig(BaseModel):
     my_user_id: str
     error_channel_id: str | None = None
     approval_channel_id: str | None = None
+    # 入口の作法を変えたいチャンネルの登録リスト。未設定・空リストなら受信動作は
+    # 現行のまま（メンション or DM）で、会話履歴は登録の有無によらず全チャンネル
+    # 横断のままにする。
+    channels: list[DiscordChannelConfig] = []
+
+    @model_validator(mode="after")
+    def _validate_unique_channels(self) -> "DiscordConfig":
+        """`discord.channels` の `name` / `channel_id` の重複を起動時に落とす。
+
+        重複を許すと「どちらのエントリが効いているか」が並び順に依存して見えなく
+        なるため、静かな先勝ちにせず fail-fast させる。
+        """
+        for label, values in (
+            ("name", [entry.name for entry in self.channels]),
+            ("channel_id", [entry.channel_id for entry in self.channels]),
+        ):
+            duplicates = sorted({value for value in values if values.count(value) > 1})
+            if duplicates:
+                raise ValueError(
+                    f"discord.channels has duplicate {label}: {', '.join(duplicates)}"
+                )
+        return self
+
+    def find_channel_by_id(self, channel_id: str | int) -> DiscordChannelConfig | None:
+        """`channel_id` に一致する登録チャンネルを返す（無ければ `None`）。
+
+        Discord 側の ID は int、設定側は snowflake 文字列で持つため、文字列へ
+        揃えたうえで比較する。
+
+        Args:
+            channel_id: 探す Discord チャンネル ID（int / str のどちらでもよい）。
+
+        Returns:
+            一致した登録エントリ。登録が無ければ `None`。
+        """
+        key = str(channel_id).strip()
+        for entry in self.channels:
+            if entry.channel_id == key:
+                return entry
+        return None
+
+    def find_channel_by_name(self, name: str) -> DiscordChannelConfig | None:
+        """設定上の別名に一致する登録チャンネルを返す（無ければ `None`）。
+
+        突き合わせは前後空白を除いた完全一致で、大文字小文字は区別する。
+
+        Args:
+            name: 探す登録チャンネルの `name`。
+
+        Returns:
+            一致した登録エントリ。登録が無ければ `None`。
+        """
+        key = name.strip()
+        for entry in self.channels:
+            if entry.name == key:
+                return entry
+        return None
 
 
 class PathsConfig(BaseModel):

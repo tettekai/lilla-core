@@ -451,3 +451,129 @@ class TestNoFlattenApiRemains:
 
     def test_no_public_name_contains_flatten(self) -> None:
         assert [n for n in dir(_config_module) if "flatten" in n.lower()] == []
+
+
+class TestDiscordChannels:
+    """`discord.channels` の読み込み・検証・ヘルパーの挙動を固定する。"""
+
+    def _build(self, config_root: Path, discord_body: str) -> "AppConfig":
+        """`discord:` セクションの本文を差し替えた AppConfig を組み立てる。"""
+        _write_yaml(config_root, discord_body + _DUMMY_LLM_YAML)
+        return AppConfig(env={"discord_token": "dummy"}, _env_file=None)
+
+    def test_channels_default_to_empty_list(self, isolated_config_root: Path) -> None:
+        """`channels` 未設定でも起動でき、空リストになる。"""
+        cfg = self._build(isolated_config_root, 'discord:\n  my_user_id: "1"\n')
+        assert cfg.discord.channels == []
+
+    def test_channels_are_loaded_from_yaml(self, isolated_config_root: Path) -> None:
+        cfg = self._build(
+            isolated_config_root,
+            'discord:\n'
+            '  my_user_id: "1"\n'
+            "  channels:\n"
+            "    - name: dev\n"
+            '      channel_id: "123456789012345678"\n'
+            "      mention_optional: true\n"
+            "    - name: lounge\n"
+            '      channel_id: "234567890123456789"\n',
+        )
+        assert [entry.name for entry in cfg.discord.channels] == ["dev", "lounge"]
+        assert cfg.discord.channels[0].mention_optional is True
+
+    def test_mention_optional_defaults_to_false(self, isolated_config_root: Path) -> None:
+        """`mention_optional` 省略時は False になる。"""
+        cfg = self._build(
+            isolated_config_root,
+            'discord:\n  my_user_id: "1"\n  channels:\n    - name: lounge\n'
+            '      channel_id: "234567890123456789"\n',
+        )
+        assert cfg.discord.channels[0].mention_optional is False
+
+    @pytest.mark.parametrize(
+        "channels_body",
+        [
+            # name の重複
+            "    - name: dev\n"
+            '      channel_id: "111"\n'
+            "    - name: dev\n"
+            '      channel_id: "222"\n',
+            # channel_id の重複
+            "    - name: dev\n"
+            '      channel_id: "111"\n'
+            "    - name: lounge\n"
+            '      channel_id: "111"\n',
+        ],
+    )
+    def test_duplicate_entries_fail_fast(
+        self, isolated_config_root: Path, channels_body: str
+    ) -> None:
+        """`name` / `channel_id` の重複は起動時に落とす。"""
+        with pytest.raises(ValidationError):
+            self._build(
+                isolated_config_root,
+                'discord:\n  my_user_id: "1"\n  channels:\n' + channels_body,
+            )
+
+    def test_blank_name_fails_fast(self, isolated_config_root: Path) -> None:
+        """空白のみの `name` は起動時に落とす。"""
+        with pytest.raises(ValidationError):
+            self._build(
+                isolated_config_root,
+                'discord:\n  my_user_id: "1"\n  channels:\n'
+                '    - name: "   "\n      channel_id: "111"\n',
+            )
+
+    def test_surrounding_whitespace_is_stripped(self, isolated_config_root: Path) -> None:
+        """`name` / `channel_id` は前後の空白を除いて保持する。"""
+        cfg = self._build(
+            isolated_config_root,
+            'discord:\n  my_user_id: "1"\n  channels:\n'
+            '    - name: "  dev  "\n      channel_id: "  111  "\n',
+        )
+        assert cfg.discord.channels[0].name == "dev"
+        assert cfg.discord.channels[0].channel_id == "111"
+
+    def _lookup_config(self, config_root: Path) -> "AppConfig":
+        """ヘルパー検証用に 2 件登録した AppConfig を返す。"""
+        return self._build(
+            config_root,
+            'discord:\n'
+            '  my_user_id: "1"\n'
+            "  channels:\n"
+            "    - name: dev\n"
+            '      channel_id: "111"\n'
+            "      mention_optional: true\n"
+            "    - name: Lounge\n"
+            '      channel_id: "222"\n',
+        )
+
+    def test_find_channel_by_id_accepts_int_and_str(self, isolated_config_root: Path) -> None:
+        """Discord 側の int ID でも設定側の文字列でも同じエントリを引ける。"""
+        cfg = self._lookup_config(isolated_config_root)
+        assert cfg.discord.find_channel_by_id(111).name == "dev"
+        assert cfg.discord.find_channel_by_id("111").name == "dev"
+
+    def test_find_channel_by_id_returns_none_for_unregistered(
+        self, isolated_config_root: Path
+    ) -> None:
+        cfg = self._lookup_config(isolated_config_root)
+        assert cfg.discord.find_channel_by_id(999) is None
+
+    def test_find_channel_by_name_ignores_surrounding_whitespace(
+        self, isolated_config_root: Path
+    ) -> None:
+        cfg = self._lookup_config(isolated_config_root)
+        assert cfg.discord.find_channel_by_name("  dev  ").channel_id == "111"
+
+    def test_find_channel_by_name_is_case_sensitive(self, isolated_config_root: Path) -> None:
+        """名前解決は完全一致で、大文字小文字は区別する。"""
+        cfg = self._lookup_config(isolated_config_root)
+        assert cfg.discord.find_channel_by_name("Lounge").channel_id == "222"
+        assert cfg.discord.find_channel_by_name("lounge") is None
+
+    def test_find_channel_by_name_returns_none_for_unregistered(
+        self, isolated_config_root: Path
+    ) -> None:
+        cfg = self._lookup_config(isolated_config_root)
+        assert cfg.discord.find_channel_by_name("nope") is None

@@ -54,6 +54,26 @@
   `type: lilla_core.builtin_tools.llm_current_datetime` の YAML を置くと opt-in で有効化できる
   （コアは自動では読み込まない）。import パス指定でコア組み込みツールを使う実例として README に記載
 
+- `lilla.yaml` の `discord.channels` に登録チャンネルのリストを追加。`name`（設定上の
+  別名）・`channel_id`（snowflake 文字列）・`mention_optional`（既定 `false`）を並べると、
+  `mention_optional: true` のチャンネルではオーナーのメンションなしの発言にも応答する。
+  未設定・空リストなら受信動作は現行のまま（メンションまたは DM）で、`name` または
+  `channel_id` の重複は起動時に fail-fast する
+- `DiscordConfig.find_channel_by_id()` / `find_channel_by_name()` を追加。登録チャンネルの
+  エントリを Discord のチャンネル ID（int / str）や設定上の別名（前後空白を除いた完全一致・
+  大文字小文字は区別）から引ける
+
+### Changed
+
+- 登録チャンネルでの会話では、システムプロンプトに「今この登録チャンネルにいる」旨の
+  短い一節を追記するようにした（未登録チャンネル・DM では追記しない）。会話履歴は
+  従来どおり全チャンネル横断のまま
+- `MemoryManager.build_system_prompt()` に `discord_channel_id` 引数を追加（既定 `None`。
+  登録チャンネルの一節の解決に使う）。`run_conversation()` が受け取ったチャンネル ID を
+  そのまま渡す
+- Discord 経由のユーザー発言も、アシスタント返信と同様に `discord_channel_id` つきで
+  会話履歴へ保存するようにした（既存レコードの補完は行わない）
+
 ## [0.4.0] - 2026-09-13
 
 ### Added

@@ -5,6 +5,18 @@ discord:
   # 未設定ならそれぞれスキップされる。
   # error_channel_id: "XXXXXXXXX"
   # approval_channel_id: "XXXXXXXXX"
+  # 入口の作法を変えたいチャンネルの登録リスト（未設定・空なら現行どおり
+  # メンションか DM のときだけ会話を始める）。`name` は設定上の別名で、
+  # Discord 側の現在のチャンネル名と一致していなくてよい。
+  # `mention_optional: true` のチャンネルでは、オーナーのメンションなしの
+  # 発言にも応答する。会話履歴は登録の有無によらず全チャンネル横断のまま。
+  # channels:
+  #   - name: dev
+  #     channel_id: "XXXXXXXXX"
+  #     mention_optional: true
+  #   - name: lounge
+  #     channel_id: "YYYYYYYYY"
+  #     # mention_optional 省略時は false
 
 ui:
   locale: ja
