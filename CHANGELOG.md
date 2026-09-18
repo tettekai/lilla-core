@@ -78,6 +78,19 @@
 - `ConversationRepository.load_by_channel_between()` を追加（チャンネルと期間で絞った
   会話履歴の取得）。あわせて `conversations` に `(discord_channel_id, time)` の複合
   インデックスを張るようにした
+- コア組み込みの LLM ツール `lilla_core.builtin_tools.llm_conversation_get` を追加。
+  会話履歴を期間（`datetime_range`）・キーワード（`query`。スペース区切りの AND）・
+  発言者（`role`）・件数（`limit`。既定・上限とも 30 で、0 や負数は 1 へ丸める）で検索する。
+  `${CONFIG_ROOT}/tools/` に `type: lilla_core.builtin_tools.llm_conversation_get` の
+  YAML を置いた場合だけ有効になる opt-in（LLM へ見せるツール名は YAML のファイル名）。
+  任意パラメータ `channel_name` に `discord.channels` の登録名を渡すと、その
+  `discord_channel_id` の発言だけに絞り込む。名前は設定上の別名であり Discord の現在の
+  チャンネル名ではない。突き合わせは前後空白を除いた完全一致（大文字小文字を区別）で、
+  登録に無い名前は全件検索へ落とさずエラーを返す。省略時は従来どおり全チャンネル横断。
+  会話履歴そのものはチャンネルで分離せず、`tags` の扱いも変えていない
+- `ConversationRepository.search()` を追加（期間・キーワード・発言者・チャンネルを
+  任意に重ねた会話履歴の検索）。キーワードは正規表現としてではなくエスケープした
+  部分一致（大文字小文字を区別しない）として扱う
 
 ### Changed
 

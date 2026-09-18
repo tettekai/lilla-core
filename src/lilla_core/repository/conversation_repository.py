@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from functools import lru_cache
 
@@ -119,6 +120,62 @@ class ConversationRepository:
         if len(docs) > max_turns:
             docs = docs[-max_turns:]
         return docs
+
+    async def search(
+        self,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        keywords: list[str] | None = None,
+        role: str | None = None,
+        discord_channel_id: int | None = None,
+        limit: int = 30,
+    ) -> list[dict]:
+        """条件を指定して会話履歴を新しい順に検索する。
+
+        条件はすべて任意で、指定されたものだけを AND で重ねる。`keywords` は
+        `message.content` に対する部分一致（大文字小文字を区別しない）で、
+        すべてを含むものだけを返す。利用者・LLM 由来の文字列をそのまま正規表現
+        として解釈させないよう、キーワードはエスケープしてから渡す。
+
+        Args:
+            start: 取得範囲の下限（この時刻を含む。UTC 推奨）。`None` なら下限なし。
+            end: 取得範囲の上限（この時刻を含む。UTC 推奨）。`None` なら上限なし。
+            keywords: すべて含むべきキーワードのリスト。`None` / 空なら絞り込まない。
+            role: 絞り込む発言者（`"user"` / `"assistant"` など）。`None` なら絞り込まない。
+            discord_channel_id: 絞り込む Discord チャンネル ID。`None` なら全チャンネル横断。
+            limit: 返す最大件数。MongoDB の仕様上 `0` は「制限なし」と同等に
+                なるため、利用者入力を渡す呼び出し元が正の整数へ正規化すること。
+
+        Returns:
+            {"message": {...}, "time": datetime} のリスト（新しい順）。
+        """
+        mongo_filter: dict = {}
+
+        if start is not None or end is not None:
+            time_filter: dict = {}
+            if start is not None:
+                time_filter["$gte"] = start
+            if end is not None:
+                time_filter["$lte"] = end
+            mongo_filter["time"] = time_filter
+
+        if keywords:
+            mongo_filter["$and"] = [
+                {"message.content": {"$regex": re.escape(keyword), "$options": "i"}}
+                for keyword in keywords
+            ]
+
+        if role:
+            mongo_filter["message.role"] = role
+
+        if discord_channel_id is not None:
+            mongo_filter["discord_channel_id"] = discord_channel_id
+
+        cursor = self._collection.find(
+            mongo_filter,
+            {"_id": 0, "message": 1, "time": 1},
+        ).sort("time", DESCENDING).limit(limit)
+        return await cursor.to_list(length=limit)
 
     async def list_for_client(self, limit: int, offset: int) -> list[dict]:
         """クライアント向けに会話履歴を新しい順で返す。
