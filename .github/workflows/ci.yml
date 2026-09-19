@@ -1,24 +1,40 @@
 name: CI
 
+# develop は「動作保証しない統合ブランチ」という位置づけなので、PR にチェックは
+# 足さない（マージのゲートにしない）。代わりにマージ後の push で 1 回だけ回し、
+# どのマージで壊れたかがその場で分かるようにする。作業ブランチ上の pytest では
+# 原理的に検出できないマージ後の衝突を、リリース直前ではなく即座に拾うのが狙い。
+#
+# push イベントは push されたブランチ自身の定義を読むため、この設定は develop に
+# 入った時点で有効になる（main への先行マージは不要。次のリリース PR で main にも
+# 入る）。
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
     branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       matrix:
         python-version: ["3.12"]
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # fork からの PR でも `pip install -e` がリポジトリのビルドフックを実行する。
+          # GITHUB_TOKEN を .git/config に残さないようにしておく。
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
 

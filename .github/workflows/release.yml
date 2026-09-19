@@ -7,7 +7,8 @@ name: Release
 # バージョンは release-pr.yml と同じ方針で、マージ後の main の pyproject.toml から読む
 # （develop 側で release-prep.yml がすでに pyproject.toml と CHANGELOG.md を同じ
 # バージョンに揃えている）。タグ名は既存方針に合わせて vX.Y.Z、リリース本文は
-# CHANGELOG.md の該当バージョン見出しの節をそのまま使う。
+# 固定の短いプレースホルダにする。正式な文面は Grok Bot のドラフトを人が確認した
+# うえで draft へ貼る。
 #
 # 同名タグの Release が既にあれば新規作成せずスキップし、既存 Release の URL を
 # Webhook 通知に使う（再実行や手動再送でも二重に draft を作らないため）。
@@ -26,14 +27,16 @@ jobs:
     if: >
       github.event.pull_request.merged == true &&
       github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.ref == 'develop' &&
       contains(github.event.pull_request.labels.*.name, 'release')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
       - name: Check out main
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           fetch-depth: 0
@@ -58,39 +61,6 @@ jobs:
           release_url=$(gh release view "${TAG}" --json url --jq '.url' 2>/dev/null || true)
           echo "release_url=${release_url}" >> "${GITHUB_OUTPUT}"
 
-      - name: Extract release notes section
-        if: steps.existing.outputs.release_url == ''
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          python3 - <<'PY'
-          import os
-          import pathlib
-          import re
-
-          version = os.environ["VERSION"]
-          text = pathlib.Path("CHANGELOG.md").read_text()
-          pattern = re.compile(
-              rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|\Z)",
-              re.MULTILINE | re.DOTALL,
-          )
-          match = pattern.search(text)
-          notes = match.group(1).strip() if match else ""
-          pathlib.Path("/tmp/release-notes.md").write_text(notes)
-          PY
-
-      - name: Build release notes body
-        if: steps.existing.outputs.release_url == ''
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          if [ -s /tmp/release-notes.md ]; then
-            cp /tmp/release-notes.md /tmp/release-body.md
-          else
-            printf 'CHANGELOG.md に v%s の節が見つかりませんでした。\n[CHANGELOG.md](https://github.com/%s/blob/main/CHANGELOG.md) を参照してください。\n' \
-              "${VERSION}" "${GITHUB_REPOSITORY}" > /tmp/release-body.md
-          fi
-
       - name: Create draft release
         id: create
         if: steps.existing.outputs.release_url == ''
@@ -101,7 +71,7 @@ jobs:
           release_url=$(gh release create "${TAG}" \
             --target main \
             --title "${TAG}" \
-            --notes-file /tmp/release-body.md \
+            --notes "Release notes will be filled in before publish." \
             --draft)
           echo "release_url=${release_url}" >> "${GITHUB_OUTPUT}"
 
