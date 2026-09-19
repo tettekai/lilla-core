@@ -1,0 +1,148 @@
+name: Release
+
+# release-pr.yml が開く develop -> main のリリース PR（release ラベル付き）が main に
+# マージされたら、対象バージョンの draft Release を作り、Grok Bot へ Webhook で通知する。
+# 文面の調整・正式公開（Publish）は人が行う。
+#
+# バージョンは release-pr.yml と同じ方針で、マージ後の main の pyproject.toml から読む
+# （develop 側で release-prep.yml がすでに pyproject.toml と CHANGELOG.md を同じ
+# バージョンに揃えている）。タグ名は既存方針に合わせて vX.Y.Z、リリース本文は
+# CHANGELOG.md の該当バージョン見出しの節をそのまま使う。
+#
+# 同名タグの Release が既にあれば新規作成せずスキップし、既存 Release の URL を
+# Webhook 通知に使う（再実行や手動再送でも二重に draft を作らないため）。
+#
+# Webhook の URL / Authorization（secrets.GROK_BOT_RELEASE_WEBHOOK_URL /
+# secrets.GROK_BOT_RELEASE_WEBHOOK_AUTHORIZATION）は notify-grok-bot-review.yml の
+# レビュー用 Webhook とは別のシークレットに分ける（リリース専用ルーティン向け）。
+# 未設定の場合は draft 作成（または既存 draft の検出）までは成功させ、通知だけを
+# WARNING ログでスキップする（ジョブは失敗させない）。
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  create-draft-release:
+    if: >
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.head.ref == 'develop' &&
+      contains(github.event.pull_request.labels.*.name, 'release')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Read version from pyproject.toml
+        id: version
+        run: |
+          version=$(grep -m1 '^version = "' pyproject.toml | sed -E 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)"$/\1/')
+          if [ -z "${version}" ]; then
+            echo "::error::failed to read version from pyproject.toml" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "tag=v${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check for existing release
+        id: existing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          release_url=$(gh release view "${TAG}" --json url --jq '.url' 2>/dev/null || true)
+          echo "release_url=${release_url}" >> "${GITHUB_OUTPUT}"
+
+      - name: Extract release notes section
+        if: steps.existing.outputs.release_url == ''
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+
+          version = os.environ["VERSION"]
+          text = pathlib.Path("CHANGELOG.md").read_text()
+          pattern = re.compile(
+              rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|\Z)",
+              re.MULTILINE | re.DOTALL,
+          )
+          match = pattern.search(text)
+          notes = match.group(1).strip() if match else ""
+          pathlib.Path("/tmp/release-notes.md").write_text(notes)
+          PY
+
+      - name: Build release notes body
+        if: steps.existing.outputs.release_url == ''
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ -s /tmp/release-notes.md ]; then
+            cp /tmp/release-notes.md /tmp/release-body.md
+          else
+            printf 'CHANGELOG.md に v%s の節が見つかりませんでした。\n[CHANGELOG.md](https://github.com/%s/blob/main/CHANGELOG.md) を参照してください。\n' \
+              "${VERSION}" "${GITHUB_REPOSITORY}" > /tmp/release-body.md
+          fi
+
+      - name: Create draft release
+        id: create
+        if: steps.existing.outputs.release_url == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          release_url=$(gh release create "${TAG}" \
+            --target main \
+            --title "${TAG}" \
+            --notes-file /tmp/release-body.md \
+            --draft)
+          echo "release_url=${release_url}" >> "${GITHUB_OUTPUT}"
+
+      - name: Skip (release already exists)
+        if: steps.existing.outputs.release_url != ''
+        env:
+          EXISTING_RELEASE_URL: ${{ steps.existing.outputs.release_url }}
+        run: |
+          echo "release ${{ steps.version.outputs.tag }} already exists (${EXISTING_RELEASE_URL}); skipping creation"
+
+      - name: Notify Grok Bot
+        env:
+          WEBHOOK_URL: ${{ secrets.GROK_BOT_RELEASE_WEBHOOK_URL }}
+          WEBHOOK_AUTHORIZATION: ${{ secrets.GROK_BOT_RELEASE_WEBHOOK_AUTHORIZATION }}
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          DRAFT_RELEASE_URL: ${{ steps.existing.outputs.release_url || steps.create.outputs.release_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          if [ -z "${WEBHOOK_URL}" ] || [ -z "${WEBHOOK_AUTHORIZATION}" ]; then
+            echo "::warning::GROK_BOT_RELEASE_WEBHOOK_URL or GROK_BOT_RELEASE_WEBHOOK_AUTHORIZATION not set; skipping notification"
+            exit 0
+          fi
+
+          jq -n \
+            --arg owner "${OWNER}" \
+            --arg repo "${REPO_NAME}" \
+            --arg repository "${REPO}" \
+            --arg version "${VERSION}" \
+            --arg tag "${TAG}" \
+            --arg draft_release_url "${DRAFT_RELEASE_URL}" \
+            --argjson pr_number "${PR_NUMBER}" \
+            --arg pr_url "${PR_URL}" \
+            '{action:"release", owner:$owner, repo:$repo, repository:$repository, version:$version, tag:$tag, draft_release_url:$draft_release_url, pr_number:$pr_number, pr_url:$pr_url}' \
+            > /tmp/event.json
+
+          curl -fsS -X POST "${WEBHOOK_URL}" \
+            -H "Authorization: ${WEBHOOK_AUTHORIZATION}" \
+            -H "Content-Type: application/json" \
+            --data-binary @/tmp/event.json
