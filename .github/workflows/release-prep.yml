@@ -5,7 +5,17 @@ name: Release prep
 # version を合わせて develop 向け PR を開く。中身の確認とマージは人が行う。
 #
 # workflow_dispatch はデフォルトブランチ（main）の定義を読むため、このファイルは
-# main 側にマージされて初めて実行可能になる。
+# main 側にマージされて初めて実行可能になる。main マージ直後はまだ develop に
+# このファイルや bump スクリプトが同期されていない可能性があるため、bump
+# スクリプトは develop の内容にかかわらず常に origin/main から取り込んで実行する
+# （「Fetch release-prep script from default branch」ステップ参照）。
+#
+# 一方、release-prep が開く PR（base=develop）に対する notify-grok-bot-review.yml
+# の release-prep スキップ条件は、pull_request イベントで develop 側のワークフロー
+# 定義が使われるため、main に本ファイルをマージしただけでは develop 向け
+# release-prep PR には効かない。**main へのマージ後、最初に workflow_dispatch を
+# 使う前に、必ず main→develop 同期 PR を作成してマージすること。** 同期前に実行すると
+# Grok Bot の自動レビュー webhook がスキップされずに飛ぶ可能性がある。
 #
 # GITHUB_TOKEN はこのリポジトリでは PR 作成が許可されていない（claude.yml の
 # 「Notify Grok Bot to create PR after Claude finishes」ステップのコメント参照）ため、
@@ -44,6 +54,15 @@ jobs:
         with:
           ref: develop
           fetch-depth: 0
+
+      - name: Fetch bump script from default branch
+        # develop がまだこの PR の内容と同期されていない場合（main マージ直後など）
+        # に備え、develop の内容にかかわらず常に main 側の最新版を使う。
+        run: |
+          git fetch origin main
+          mkdir -p .github/scripts
+          git show origin/main:.github/scripts/release_prep_bump_version.py \
+            > .github/scripts/release_prep_bump_version.py
 
       - name: Update CHANGELOG.md and pyproject.toml
         env:
