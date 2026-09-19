@@ -7,5 +7,7 @@ dist/
 *.egg-info/
 .env
 
+CLAUDE.local.md
+
 .DS_Store
 
