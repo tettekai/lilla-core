@@ -51,18 +51,21 @@ jobs:
               const issue = context.payload.issue;
               const labels = issue.labels.map((l) => l.name);
 
-              let ok = true;
-              if (labels.includes("auto")) {
-                ok = isTrusted(issue.user.login);
-                if (ok) {
-                  const comments = await github.paginate(github.rest.issues.listComments, {
-                    owner,
-                    repo,
-                    issue_number: issue.number,
-                    per_page: 100,
-                  });
-                  ok = comments.every((c) => isTrusted(c.user.login));
-                }
+              if (!labels.includes("auto")) {
+                core.notice("issue is missing the 'auto' label; skipping");
+                core.setOutput("should_run", "false");
+                return;
+              }
+
+              let ok = isTrusted(issue.user.login);
+              if (ok) {
+                const comments = await github.paginate(github.rest.issues.listComments, {
+                  owner,
+                  repo,
+                  issue_number: issue.number,
+                  per_page: 100,
+                });
+                ok = comments.every((c) => isTrusted(c.user.login));
               }
 
               if (!ok) {
@@ -101,6 +104,35 @@ jobs:
                 ? context.payload.issue.number
                 : context.payload.pull_request.number;
 
+            const pr = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+            const prLabels = pr.data.labels.map((l) => l.name);
+
+            let hasAuto = prLabels.includes("auto");
+            if (!hasAuto) {
+              // Closing keywords (GitHub-recognized): close(s/d), fix(es/d), resolve(s/d) + "#123".
+              const closeKeywordPattern = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s*#(\d+)/gi;
+              const linkedIssueNumbers = new Set(
+                [...(pr.data.body || "").matchAll(closeKeywordPattern)].map((m) => Number(m[1]))
+              );
+              for (const issueNumber of linkedIssueNumbers) {
+                try {
+                  const linkedIssue = await github.rest.issues.get({ owner, repo, issue_number: issueNumber });
+                  if (linkedIssue.data.labels.map((l) => l.name).includes("auto")) {
+                    hasAuto = true;
+                    break;
+                  }
+                } catch (error) {
+                  core.warning(`failed to fetch linked issue #${issueNumber}: ${error.message}`);
+                }
+              }
+            }
+
+            if (!hasAuto) {
+              core.notice("PR (and any linked issues) missing 'auto' label; skipping");
+              core.setOutput("should_run", "false");
+              return;
+            }
+
             const [issueComments, reviewComments, reviews] = await Promise.all([
               github.paginate(github.rest.issues.listComments, {
                 owner,
@@ -133,8 +165,6 @@ jobs:
               return;
             }
 
-            const pr = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
-            const prLabels = pr.data.labels.map((l) => l.name);
             if (prLabels.includes("grok-bot-reviewing")) {
               // Approximates "number of times Claude was woken up" by counting
               // @claude mentions across conversation/review comments/review
