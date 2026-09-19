@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-19
+
 ### Added
 
 - 拡張が UI 文言カタログを同梱できる `Extension.locale_dirs()` を追加。ディレクトリに
