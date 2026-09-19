@@ -9,6 +9,7 @@ jobs:
   label:
     if: github.event.pull_request.merged
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       issues: write
       pull-requests: read

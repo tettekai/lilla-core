@@ -10,6 +10,7 @@ jobs:
   clear:
     if: github.event.label.name == 'grok-bot-approved'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       pull-requests: write
       contents: read
