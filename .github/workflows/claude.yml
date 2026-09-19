@@ -59,6 +59,10 @@ jobs:
               core.setOutput("should_run", "false");
             };
 
+            // `auto-halted` / `grok-bot-review-exhausted` は記録用のマーカーで、
+            // それ自体をゲートにはしない（#80）。原因（外部コメントなど）が残って
+            // いれば毎回の再スキャンで止まり、原因が解消されればラベルを手で外さ
+            // なくても再開できる。逆にラベルだけ外しても原因が残っていれば止まる。
             const addLabel = async (issueNumber, name) => {
               try {
                 await github.rest.issues.addLabels({
@@ -100,12 +104,6 @@ jobs:
               const issue = context.payload.issue;
               const labels = issue.labels.map((l) => l.name);
 
-              // 一度 halt した Issue は、原因コメントが削除されても再開しない。
-              if (labels.includes("auto-halted")) {
-                skip("issue is halted; remove the 'auto-halted' label to resume");
-                return;
-              }
-
               if (!labels.includes("auto")) {
                 skip("issue is missing the 'auto' label; skipping");
                 return;
@@ -135,16 +133,6 @@ jobs:
               pull_number: prNumber,
             });
             const prLabels = pr.labels.map((l) => l.name);
-
-            // 一度 halt / 使い切った PR は、原因が消えても再開しない。
-            if (prLabels.includes("auto-halted")) {
-              skip("PR is halted; remove the 'auto-halted' label to resume");
-              return;
-            }
-            if (prLabels.includes("grok-bot-review-exhausted")) {
-              skip("review invocation limit already exhausted for this PR");
-              return;
-            }
 
             if (!pr.head.repo || pr.head.repo.full_name !== `${owner}/${repo}`) {
               skip("PR head is from a fork; not launching");
