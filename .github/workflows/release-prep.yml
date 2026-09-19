@@ -9,8 +9,11 @@ name: Release prep
 #
 # GITHUB_TOKEN はこのリポジトリでは PR 作成が許可されていない（claude.yml の
 # 「Notify Grok Bot to create PR after Claude finishes」ステップのコメント参照）ため、
-# PR 作成のみリポジトリ secret RELEASE_PR_TOKEN（このリポジトリへの
-# pull-requests:write を持つ PAT）を使う。未設定の場合はこのジョブが失敗する。
+# PR 作成のみリポジトリ secret RELEASE_PR_TOKEN（このリポジトリ 1 つに絞った
+# fine-grained PAT。Pull requests: Read and write のみで足りる。Contents は
+# GITHUB_TOKEN 側の contents:write で足りており、ラベル付与も GITHUB_TOKEN の
+# issues:write で別ステップとして行うため、Issues 権限は不要）を使う。
+# 未設定の場合はこのジョブが失敗する。
 on:
   workflow_dispatch:
     inputs:
@@ -25,6 +28,7 @@ jobs:
     permissions:
       contents: write
       issues: write
+      pull-requests: write
     steps:
       - name: Validate version format
         env:
@@ -71,6 +75,7 @@ jobs:
           git push -u origin "HEAD:release-prep/v${VERSION}"
 
       - name: Create pull request
+        id: create_pr
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PR_TOKEN }}
           VERSION: ${{ inputs.version }}
@@ -82,9 +87,14 @@ jobs:
           printf '## Summary\n- CHANGELOG.md の Unreleased を v%s 見出しへ移した\n- pyproject.toml の version を %s に更新した\n\nworkflow_dispatch（release-prep）による自動生成 PR です。内容を確認してマージしてください。\n' \
             "${VERSION}" "${VERSION}" > /tmp/release-prep-pr-body.md
 
-          gh pr create \
+          pr_url=$(gh pr create \
             --base develop \
             --head "release-prep/v${VERSION}" \
             --title "chore(release): prepare v${VERSION}" \
-            --label release-prep \
-            --body-file /tmp/release-prep-pr-body.md
+            --body-file /tmp/release-prep-pr-body.md)
+          echo "pr_url=${pr_url}" >> "${GITHUB_OUTPUT}"
+
+      - name: Add release-prep label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr edit "${{ steps.create_pr.outputs.pr_url }}" --add-label release-prep
