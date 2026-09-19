@@ -146,11 +146,57 @@ jobs:
               return;
             }
 
+            // リンク Issue は「'auto' の継承元」であり「スレッド検証の対象」でもある
+            // ため、取りこぼしも取りすぎも信頼判定を誤らせる。そこで GitHub 自身が
+            // 認識しているリンク（closingIssuesReferences）を主に使う。これは PR
+            // サイドバーの Development パネルで紐づけた Issue も含み、本文の正規表現
+            // では原理的に拾えない（= Claude が読むのに未検証の Issue が生まれる）。
+            //
+            // 正規表現は本文中の引用・否定文・コードブロックも拾うため、これを
+            // 'auto' の継承根拠にすると信頼アンカーが意図せず広がる。用途を分ける:
+            //   - スレッド検証の対象 (linkedIssueNumbers): 両者の和集合。広い方が安全側
+            //   - 'auto' の継承元 (autoSourceNumbers): GraphQL が成功したならその結果だけ。
+            //     失敗したときだけ正規表現へフォールバックし、API の一時障害で
+            //     正規の起動が止まらないようにする
+            const linkedIssueNumbers = new Set();
+            const autoSourceNumbers = new Set();
+
+            const linkedIssuesQuery = `
+              query($owner: String!, $repo: String!, $number: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $number) {
+                    closingIssuesReferences(first: 50) {
+                      nodes { number }
+                    }
+                  }
+                }
+              }
+            `;
+            let closingRefsResolved = false;
+            try {
+              const linked = await github.graphql(linkedIssuesQuery, {
+                owner,
+                repo,
+                number: prNumber,
+              });
+              for (const node of linked.repository.pullRequest.closingIssuesReferences.nodes) {
+                linkedIssueNumbers.add(node.number);
+                autoSourceNumbers.add(node.number);
+              }
+              closingRefsResolved = true;
+            } catch (error) {
+              core.warning(`failed to fetch closingIssuesReferences: ${error.message}`);
+            }
+
             // Closing keywords (GitHub-recognized): close(s/d), fix(es/d), resolve(s/d) + "#123".
             const closeKeywordPattern = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s*#(\d+)/gi;
-            const linkedIssueNumbers = new Set(
-              [...(pr.body || "").matchAll(closeKeywordPattern)].map((m) => Number(m[1]))
-            );
+            for (const match of (pr.body || "").matchAll(closeKeywordPattern)) {
+              const issueNumber = Number(match[1]);
+              linkedIssueNumbers.add(issueNumber);
+              if (!closingRefsResolved) {
+                autoSourceNumbers.add(issueNumber);
+              }
+            }
 
             let hasAuto = prLabels.includes("auto");
             for (const issueNumber of linkedIssueNumbers) {
@@ -174,7 +220,10 @@ jobs:
                 core.setOutput("should_run", "false");
                 return;
               }
-              if (linkedIssue.data.labels.map((l) => l.name).includes("auto")) {
+              if (
+                autoSourceNumbers.has(issueNumber) &&
+                linkedIssue.data.labels.map((l) => l.name).includes("auto")
+              ) {
                 hasAuto = true;
               }
             }
