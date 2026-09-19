@@ -20,6 +20,9 @@ name: Release PR
 # （base=main かつ head=develop）でレビュー対象外になる。base/head の組だけで判定して
 # いるため author は問わず、このワークフローが作る PR にもそのまま効く。
 #
+# この PR には release ラベルを付ける（release-prep とは別ラベル）。release.yml が
+# このラベルの有無でマージ後の draft Release 作成対象を判定する。
+#
 # GITHUB_TOKEN はこのリポジトリで PR 作成が許可されていない（release-prep.yml の
 # コメント参照）ため、release-prep.yml と同じ secrets.RELEASE_PR_TOKEN を使う。
 # 未設定の場合はこのジョブが失敗する。
@@ -37,8 +40,18 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      issues: write
       pull-requests: read
     steps:
+      - name: Ensure release label exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create release \
+            --color 0e8a16 \
+            --description "develop -> main のリリース PR。マージで draft Release を作成" \
+            --force
+
       - name: Check out develop
         uses: actions/checkout@v7
         with:
@@ -101,6 +114,7 @@ jobs:
           fi
 
       - name: Create develop -> main pull request
+        id: create_pr
         if: steps.existing.outputs.pr_url == ''
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PR_TOKEN }}
@@ -110,11 +124,18 @@ jobs:
             echo "::error::secrets.RELEASE_PR_TOKEN is not set; cannot create pull request" >&2
             exit 1
           fi
-          gh pr create \
+          pr_url=$(gh pr create \
             --base main \
             --head develop \
             --title "Release v${VERSION}" \
-            --body-file /tmp/release-pr-body.md
+            --body-file /tmp/release-pr-body.md)
+          echo "pr_url=${pr_url}" >> "${GITHUB_OUTPUT}"
+
+      - name: Add release label
+        if: steps.existing.outputs.pr_url == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr edit "${{ steps.create_pr.outputs.pr_url }}" --add-label release
 
       - name: Skip (pull request already exists)
         if: steps.existing.outputs.pr_url != ''
