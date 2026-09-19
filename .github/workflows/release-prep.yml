@@ -1,0 +1,90 @@
+name: Release prep
+
+# workflow_dispatch でバージョンを指定すると、develop から作業ブランチを切り、
+# CHANGELOG.md の Unreleased をそのバージョン見出しへ移し、pyproject.toml の
+# version を合わせて develop 向け PR を開く。中身の確認とマージは人が行う。
+#
+# workflow_dispatch はデフォルトブランチ（main）の定義を読むため、このファイルは
+# main 側にマージされて初めて実行可能になる。
+#
+# GITHUB_TOKEN はこのリポジトリでは PR 作成が許可されていない（claude.yml の
+# 「Notify Grok Bot to create PR after Claude finishes」ステップのコメント参照）ため、
+# PR 作成のみリポジトリ secret RELEASE_PR_TOKEN（このリポジトリへの
+# pull-requests:write を持つ PAT）を使う。未設定の場合はこのジョブが失敗する。
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "リリースするバージョン（例: 1.2.3。先頭の v は付けない）"
+        required: true
+        type: string
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - name: Validate version format
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must be X.Y.Z (got '${VERSION}')"
+            exit 1
+          fi
+
+      - name: Check out develop
+        uses: actions/checkout@v7
+        with:
+          ref: develop
+          fetch-depth: 0
+
+      - name: Update CHANGELOG.md and pyproject.toml
+        env:
+          VERSION: ${{ inputs.version }}
+        run: python3 .github/scripts/release_prep_bump_version.py
+
+      - name: Ensure release-prep label exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create release-prep \
+            --color ededed \
+            --description "リリース準備 PR。自動レビュー対象外" \
+            --force
+
+      - name: Commit changes
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md pyproject.toml
+          git commit -m "chore(release): prepare v${VERSION}"
+
+      - name: Push release branch
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          git push -u origin "HEAD:release-prep/v${VERSION}"
+
+      - name: Create pull request
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PR_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::secrets.RELEASE_PR_TOKEN is not set; cannot create pull request" >&2
+            exit 1
+          fi
+          printf '## Summary\n- CHANGELOG.md の Unreleased を v%s 見出しへ移した\n- pyproject.toml の version を %s に更新した\n\nworkflow_dispatch（release-prep）による自動生成 PR です。内容を確認してマージしてください。\n' \
+            "${VERSION}" "${VERSION}" > /tmp/release-prep-pr-body.md
+
+          gh pr create \
+            --base develop \
+            --head "release-prep/v${VERSION}" \
+            --title "chore(release): prepare v${VERSION}" \
+            --label release-prep \
+            --body-file /tmp/release-prep-pr-body.md
