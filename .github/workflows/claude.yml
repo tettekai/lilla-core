@@ -222,10 +222,19 @@ jobs:
               // @claude mentions across conversation/review comments/review
               // bodies. Edited reviews never retrigger this workflow because
               // pull_request_review only listens for `submitted`.
+              //
+              // Grok Bot はオーナーの PAT で投稿するため、投稿者では自分の
+              // レビューと owner 本人の依頼を区別できない。本文末尾のフッターで
+              // Grok の投稿を除き、owner 本人が出した `@claude` だけを数える。
+              // これは認証ではなく起動回数の目安なので、フッターの文言が変わって
+              // も「Grok の分も数える」= 早めに上限へ当たる安全側に倒れるだけ。
+              const GROK_POST_MARKER = "Posted by Grok Bot";
+              const isOwnerMention = (body) =>
+                Boolean(body) && body.includes("@claude") && !body.includes(GROK_POST_MARKER);
               const mentionCount =
-                issueComments.filter((c) => c.body && c.body.includes("@claude")).length +
-                reviewComments.filter((c) => c.body && c.body.includes("@claude")).length +
-                reviews.filter((r) => r.body && r.body.includes("@claude")).length;
+                issueComments.filter((c) => isOwnerMention(c.body)).length +
+                reviewComments.filter((c) => isOwnerMention(c.body)).length +
+                reviews.filter((r) => isOwnerMention(r.body)).length;
               if (mentionCount > 3) {
                 core.notice("review invocation limit exceeded; halting");
                 await addLabel(prNumber, "grok-bot-review-exhausted");
