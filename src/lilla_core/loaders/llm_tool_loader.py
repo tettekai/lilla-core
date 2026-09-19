@@ -5,7 +5,6 @@ LLM に渡す tools パラメータの構築と、tool_call の実行を担う�
 """
 from __future__ import annotations
 
-import glob
 import importlib.util
 import json
 import logging
@@ -21,7 +20,11 @@ from lilla_core.core.config import get_config
 from lilla_core.core.extension import get_tool_context_providers
 from lilla_core.loaders.tool_paths import (
     find_tool_file,
+    import_tool_module,
+    is_import_path,
+    is_tool_enabled,
     is_within_tool_dirs,
+    resolve_tool_config_files,
     resolve_tool_dirs,
     resolve_tool_roots,
 )
@@ -116,13 +119,20 @@ def load_llm_tools(
     tool_roots: list[Path] | None = None,
     config_root: Path | None = None,
 ) -> dict[str, dict]:
-    """config/tools/llm_*.yaml を読み込み、対応するツールをロードして返す。
+    """ツール YAML（`llm_*.yaml`）を読み込み、対応するツールをロードして返す。
+
+    YAML は `tool_paths.resolve_tool_config_files()` が集める（拡張が同梱した既定
+    YAML → `config_root/tools` の順で、同じ stem は後者が丸ごと上書き）。
+    `enabled: false` の YAML はロードしない。
 
     各 YAML の type をもとに tools/**/llm_*.py を探してロードする。
     YAML に description がある場合は SCHEMA["description"] を上書きする。
 
     YAML の type が ``self`` の場合は tool_root 配下の検索を行わず、
     YAML と同じディレクトリ・同名の .py をそのままツール本体としてロードする。
+    type が ``.`` を含む場合は import パスとみなし、``importlib`` で解決する
+    （インストール済みパッケージが同梱するツール向け。ファイル探索も
+    ディレクトリの検査も行わない）。
 
     Parameters
     ----------
@@ -142,19 +152,24 @@ def load_llm_tools(
     if config_root is None:
         config_root = get_config().env.config_root
 
-    tool_config_root = config_root / "tools"
     tool_dirs = resolve_tool_dirs(tool_roots, config_root)
     llm_tools: dict[str, dict] = {}
 
-    for config_path in glob.glob(str(tool_config_root / "llm_*.yaml")):
+    for config_path in resolve_tool_config_files("llm_", config_root):
         with open(config_path, "r", encoding="utf-8") as f:
             config = yaml.safe_load(f) or {}
+
+        if not is_tool_enabled(config):
+            logger.info("LLM tool disabled by config: %s", config_path)
+            continue
 
         tool_type = config.get("type")
         if not tool_type:
             logger.warning("Config file %s has no type. Skipping", config_path)
             continue
 
+        # `origin` は以降のログに出すツール本体の出所（ファイルパスまたは import パス）。
+        # 分岐ごとに必ず設定し、前のループの値を引きずらない。
         if tool_type == "self":
             py_file = _resolve_self_tool_file(Path(config_path))
             if py_file is None:
@@ -163,6 +178,11 @@ def load_llm_tools(
                     Path(config_path).with_suffix(".py"),
                 )
                 continue
+            origin = str(py_file)
+            module = _load_llm_module(py_file, tool_dirs)
+        elif is_import_path(tool_type):
+            origin = tool_type
+            module = import_tool_module(tool_type)
         else:
             py_file = find_tool_file(tool_type, tool_roots)
             if py_file is None:
@@ -170,8 +190,8 @@ def load_llm_tools(
                     "Tool file not found: %s.py (tool_roots=%s)", tool_type, tool_roots
                 )
                 continue
-
-        module = _load_llm_module(py_file, tool_dirs)
+            origin = str(py_file)
+            module = _load_llm_module(py_file, tool_dirs)
         if module is None:
             continue
 
@@ -183,7 +203,7 @@ def load_llm_tools(
         execute: Callable | None = getattr(module, "execute", None)
 
         if schema is None or execute is None:
-            logger.warning("SCHEMA or execute not found: %s", py_file)
+            logger.warning("SCHEMA or execute not found: %s (%s)", origin, config_path)
             continue
 
         name = Path(config_path).stem

@@ -1098,3 +1098,30 @@ class TestConversationStartHook:
 
         hook.assert_awaited_once()
         assert result == "返答"
+
+
+class TestSystemPromptChannelContext:
+    """`discord_channel_id` がシステムプロンプト組み立てへ渡ることを検証する。"""
+
+    async def test_channel_id_forwarded_to_build_system_prompt(
+        self, conversation_service, mock_memory_manager_instance,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(conversation_service, "chat_to_llm", AsyncMock(return_value="ok"))
+
+        await conversation_service.run_conversation({}, discord_channel_id=100)
+
+        kwargs = mock_memory_manager_instance.build_system_prompt.await_args.kwargs
+        assert kwargs["discord_channel_id"] == 100
+
+    async def test_channel_id_is_none_when_not_supplied(
+        self, conversation_service, mock_memory_manager_instance,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """task 実行など Discord 以外の呼び出しでは None のまま渡る。"""
+        monkeypatch.setattr(conversation_service, "chat_to_llm", AsyncMock(return_value="ok"))
+
+        await conversation_service.run_conversation({}, client_type="task")
+
+        kwargs = mock_memory_manager_instance.build_system_prompt.await_args.kwargs
+        assert kwargs["discord_channel_id"] is None

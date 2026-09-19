@@ -41,7 +41,8 @@ nothing, so the core never depends on the presence of extensions.
   number of extensions loaded per process (extra repositories, message hooks, startup
   work, result delivery, client-specific prompts, conversation-start hooks, tool
   execution context, extra tool roots, and extra command packages)
-- User-facing Discord text is pulled from locale catalogs (`ja` / `en`)
+- User-facing Discord text is pulled from locale catalogs (`ja` / `en`); extensions can
+  ship their own catalogs under their own name
 - One configurable timezone (`ui.timezone`) for schedules, "today", and the
   current time shown to the LLM
 
@@ -93,6 +94,89 @@ the core alone). Modules are loaded in the order given.
 export LILLA_EXTENSIONS=my_extension_package,another_pack
 python -m lilla_core.bot
 ```
+
+### Registered channels
+
+Channels listed under `discord.channels` in `lilla.yaml` can use a different rule for
+starting a conversation.
+
+```yaml
+discord:
+  my_user_id: "XXXXXXXXX"
+  channels:
+    - name: dev
+      channel_id: "123456789012345678"
+      mention_optional: true
+    - name: lounge
+      channel_id: "234567890123456789"
+      # mention_optional defaults to false
+```
+
+- `name`: an alias used by the configuration. It does not have to match the channel's
+  current name on Discord
+- `channel_id`: the channel snowflake, as a string (same form as `approval_channel_id`)
+- `mention_optional`: when `true`, the bot also replies to the owner's messages in that
+  channel without a mention. It defaults to `false`, which keeps the current rule
+  (mention or DM)
+- Leaving `channels` unset or empty keeps the receiving behaviour exactly as it is
+- A duplicated `name` or `channel_id` fails at startup
+
+A conversation in a registered channel gets a short line in the system prompt saying the
+bot is currently in that channel (unregistered channels and DMs do not get it). The
+conversation history itself still spans every channel and DM, registered or not.
+
+### Channel notes (nightly summary)
+
+A registered channel can also keep a short "note of the room": a factual summary of what
+was said there on a given day, which outlives the TTL of the conversation history. The
+core ships the batch that writes it as a built-in task tool, disabled until you opt in
+by adding this YAML to `${CONFIG_ROOT}/tools/task_channel_summary.yaml`:
+
+```yaml
+type: lilla_core.builtin_tools.task_channel_summary
+# schedule: "0 2 * * *"      # default; interpreted in ui.timezone
+# llm_name: summarizer       # default: llm.default
+# max_turns: 500             # messages read per channel
+# max_transcript_chars: 20000
+```
+
+- On each run it loops over `discord.channels` and summarizes **yesterday** (the
+  calendar day in `ui.timezone`), so a 2 a.m. run does not summarize a day that only
+  holds 00:00–02:00
+- Only messages stored with a `discord_channel_id` are read; existing rows without one
+  are left alone (no backfill)
+- If a channel has nothing on the target day, its existing note is kept as is
+- The summary is produced with a short fact-extraction prompt, not the bot's character
+  prompt, and the transcript is passed as data inside `<channel_transcript>` tags
+- Notes are stored in the `channel_summaries` collection, one document per channel
+  (`discord_channel_id` is unique, and each run upserts it)
+- With `discord.channels` empty, or without that YAML, nothing changes
+
+When a conversation happens in a registered channel that has a note, the note is
+inserted into the system prompt together with its `summary_date`, wrapped in
+`<channel_note>` tags as untrusted context — past information, never instructions.
+Unregistered channels and DMs never get it.
+
+### Searching history by room name
+
+Conversation history itself stays global — it is never split per channel — but the core
+ships a built-in LLM tool for recalling "what was said in that room". It is not enabled
+by default; opt in by adding this YAML under `${CONFIG_ROOT}/tools/` (the name the LLM
+sees is the YAML's file name):
+
+```yaml
+type: lilla_core.builtin_tools.llm_conversation_get
+```
+
+- It narrows by `datetime_range` (`today`, `last_7_days`, `2026-04-20/2026-04-26`, ...),
+  `query` (space-separated AND keywords), `role` (`user` / `assistant` / `all`) and
+  `limit` (default 30, capped at 30)
+- Passing a `channel_name` registered in `discord.channels` narrows the search to that
+  channel. **It is the alias from the config, not the channel's current Discord name**
+- Omitting `channel_name` searches across every channel, as before
+- An unregistered name returns an error — it never silently falls back to a global search
+- Names match exactly after stripping surrounding whitespace, and are case sensitive
+- Both the range boundaries and the timestamps in the results use `ui.timezone`
 
 ### Timezone
 
@@ -167,7 +251,8 @@ src/lilla_core/
 ├── loaders/               # Dynamic loading of tools (llm_*.yaml / task_*.yaml)
 ├── api/                  # LLM client (Ollama / OpenAI-compatible)
 ├── repository/           # Data persistence to MongoDB
-└── tool_support/         # Opt-in helpers for tool implementations
+├── tool_support/         # Opt-in helpers for tool implementations
+└── testing/              # Test helpers for extension repositories (opt-in)
 tests/                    # Unit tests (pytest)
 config.example/           # Sample lilla.yaml / logging.yaml
 ```
@@ -209,6 +294,8 @@ extension = MyExtension()
 | `conversation_start_hooks` | Async hooks run before conversation handling starts, as `{client_type: [hook, ...]}`. Additive like the prompts. Each hook receives one `ConversationContext` (`client_type`, `client_state`, `discord_channel_id`, `llm_name`) |
 | `tool_context_providers` | Values injected into the tool execution context |
 | `tool_roots` | Extra directories searched for tool `.py` files |
+| `tool_config_roots` | Directories of default tool YAML files (`llm_*.yaml` / `task_*.yaml`) shipped by the extension. A YAML with the same stem in `${CONFIG_ROOT}/tools` replaces it wholesale; put `enabled: false` there to turn a bundled tool off |
+| `locale_dirs` | Directories of UI message catalogs (`{locale}.yaml`) shipped by the extension. The catalog's only top-level key must be the extension's `name` |
 | `command_packages` | Extra packages scanned for `@register_command` handlers |
 | `config_models` | YAML sections this extension adds to `AppConfig` |
 | `env_fields` | Secret fields this extension adds to `cfg.env` |
@@ -227,6 +314,22 @@ order, so several extensions can contribute to the same client.
 `client_type="discord"` is special in two ways: the core provides a built-in system
 prompt that is used only when no extension contributes one, and the core owns
 `!toolresult` delivery, so extensions cannot register a result delivery for it.
+
+Extensions may also ship their own Discord text through `locale_dirs()`. Each directory
+holds `{locale}.yaml` files named the same way as the core's (`ja.yaml`, `en.yaml`, ...),
+and the catalog's **only top-level key must be the extension's `name`**, so
+`name = "lilla-habits"` means a YAML with a single `lilla-habits:` node and calls such as
+`t("lilla-habits.notify.title")`. The core never prefixes keys for you: the key in the
+YAML and the key you pass to `t()` are the same string. The core layers extension
+catalogs onto its own in load order, so lookups keep the usual
+"`ui.locale` → `ja` → the key itself" fallback and an extension that ships only `ja.yaml`
+still works under `ui.locale: en`. If one extension returns several directories, its own
+node is merged shallowly in load order (a later directory wins on the same key). A
+catalog whose top-level key is not the extension name, or an extension whose name
+collides with a core top-level key (`selftest`, ...), fails fast with `ValueError` while
+the extensions are registered, so `t()` itself still never raises. A directory that does
+not exist logs a warning (once per locale) and is skipped, and a broken YAML is logged as
+an error and treated as empty for that locale.
 
 A client extension that drives `run_conversation()` itself may pass any object as
 `client_state` (for example its set of connected sockets). The core does not interpret
@@ -350,12 +453,77 @@ The policy for changing the contract:
   (for example `lilla-core>=0.3,<0.4`) so a breaking core release is not picked up
   silently.
 
+### Testing an extension
+
+`lilla_core.testing` carries the setup an extension repository would otherwise
+rewrite for itself: register the extension, compose the config, and put the process
+back the way it was afterwards. It only uses the production dependencies — `pytest` is
+imported by `lilla_core.testing.pytest_plugin` alone.
+
+The plugin is **not** registered through a `pytest11` entry point, so it cannot
+interfere silently with an existing conftest. Opt in from the root `conftest.py`:
+
+```python
+# conftest.py
+pytest_plugins = ["lilla_core.testing.pytest_plugin"]
+```
+
+```python
+# test_my_extension.py
+from my_package import extension
+
+
+def test_config_section_is_composed(lilla_extensions):
+    cfg = lilla_extensions(extension)
+
+    assert cfg.my_section.value == "default"
+```
+
+Two fixtures come with it, both function-scoped:
+
+- `lilla_config_root` writes a minimal `lilla.yaml` into `tmp_path`, points
+  `CONFIG_ROOT` at it, and sets a dummy `DISCORD_TOKEN` when one is not already in the
+  environment. It returns that directory.
+- `lilla_extensions` returns `register(*extensions) -> AppConfig`, which registers the
+  extensions, composes the config against `lilla_config_root`, calls `set_config()` (so
+  `get_config()` returns the composed model), and returns it. Everything is unwound at
+  teardown, last in first out if `register` was called more than once.
+
+Without pytest — or when a test needs finer control — use the helpers directly:
+
+```python
+from lilla_core.testing import use_extensions, write_minimal_lilla_yaml
+
+
+def test_section(tmp_path):
+    write_minimal_lilla_yaml(tmp_path, extra={"habits": {"channel": "habits-test"}})
+
+    with use_extensions(extension, config_root=tmp_path) as cfg:
+        assert cfg.habits.channel == "habits-test"
+```
+
+`use_extensions()` saves the current registration, the current config instance and
+`CONFIG_ROOT` on the way in, and restores all three on the way out even if the body
+raises. `write_minimal_lilla_yaml(directory, *, my_user_id=..., llm_name=..., extra=...)`
+writes the sections the core requires (`discord.my_user_id`, `llm.default` and the
+matching `llm.providers.<name>`, plus `ui.timezone: Asia/Tokyo` so dates do not depend
+on the OS timezone) and deep-merges `extra` on top for the sections an extension makes
+mandatory. It returns the path it wrote.
+
 ## Tool contracts
 
 Tools are loaded dynamically from `${TOOL_ROOT}/**/*.py` based on YAML config files in
 `${CONFIG_ROOT}/tools/`. Each YAML's file name stem becomes the tool's name, and its
 `type` field is used to locate the matching `.py` file (`loaders/llm_tool_loader.py` /
 `loaders/task_tool_loader.py` implement the details below).
+
+An extension can ship default YAML files through `tool_config_roots()`. The loader
+collects YAML from those directories first (in extension load order) and then from
+`${CONFIG_ROOT}/tools`; a file with the same stem in `${CONFIG_ROOT}/tools` replaces the
+bundled one wholesale (no merging), so your settings always win. Two extensions bundling
+the same stem fail at startup. To switch a bundled tool off, put a YAML with the same
+stem in `${CONFIG_ROOT}/tools` containing `enabled: false`; `enabled: false` disables any
+tool YAML, bundled or not.
 
 **LLM tools** (`${CONFIG_ROOT}/tools/llm_*.yaml`, implemented in
 `${TOOL_ROOT}/**/<type>.py`):
@@ -368,10 +536,28 @@ Tools are loaded dynamically from `${TOOL_ROOT}/**/*.py` based on YAML config fi
   see `tool_support/tool_result.py` for the helper constructors).
 - If the YAML's `type` is `self`, the loader skips searching `TOOL_ROOT` and instead
   loads the `.py` file next to the YAML with the same stem.
+- If the YAML's `type` contains a dot (`type: lilla_google_calendar.tools.calendar_get`),
+  it is an **import path**: the loader imports that module with `importlib` instead of
+  searching the tool roots. This is how an installed package (for example an extension
+  published on PyPI) ships its tools. The module is a regular import: it is registered
+  in `sys.modules` under its dotted name (a stem-resolved file is executed as a
+  standalone module and is not), so relative imports inside it work and no directory
+  check applies. An import failure is logged as a warning and only that tool is
+  skipped, like a missing file.
 - The YAML may set `description` (overrides the schema's description),
   `supported_client_type` (defaults to `"all"`), a `cache` block, and other
   tool-specific keys — the latter must not collide with the runtime context keys
   below (checked at startup; a collision raises at load time).
+
+`lilla_core` ships two built-in LLM tools as concrete examples of the import-path
+form: `lilla_core/builtin_tools/llm_current_datetime.py` (a sample) and
+`lilla_core/builtin_tools/llm_conversation_get.py`
+([Searching history by room name](#searching-history-by-room-name)). Neither is enabled
+by default — opt in by adding YAML under `${CONFIG_ROOT}/tools/`:
+
+```yaml
+type: lilla_core.builtin_tools.llm_current_datetime
+```
 
 **Task tools** (`${CONFIG_ROOT}/tools/task_*.yaml`, implemented in
 `${TOOL_ROOT}/**/<type>.py`):
@@ -382,6 +568,14 @@ Tools are loaded dynamically from `${TOOL_ROOT}/**/*.py` based on YAML config fi
   expression string) attributes, plus `async def execute(context: dict) -> None`.
 - `schedule` is optional — a tool without it is not registered with the scheduler, but
   can still be run manually via `!runtask`.
+- `type` accepts an import path here too (`type: some_package.tasks.daily_summary`); the
+  class is looked up in the imported module the same way as in a file. The trigger kind
+  comes from the YAML's file name, not from `type`, so an import-path task tool is still
+  a `task` tool and can be run with `!runtask`.
+
+`lilla_core` ships one built-in task tool: `lilla_core/builtin_tools/task_channel_summary.py`,
+the nightly channel-note batch described under
+[Channel notes](#channel-notes-nightly-summary). Like the LLM sample it is opt-in.
 
 **The `context` dict passed to `execute`** varies by call site. For LLM tools it always
 includes `client_type` and a nested-call helper `call_tool(tool_name, tool_input)`,

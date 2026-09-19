@@ -93,8 +93,16 @@ async def handle_message(message, bot, tools, llm_tools, message_hook) -> None:
         await command_handler.handle_command(message, command_content, tools, bot)
         return
 
-    # 通常の会話処理
-    if bot.user.mentioned_in(message) or isinstance(message.channel, discord.DMChannel):
+    # 通常の会話処理。メンション・DM に加えて、`discord.channels` へ
+    # `mention_optional: true` で登録したチャンネルではメンションなしでも会話を始める
+    # （未登録チャンネル・`mention_optional: false` は現行どおりメンションが要る）。
+    registered_channel = _config.discord.find_channel_by_id(message.channel.id)
+    mention_optional = registered_channel is not None and registered_channel.mention_optional
+    if (
+        bot.user.mentioned_in(message)
+        or isinstance(message.channel, discord.DMChannel)
+        or mention_optional
+    ):
         channel_id = message.channel.id
 
         # 送信中のタスクがあればキャンセル
@@ -106,7 +114,10 @@ async def handle_message(message, bot, tools, llm_tools, message_hook) -> None:
             try:
                 async with message.channel.typing():
                     save_content = memory_content if memory_content is not None else content
-                    await _memory_manager.add_conversation({"role": "user", "content": save_content})
+                    await _memory_manager.add_conversation(
+                        {"role": "user", "content": save_content},
+                        discord_channel_id=channel_id,
+                    )
                     override = content if memory_content is not None else None
                     reply = await run_conversation(
                         llm_tools,

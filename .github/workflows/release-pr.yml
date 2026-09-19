@@ -1,0 +1,124 @@
+name: Release PR
+
+# release-prep 付きの準備 PR（base=develop）がマージされたら、develop → main の
+# リリース PR を自動で開く。中身の最終確認とマージは人が行う。
+#
+# トリガーは release-prep.yml の PR 作成条件（release-prep ラベル、または
+# release-prep/ で始まる head ブランチ名）に揃えている。ラベル付与は PR 作成後の
+# 別ステップのため、閉じられた時点ではラベルが付いているはずだが、念のため
+# ブランチ名でも判定する。
+#
+# バージョンはマージ後の develop の pyproject.toml から読む
+# （release_prep_bump_version.py が準備 PR の時点で pyproject.toml と CHANGELOG.md を
+# 同じバージョンに揃えているため）。リリースノートは CHANGELOG.md の該当バージョン
+# 見出しの節を PR 本文に埋め込む（見つからなければ短い説明＋参照リンクにフォールバック）。
+#
+# 既に develop → main の open PR があれば新規作成せずスキップする（ログに残すのみ。
+# 更新はしない。人が確認中の PR 本文を上書きしないため）。
+#
+# develop → main の PR は notify-grok-bot-review.yml の既存の develop↔main スキップ
+# （base=main かつ head=develop）でレビュー対象外になる。base/head の組だけで判定して
+# いるため author は問わず、このワークフローが作る PR にもそのまま効く。
+#
+# GITHUB_TOKEN はこのリポジトリで PR 作成が許可されていない（release-prep.yml の
+# コメント参照）ため、release-prep.yml と同じ secrets.RELEASE_PR_TOKEN を使う。
+# 未設定の場合はこのジョブが失敗する。
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  open-release-pr:
+    if: >
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'develop' &&
+      (contains(github.event.pull_request.labels.*.name, 'release-prep') ||
+       startsWith(github.event.pull_request.head.ref, 'release-prep/'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check out develop
+        uses: actions/checkout@v7
+        with:
+          ref: develop
+          fetch-depth: 0
+
+      - name: Read version from pyproject.toml
+        id: version
+        run: |
+          version=$(grep -m1 '^version = "' pyproject.toml | sed -E 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)"$/\1/')
+          if [ -z "${version}" ]; then
+            echo "::error::failed to read version from pyproject.toml" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check for existing develop -> main pull request
+        id: existing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pr_url=$(gh pr list --base main --head develop --state open --json url --jq '.[0].url // empty')
+          echo "pr_url=${pr_url}" >> "${GITHUB_OUTPUT}"
+
+      - name: Extract release notes section
+        if: steps.existing.outputs.pr_url == ''
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+
+          version = os.environ["VERSION"]
+          text = pathlib.Path("CHANGELOG.md").read_text()
+          pattern = re.compile(
+              rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|\Z)",
+              re.MULTILINE | re.DOTALL,
+          )
+          match = pattern.search(text)
+          notes = match.group(1).strip() if match else ""
+          pathlib.Path("/tmp/release-notes.md").write_text(notes)
+          PY
+
+      - name: Build pull request body
+        if: steps.existing.outputs.pr_url == ''
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ -s /tmp/release-notes.md ]; then
+            {
+              echo "## Release notes"
+              echo
+              cat /tmp/release-notes.md
+            } > /tmp/release-pr-body.md
+          else
+            printf '## Release notes\n\nCHANGELOG.md に v%s の節が見つかりませんでした。\n[CHANGELOG.md](https://github.com/%s/blob/develop/CHANGELOG.md) を参照してください。\n' \
+              "${VERSION}" "${GITHUB_REPOSITORY}" > /tmp/release-pr-body.md
+          fi
+
+      - name: Create develop -> main pull request
+        if: steps.existing.outputs.pr_url == ''
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PR_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::secrets.RELEASE_PR_TOKEN is not set; cannot create pull request" >&2
+            exit 1
+          fi
+          gh pr create \
+            --base main \
+            --head develop \
+            --title "Release v${VERSION}" \
+            --body-file /tmp/release-pr-body.md
+
+      - name: Skip (pull request already exists)
+        if: steps.existing.outputs.pr_url != ''
+        env:
+          EXISTING_PR_URL: ${{ steps.existing.outputs.pr_url }}
+        run: |
+          echo "develop -> main pull request already open (${EXISTING_PR_URL}); skipping creation"

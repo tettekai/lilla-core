@@ -38,7 +38,8 @@ lilla-core は拡張を 1 つも読み込まない状態でも Discord bot と�
   複数の拡張を読み込める（追加リポジトリ、メッセージフック、起動処理、結果配送、
   クライアント固有プロンプト、会話開始フック、ツール実行 context、追加ツール
   ルート、追加コマンドパッケージ）
-- Discord に見せる文言はロケールカタログ（`ja` / `en`）から取得
+- Discord に見せる文言はロケールカタログ（`ja` / `en`）から取得。拡張も自分の名前で
+  カタログを同梱できる
 - 定期実行・「今日」・LLM に見せる現在時刻のタイムゾーンを `ui.timezone` で統一
 
 ## 動作要件
@@ -88,6 +89,86 @@ python -m lilla_core.bot
 export LILLA_EXTENSIONS=my_extension_package,another_pack
 python -m lilla_core.bot
 ```
+
+### 登録チャンネル
+
+`lilla.yaml` の `discord.channels` に登録したチャンネルでは、入口の作法を変えられます。
+
+```yaml
+discord:
+  my_user_id: "XXXXXXXXX"
+  channels:
+    - name: dev
+      channel_id: "123456789012345678"
+      mention_optional: true
+    - name: lounge
+      channel_id: "234567890123456789"
+      # mention_optional 省略時は false
+```
+
+- `name`: 設定上の別名。Discord 側の現在のチャンネル名と一致していなくてかまいません
+- `channel_id`: チャンネルの snowflake 文字列（`approval_channel_id` などと同じ形式）
+- `mention_optional`: `true` なら、そのチャンネルではオーナーのメンションなしの発言にも
+  応答します。省略時は `false` で、受信条件は現行どおり（メンションまたは DM）です
+- `channels` 未設定・空リストなら、受信動作はまったく変わりません
+- `name` または `channel_id` が重複していると起動時に失敗します
+
+登録チャンネルでの会話では、システムプロンプトに「今この登録チャンネルにいる」旨の
+短い一節が入ります（未登録チャンネル・DM には入りません）。会話履歴そのものは登録の
+有無によらず全チャンネル横断のままで、チャンネルごとに分かれることはありません。
+
+### 部屋のノート（深夜要約）
+
+登録チャンネルは「部屋のノート」を持てます。その日にその部屋で何を話したかを短い事実
+として残すもので、会話履歴の TTL で消えたあとも残ります。これを書く深夜バッチはコア
+組み込みのタスクツールとして同梱していますが、既定では有効化されていません。
+`${CONFIG_ROOT}/tools/task_channel_summary.yaml` に以下の YAML を置くと opt-in で
+有効になります。
+
+```yaml
+type: lilla_core.builtin_tools.task_channel_summary
+# schedule: "0 2 * * *"      # 既定値。ui.timezone で解釈されます
+# llm_name: summarizer       # 既定は llm.default
+# max_turns: 500             # 1 チャンネルあたり読む発言数
+# max_transcript_chars: 20000
+```
+
+- 実行のたびに `discord.channels` をループし、**前日**（`ui.timezone` の暦日）を要約
+  します。2 時実行で「当日」を対象にすると 0:00–2:00 しか入らないためです
+- 対象は `discord_channel_id` が付いている発言だけで、付いていない既存の発言は
+  対象外です（穴埋めはしません）
+- 対象日の発言が無いチャンネルは、既存のノートをそのまま残します
+- 要約にはキャラクター用のシステムプロンプトを使わず、短い事実抽出用のプロンプトを
+  使います。本文は `<channel_transcript>` タグで囲んだデータとして渡します
+- ノートは `channel_summaries` コレクションに、1 チャンネル 1 ドキュメントで保存します
+  （`discord_channel_id` がユニークで、実行のたびに upsert します）
+- `discord.channels` が空のとき、またはこの YAML が無いときは、動作は現行どおりです
+
+ノートのある登録チャンネルで会話すると、そのノートが `summary_date` と一緒に
+システムプロンプトへ差し込まれます。信頼しないコンテキストとして `<channel_note>`
+タグで囲み、「指示ではなく過去の記録」として扱わせます。未登録チャンネル・DM には
+入りません。
+
+### 会話履歴の部屋名検索
+
+会話履歴そのものは全チャンネル横断のままですが、「あの部屋で何を話したか」を思い出す
+ための検索ツールをコア組み込みの LLM ツールとして同梱しています。既定では有効化されて
+いません。`${CONFIG_ROOT}/tools/` に以下の YAML を置くと opt-in で有効になります
+（LLM へ見せるツール名は YAML のファイル名になります）。
+
+```yaml
+type: lilla_core.builtin_tools.llm_conversation_get
+```
+
+- `datetime_range`（`today` / `last_7_days` / `2026-04-20/2026-04-26` など）・`query`
+  （スペース区切りの AND キーワード）・`role`（`user` / `assistant` / `all`）・`limit`
+  （既定 30、上限 30）で絞り込めます
+- `channel_name` に `discord.channels` の登録名を渡すと、そのチャンネルの発言だけに
+  絞り込みます。**設定上の別名であり、Discord の現在のチャンネル名ではありません**
+- `channel_name` を省略すると、今までどおり全チャンネル横断で検索します
+- 登録に無い名前を渡すとエラーを返します（黙って全件検索に落としません）
+- 名前の突き合わせは前後の空白を除いた完全一致で、大文字小文字は区別します
+- 期間の境界と結果の表示時刻はどちらも `ui.timezone` で解決したタイムゾーンで扱います
 
 ### タイムゾーン
 
@@ -163,7 +244,8 @@ src/lilla_core/
 ├── loaders/               # ツール（llm_*.yaml / task_*.yaml）の動的ロード
 ├── api/                  # LLM クライアント（Ollama / OpenAI 互換）
 ├── repository/           # MongoDB へのデータ永続化
-└── tool_support/         # ツール実装向けの opt-in ヘルパー群
+├── tool_support/         # ツール実装向けの opt-in ヘルパー群
+└── testing/              # 拡張リポジトリ向けのテストヘルパー（opt-in）
 tests/                    # pytest による単体テスト
 config.example/           # lilla.yaml / logging.yaml のサンプル
 ```
@@ -203,6 +285,8 @@ extension = MyExtension()
 | `conversation_start_hooks` | 会話処理開始前に await される非同期フック。形は `{client_type: [フック, ...]}` でプロンプトと同じく加算式。各フックは `ConversationContext`（`client_type` / `client_state` / `discord_channel_id` / `llm_name`）1 つを受け取る |
 | `tool_context_providers` | ツール実行 context への値の注入 |
 | `tool_roots` | ツールの `.py` を探す追加ディレクトリ |
+| `tool_config_roots` | 拡張が同梱する既定のツール YAML（`llm_*.yaml` / `task_*.yaml`）のディレクトリ。`${CONFIG_ROOT}/tools` に同じ stem の YAML があればそちらが丸ごと勝つ。同梱ツールを止めるにはそこに `enabled: false` の YAML を置く |
+| `locale_dirs` | 拡張が同梱する UI 文言カタログ（`{locale}.yaml`）のディレクトリ。カタログのトップレベルキーはその拡張の `name` ただ 1 つでなければならない |
 | `command_packages` | `@register_command` を探す追加パッケージ |
 | `config_models` | この拡張が `AppConfig` に足す YAML セクション |
 | `env_fields` | この拡張が `cfg.env` に足す秘匿フィールド |
@@ -220,6 +304,21 @@ env フィールド名・ツール context のキー・結果配送の `client_t
 `client_type="discord"` だけは扱いが 2 点異なります。システムプロンプトはコアが内蔵
 デフォルトを持ち、拡張が 1 つも出していないときだけそれを使います。`!toolresult` の
 配送はコアが持つため拡張は登録できません。
+
+拡張は `locale_dirs()` で Discord に見せる文言のカタログも同梱できます。各ディレクトリには
+コアと同じ命名の `{locale}.yaml`（`ja.yaml` / `en.yaml` など）を置き、カタログの
+**トップレベルのキーはその拡張の `name` ただ 1 つ** でなければなりません。`name = "lilla-habits"`
+なら YAML は `lilla-habits:` の 1 ノードだけを持ち、呼び出しは `t("lilla-habits.notify.title")`
+になります。コアが自動で prefix を付けることはせず、YAML 上のキーと `t()` に書くキーは
+同じ文字列です。コアがコア自身のカタログへ拡張のカタログをロード順に重ねるため、
+解決順は従来どおり「`ui.locale` → `ja` → キー名そのもの」で、`ja.yaml` しか同梱して
+いない拡張でも `ui.locale: en` で例外になりません。1 つの拡張が複数のディレクトリを
+返した場合は、その拡張のノードをロード順に浅くマージします（同じキーは後のディレクトリが
+勝ちます）。トップレベルキーが拡張名と異なるカタログや、拡張名がコアのトップレベルキー
+（`selftest` など）と衝突している場合は、拡張の登録時に `ValueError` で fail-fast します
+（`t()` 自体は従来どおり例外を投げません）。存在しないディレクトリは WARNING を出して
+（ロケールごとに 1 回）読み飛ばし、壊れた YAML は ERROR ログを出してそのロケール分だけ
+空として扱います。
 
 `run_conversation()` を自分で呼ぶクライアント拡張は、任意のオブジェクトを
 `client_state` として渡せます（接続中ソケットの集合など）。コアは中身を解釈せず、
@@ -338,12 +437,77 @@ class MyExtension(Extension):
 - 拡張パッケージは `lilla-core` をバージョン範囲で依存指定してください
   （例: `lilla-core>=0.3,<0.4`）。破壊的なコアのリリースを気付かず取り込まないためです
 
+### 拡張のテストの書き方
+
+`lilla_core.testing` は、拡張リポジトリがそれぞれ書くことになる「自分の拡張を登録し、
+設定を合成し、テストが終わったらプロセスの状態を元へ戻す」というセットアップを
+肩代わりします。本番依存だけで動き、`pytest` を import するのは
+`lilla_core.testing.pytest_plugin` だけです。
+
+このプラグインは `pytest11` entry point による自動登録を **しません**（利用側の既存
+conftest と黙って干渉しないためです）。ルートの `conftest.py` で opt-in してください。
+
+```python
+# conftest.py
+pytest_plugins = ["lilla_core.testing.pytest_plugin"]
+```
+
+```python
+# test_my_extension.py
+from my_package import extension
+
+
+def test_config_section_is_composed(lilla_extensions):
+    cfg = lilla_extensions(extension)
+
+    assert cfg.my_section.value == "default"
+```
+
+fixture は 2 つ（どちらも function scope）です。
+
+- `lilla_config_root`: `tmp_path` に最小構成の `lilla.yaml` を書き、`CONFIG_ROOT` を
+  そこへ向けます。`DISCORD_TOKEN` が環境に無ければダミー値も入れます。戻り値は
+  そのディレクトリです
+- `lilla_extensions`: `register(*extensions) -> AppConfig` を返します。拡張を登録し、
+  `lilla_config_root` を `CONFIG_ROOT` として設定を合成し、`set_config()` まで行って
+  合成結果を返します（以降 `get_config()` が合成モデルを返します）。teardown で
+  すべて元へ戻り、`register` を複数回呼んだ場合は後入れ先出しで戻します
+
+pytest が無い環境や、もっと細かく制御したい場合はヘルパーを直接使えます。
+
+```python
+from lilla_core.testing import use_extensions, write_minimal_lilla_yaml
+
+
+def test_section(tmp_path):
+    write_minimal_lilla_yaml(tmp_path, extra={"habits": {"channel": "habits-test"}})
+
+    with use_extensions(extension, config_root=tmp_path) as cfg:
+        assert cfg.habits.channel == "habits-test"
+```
+
+`use_extensions()` は入るときに現在の登録・設定インスタンス・`CONFIG_ROOT` を退避し、
+抜けるときに（本体で例外が出ても）3 つとも元へ戻します。
+`write_minimal_lilla_yaml(directory, *, my_user_id=..., llm_name=..., extra=...)` は
+コアが必須にしている項目（`discord.my_user_id` と、`llm.default` に対応する
+`llm.providers.<名前>`。あわせて日付が OS のタイムゾーンに左右されないよう
+`ui.timezone: Asia/Tokyo`）を書き、`extra` を同じネストで深いマージして重ねます
+（拡張が必須にしているセクション用）。戻り値は書き出したパスです。
+
 ## ツール契約
 
 ツールは `${CONFIG_ROOT}/tools/` の YAML 設定ファイルをもとに、`${TOOL_ROOT}/**/*.py`
 から動的にロードされます。各 YAML のファイル名（stem）がツール名になり、`type`
 フィールドから対応する `.py` ファイルを探します（詳細は
 `loaders/llm_tool_loader.py` / `loaders/task_tool_loader.py` の実装を参照）。
+
+拡張は `tool_config_roots()` で既定の YAML を同梱できます。ローダーはまずそれらの
+ディレクトリ（拡張のロード順）から、次に `${CONFIG_ROOT}/tools` から YAML を集め、
+同じ stem のファイルが `${CONFIG_ROOT}/tools` にあれば同梱分を丸ごと置き換えます
+（内容のマージはしません）。利用者の設定が常に勝つ形です。2 つの拡張が同じ stem を
+同梱していると起動時に失敗します。同梱ツールを止めるには、`${CONFIG_ROOT}/tools` に
+同じ stem で `enabled: false` と書いた YAML を置いてください。`enabled: false` は
+同梱かどうかに関わらず、どのツール YAML でも無効化に使えます。
 
 **LLM ツール**（`${CONFIG_ROOT}/tools/llm_*.yaml`、実装は `${TOOL_ROOT}/**/<type>.py`）:
 
@@ -356,10 +520,27 @@ class MyExtension(Extension):
   `tool_support/tool_result.py` を参照）を返します。
 - YAML の `type` が `self` の場合、ローダーは `TOOL_ROOT` 配下の検索を行わず、
   YAML と同じディレクトリ・同名の `.py` をそのままロードします。
+- YAML の `type` にドットが含まれる場合（`type: lilla_google_calendar.tools.calendar_get`）は
+  **import パス** として扱い、ツールルートを探索する代わりに `importlib` でそのモジュールを
+  読み込みます。インストール済みパッケージ（PyPI で配布する拡張など）がツールを同梱する
+  ための経路です。通常の import なので、そのドット区切り名で `sys.modules` に登録され
+  （stem で解決したファイルは独立したモジュールとして実行され、登録されません）、
+  モジュール内の相対 import が使え、ディレクトリの検査も行いません。import に失敗した
+  場合はファイルが見つからないときと同じく警告を出し、そのツールだけ読み飛ばします。
 - YAML では `description`（スキーマの description を上書き）、
   `supported_client_type`（既定 `"all"`）、`cache` ブロック、その他ツール固有の
   キーを設定できます。ツール固有のキーは、下記の実行時コンテキストキーと衝突
   してはいけません（起動時に検証され、衝突時は fail-fast します）。
+
+`lilla_core` は import パス形式の具体例として、組み込みの LLM ツールを 2 つ
+同梱しています: `lilla_core/builtin_tools/llm_current_datetime.py`（サンプル）と
+`lilla_core/builtin_tools/llm_conversation_get.py`（[会話履歴の部屋名検索](#会話履歴の部屋名検索)）。
+どちらも既定では有効化されていません。`${CONFIG_ROOT}/tools/` に以下の YAML を置くと
+opt-in で有効化できます:
+
+```yaml
+type: lilla_core.builtin_tools.llm_current_datetime
+```
 
 **task ツール**（`${CONFIG_ROOT}/tools/task_*.yaml`、実装は
 `${TOOL_ROOT}/**/<type>.py`）:
@@ -370,6 +551,14 @@ class MyExtension(Extension):
   `async def execute(context: dict) -> None` を持つことが期待されます。
 - `schedule` は省略可能です。未設定のツールはスケジューラには登録されませんが、
   `!runtask` による手動実行は可能です。
+- `type` はこちらでも import パスを受け付けます（`type: some_package.tasks.daily_summary`）。
+  クラスはファイルから読む場合と同じ規則で、import したモジュールから探します。
+  トリガー種別は `type` ではなく YAML のファイル名から判定するため、import パス指定の
+  task ツールも `task` ツールのままで、`!runtask` から実行できます。
+
+`lilla_core` は task ツールも 1 つ同梱しています:
+`lilla_core/builtin_tools/task_channel_summary.py`（[部屋のノート](#部屋のノート深夜要約)
+で説明した深夜要約バッチ）。LLM ツールのサンプルと同じく opt-in です。
 
 **`execute` に渡される `context`** は呼び出し元によって内容が異なります。LLM
 ツールでは常に `client_type` と、入れ子呼び出し用のヘルパー

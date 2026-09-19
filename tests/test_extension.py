@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from lilla_core.core import extension as ext_module
 from lilla_core.core.extension import Extension
+from lilla_core.testing import use_extensions as use_extensions_cm
 
 
 def config_module():
@@ -32,19 +33,11 @@ def _isolate_registry():
 
     `load_extensions()` は設定の合成まで行い `set_config()` するため、拡張の
     登録内容だけでなくプロセスの設定インスタンスと OS 変数名のレジストリも
-    元へ戻す。
+    元へ戻す必要がある。その退避と復元はコアが拡張リポジトリ向けに公開している
+    `lilla_core.testing.use_extensions()` がそのまま担うので、そちらを使う。
     """
-    cfg = config_module()
-    saved = ext_module.get_extensions()
-    saved_config = cfg._config_instance
-    saved_var_names = dict(cfg._extra_env_var_names)
-    ext_module.reset_extensions()
-    yield
-    ext_module.set_extensions(saved)
-    cfg._config_instance = saved_config
-    cfg._extra_env_var_names.clear()
-    cfg._extra_env_var_names.update(saved_var_names)
-    cfg._default_config.cache_clear()
+    with use_extensions_cm():
+        yield
 
 
 class SampleSectionConfig(BaseModel):
@@ -86,6 +79,7 @@ class TestExtensionDefaults:
         assert ext.config_models() == {}
         assert ext.env_fields() == {}
         assert ext.tool_roots() == []
+        assert ext.tool_config_roots() == []
         assert ext.command_packages() == []
         assert ext.startup_repos() == []
         assert ext.tool_context_providers() == {}
@@ -663,6 +657,38 @@ class TestAggregatedContributions:
         ])
 
         assert ext_module.get_startup_repos() == [first, second, third]
+
+    def test_tool_config_roots_carry_extension_names_in_load_order(self, make_extension) -> None:
+        """同梱 YAML のディレクトリは拡張名つきでロード順に返す。"""
+        ext_module.set_extensions([
+            make_extension("a", tool_config_roots=[Path("/one/tools")]),
+            make_extension("b", tool_config_roots=[Path("/two/tools"), Path("/three/tools")]),
+        ])
+
+        assert ext_module.get_tool_config_roots() == [
+            ("a", Path("/one/tools")),
+            ("b", Path("/two/tools")),
+            ("b", Path("/three/tools")),
+        ]
+
+    def test_locale_dirs_carry_extension_names_in_load_order(self, make_extension) -> None:
+        """同梱カタログのディレクトリは拡張名つきでロード順に返す。"""
+        ext_module.set_extensions([
+            make_extension("a", locale_dirs=[Path("/one/locales")]),
+            make_extension("b", locale_dirs=[Path("/two/locales"), Path("/three/locales")]),
+        ])
+
+        assert ext_module.get_locale_dirs() == [
+            ("a", Path("/one/locales")),
+            ("b", Path("/two/locales")),
+            ("b", Path("/three/locales")),
+        ]
+
+    def test_locale_dirs_default_to_empty(self, make_extension) -> None:
+        """`locale_dirs()` を実装しない拡張は何も貢献しない。"""
+        ext_module.set_extensions([make_extension("a")])
+
+        assert ext_module.get_locale_dirs() == []
 
     def test_tool_roots_are_concatenated_in_load_order(self, make_extension) -> None:
         """ツール探索ルートはロード順に連結される。"""

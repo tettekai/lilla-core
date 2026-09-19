@@ -323,6 +323,163 @@ class TestLoadLlmToolsFromExtensionRoots:
             )
 
 
+class TestLoadLlmToolsImportPath:
+    """`type` に import パス（`.` 区切り）を書いた場合の解決。"""
+
+    @pytest.fixture()
+    def config_root(self, llm_tool_loader, tmp_path: Path) -> Path:
+        cr = tmp_path / "config_root"
+        (cr / "tools").mkdir(parents=True)
+        return cr
+
+    @pytest.fixture()
+    def package(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+        """`site-packages` 相当の場所に、ツールを同梱したパッケージを置いて import 可能にする。"""
+        import uuid
+
+        name = f"lilla_pack_{uuid.uuid4().hex}"
+        site = tmp_path / "site-packages"
+        (site / name / "tools").mkdir(parents=True)
+        (site / name / "__init__.py").write_text("")
+        (site / name / "tools" / "__init__.py").write_text("HELPER = 'shared'\n")
+        (site / name / "tools" / "llm_extra.py").write_text(
+            "from . import HELPER\n"
+            "SCHEMA = {'name': 'extra', 'description': HELPER, 'input_schema': {}}\n\n"
+            "async def execute(input, context):\n    return 'ok'\n",
+            encoding="utf-8",
+        )
+        monkeypatch.syspath_prepend(str(site))
+        return name
+
+    def test_loads_tool_via_import_path(
+        self, llm_tool_loader, package: str, config_root: Path, tmp_path: Path
+    ) -> None:
+        """import パスで書いたツールは、探索ルートの外（インストール先）にあってもロードできる。"""
+        _write_yaml(config_root / "tools", "llm_extra.yaml", f"type: {package}.tools.llm_extra\n")
+
+        result = llm_tool_loader.load_llm_tools(
+            tool_roots=[tmp_path / "unrelated_root"], config_root=config_root
+        )
+
+        assert "llm_extra" in result
+        # 相対 import が効いている（トップレベルモジュール扱いではない）
+        assert result["llm_extra"]["schema"]["description"] == "shared"
+
+    def test_unimportable_path_is_skipped(
+        self, llm_tool_loader, config_root: Path, tmp_path: Path, caplog
+    ) -> None:
+        """import できない type は WARNING を出してそのツールだけ読み飛ばす。"""
+        _write_yaml(config_root / "tools", "llm_extra.yaml", "type: no_such_pkg_xyz.tools.llm_extra\n")
+
+        with caplog.at_level("WARNING"):
+            result = llm_tool_loader.load_llm_tools(tool_roots=[tmp_path], config_root=config_root)
+
+        assert result == {}
+        assert "Failed to import tool module" in caplog.text
+
+    def test_import_path_module_without_schema_is_skipped(
+        self, llm_tool_loader, config_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
+    ) -> None:
+        """import できても SCHEMA / execute が無ければ、そのツールだけ警告してスキップする（落ちない）。"""
+        import uuid
+
+        name = f"noschema_{uuid.uuid4().hex}"
+        site = tmp_path / "site-packages"
+        (site / name).mkdir(parents=True)
+        (site / name / "__init__.py").write_text("")
+        (site / name / "llm_bare.py").write_text("X = 1\n")
+        monkeypatch.syspath_prepend(str(site))
+        _write_yaml(config_root / "tools", "llm_bare.yaml", f"type: {name}.llm_bare\n")
+        # 正常なツールを後ろに置き、前のツールの失敗が全体を止めないことも確認する
+        schema = {"name": "ok", "description": "説明", "input_schema": {}}
+        _write_py(tmp_path / "root", "llm_ok.py", schema)
+        _write_yaml(config_root / "tools", "llm_ok.yaml", "type: llm_ok\n")
+
+        with caplog.at_level("WARNING"):
+            result = llm_tool_loader.load_llm_tools(tool_roots=[tmp_path / "root"], config_root=config_root)
+
+        assert "llm_bare" not in result
+        assert "llm_ok" in result
+        assert f"SCHEMA or execute not found: {name}.llm_bare" in caplog.text
+
+    def test_stem_type_still_uses_file_search(
+        self, llm_tool_loader, package: str, config_root: Path, tmp_path: Path
+    ) -> None:
+        """`.` を含まない type は従来どおりファイル探索で、パッケージの中は見ない。"""
+        _write_yaml(config_root / "tools", "llm_extra.yaml", "type: llm_extra\n")
+
+        result = llm_tool_loader.load_llm_tools(tool_roots=[tmp_path / "empty"], config_root=config_root)
+
+        assert result == {}
+
+
+class TestLoadLlmToolsBundledConfigs:
+    """拡張が同梱した既定 YAML のロードと、利用者側の上書き・無効化。"""
+
+    @pytest.fixture()
+    def config_root(self, llm_tool_loader, tmp_path: Path) -> Path:
+        cr = tmp_path / "config_root"
+        (cr / "tools").mkdir(parents=True)
+        return cr
+
+    @pytest.fixture()
+    def tool_root(self, llm_tool_loader, tmp_path: Path) -> Path:
+        root = tmp_path / "tool_root"
+        _write_py(root, "llm_pack.py", {"name": "pack", "description": "bundled", "input_schema": {}})
+        return root
+
+    @pytest.fixture()
+    def pack_configs(self, tmp_path: Path, make_extension, use_extensions) -> Path:
+        """`llm_pack.yaml` を同梱する拡張を登録し、そのディレクトリを返す。"""
+        configs = tmp_path / "pack" / "tool_configs"
+        configs.mkdir(parents=True)
+        _write_yaml(configs, "llm_pack.yaml", "type: llm_pack\ndescription: from pack\n")
+        use_extensions(make_extension("pack", tool_config_roots=[configs]))
+        return configs
+
+    def test_bundled_yaml_loads_without_user_config(
+        self, llm_tool_loader, pack_configs: Path, tool_root: Path, config_root: Path
+    ) -> None:
+        """利用者の `config_root/tools` に何も無くても、同梱 YAML だけでロードされる。"""
+        result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
+
+        assert "llm_pack" in result
+        assert result["llm_pack"]["schema"]["description"] == "from pack"
+
+    def test_user_yaml_replaces_bundled_yaml(
+        self, llm_tool_loader, pack_configs: Path, tool_root: Path, config_root: Path
+    ) -> None:
+        """同名 YAML を `config_root/tools` に置くと、その内容で丸ごと上書きされる。"""
+        _write_yaml(config_root / "tools", "llm_pack.yaml", "type: llm_pack\ndescription: mine\n")
+
+        result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
+
+        assert result["llm_pack"]["schema"]["description"] == "mine"
+
+    def test_user_can_disable_bundled_tool(
+        self, llm_tool_loader, pack_configs: Path, tool_root: Path, config_root: Path
+    ) -> None:
+        """`enabled: false` の同名 YAML を置くと、同梱ツールはロードされない。"""
+        _write_yaml(config_root / "tools", "llm_pack.yaml", "enabled: false\n")
+
+        result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
+
+        assert result == {}
+
+    def test_bundled_self_type_loads_py_next_to_yaml(
+        self, llm_tool_loader, make_extension, use_extensions, tmp_path: Path, config_root: Path
+    ) -> None:
+        """同梱 YAML が `type: self` なら、同梱ディレクトリの同名 `.py` を読める。"""
+        configs = tmp_path / "pack2" / "tool_configs"
+        _write_py(configs, "llm_selfy.py", {"name": "selfy", "description": "self", "input_schema": {}})
+        _write_yaml(configs, "llm_selfy.yaml", "type: self\n")
+        use_extensions(make_extension("pack2", tool_config_roots=[configs]))
+
+        result = llm_tool_loader.load_llm_tools(tool_roots=[tmp_path / "empty"], config_root=config_root)
+
+        assert "llm_selfy" in result
+
+
 class TestResolveSelfToolFile:
     """_resolve_self_tool_file の単体テスト。"""
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from functools import lru_cache
 
@@ -39,7 +40,12 @@ class ConversationRepository:
         await self.ensure_indexes()
 
     async def ensure_indexes(self) -> None:
-        """インデックスを作成します。ttl_hours が 0 の場合は TTL なしの通常インデックスを作成します。"""
+        """インデックスを作成します。ttl_hours が 0 の場合は TTL なしの通常インデックスを作成します。
+
+        あわせて `(discord_channel_id, time)` の複合インデックスを作成します
+        （チャンネル単位・期間指定の取得に使います。`discord_channel_id` を持たない
+        既存ドキュメントも通常のインデックスに含まれます）。
+        """
         if self._ttl_hours == 0:
             await self._collection.create_index([("time", ASCENDING)])
         else:
@@ -47,6 +53,9 @@ class ConversationRepository:
                 [("time", ASCENDING)],
                 expireAfterSeconds=self._ttl_hours * 3600,
             )
+        await self._collection.create_index(
+            [("discord_channel_id", ASCENDING), ("time", ASCENDING)],
+        )
 
     async def load(self, max_turns: int) -> list[dict]:
         """会話履歴を新しい順に最大 max_turns 件取得し、時系列順に返します。"""
@@ -78,6 +87,95 @@ class ConversationRepository:
         if len(docs) > max_turns:
             docs = docs[-max_turns:]
         return docs
+
+    async def load_by_channel_between(
+        self,
+        discord_channel_id: int,
+        start: datetime,
+        end: datetime,
+        max_turns: int,
+    ) -> list[dict]:
+        """指定チャンネルの `[start, end)` の会話を時系列順に返す。
+
+        `discord_channel_id` を持たない既存ドキュメントは対象外（穴埋めはしない）。
+        `max_turns` を超える場合は末尾（直近）を残す。
+
+        Args:
+            discord_channel_id: 対象の Discord チャンネル ID。
+            start: 取得範囲の下限（この時刻を含む。UTC 推奨）。
+            end: 取得範囲の上限（この時刻を含まない。UTC 推奨）。
+            max_turns: 返す最大件数。
+
+        Returns:
+            {"message": {...}, "time": datetime} のリスト（古い順）。
+        """
+        cursor = self._collection.find(
+            {
+                "discord_channel_id": discord_channel_id,
+                "time": {"$gte": start, "$lt": end},
+            },
+            {"_id": 0, "message": 1, "time": 1},
+        ).sort("time", ASCENDING)
+        docs = await cursor.to_list(length=None)
+        if len(docs) > max_turns:
+            docs = docs[-max_turns:]
+        return docs
+
+    async def search(
+        self,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        keywords: list[str] | None = None,
+        role: str | None = None,
+        discord_channel_id: int | None = None,
+        limit: int = 30,
+    ) -> list[dict]:
+        """条件を指定して会話履歴を新しい順に検索する。
+
+        条件はすべて任意で、指定されたものだけを AND で重ねる。`keywords` は
+        `message.content` に対する部分一致（大文字小文字を区別しない）で、
+        すべてを含むものだけを返す。利用者・LLM 由来の文字列をそのまま正規表現
+        として解釈させないよう、キーワードはエスケープしてから渡す。
+
+        Args:
+            start: 取得範囲の下限（この時刻を含む。UTC 推奨）。`None` なら下限なし。
+            end: 取得範囲の上限（この時刻を含む。UTC 推奨）。`None` なら上限なし。
+            keywords: すべて含むべきキーワードのリスト。`None` / 空なら絞り込まない。
+            role: 絞り込む発言者（`"user"` / `"assistant"` など）。`None` なら絞り込まない。
+            discord_channel_id: 絞り込む Discord チャンネル ID。`None` なら全チャンネル横断。
+            limit: 返す最大件数。MongoDB の仕様上 `0` は「制限なし」と同等に
+                なるため、利用者入力を渡す呼び出し元が正の整数へ正規化すること。
+
+        Returns:
+            {"message": {...}, "time": datetime} のリスト（新しい順）。
+        """
+        mongo_filter: dict = {}
+
+        if start is not None or end is not None:
+            time_filter: dict = {}
+            if start is not None:
+                time_filter["$gte"] = start
+            if end is not None:
+                time_filter["$lte"] = end
+            mongo_filter["time"] = time_filter
+
+        if keywords:
+            mongo_filter["$and"] = [
+                {"message.content": {"$regex": re.escape(keyword), "$options": "i"}}
+                for keyword in keywords
+            ]
+
+        if role:
+            mongo_filter["message.role"] = role
+
+        if discord_channel_id is not None:
+            mongo_filter["discord_channel_id"] = discord_channel_id
+
+        cursor = self._collection.find(
+            mongo_filter,
+            {"_id": 0, "message": 1, "time": 1},
+        ).sort("time", DESCENDING).limit(limit)
+        return await cursor.to_list(length=limit)
 
     async def list_for_client(self, limit: int, offset: int) -> list[dict]:
         """クライアント向けに会話履歴を新しい順で返す。
