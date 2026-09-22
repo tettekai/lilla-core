@@ -9,6 +9,37 @@
 
 ### Added
 
+- 観測用ダッシュボードの HTTP サーバーをコアが起動するようになった
+  （`handlers/dashboard_server.py`）。`bot.py` の `main()` が拡張の `setup()` を
+  await したあと、Discord へ接続する前に起こす（申告の集約が `load_extensions()` で
+  済んでいること・拡張の起動が失敗したら観測窓も開かないこと、の 2 つが理由）。
+  提供するのは初期設定 / ログイン / セッション Cookie による認証と、会話履歴・
+  ユーザーメモ・ログの API、拡張のページを並べる `GET /api/dashboard/nav`、および
+  #105 で入った拡張の申告の配線（`/static/ext/{name}/`（認証不要）・`/api/{name}`
+  （Cookie 必須）・`/oauth/{name}`（認証の外側））。SPA（Alpine.js・ハッシュ
+  ルーティング・拡張ページの `import()` + `mount()` / `unmount()`）は
+  `src/lilla_core/dashboard/` にパッケージ同梱し、`locales/` と同じく wheel へ入る。
+  拡張が 0 個でも組み込み 4 画面（Home / Conversations / Memos / Logs）で起動する
+  （`Extension` の契約は変えていないので `EXTENSION_API_VERSION` は 1 のまま）
+- コア確定の YAML セクション `dashboard:` を追加（`DashboardConfig`）。`host`
+  （既定 `0.0.0.0`）・`port`（既定 `8765`）・`cookie_secure`（既定 `true`）の 3 つで、
+  全項目に既定があるため `lilla.yaml` に節そのものが無くても起動する。
+  **このポートは管理画面を開く。** パスワード未登録の間は `POST /api/setup` に
+  先に到達した者が管理者パスワードを決められるブートストラップなので、公開
+  ネットワークへ晒さないこと（前段でアクセス制御を掛けるか、`host` を
+  `127.0.0.1` に絞る）。詳細は README と `SECURITY.md` を参照
+
+### Changed
+
+- **コアの設計方針の線引きを更新した。** これまで「HTTP/ダッシュボードサーバーは
+  コアに含めない」としていたが、観測用ダッシュボードはコアが所有することにした
+  （見せる中身がすべてコアの状態のため）。用途特化のサーバー（機械向けの Bearer
+  API・WebSocket クライアントなど）を拡張側に置く方針は変わらない。
+  `dashboard` はコア確定のセクション名になったため、**同名の YAML セクションを
+  申告している拡張はロード時に fail-fast する**（`config_models()` から外すこと）
+
+### Added
+
 - 拡張が観測用ダッシュボードへ差し込むための申告を `Extension` に追加。
   `dashboard_page()`（タブ 1 つ。`DashboardPage(label, group)` で `group` は
   `main` / `admin`）・`dashboard_static_dir()`（`/static/ext/{name}/` に載せる

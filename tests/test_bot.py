@@ -1546,8 +1546,15 @@ class TestOnReady:
 class TestMain:
     """main() の起動順序テスト。
 
-    拡張の `setup()` を await し、その後で bot.start() する。
+    拡張の `setup()` を await し、観測用ダッシュボードを起こしてから bot.start() する。
     """
+
+    @pytest.fixture(autouse=True)
+    def mock_start_dashboard(self, discord_bot, monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+        """ダッシュボードを実際に listen させない（テストでポートを掴まないため）。"""
+        mock = AsyncMock()
+        monkeypatch.setattr(discord_bot, "start_dashboard_server", mock)
+        return mock
 
     async def test_awaits_setup_hooks_before_bot_start(
         self, discord_bot, mock_extension: MagicMock, monkeypatch: pytest.MonkeyPatch
@@ -1568,6 +1575,44 @@ class TestMain:
             discord_bot.tools, discord_bot.llm_tools, discord_bot.bot
         )
         mock_start.assert_awaited_once_with(discord_bot._config.env.discord_token)
+
+    async def test_starts_dashboard_between_setup_hooks_and_bot_start(
+        self,
+        discord_bot,
+        mock_extension: MagicMock,
+        mock_start_dashboard: AsyncMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """観測用ダッシュボードは setup() のあと、Discord 接続の前に起こす。
+
+        申告の集約は `load_extensions()` で済んでいる必要があり、拡張の起動処理が
+        失敗したときは観測窓も開かない（`setup()` の例外で先へ進まない）。
+        """
+        call_order = []
+        mock_extension.run_setup_hooks.side_effect = (
+            lambda *_args, **_kwargs: call_order.append("setup")
+        )
+        mock_start_dashboard.side_effect = lambda *_a, **_k: call_order.append("dashboard")
+        monkeypatch.setattr(
+            discord_bot.bot,
+            "start",
+            AsyncMock(side_effect=lambda *_a, **_k: call_order.append("bot_start")),
+        )
+
+        await discord_bot.main()
+
+        assert call_order == ["setup", "dashboard", "bot_start"]
+
+    async def test_setup_hook_failure_skips_the_dashboard(
+        self, discord_bot, mock_extension: MagicMock, mock_start_dashboard: AsyncMock
+    ) -> None:
+        """拡張の setup() が失敗したらダッシュボードも起こさない。"""
+        mock_extension.run_setup_hooks.side_effect = RuntimeError("setup boom")
+
+        with pytest.raises(RuntimeError, match="setup boom"):
+            await discord_bot.main()
+
+        mock_start_dashboard.assert_not_awaited()
 
     async def test_no_extensions_still_calls_bot_start(
         self, discord_bot, mock_extension: MagicMock, monkeypatch: pytest.MonkeyPatch

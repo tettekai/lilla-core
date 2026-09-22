@@ -9,10 +9,14 @@ and provides the "skeleton of an agent": the tool_call loop, command processing,
 replies.
 
 Character settings, domain-specific tools (integrations with external services, etc.),
-and purpose-specific HTTP/dashboard servers — anything that varies per user — are kept
-out of the core. Such elements are added from the outside by subclassing `Extension`
-(`core/extension.py`) and listing the module in the `LILLA_EXTENSIONS` environment
-variable, which is loaded at startup.
+and purpose-specific HTTP servers (a machine-facing Bearer API, say) — anything that
+varies per user — are kept out of the core. Such elements are added from the outside by
+subclassing `Extension` (`core/extension.py`) and listing the module in the
+`LILLA_EXTENSIONS` environment variable, which is loaded at startup.
+
+The observability dashboard is the one exception: the core owns it, because everything
+it shows (conversation history, user memos, logs) is core state. Extensions add tabs and
+HTTP routes to it through their `dashboard_*()` declarations.
 
 lilla-core is designed to be able to start as a standalone Discord bot with zero
 extensions loaded. Every `Extension` method has a safe default that contributes
@@ -199,6 +203,39 @@ at UTC+9 no matter what `ui.timezone` says, for code that needs Japan time expli
 > leave `ui.timezone` unset there, cron schedules and "today" are UTC as well. Set it
 > explicitly whenever the dates matter.
 
+### The observability dashboard
+
+At startup the core brings up an HTTP dashboard for reading conversation history, user
+memos and logs. There is no enable/disable flag — if the bot runs, the terminal is open.
+It is configured under `dashboard:` in `lilla.yaml`; omit the section for the defaults.
+
+```yaml
+dashboard:
+  host: "0.0.0.0"     # address to listen on (default)
+  port: 8765          # port to listen on (default)
+  cookie_secure: true # add Secure to the session cookie (default)
+```
+
+> **Security note**
+>
+> This port serves an admin UI. While no password is set, `POST /api/setup` lets anyone
+> through as a bootstrap, so **whoever reaches the port first gets to choose the admin
+> password** (afterwards it is blocked with 403 for good).
+>
+> - `host` defaults to every interface (`0.0.0.0`) because container deployment is the
+>   assumed case. **Do not expose this port directly to a public network.** Put an access
+>   control in front of it (a reverse proxy, Zero Trust, …), or set `host: 127.0.0.1` if
+>   only the local host needs it.
+> - **Set the initial password first thing after starting** (opening `/` shows the setup
+>   screen).
+> - `cookie_secure: true` is the safe default and assumes HTTPS. Reaching
+>   `http://<host>:8765` directly over a LAN needs `false`, otherwise login succeeds but
+>   the browser never sends the cookie back.
+
+Only `/oauth/{extension name}` sits outside the auth middleware, for public GETs a
+browser makes without a session (OAuth redirect targets and the like). An upstream access
+control would bypass just that prefix.
+
 ### Discord bot setup
 
 In the [Discord Developer Portal](https://discord.com/developers/applications), under
@@ -373,7 +410,8 @@ class MyExtension(Extension):
 The collected declarations are read through `get_dashboard_pages()` (derived
 `DashboardPageEntry` objects), `get_dashboard_static_mounts()`,
 `get_dashboard_routes()` and `get_dashboard_public_routes()`, all in load order.
-The core ships no dashboard HTTP server; mounting these is the host's job.
+Mounting these is the core's own dashboard server (`handlers/dashboard_server.py`),
+which `bot.py`'s `main()` starts after the extensions' `setup()` hooks.
 
 Because `name` ends up verbatim in URLs, a name that does not match
 `^[a-z0-9][a-z0-9-]*$`, or one of the core's reserved names (`api`, `oauth`,

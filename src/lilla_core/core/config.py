@@ -234,6 +234,28 @@ class CommandsConfig(BaseModel):
     mongodata: MongodataCommandConfig = MongodataCommandConfig()
 
 
+class DashboardConfig(BaseModel):
+    """lilla.yaml の `dashboard:` セクション（観測用ダッシュボードの HTTP サーバー）。
+
+    全フィールドに既定があるため、`lilla.yaml` に節そのものが無くてもよい
+    （既定のまま `0.0.0.0:8765` で起動する）。
+    """
+
+    #: listen するアドレス。既定は全インターフェース（コンテナ運用が前提）。
+    #: **このポートはパスワード認証つきの管理画面を開く。** パスワード未登録の
+    #: 間は `POST /api/setup` に先に到達した者が管理者パスワードを決められる
+    #: ブートストラップなので、公開ネットワークへ晒さないこと。同一ホストからしか
+    #: 使わない運用では `127.0.0.1` に絞れる（`SECURITY.md` 参照）。
+    host: str = "0.0.0.0"
+    #: listen するポート。
+    port: int = 8765
+    #: ログインセッション Cookie に `Secure` 属性を付けるか。HTTPS / 前段の
+    #: アクセス制御を前提とした安全側の既定。LAN 内で `http://<host>:8765` へ
+    #: 直接アクセスする運用では `false` にしないと、ログインはできても Cookie が
+    #: ブラウザから送信されずログイン状態を維持できない。
+    cookie_secure: bool = True
+
+
 class UiConfig(BaseModel):
     """lilla.yaml の `ui:` セクション。
 
@@ -418,6 +440,7 @@ class AppConfig(BaseSettings):
     memory: MemoryConfig = MemoryConfig()
     tools: ToolsConfig = ToolsConfig()
     commands: CommandsConfig = CommandsConfig()
+    dashboard: DashboardConfig = DashboardConfig()
     # `LlmConfig()` を直接デフォルト値にすると、クラス定義（モジュール import）の
     # 時点で即座にインスタンス化・検証されてしまい、YAML の内容に関わらず
     # import だけで落ちる。`default_factory` で AppConfig 構築時まで遅延させる。
