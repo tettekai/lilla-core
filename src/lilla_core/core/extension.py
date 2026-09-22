@@ -29,6 +29,13 @@
 書いて import 副作用で `set_config()` する仕組みは使わない（呼んでも合成結果で
 上書きされる）。そのため `LILLA_EXTENSIONS` の並び順は設定の合成に影響しない。
 
+観測用ダッシュボードへの差し込みは `dashboard_*()` の 4 メソッドで申告する。
+経路の識別子は `name` ただ 1 つで、ハッシュ・API 接頭辞・公開コールバック・
+静的 URL はすべてコアが `name` から導出する（`DashboardPageEntry`）。そのため
+`name` は URL に埋まる文字列でもあり、形（`_EXTENSION_NAME_RE`）と予約語
+（`RESERVED_EXTENSION_NAMES`）をロード時に検査する。ダッシュボードの HTTP
+サーバー本体はコアにはまだ無く、申告を集めて配るところまでがコアの役目。
+
 `LILLA_EXTENSIONS` に並べたモジュールは同一プロセスで動く **信頼コード**
 であり、サンドボックスではない。
 """
@@ -37,9 +44,10 @@ from __future__ import annotations
 import importlib
 import logging
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -68,6 +76,50 @@ _RESERVED_DELIVERY_CLIENT_TYPES = frozenset({"discord"})
 #: `commands/runtask.py`）。LLM ツール側の共通キーは `loaders/llm_tool_loader.py` の
 #: `_CORE_RUNTIME_CONTEXT_KEYS` が正で、両方をまとめたものが `_core_tool_context_keys()`。
 CORE_TASK_CONTEXT_KEYS = frozenset({"discord_client", "now", "llm_tools", "params"})
+
+#: 観測用ダッシュボードの経路を `Extension.name` から導出するときの接頭辞。
+#: 拡張は経路そのものを申告せず、`name` を 1 つ決めるだけでよい。
+DASHBOARD_API_PREFIX = "/api"
+DASHBOARD_PUBLIC_PREFIX = "/oauth"
+DASHBOARD_STATIC_PREFIX = "/static/ext"
+
+#: 拡張ページのフロントエンドモジュールのファイル名。`dashboard_static_dir()` が
+#: 返すディレクトリ直下に置く。
+DASHBOARD_PAGE_MODULE = "page.js"
+
+#: `DashboardPage.group` に指定できる値。常用ナビか、管理メニューか。
+DASHBOARD_GROUPS = frozenset({"main", "admin"})
+
+#: `Extension.name` に使える形（先頭は英小文字か数字、以降は英小文字・数字・ハイフン）。
+#: `name` はダッシュボードの URL パス・ハッシュ・静的ディレクトリ名へそのまま埋まるため、
+#: パスを壊す文字（`/` や `..`、空白、`%` など）を弾く。
+_EXTENSION_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+#: 拡張が `name` に使えない名前。ダッシュボードの URL 構造（`/api` `/oauth` `/static`）と、
+#: 組み込み画面・認証エンドポイントの第 1 セグメントを押さえる。`name` はそのまま
+#: `/api/{name}` や `#/{name}` になるため、ここを空けておかないと拡張が正当な申告を
+#: しただけで組み込みの経路を食う。ダッシュボード本体は将来コアへ移す想定で、
+#: 予約はその移設先を先に確保しておくもの。
+RESERVED_EXTENSION_NAMES = frozenset(
+    {
+        # URL 構造
+        "api",
+        "oauth",
+        "static",
+        "admin",
+        "dashboard",
+        # 認証エンドポイント
+        "auth",
+        "login",
+        "logout",
+        "setup",
+        # 組み込み画面
+        "home",
+        "conversations",
+        "memos",
+        "logs",
+    }
+)
 
 # 型エイリアス（可読性向上目的のためだけ）
 StartupRepoFactory = Callable[[], Any]
@@ -113,6 +165,156 @@ class ConversationContext:
     discord_channel_id: int | None = None
     #: 使用する LLM プロバイダー名。`None` なら既定。
     llm_name: str | None = None
+
+
+@dataclass(frozen=True)
+class DashboardPage:
+    """拡張が観測用ダッシュボードへ足すタブ 1 つ分の申告。
+
+    識別子は持たない。ハッシュ・API 接頭辞・静的 URL はすべて拡張の `name` から
+    導出する（`DashboardPageEntry` 参照）ので、経路を申告する欄は作らない。
+    """
+
+    #: ナビに表示する文字列。多言語化したい拡張は `dashboard_page()` の中で
+    #: `lilla_core.ui.messages.t()` の戻り値を入れる（メソッドなので呼ばれるたびに
+    #: 評価され、ロケール切り替えに追随する）。
+    label: str
+    #: 常用ナビ（`"main"`）か、管理メニュー（`"admin"`）か。
+    group: Literal["main", "admin"]
+
+    def __post_init__(self) -> None:
+        """`label` が非空文字列で、`group` が既知の値であることを検証する。
+
+        `Literal` は型注釈でしかなく実行時には効かないため、ここで明示的に見る。
+
+        Raises:
+            ValueError: `label` が空、または `group` が `DASHBOARD_GROUPS` にない場合。
+        """
+        if not isinstance(self.label, str) or not self.label.strip():
+            raise ValueError("DashboardPage.label must be a non-empty string")
+        if self.group not in DASHBOARD_GROUPS:
+            groups = ", ".join(sorted(DASHBOARD_GROUPS))
+            raise ValueError(
+                f"DashboardPage.group must be one of {groups}, got {self.group!r}"
+            )
+
+
+@dataclass(frozen=True)
+class DashboardRoute:
+    """拡張が観測用ダッシュボードへ足す HTTP ルート 1 本分の申告。
+
+    コアはダッシュボードの HTTP サーバー本体を持たないため、ここでは aiohttp の
+    型を使わずコア独自の形で受け取る。ホストが自分のフレームワークのルートへ
+    変換して載せる（`Extension` の契約を特定の HTTP ライブラリのバージョンに
+    縛らないため）。
+    """
+
+    #: HTTP メソッド。小文字で書いても大文字へ正規化される。
+    method: str
+    #: 完全なパス。`/api/{name}` 配下（セッション認証の内側）または
+    #: `/oauth/{name}` 配下（認証の外側）でなければロード時に落ちる。
+    path: str
+    #: リクエストを処理する非同期ハンドラー。型はホストのフレームワーク次第。
+    handler: Callable[..., Any]
+
+    def __post_init__(self) -> None:
+        """メソッド・パス・ハンドラーの形を検証し、メソッドを大文字へ正規化する。
+
+        Raises:
+            ValueError: `method` が空、`path` が `/` 始まりでない、または
+                `handler` が callable でない場合。
+        """
+        if not isinstance(self.method, str) or not self.method.strip():
+            raise ValueError("DashboardRoute.method must be a non-empty string")
+        if not isinstance(self.path, str) or not self.path.startswith("/"):
+            raise ValueError(
+                f"DashboardRoute.path must start with '/', got {self.path!r}"
+            )
+        if not callable(self.handler):
+            raise ValueError("DashboardRoute.handler must be callable")
+        object.__setattr__(self, "method", self.method.strip().upper())
+
+
+@dataclass(frozen=True)
+class DashboardPageEntry:
+    """`DashboardPage` に `name` からの導出値を添えた、ホストが読む形。
+
+    導出の規則はここ 1 か所だけに持ち、ホスト側で組み立て直さない。
+    `name = "google-oauth"` なら次のようになる::
+
+        hash             #/google-oauth      （group="admin" なら #/admin/google-oauth）
+        api_prefix       /api/google-oauth
+        callback_prefix  /oauth/google-oauth
+        static_url       /static/ext/google-oauth/
+        module_url       /static/ext/google-oauth/page.js
+    """
+
+    #: 申告した拡張の `name`。
+    name: str
+    #: ナビに表示する文字列。
+    label: str
+    #: `"main"`（常用ナビ）か `"admin"`（管理メニュー）。
+    group: str
+    #: SPA のハッシュ。
+    hash: str
+    #: セッション認証の内側に載るこの拡張の API 接頭辞。
+    api_prefix: str
+    #: 認証の外側に載るこの拡張の公開エンドポイントの接頭辞。
+    callback_prefix: str
+    #: 静的ファイルの配信 URL（末尾はスラッシュ）。
+    static_url: str
+    #: フロントエンドが `import()` する JS モジュールの URL。
+    module_url: str
+
+    @classmethod
+    def from_page(cls, name: str, page: DashboardPage) -> DashboardPageEntry:
+        """拡張の `name` とページ申告から、経路を導出したエントリを組み立てる。
+
+        Args:
+            name: 申告した拡張の `name`。
+            page: `Extension.dashboard_page()` の戻り値。
+
+        Returns:
+            導出済みの `DashboardPageEntry`。
+        """
+        static_url = _dashboard_static_url(name)
+        return cls(
+            name=name,
+            label=page.label,
+            group=page.group,
+            hash=f"#/admin/{name}" if page.group == "admin" else f"#/{name}",
+            api_prefix=_dashboard_api_prefix(name),
+            callback_prefix=_dashboard_public_prefix(name),
+            static_url=static_url,
+            module_url=f"{static_url}{DASHBOARD_PAGE_MODULE}",
+        )
+
+
+@dataclass(frozen=True)
+class DashboardStaticMount:
+    """拡張が同梱する静的ファイルの配信先（URL 接頭辞とディレクトリ）。"""
+
+    #: 申告した拡張の `name`。
+    name: str
+    #: 配信 URL の接頭辞（末尾はスラッシュ）。認証の外側に載る。
+    url_prefix: str
+    #: 配信するローカルディレクトリ。
+    directory: Path
+
+
+def _dashboard_api_prefix(name: str) -> str:
+    """`name` からセッション API の接頭辞を導出する。"""
+    return f"{DASHBOARD_API_PREFIX}/{name}"
+
+
+def _dashboard_public_prefix(name: str) -> str:
+    """`name` から公開エンドポイント（認証の外側）の接頭辞を導出する。"""
+    return f"{DASHBOARD_PUBLIC_PREFIX}/{name}"
+
+
+def _dashboard_static_url(name: str) -> str:
+    """`name` から静的ファイルの配信 URL 接頭辞を導出する（末尾スラッシュ付き）。"""
+    return f"{DASHBOARD_STATIC_PREFIX}/{name}/"
 
 
 class Extension:
@@ -216,6 +418,51 @@ class Extension:
         """`load_all_commands()` が追加で走査するパッケージの import パスを返す。"""
         return []
 
+    def dashboard_page(self) -> DashboardPage | None:
+        """観測用ダッシュボードへ足すタブを返す。タブを出さないなら `None`。
+
+        1 拡張あたりページは高々 1 つ。ハッシュ・API 接頭辞・静的 URL はこの拡張の
+        `name` から導出されるため、経路を指定する引数は持たない（導出結果は
+        `DashboardPageEntry` を参照）。
+
+        ページを出す拡張は `dashboard_static_dir()` も返し、そのディレクトリ直下に
+        `page.js` を置くこと（返さない場合はロード時に落ちる）。ページを出さずに
+        `dashboard_public_routes()` だけを申告してもよい。
+        """
+        return None
+
+    def dashboard_static_dir(self) -> Path | None:
+        """ホストが `/static/ext/{name}/` に載せる静的ファイルのディレクトリを返す。
+
+        認証の外側で配信されるため、機密を含むファイルを置かないこと。
+        `dashboard_page()` を返すなら、このディレクトリ直下に `page.js` を置く。
+        `page.js` は ES モジュールで、ホストが `import()` したあと `mount(el, ctx)` /
+        `unmount()` を呼ぶ（`ctx` の中身はホストの契約）。
+        """
+        return None
+
+    def dashboard_routes(self) -> list[DashboardRoute]:
+        """ホストがセッション認証の内側へ足す HTTP ルートを返す。
+
+        パスは `/api/{name}` 配下（`/api/{name}` 自身を含む）のみ許可し、外れた
+        パスはロード時に fail-fast する。
+        """
+        return []
+
+    def dashboard_public_routes(self) -> list[DashboardRoute]:
+        """ホストが認証ミドルウェアの **外側** へ載せる HTTP ルートを返す。
+
+        OAuth の戻り先のように、ブラウザがセッションなしで打つ公開エンドポイント用。
+        パスは `/oauth/{name}` 配下（`/oauth/{name}` 自身を含む）のみ許可し、外れた
+        パスはロード時に fail-fast する。
+
+        **ここに載せたルートは誰でも叩ける。** ホスト前段のアクセス制御で公開
+        コールバックだけを通す構成でも、`state` の検証など「その要求が自分の
+        始めたフローのものか」の確認は拡張側の責任とする。認証が要る処理は
+        `dashboard_routes()` へ置くこと。
+        """
+        return []
+
     def startup_repos(self) -> list[StartupRepoFactory]:
         """`on_ready` で `init_collection()` を呼ぶリポジトリファクトリを返す。"""
         return []
@@ -267,6 +514,10 @@ _tool_context_providers: dict[str, ContextValueProvider] = {}
 _result_deliveries: dict[str, DeliveryFn] = {}
 _client_prompt_providers: dict[str, list[PromptProvider]] = {}
 _conversation_start_hooks: dict[str, list[ConversationStartHook]] = {}
+_dashboard_pages: list[DashboardPageEntry] = []
+_dashboard_static_mounts: list[DashboardStaticMount] = []
+_dashboard_routes: list[DashboardRoute] = []
+_dashboard_public_routes: list[DashboardRoute] = []
 
 
 def _merge_unique(
@@ -361,10 +612,16 @@ def _validate_api_versions(extensions: list[Extension]) -> None:
 
 
 def _validate_names(extensions: list[Extension]) -> None:
-    """`name` が設定済みかつ一意であることを検証する。
+    """`name` が設定済み・一意で、経路に使える形かつ予約名でないことを検証する。
+
+    `name` はダッシュボードの URL パス・ハッシュ・静的ディレクトリ名へそのまま
+    埋まるため、形の検査は経路を申告する拡張だけでなく全拡張に課す（`name` が
+    後からダッシュボードへ出るようになったときに、名前の変更を強いられないため）。
 
     Raises:
-        ValueError: `name` が未設定・空文字・非文字列、または重複している場合。
+        ValueError: `name` が未設定・空文字・非文字列の場合、`_EXTENSION_NAME_RE` に
+            合わない場合、`RESERVED_EXTENSION_NAMES` の名前を使った場合、または
+            重複している場合。
     """
     seen: set[str] = set()
     for ext in extensions:
@@ -372,6 +629,16 @@ def _validate_names(extensions: list[Extension]) -> None:
         if not isinstance(name, str) or not name.strip():
             raise ValueError(
                 f"Extension {type(ext).__name__} must define a non-empty 'name'"
+            )
+        if not _EXTENSION_NAME_RE.match(name):
+            raise ValueError(
+                f"Extension name '{name}' must match {_EXTENSION_NAME_RE.pattern} "
+                "(it is used as-is in dashboard URLs and hashes)"
+            )
+        if name in RESERVED_EXTENSION_NAMES:
+            reserved = ", ".join(sorted(RESERVED_EXTENSION_NAMES))
+            raise ValueError(
+                f"Extension name '{name}' is reserved by the core (reserved: {reserved})"
             )
         if name in seen:
             raise ValueError(f"Duplicate extension name: '{name}'")
@@ -441,6 +708,127 @@ def _validate_requires(extensions: list[Extension]) -> None:
                 )
 
 
+def _validate_dashboard_routes(
+    ext: Extension, method_name: str, prefix: str
+) -> list[DashboardRoute]:
+    """1 拡張分の HTTP ルート申告を検証して返す。
+
+    パスは `prefix` 自身か、`prefix` の直下（`prefix + "/"` 始まり）のみ許可する。
+    前方一致だけだと `name = "foo"` の拡張が `/api/foobar` を申告できてしまうため、
+    区切りまで見る。
+
+    Args:
+        ext: 申告した拡張。
+        method_name: 申告を返すメソッド名（`"dashboard_routes"` など）。
+        prefix: 許可するパスの接頭辞（`"/api/google-oauth"` など）。
+
+    Returns:
+        検証済みの `DashboardRoute` のリスト（申告順）。
+
+    Raises:
+        ValueError: 戻り値がリストでない、要素が `DashboardRoute` でない、または
+            パスが `prefix` 配下でない場合。
+    """
+    routes = getattr(ext, method_name)()
+    if not isinstance(routes, (list, tuple)):
+        raise ValueError(
+            f"Extension '{ext.name}' must return a list from {method_name}(), "
+            f"got {type(routes).__name__}"
+        )
+    validated: list[DashboardRoute] = []
+    for route in routes:
+        if not isinstance(route, DashboardRoute):
+            raise ValueError(
+                f"Extension '{ext.name}' must return DashboardRoute instances from "
+                f"{method_name}(), got {type(route).__name__}"
+            )
+        if route.path != prefix and not route.path.startswith(f"{prefix}/"):
+            raise ValueError(
+                f"Extension '{ext.name}' declared dashboard route '{route.path}', "
+                f"which is outside its allowed prefix '{prefix}'"
+            )
+        validated.append(route)
+    return validated
+
+
+def _collect_dashboard(
+    extensions: list[Extension],
+) -> tuple[
+    list[DashboardPageEntry],
+    list[DashboardStaticMount],
+    list[DashboardRoute],
+    list[DashboardRoute],
+]:
+    """全拡張のダッシュボード申告を集め、経路を導出して検証する。
+
+    経路の導出規則はコアだけが持ち、ホストは戻り値を読むだけにする。並び順は
+    ロード順（`LILLA_EXTENSIONS` の並び）。
+
+    Args:
+        extensions: ロード順に並んだ拡張のリスト。
+
+    Returns:
+        `(ページ一覧, 静的配信の一覧, セッションルート, 公開ルート)`。
+
+    Raises:
+        ValueError: `dashboard_page()` が `DashboardPage` でも `None` でもない場合、
+            ページを出すのに `dashboard_static_dir()` を返さない場合、または
+            申告したルートのパスが許可された接頭辞の外にある場合。
+    """
+    pages: list[DashboardPageEntry] = []
+    mounts: list[DashboardStaticMount] = []
+    routes: list[DashboardRoute] = []
+    public_routes: list[DashboardRoute] = []
+
+    for ext in extensions:
+        page = ext.dashboard_page()
+        if page is not None and not isinstance(page, DashboardPage):
+            raise ValueError(
+                f"Extension '{ext.name}' must return a DashboardPage or None from "
+                f"dashboard_page(), got {type(page).__name__}"
+            )
+
+        static_dir = ext.dashboard_static_dir()
+        if page is not None and static_dir is None:
+            raise ValueError(
+                f"Extension '{ext.name}' declares a dashboard page but no "
+                f"dashboard_static_dir(); the page's '{DASHBOARD_PAGE_MODULE}' "
+                "would be missing"
+            )
+
+        if page is not None:
+            pages.append(DashboardPageEntry.from_page(ext.name, page))
+
+        if static_dir is not None:
+            directory = Path(static_dir)
+            if not directory.is_dir():
+                logger.warning(
+                    "Dashboard static dir of extension '%s' does not exist: %s",
+                    ext.name,
+                    directory,
+                )
+            mounts.append(
+                DashboardStaticMount(
+                    name=ext.name,
+                    url_prefix=_dashboard_static_url(ext.name),
+                    directory=directory,
+                )
+            )
+
+        routes.extend(
+            _validate_dashboard_routes(
+                ext, "dashboard_routes", _dashboard_api_prefix(ext.name)
+            )
+        )
+        public_routes.extend(
+            _validate_dashboard_routes(
+                ext, "dashboard_public_routes", _dashboard_public_prefix(ext.name)
+            )
+        )
+
+    return pages, mounts, routes, public_routes
+
+
 def _core_tool_context_keys() -> frozenset[str]:
     """コアが実行時にツール context へ必ず注入するキーの集合を返す。
 
@@ -475,8 +863,10 @@ def set_extensions(extensions: list[Extension]) -> None:
             `EnvConfig` フィールド名を提供した場合、`requires` の拡張が未ロードか
             自分より後ろに並んでいる場合、または誰も提供していない名前を
             `required_config_sections()` / `required_env_fields()` /
-            `required_tool_context_keys()` が要求している場合、または
-            `locale_dirs()` のカタログが名前空間の規約に違反している場合。
+            `required_tool_context_keys()` が要求している場合、
+            `locale_dirs()` のカタログが名前空間の規約に違反している場合、または
+            ダッシュボードの申告（`name` の形・予約名・ルートのパス接頭辞・
+            ページを出すのに静的ディレクトリが無い）が規約に違反している場合。
     """
     from lilla_core.core.config import core_config_section_names, core_env_field_names
 
@@ -531,6 +921,9 @@ def set_extensions(extensions: list[Extension]) -> None:
     start_hooks = _merge_lists(
         extensions, "conversation_start_hooks", "conversation start hook"
     )
+    dashboard_pages, static_mounts, dash_routes, public_routes = _collect_dashboard(
+        extensions
+    )
     _validate_message_catalogs(extensions)
 
     global _extensions
@@ -547,6 +940,14 @@ def set_extensions(extensions: list[Extension]) -> None:
     _client_prompt_providers.update(prompts)
     _conversation_start_hooks.clear()
     _conversation_start_hooks.update(start_hooks)
+    _dashboard_pages.clear()
+    _dashboard_pages.extend(dashboard_pages)
+    _dashboard_static_mounts.clear()
+    _dashboard_static_mounts.extend(static_mounts)
+    _dashboard_routes.clear()
+    _dashboard_routes.extend(dash_routes)
+    _dashboard_public_routes.clear()
+    _dashboard_public_routes.extend(public_routes)
 
     _clear_message_catalog_cache()
 
@@ -736,6 +1137,33 @@ def build_tool_context() -> dict[str, Any]:
         except Exception as e:
             logger.debug("Skipped initialization of %s: %s", name, e)
     return context
+
+
+def get_dashboard_pages() -> list[DashboardPageEntry]:
+    """全拡張のダッシュボードページを、経路を導出済みの形でロード順に返す。
+
+    ホストはこの一覧からナビとハッシュルーティングを組み立てる。経路の導出は
+    コアに閉じているので、ホスト側で `name` から組み立て直さないこと。
+    """
+    return list(_dashboard_pages)
+
+
+def get_dashboard_static_mounts() -> list[DashboardStaticMount]:
+    """全拡張の静的ファイル配信先（URL 接頭辞とディレクトリ）をロード順に返す。"""
+    return list(_dashboard_static_mounts)
+
+
+def get_dashboard_routes() -> list[DashboardRoute]:
+    """全拡張のセッション認証の内側に載せる HTTP ルートをロード順に返す。"""
+    return list(_dashboard_routes)
+
+
+def get_dashboard_public_routes() -> list[DashboardRoute]:
+    """全拡張の認証の外側に載せる公開 HTTP ルートをロード順に返す。
+
+    ホストはこれらを認証ミドルウェアの対象外として載せる。
+    """
+    return list(_dashboard_public_routes)
 
 
 def get_result_delivery(client_type: str) -> DeliveryFn | None:

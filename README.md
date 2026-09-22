@@ -297,6 +297,10 @@ extension = MyExtension()
 | `tool_config_roots` | Directories of default tool YAML files (`llm_*.yaml` / `task_*.yaml`) shipped by the extension. A YAML with the same stem in `${CONFIG_ROOT}/tools` replaces it wholesale; put `enabled: false` there to turn a bundled tool off |
 | `locale_dirs` | Directories of UI message catalogs (`{locale}.yaml`) shipped by the extension. The catalog's only top-level key must be the extension's `name` |
 | `command_packages` | Extra packages scanned for `@register_command` handlers |
+| `dashboard_page` | One tab on the observability dashboard (`DashboardPage(label, group)`), where `group` is `main` (primary nav) or `admin` (overflow menu). Paths are not declared; they are derived from `name` |
+| `dashboard_static_dir` | Directory served at `/static/ext/{name}/`. Put `page.js` at its root when the extension contributes a tab |
+| `dashboard_routes` | HTTP routes (`DashboardRoute`) mounted inside session auth. Paths must live under `/api/{name}` |
+| `dashboard_public_routes` | Public routes mounted outside session auth (OAuth callbacks and the like). Paths must live under `/oauth/{name}`; validating `state` is the extension's job |
 | `config_models` | YAML sections this extension adds to `AppConfig` |
 | `env_fields` | Secret fields this extension adds to `cfg.env` |
 | `required_config_sections` | YAML sections this extension reads but does not provide |
@@ -335,6 +339,53 @@ A client extension that drives `run_conversation()` itself may pass any object a
 `client_state` (for example its set of connected sockets). The core does not interpret
 it: it is exposed to hooks as `ConversationContext.client_state` and to LLM tools as
 the `client_state` context key.
+
+### Dashboard contributions
+
+An extension may add one dashboard tab plus HTTP routes. The only identifier is
+`Extension.name`: the core derives the hash, the API prefix, the public callback
+prefix and the static URL from it, so there is no separate id field. For
+`name = "google-oauth"`:
+
+| Purpose | Value |
+|---------|-------|
+| Primary hash | `#/google-oauth` |
+| Admin hash | `#/admin/google-oauth` |
+| Session API | `/api/google-oauth` |
+| Public callback | `/oauth/google-oauth/callback` |
+| Static files | `/static/ext/google-oauth/` |
+| JS module | `/static/ext/google-oauth/page.js` |
+
+```python
+class MyExtension(Extension):
+    name = "my-pack"
+
+    def dashboard_page(self) -> DashboardPage | None:
+        return DashboardPage(label="My Pack", group="main")
+
+    def dashboard_static_dir(self) -> Path | None:
+        return Path(__file__).parent / "dashboard"
+
+    def dashboard_routes(self) -> list[DashboardRoute]:
+        return [DashboardRoute("GET", "/api/my-pack/items", handle_items)]
+```
+
+The collected declarations are read through `get_dashboard_pages()` (derived
+`DashboardPageEntry` objects), `get_dashboard_static_mounts()`,
+`get_dashboard_routes()` and `get_dashboard_public_routes()`, all in load order.
+The core ships no dashboard HTTP server; mounting these is the host's job.
+
+Because `name` ends up verbatim in URLs, a name that does not match
+`^[a-z0-9][a-z0-9-]*$`, or one of the core's reserved names (`api`, `oauth`,
+`static`, `admin`, `dashboard`, `auth`, `login`, `logout`, `setup`, `home`,
+`conversations`, `memos`, `logs`), fails at load time. So does a route path
+outside the extension's own prefix, or a tab declared without a
+`dashboard_static_dir()`.
+
+Routes declared through `dashboard_public_routes()` are reachable by **anyone**.
+Even when an upstream access control only lets public callbacks through,
+validating `state` is the extension's responsibility; anything that needs
+authentication belongs in `dashboard_routes()`.
 
 ### Config composition
 

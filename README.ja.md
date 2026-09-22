@@ -288,6 +288,10 @@ extension = MyExtension()
 | `tool_config_roots` | 拡張が同梱する既定のツール YAML（`llm_*.yaml` / `task_*.yaml`）のディレクトリ。`${CONFIG_ROOT}/tools` に同じ stem の YAML があればそちらが丸ごと勝つ。同梱ツールを止めるにはそこに `enabled: false` の YAML を置く |
 | `locale_dirs` | 拡張が同梱する UI 文言カタログ（`{locale}.yaml`）のディレクトリ。カタログのトップレベルキーはその拡張の `name` ただ 1 つでなければならない |
 | `command_packages` | `@register_command` を探す追加パッケージ |
+| `dashboard_page` | 観測用ダッシュボードへ足すタブ 1 つ（`DashboardPage(label, group)`）。`group` は `main`（常用ナビ）か `admin`（管理メニュー）。経路は申告せず `name` から導出する |
+| `dashboard_static_dir` | `/static/ext/{name}/` に載せる静的ファイルのディレクトリ。タブを出すなら直下に `page.js` を置く |
+| `dashboard_routes` | セッション認証の内側に足す HTTP ルート（`DashboardRoute`）。パスは `/api/{name}` 配下のみ |
+| `dashboard_public_routes` | 認証の外側に載せる公開ルート（OAuth の戻り先など）。パスは `/oauth/{name}` 配下のみ。`state` の検証は拡張側の責任 |
 | `config_models` | この拡張が `AppConfig` に足す YAML セクション |
 | `env_fields` | この拡張が `cfg.env` に足す秘匿フィールド |
 | `required_config_sections` | 自分では提供しないが読む YAML セクション |
@@ -324,6 +328,51 @@ env フィールド名・ツール context のキー・結果配送の `client_t
 `client_state` として渡せます（接続中ソケットの集合など）。コアは中身を解釈せず、
 フックには `ConversationContext.client_state` として、LLM ツールには context の
 `client_state` キーとしてそのまま渡します。
+
+### ダッシュボードへの差し込み
+
+拡張は観測用ダッシュボードにタブを 1 つと、HTTP ルートを足せます。経路の識別子は
+`Extension.name` ただ 1 つで、ハッシュ・API 接頭辞・公開コールバック・静的 URL は
+すべてコアが `name` から導出します（新しい ID 欄はありません）。`name = "google-oauth"`
+のとき次のようになります。
+
+| 用途 | 値 |
+|------|-----|
+| 常用ハッシュ | `#/google-oauth` |
+| 管理ハッシュ | `#/admin/google-oauth` |
+| セッション API | `/api/google-oauth` |
+| 公開コールバック | `/oauth/google-oauth/callback` |
+| 静的ファイル | `/static/ext/google-oauth/` |
+| JS モジュール | `/static/ext/google-oauth/page.js` |
+
+```python
+class MyExtension(Extension):
+    name = "my-pack"
+
+    def dashboard_page(self) -> DashboardPage | None:
+        return DashboardPage(label="My Pack", group="main")
+
+    def dashboard_static_dir(self) -> Path | None:
+        return Path(__file__).parent / "dashboard"
+
+    def dashboard_routes(self) -> list[DashboardRoute]:
+        return [DashboardRoute("GET", "/api/my-pack/items", handle_items)]
+```
+
+コアが集めた結果は `get_dashboard_pages()`（導出済みの `DashboardPageEntry`）・
+`get_dashboard_static_mounts()`・`get_dashboard_routes()`・`get_dashboard_public_routes()`
+から、いずれもロード順で読めます。ダッシュボードの HTTP サーバー本体はコアには無く、
+これらを実際に載せるのはホスト側です。
+
+`name` は URL にそのまま埋まるため、`^[a-z0-9][a-z0-9-]*$` に合わない名前と、
+コアが押さえている予約名（`api` / `oauth` / `static` / `admin` / `dashboard` /
+`auth` / `login` / `logout` / `setup` / `home` / `conversations` / `memos` / `logs`）は
+ロード時に fail-fast します。ルートのパスが自分の接頭辞の外にある場合、タブを出すのに
+`dashboard_static_dir()` を返していない場合も同様です。
+
+`dashboard_public_routes()` に載せたルートは **誰でも叩けます**。ホスト前段の
+アクセス制御で公開コールバックだけを通す構成でも、`state` の検証は拡張側の責任です。
+認証が要る処理は `dashboard_routes()` へ置いてください。
 
 ### 設定の合成
 
