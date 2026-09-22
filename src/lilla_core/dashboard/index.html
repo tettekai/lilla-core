@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lilla Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js" defer></script>
+</head>
+<body>
+  <!-- Alpine 3 は x-data のオブジェクトが持つ init() を自動で呼ぶ。
+       x-init="init()" を併記すると 2 回実行され、hashchange リスナーが
+       二重登録されて画面切り替えのたびに同じ API を 2 回叩くことになる。 -->
+  <div x-data="dashboardApp()">
+
+    <!-- Loading -->
+    <div x-show="view === 'loading'" class="auth-screen">
+      <div class="loading">読み込み中...</div>
+    </div>
+
+    <!-- Setup View -->
+    <div x-show="view === 'setup'" class="auth-screen" x-cloak>
+      <form class="auth-card" @submit.prevent="submitSetup()">
+        <h1>初期設定</h1>
+        <p class="auth-desc">
+          ダッシュボードの管理者パスワードを設定します。<br>
+          <span x-text="minPasswordLength"></span>文字以上で入力してください。
+        </p>
+        <input type="password" x-model="setupPassword" placeholder="パスワード"
+          autocomplete="new-password" :disabled="setupSubmitting">
+        <input type="password" x-model="setupPasswordConfirm" placeholder="パスワード（確認）"
+          autocomplete="new-password" :disabled="setupSubmitting">
+        <div class="auth-error" x-show="setupError" x-text="setupError"></div>
+        <button type="submit" :disabled="setupSubmitting">設定する</button>
+      </form>
+    </div>
+
+    <!-- Login View -->
+    <div x-show="view === 'login'" class="auth-screen" x-cloak>
+      <form class="auth-card" @submit.prevent="submitLogin()">
+        <h1>Lilla Dashboard</h1>
+        <p class="auth-desc">パスワードを入力してください。</p>
+        <input type="password" x-model="loginPassword" placeholder="パスワード"
+          autocomplete="current-password" :disabled="loginSubmitting">
+        <div class="auth-error" x-show="loginError" x-text="loginError"></div>
+        <button type="submit" :disabled="loginSubmitting || !loginPassword">ログイン</button>
+      </form>
+    </div>
+
+    <!-- Dashboard View -->
+    <div x-show="view === 'dashboard'" x-cloak>
+
+    <header>
+      <div class="header-bar">
+        <h1>Lilla Dashboard</h1>
+        <!-- ナビは /api/dashboard/nav のカタログから組む。組み込みの 4 画面も
+             拡張のページも同じ形で並ぶので、ここで区別しない。 -->
+        <nav class="tabs">
+          <template x-for="page in mainNav" :key="page.name">
+            <button :class="{ active: activeTab === page.name }"
+              @click="navigate(page.name)" x-text="page.label"></button>
+          </template>
+        </nav>
+        <div class="overflow-menu" @click.outside="menuOpen = false"
+          @keydown.escape.window="menuOpen = false">
+          <button class="menu-toggle" @click="menuOpen = !menuOpen"
+            :aria-expanded="menuOpen" aria-haspopup="true" aria-label="メニュー">&#8943;</button>
+          <div class="menu-panel" x-show="menuOpen" x-cloak>
+            <template x-for="page in adminNav" :key="page.name">
+              <button :class="{ active: activeTab === page.name }"
+                @click="navigate(page.name)" x-text="page.label"></button>
+            </template>
+            <button @click="logout()">Logout</button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Home Tab -->
+    <section x-show="activeTab === 'home'">
+      <h2 class="page-title">Home</h2>
+    </section>
+
+    <!-- Logs Tab (Admin) -->
+    <section x-show="activeTab === 'logs'">
+      <div class="stats-bar">
+        <template x-for="[level, count] in statsEntries()" :key="level">
+          <span :class="'badge ' + levelClass(level)">
+            <span x-text="level"></span>: <span x-text="count"></span>
+          </span>
+        </template>
+      </div>
+
+      <div class="filters">
+        <select x-model="logs.filters.level">
+          <option value="">全レベル</option>
+          <template x-for="level in logs.levels" :key="level">
+            <option :value="level" x-text="level"></option>
+          </template>
+        </select>
+        <input type="text" x-model="logs.filters.keyword" placeholder="キーワード検索">
+        <input type="datetime-local" x-model="logs.filters.date_from" title="開始日時">
+        <span class="filter-sep">〜</span>
+        <input type="datetime-local" x-model="logs.filters.date_to" title="終了日時">
+        <button @click="fetchLogs(1)">絞り込む</button>
+        <button @click="resetLogsFilters()">リセット</button>
+      </div>
+
+      <div x-show="logs.loading" class="loading">読み込み中...</div>
+
+      <table x-show="!logs.loading">
+        <thead>
+          <tr>
+            <th>日時</th>
+            <th>レベル</th>
+            <th>メッセージ</th>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="(log, idx) in logs.items" :key="idx">
+            <tr @click="openLogDetail(log)" class="clickable">
+              <td class="col-time" x-text="formatDate(log.created_at)"></td>
+              <td class="col-level">
+                <span :class="'badge ' + levelClass(log.levelname)" x-text="log.levelname"></span>
+              </td>
+              <td class="message-cell" x-text="log.message"></td>
+            </tr>
+          </template>
+          <tr x-show="logs.items.length === 0">
+            <td colspan="3" class="empty">ログがありません</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="pagination" x-show="!logs.loading">
+        <button @click="fetchLogs(logs.page - 1)" :disabled="logs.page <= 1">前へ</button>
+        <span x-text="logs.page + ' / ' + logs.total_pages"></span>
+        <button @click="fetchLogs(logs.page + 1)" :disabled="logs.page >= logs.total_pages">次へ</button>
+        <span class="total-count">合計 <span x-text="logs.total"></span> 件</span>
+      </div>
+    </section>
+
+    <!-- Conversations Tab -->
+    <section x-show="activeTab === 'conversations'">
+      <div class="filters">
+        <input type="datetime-local" x-model="conversations.filters.date_from" title="開始日時">
+        <span class="filter-sep">〜</span>
+        <input type="datetime-local" x-model="conversations.filters.date_to" title="終了日時">
+        <button @click="fetchConversations(1)">絞り込む</button>
+        <button @click="resetConvFilters()">リセット</button>
+      </div>
+
+      <div x-show="conversations.loading" class="loading">読み込み中...</div>
+
+      <div class="chat-container" x-show="!conversations.loading">
+        <template x-for="(item, idx) in conversations.items" :key="idx">
+          <div :class="'chat-message ' + (item.message && item.message.role)">
+            <div class="chat-meta">
+              <span class="role" x-text="item.message && item.message.role"></span>
+              <span class="time" x-text="formatDate(item.time)"></span>
+              <button class="btn-delete" @click.stop="deleteConversation(item)" title="削除">×</button>
+            </div>
+            <div class="chat-content" x-text="item.message && item.message.content"></div>
+          </div>
+        </template>
+        <div x-show="conversations.items.length === 0" class="empty">会話履歴がありません</div>
+      </div>
+
+      <div class="pagination" x-show="!conversations.loading">
+        <button @click="fetchConversations(conversations.page - 1)" :disabled="conversations.page <= 1">前へ</button>
+        <span x-text="conversations.page + ' / ' + conversations.total_pages"></span>
+        <button @click="fetchConversations(conversations.page + 1)" :disabled="conversations.page >= conversations.total_pages">次へ</button>
+        <span class="total-count">合計 <span x-text="conversations.total"></span> 件</span>
+      </div>
+    </section>
+
+    <!-- User Memos Tab -->
+    <section x-show="activeTab === 'memos'">
+      <div class="memo-add-form">
+        <textarea x-model="memos.newContent" placeholder="新しいメモを入力..." class="memo-input"
+          rows="5"></textarea>
+        <button @click="addMemo()" :disabled="!memos.newContent.trim()">追加</button>
+      </div>
+
+      <div x-show="memos.loading" class="loading">読み込み中...</div>
+
+      <div class="memo-list" x-show="!memos.loading">
+        <template x-for="memo in memos.items" :key="memo._id">
+          <div :class="'memo-item' + (memo.enabled ? '' : ' memo-disabled')">
+            <div class="memo-content" x-show="memos.editingId !== memo._id">
+              <span x-text="memo.content"></span>
+            </div>
+            <div class="memo-edit-form" x-show="memos.editingId === memo._id">
+              <textarea x-model="memos.editContent" @keydown.escape="cancelEdit()"
+                class="memo-input" rows="5"></textarea>
+            </div>
+            <div class="memo-actions">
+              <span class="memo-time" x-text="formatDate(memo.created_at)"></span>
+              <label class="memo-toggle">
+                <input type="checkbox" :checked="memo.enabled" @change="toggleMemo(memo)">
+                有効
+              </label>
+              <button x-show="memos.editingId !== memo._id" @click="startEdit(memo)">編集</button>
+              <button x-show="memos.editingId === memo._id" @click="saveEdit(memo)">保存</button>
+              <button x-show="memos.editingId === memo._id" @click="cancelEdit()">キャンセル</button>
+              <button class="btn-delete" @click="deleteMemo(memo)" title="削除">×</button>
+            </div>
+          </div>
+        </template>
+        <div x-show="memos.items.length === 0" class="empty">メモがありません</div>
+      </div>
+    </section>
+
+    <!-- 拡張ページ用スロット。中身は拡張の page.js が mount(el, ctx) で書くので、
+         Alpine のディレクティブは置かない（殻が触るのは表示の切り替えだけ）。 -->
+    <section x-show="extPage.name" x-cloak>
+      <div x-ref="extSlot"></div>
+      <div class="empty" x-show="extPage.error" x-text="extPage.error"></div>
+    </section>
+
+    <!-- Log Detail Modal -->
+    <div class="modal-overlay" x-show="logs.selectedLog" @click.self="closeLogDetail()" x-cloak>
+      <div class="modal">
+        <div class="modal-header">
+          <h3>ログ詳細</h3>
+          <button @click="closeLogDetail()">×</button>
+        </div>
+        <div class="modal-body" x-show="logs.selectedLog">
+          <dl>
+            <dt>日時</dt>
+            <dd x-text="logs.selectedLog && formatDate(logs.selectedLog.created_at)"></dd>
+            <dt>レベル</dt>
+            <dd>
+              <span
+                :class="'badge ' + levelClass(logs.selectedLog && logs.selectedLog.levelname)"
+                x-text="logs.selectedLog && logs.selectedLog.levelname"
+              ></span>
+            </dd>
+            <dt>メッセージ</dt>
+            <dd class="message-full" x-text="logs.selectedLog && logs.selectedLog.message"></dd>
+          </dl>
+        </div>
+      </div>
+    </div>
+
+    </div>
+    <!-- /Dashboard View -->
+
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
