@@ -7,6 +7,35 @@
 
 ## [Unreleased]
 
+### Added
+
+- 拡張が観測用ダッシュボードへ差し込むための申告を `Extension` に追加。
+  `dashboard_page()`（タブ 1 つ。`DashboardPage(label, group)` で `group` は
+  `main` / `admin`）・`dashboard_static_dir()`（`/static/ext/{name}/` に載せる
+  ディレクトリ。タブを出すなら直下に `page.js`）・`dashboard_routes()`（セッション
+  認証の内側。パスは `/api/{name}` 配下のみ）・`dashboard_public_routes()`（認証の
+  外側。パスは `/oauth/{name}` 配下のみ）の 4 つで、いずれも既定は「何も貢献しない」。
+  経路の識別子は既存の `Extension.name` だけで、ハッシュ（`#/{name}` / `#/admin/{name}`）・
+  API 接頭辞・公開コールバック・静的 URL・JS モジュール URL はコアが `name` から導出する
+  （新しい ID 欄は作らない）。集約結果は `get_dashboard_pages()`（導出済みの
+  `DashboardPageEntry`）・`get_dashboard_static_mounts()`・`get_dashboard_routes()` ・
+  `get_dashboard_public_routes()` からロード順で読める。ルートは aiohttp の型ではなく
+  コア独自の `DashboardRoute(method, path, handler)` で受け取り、`Extension` 契約を
+  HTTP ライブラリのバージョンに縛らない。ダッシュボードの HTTP サーバー本体はコアには
+  含まれず、申告を集めて配るところまでがコアの役目（メソッドの追加のみで非破壊。
+  `EXTENSION_API_VERSION` は 1 のまま据え置き）
+
+### Changed
+
+- **`Extension.name` の形を検査するようになった。** `name` はダッシュボードの URL
+  パス・ハッシュ・静的ディレクトリ名へそのまま埋まるため、`^[a-z0-9][a-z0-9-]*$` に
+  合わない名前（大文字・アンダースコア・空白・`/`・`..` など）はロード時に `ValueError`
+  で落ちる。加えて、組み込みの経路と衝突する名前（`api` / `oauth` / `static` / `admin` /
+  `dashboard` / `auth` / `login` / `logout` / `setup` / `home` / `conversations` /
+  `memos` / `logs`）を `RESERVED_EXTENSION_NAMES` として予約し、使った拡張は落とす。
+  該当する `name` の拡張は改名が必要（既存の `google-oauth` / `google-calendar` /
+  `lilla-agent` はいずれも影響を受けない）
+
 ## [0.4.1] - 2026-09-19
 
 ### Added

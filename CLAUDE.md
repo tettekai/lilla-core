@@ -229,7 +229,7 @@ lilla-core 自体は起動スクリプトを持たない（ライブラリとし
 | ファイル | 役割 |
 |----------|------|
 | `config.py` | Pydantic ベースの設定管理（`AppConfig`）。`${CONFIG_ROOT}/lilla.yaml` はネスト構造のまま同じ形のセクションモデル（`cfg.discord.my_user_id` など）へ読み込み、`.env` / OS 環境変数は `EnvConfig`（`cfg.env.discord_token` など）へ読み込む（YAML の項目を環境変数で上書きする経路は持たない。YAML トップレベルの `env:` は警告して無視する）。複数 LLM プロバイダの動的選択に対応。`ui.locale`（`UiConfig`）は Discord に見せる文言のロケールを、`ui.timezone`（同じく `UiConfig`。IANA 名か未指定）は「人間側の今日 / いま」のタイムゾーンを決める（未指定なら OS のローカル。不正な名前・空文字はバリデーションで起動時に落とす）。コアの汎用範囲を超えるフィールドは持たず、拡張側が申告した YAML セクション・秘匿フィールドを `compose_config()` が `pydantic.create_model` で `AppConfig` / `EnvConfig` へ動的に足して 1 つのモデルに合成する（拡張分の OS 変数名はモジュールレベルの `_extra_env_var_names` に登録し、`EnvConfigSettingsSource` が `_VAR_NAMES` へ重ねて読む。pydantic のモデル本体に置いたアンダースコア始まりの属性はプライベート属性扱いになり `settings_customise_sources()` から読めないため、クラス属性ではなくモジュールのレジストリで持つ）。合成に使う名前の検査用に `core_config_section_names()` / `core_env_field_names()` を公開する。拡張が申告したセクションを型付きで取り出す `get_section(name, model, config=None)` も持つ（未申告の名前・モデル不一致は `ValueError`。コア確定のセクションにも使える）。`get_config()` / `set_config()` でプロセス全体の設定インスタンスを共有し、通常は `load_extensions()` が合成結果を `set_config()` する |
-| `extension.py` | コアの外から機能を差し込むための `Extension` 基底クラスと、そのロード・参照 API。`Extension` は Adapter 型で、起動時リポジトリ・メッセージフック・起動処理（`setup`。引数は `SetupContext` 1 つ）・結果配送・クライアント固有プロンプト（加算式）・会話開始フック（加算式。引数は `ConversationContext` 1 つ）・ツール実行 context プロバイダ・追加ツールルート・追加コマンドパッケージの各メソッドに「何も貢献しない」デフォルトを持つ。`load_extensions()` が `LILLA_EXTENSIONS` のモジュールを import して各 `extension` を集め、`set_extensions()` が貢献キーの衝突を検証して登録し、続けて `compose_config()` の結果を `set_config()` でプロセスの設定に据える（拡張どうしの重複は fail-fast）。設定の合成そのものは `core/config.py` に閉じており、このモジュールは pydantic の組み立て詳細を知らない。`set_extensions()` は登録と検証だけで設定を差し替えないため、テストは拡張を登録してもプロセスの設定を壊さない。`lilla_core/bot.py` が拡張モジュールを直接 import しないための唯一の橋渡し層 |
+| `extension.py` | コアの外から機能を差し込むための `Extension` 基底クラスと、そのロード・参照 API。観測用ダッシュボードへの差し込み（`dashboard_page` / `dashboard_static_dir` / `dashboard_routes` / `dashboard_public_routes`）も申告の型（`DashboardPage` / `DashboardRoute` / `DashboardPageEntry` / `DashboardStaticMount`）と集約だけをここに持ち、HTTP サーバー本体はコアに含めない。`Extension` は Adapter 型で、起動時リポジトリ・メッセージフック・起動処理（`setup`。引数は `SetupContext` 1 つ）・結果配送・クライアント固有プロンプト（加算式）・会話開始フック（加算式。引数は `ConversationContext` 1 つ）・ツール実行 context プロバイダ・追加ツールルート・追加コマンドパッケージの各メソッドに「何も貢献しない」デフォルトを持つ。`load_extensions()` が `LILLA_EXTENSIONS` のモジュールを import して各 `extension` を集め、`set_extensions()` が貢献キーの衝突を検証して登録し、続けて `compose_config()` の結果を `set_config()` でプロセスの設定に据える（拡張どうしの重複は fail-fast）。設定の合成そのものは `core/config.py` に閉じており、このモジュールは pydantic の組み立て詳細を知らない。`set_extensions()` は登録と検証だけで設定を差し替えないため、テストは拡張を登録してもプロセスの設定を壊さない。`lilla_core/bot.py` が拡張モジュールを直接 import しないための唯一の橋渡し層 |
 | `exceptions.py` | `ReauthenticationRequiredError`（外部 API 再認証要求時）・`LLMError`（LLM 呼び出し失敗時）の例外定義 |
 | `error_notify.py` | コマンド実行系・定期タスク実行系のエラー出力を一元化する（`notify_error`）。ERROR ログと Discord のエラー通知チャンネル（`discord.error_channel_id`。チャンネル ID で指定し、`bot.get_channel()` による ID 解決のみを行う。名前によるギルド横断検索は行わない）の 2 箇所にのみ出力し、元チャンネルへの `message.reply()` は行わない（bot 間チャンネルで相手 bot が reply に反応するのを防ぐため）。チャンネル未設定・ID 不正・未発見・送信失敗時は WARNING ログのみで、例外は投げない |
 | `http_util.py` | 全 HTTP リクエストの共通ユーティリティ（`send_http_request` / `stream_http_request`）。プロキシ自動適用、リクエスト/レスポンスの秘匿情報（`client_secret` 等）・base64 画像のログマスキングつき |
@@ -436,6 +436,10 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
 | `tool_config_roots` | `get_tool_config_roots` / `tool_paths.resolve_tool_config_files` | 拡張が同梱する既定のツール YAML（`llm_*.yaml` / `task_*.yaml`）のディレクトリ。ローダーは「拡張の同梱分（ロード順）→ `config_root/tools`」の順に集め、同じ stem は `config_root/tools` 側が丸ごと上書きする。拡張どうしの同じ stem は fail-fast。`enabled: false` の YAML はロードしない（同梱ツールを止めるには `config_root/tools` に同名で置く）。`type: self` の `.py` が同梱ディレクトリに置かれうるため、`resolve_tool_dirs()` にも含める |
 | `locale_dirs` | `get_locale_dirs(extensions=None)` / `ui.messages.validate_catalogs` | 拡張が同梱する UI 文言カタログ（`{locale}.yaml`）のディレクトリ。トップレベルのキーはその拡張の `name` ただ 1 つでなければならず、違反・コアのトップレベルキーとの衝突は登録時に `ValueError` で fail-fast する。1 つの拡張が複数返したらロード順に浅くマージする。存在しないディレクトリは WARNING で読み飛ばす（ロケールごとに 1 回） |
 | `command_packages` | `get_command_packages` | `load_all_commands()` が追加で走査するパッケージ |
+| `dashboard_page` | `get_dashboard_pages` | 観測用ダッシュボードへ足すタブ 1 つ（`DashboardPage(label, group)`。`group` は `main` / `admin`）。経路は申告せず `Extension.name` から導出する（`#/{name}` / `#/admin/{name}` / `/api/{name}` / `/oauth/{name}` / `/static/ext/{name}/`）。コアが返すのは導出済みの `DashboardPageEntry` |
+| `dashboard_static_dir` | `get_dashboard_static_mounts` | ホストが `/static/ext/{name}/` に載せる静的ファイルのディレクトリ。タブを出すなら直下に `page.js` を置く（返さないとロード時に落ちる） |
+| `dashboard_routes` | `get_dashboard_routes` | ホストがセッション認証の内側へ足す HTTP ルート（`DashboardRoute(method, path, handler)`）。パスは `/api/{name}` 配下のみ |
+| `dashboard_public_routes` | `get_dashboard_public_routes` | ホストが認証の外側へ載せる公開ルート（OAuth の戻り先など）。パスは `/oauth/{name}` 配下のみで、`state` の検証は拡張側の責任 |
 | `config_models` | `get_config_models`（全件） | `AppConfig` に足す YAML セクション名 → セクションモデル |
 | `env_fields` | `get_env_fields`（全件） | `EnvConfig` に足すフィールド名 → OS 環境変数名 |
 | `required_config_sections` | `set_extensions` の検証 | 自分では提供しないが読む YAML セクション名 |
@@ -447,7 +451,10 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
 ### 衝突は fail-fast
 拡張どうしで以下が重複したら、静かな後勝ちにせずロード時に例外を投げる。
 
-- `Extension.name`（未設定・空文字も落とす）
+- `Extension.name`（未設定・空文字も落とす。加えて `^[a-z0-9][a-z0-9-]*$` に合わない形と、
+  `RESERVED_EXTENSION_NAMES`（`api` / `oauth` / `static` / `admin` / `dashboard` / `auth` /
+  `login` / `logout` / `setup` / `home` / `conversations` / `memos` / `logs`）の予約名も落とす。
+  `name` はダッシュボードの URL・ハッシュ・静的ディレクトリ名へそのまま埋まるため）
 - `config_models()` の YAML セクション名 / `env_fields()` のフィールド名
   （コア確定の名前との重複も落とす）
 - ツール実行 context プロバイダのキー（コアが注入する共通キーとの重複も落とす）
@@ -461,6 +468,9 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
   コアのカタログのトップレベルキー（`selftest` など）と同じとき（`set_extensions()` が
   `ui/messages.py` の `validate_catalogs()` で登録前に検出。拡張どうしの衝突は `name` の
   重複検査で防がれる）
+- ダッシュボードのルート申告が自分の接頭辞（`/api/{name}` / `/oauth/{name}`）の外を指すとき、
+  または `dashboard_page()` を返すのに `dashboard_static_dir()` を返していないとき
+  （`page.js` が 404 になるため）
 
 コア内蔵のデフォルトとの重複は衝突にしない。`client_type="discord"` のシステム
 プロンプトは拡張が 1 つでも出していればそれら（連結）を使い、誰も出していなければ
