@@ -592,11 +592,37 @@ def set_config(instance: AppConfig) -> None:
     _config_instance = instance
 
 
+class _UncomposedExtensionsConfig(ExtensionsConfig):
+    """合成を経ずに組んだ設定（`_default_config()`）の `extensions:` 節。
+
+    どの拡張が載るかを知らないまま組むため、`extensions:` の下の中身は検証せずに
+    捨てる（`ExtensionsConfig` の未知キー検査は、申告を突き合わせる合成時だけ）。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class _UncomposedAppConfig(AppConfig):
+    """`load_extensions()` を経ずに `get_config()` が組む設定。
+
+    運用スクリプトなど拡張をロードしないプロセスでも、`extensions:` を書いた
+    `lilla.yaml` からコア確定の節を読めるようにする。拡張の節は読めない。
+    """
+
+    extensions: _UncomposedExtensionsConfig = Field(
+        default_factory=_UncomposedExtensionsConfig
+    )
+
+
 @lru_cache(maxsize=1)
 def _default_config() -> AppConfig:
-    """`set_config()` が一度も呼ばれなかった場合、素の `AppConfig` を組み立てて返す。
+    """`set_config()` が一度も呼ばれなかった場合、合成前の設定を組み立てて返す。
+
+    `load_extensions()` を経ていない（＝どの拡張が載るか分からない）ため、
+    `extensions:` の下の中身は検証せず空として扱う。起動時の検証（未知キーで
+    落とす）は `compose_config()` の結果にだけ掛かる。
     """
-    return AppConfig()
+    return _UncomposedAppConfig()
 
 
 def get_config() -> AppConfig:
