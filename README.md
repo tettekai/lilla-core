@@ -338,9 +338,8 @@ extension = MyExtension()
 | `dashboard_static_dir` | Directory served at `/static/ext/{name}/`. Put `page.js` at its root when the extension contributes a tab |
 | `dashboard_routes` | HTTP routes (`DashboardRoute`) mounted inside session auth. Paths must live under `/api/{name}` |
 | `dashboard_public_routes` | Public routes mounted outside session auth (OAuth callbacks and the like). Paths must live under `/oauth/{name}`; validating `state` is the extension's job |
-| `config_models` | YAML sections this extension adds under `extensions:` (`cfg.extensions.<name>`) |
+| `config_model` | The one YAML section model this extension adds, or `None`. It lives at `extensions.<name with hyphens as underscores>` (`cfg.extensions.google_oauth` for `google-oauth`) |
 | `env_fields` | Secret fields this extension adds to `cfg.env` |
-| `required_config_sections` | Sections under `extensions:` this extension reads but does not provide |
 | `required_env_fields` | `cfg.env` fields this extension reads but does not provide |
 | `required_tool_context_keys` | Tool context keys this extension's tools read but does not provide |
 | `requires` (class attribute) | Names of extensions this one depends on; they must be loaded and listed earlier in `LILLA_EXTENSIONS` |
@@ -439,40 +438,45 @@ class GoogleConfig(BaseModel):
     redirect_uri: str = "http://localhost/google-callback"
 
 
-class MyExtension(Extension):
-    name = "my-extension"
+class GoogleOAuthExtension(Extension):
+    name = "google-oauth"
 
-    def config_models(self):
-        return {"google": GoogleConfig}
+    def config_model(self):
+        return GoogleConfig
 
     def env_fields(self):
         return {"google_client_secret": "GOOGLE_CLIENT_SECRET"}
 ```
 
-Extension sections live under the core-owned `extensions:` key in `lilla.yaml`, never at
-the top level, so the core can add a top-level section later without clashing with any
-extension:
+An extension adds at most **one** section model, and it never names the section itself:
+the key is its `name` with hyphens replaced by underscores (`google-oauth` →
+`google_oauth`; a name without hyphens is used as is). To carry several groups of
+settings, nest them as fields of that one model. Extension sections live under the
+core-owned `extensions:` key in `lilla.yaml`, never at the top level, so the core can add
+a top-level section later without clashing with any extension:
 
 ```yaml
 dashboard:
   port: 8765
 extensions:
-  google:
+  google_oauth:
     client_id: ...
 ```
 
-`get_config().extensions.google.client_id` and `get_config().env.google_client_secret`
-are then readable process-wide; there is no top-level `get_config().google`. Because
+`get_config().extensions.google_oauth.client_id` and
+`get_config().env.google_client_secret` are then readable process-wide; there is no
+top-level `get_config().google_oauth`. Because
 `get_config()` is typed as the base `AppConfig`, use `get_section()` when you want the
 section back as its own model for type checking and completion:
 
 ```python
 from lilla_core.core.config import get_section
 
-client_id = get_section("google", GoogleConfig).client_id
+client_id = get_section("google-oauth", GoogleConfig).client_id
 ```
 
-It looks only under `extensions:` (read core sections such as `get_config().ui`
+It takes the extension's `name` (the section key works too), looks only under
+`extensions:` (read core sections such as `get_config().ui`
 directly) and raises `ValueError` when the section was never declared or is not an
 instance of the given model, so a misspelled name fails loudly instead of returning
 nothing.
@@ -488,14 +492,17 @@ nothing.
   alone.
 - Composed env fields are always `str | None` with a default of `None`. The contract
   carries no type, so required or non-string secrets cannot be expressed this way.
-- Providing a section name or an env field name twice fails fast, even when the two
-  models are identical. Section names may match a core-owned section (they live in a
-  separate namespace); core-owned env field names are reserved.
-- `required_config_sections()` lists sections the extension reads but does not provide,
-  such as a shared `google:` section owned by another pack. `required_env_fields()` and
-  `required_tool_context_keys()` do the same for `cfg.env` fields and tool context keys.
-  If nothing provides a required name, the load fails and names the extension that
-  asked for it. Core-owned sections are always there and are not listed here; core-owned
+- `config_model()` must return a Pydantic `BaseModel` subclass or `None`; anything else
+  fails at load. Since extension names are unique and contain no underscores, two
+  extensions can never derive the same section key. An extension whose name starts with
+  a digit cannot declare a model, because the key would not be a valid identifier.
+  Section keys may match a core-owned section (they live in a separate namespace).
+- Providing an env field name twice fails fast; core-owned env field names are reserved.
+- To read another extension's section, depend on that extension with `requires` (below)
+  and read `cfg.extensions.<its key>`; there is no separate declaration for it.
+  `required_env_fields()` and `required_tool_context_keys()` still list `cfg.env` fields
+  and tool context keys the extension reads but does not provide. If nothing provides a
+  required name, the load fails and names the extension that asked for it; core-owned
   env fields and tool context keys always satisfy a requirement.
 
 ### Dependencies between extensions
@@ -508,10 +515,7 @@ hooks, `setup()` and tool roots all run in load order.
 ```python
 class GoogleCalendarExtension(Extension):
     name = "lilla-google-calendar"
-    requires = ("lilla-google-oauth",)
-
-    def required_config_sections(self):
-        return ["google"]
+    requires = ("lilla-google-oauth",)  # also covers reading extensions.lilla_google_oauth
 
     def required_env_fields(self):
         return ["google_client_secret"]
@@ -544,12 +548,15 @@ from lilla_core.core.extension import EXTENSION_API_VERSION, Extension
 
 class MyExtension(Extension):
     name = "my-extension"
-    api_version = 1  # or leave the default, which is EXTENSION_API_VERSION
+    api_version = 2  # or leave the default, which is EXTENSION_API_VERSION
 ```
 
 If the declared version is not supported, `load_extensions()` fails and names the
 extension and both versions, instead of loading an extension written against an older
-contract and breaking later at run time.
+contract and breaking later at run time. The current version is 2, which replaced
+`config_models()` and `required_config_sections()` with `config_model()`; an extension
+that still defines either removed method fails at load with a message naming the
+replacement, even if it does not declare `api_version`.
 
 The policy for changing the contract:
 

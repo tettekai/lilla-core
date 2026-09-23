@@ -31,6 +31,22 @@
 
 ### Changed
 
+- **BREAKING**: 拡張の設定節名を `Extension.name` から導くようにし、`EXTENSION_API_VERSION` を
+  **2** に上げた（#110。受け付けるのも 2 だけ）
+  - `Extension.config_models() -> dict[str, type[BaseModel]]` を廃止し、
+    `config_model() -> type[BaseModel] | None` に置き換えた。1 拡張が足せるモデルは 1 つで、
+    節名は `name` のハイフンをアンダースコアに置き換えたもの（`google-oauth` →
+    `extensions.google_oauth`。ハイフンの無い名前はそのまま）。節名を自分で書く API は無い。
+    複数の設定を持つ拡張は 1 つのモデルの子としてまとめること
+  - `Extension.required_config_sections()` を廃止した。他の拡張の節を読む依存は
+    `requires`（拡張名）で表す。`required_env_fields()` / `required_tool_context_keys()` は残る
+  - 廃止した 2 メソッドのどちらかを定義したままの拡張は、`api_version` を宣言していなくても
+    代わりの経路を示してロード時に fail-fast する（黙って無視しない）
+  - `config_model()` が `BaseModel` のサブクラス以外を返す拡張、および `name` が数字で始まり
+    節名が識別子にならない拡張がモデルを申告した場合もロード時に fail-fast する
+  - `core/config.py` に `extension_section_name(name)` を追加。`get_section()` は拡張の `name`
+    （`get_section("google-oauth", GoogleConfig)`）でも節名でも引ける
+  - `get_config_models()` は「導いた節名 -> モデル」を返す（`compose_config()` の引数の形は不変）
 - **BREAKING**: 拡張が `config_models()` で申告した YAML セクションの置き場を、
   トップレベルからコア確定の `extensions:` の下へ移した（#109）。読み出しは
   `get_config().extensions.<節名>` で、トップレベルの `get_config().<節名>` は作らない。
