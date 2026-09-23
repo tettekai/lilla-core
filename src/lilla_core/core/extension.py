@@ -25,7 +25,9 @@
 
 設定の差分は `config_models()` / `env_fields()` で申告する。`load_extensions()`
 が全拡張の申告をマージし、`core/config.py` の `compose_config()` で 1 つの
-`AppConfig` へ組んでプロセスの設定に据える。ホストが `AppConfig` のサブクラスを
+`AppConfig` へ組んでプロセスの設定に据える。拡張の YAML セクションはコア確定の
+トップレベル節とは別の `extensions:` の下に置かれ（`get_config().extensions.<節名>`）、
+コアが後から節を確定しても拡張側の名前と衝突しない。ホストが `AppConfig` のサブクラスを
 書いて import 副作用で `set_config()` する仕組みは使わない（呼んでも合成結果で
 上書きされる）。そのため `LILLA_EXTENSIONS` の並び順は設定の合成に影響しない。
 
@@ -345,10 +347,15 @@ class Extension:
     def config_models(self) -> dict[str, type[BaseModel]]:
         """この拡張が足す YAML セクションを「セクション名 -> モデル」で返す。
 
-        コアが起動時に `AppConfig` へ合成し、`get_config().<セクション名>` で
-        型付きで読めるようにする。セクションが必須かどうかはモデルから導出され、
-        全フィールドにデフォルトがあれば `lilla.yaml` に節が無くてもよく、必須
-        フィールドを 1 つでも持つなら節そのものが必須になる。
+        コアが起動時に `AppConfig` の `extensions` の下へ合成し、
+        `get_config().extensions.<セクション名>`（型付きなら `core/config.py` の
+        `get_section()`）で読めるようにする。YAML でも `extensions:` の下に書き、
+        トップレベルに書くと起動時に落ちる。`extensions:` の名前空間はコア確定の
+        節と別なので、コアと同名のセクションを申告してもよい。
+
+        セクションが必須かどうかはモデルから導出され、全フィールドにデフォルトが
+        あれば `lilla.yaml` に節が無くてもよく、必須フィールドを 1 つでも持つなら
+        節そのものが必須になる。
         """
         return {}
 
@@ -362,11 +369,13 @@ class Extension:
         return {}
 
     def required_config_sections(self) -> list[str]:
-        """自分では提供しないが `get_config()` で読む YAML セクション名を返す。
+        """自分では提供しないが `get_config().extensions` で読む YAML セクション名を返す。
 
-        どの拡張も提供しておらず、コア確定のセクションでもない名前を書いた場合は
-        ロード時に fail-fast する。存在の検査だけを行い、拡張どうしの依存を
-        自動で解決したり、読み込み順を並べ替えたりはしない（順序は `requires`）。
+        どの拡張も `config_models()` で提供していない名前を書いた場合はロード時に
+        fail-fast する。コア確定のトップレベル節は常にあり、`extensions:` の下にも
+        無いため、ここへは書かない（書くと誰も提供していない扱いで落ちる）。
+        存在の検査だけを行い、拡張どうしの依存を自動で解決したり、読み込み順を
+        並べ替えたりはしない（順序は `requires`）。
         """
         return []
 
@@ -859,8 +868,8 @@ def set_extensions(extensions: list[Extension]) -> None:
     Raises:
         TypeError: `Extension` のインスタンスでない要素が含まれる場合。
         ValueError: 名前または貢献キーが衝突している場合、`api_version` がこのコアの
-            受け付ける契約バージョンでない場合、コア確定のセクション名 /
-            `EnvConfig` フィールド名を提供した場合、`requires` の拡張が未ロードか
+            受け付ける契約バージョンでない場合、コア確定の `EnvConfig` フィールド名を
+            提供した場合、`requires` の拡張が未ロードか
             自分より後ろに並んでいる場合、または誰も提供していない名前を
             `required_config_sections()` / `required_env_fields()` /
             `required_tool_context_keys()` が要求している場合、
@@ -868,7 +877,7 @@ def set_extensions(extensions: list[Extension]) -> None:
             ダッシュボードの申告（`name` の形・予約名・ルートのパス接頭辞・
             ページを出すのに静的ディレクトリが無い）が規約に違反している場合。
     """
-    from lilla_core.core.config import core_config_section_names, core_env_field_names
+    from lilla_core.core.config import core_env_field_names
 
     for ext in extensions:
         if not isinstance(ext, Extension):
@@ -879,9 +888,9 @@ def set_extensions(extensions: list[Extension]) -> None:
     _validate_api_versions(extensions)
     _validate_requires(extensions)
 
-    config_models = _merge_unique(
-        extensions, "config_models", "config model", reserved=core_config_section_names()
-    )
+    # 拡張の YAML セクションは `extensions:` の下に置かれるため、コア確定の
+    # トップレベル節と同名でも衝突しない（拡張どうしの重複だけを落とす）。
+    config_models = _merge_unique(extensions, "config_models", "config model")
     env_fields = _merge_unique(
         extensions, "env_fields", "env field", reserved=core_env_field_names()
     )
@@ -889,7 +898,7 @@ def set_extensions(extensions: list[Extension]) -> None:
         extensions,
         "required_config_sections",
         "config section",
-        set(config_models) | set(core_config_section_names()),
+        set(config_models),
     )
     _validate_required(
         extensions,

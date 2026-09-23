@@ -123,7 +123,8 @@ def write_minimal_lilla_yaml(
         my_user_id: `discord.my_user_id` に書く値。
         llm_name: `llm.default` と `llm.providers` のキーに使う名前。
         extra: 追加で書くセクション。同じネストで深いマージをするので、拡張が
-            必須にしているセクション（`{"habits": {"channel": "x"}}` など）を足せる。
+            必須にしているセクションを `extensions:` の下に足せる
+            （`{"extensions": {"habits": {"channel": "x"}}}` など）。
 
     Returns:
         書き出した `lilla.yaml` のパス。

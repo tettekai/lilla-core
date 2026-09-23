@@ -338,9 +338,9 @@ extension = MyExtension()
 | `dashboard_static_dir` | Directory served at `/static/ext/{name}/`. Put `page.js` at its root when the extension contributes a tab |
 | `dashboard_routes` | HTTP routes (`DashboardRoute`) mounted inside session auth. Paths must live under `/api/{name}` |
 | `dashboard_public_routes` | Public routes mounted outside session auth (OAuth callbacks and the like). Paths must live under `/oauth/{name}`; validating `state` is the extension's job |
-| `config_models` | YAML sections this extension adds to `AppConfig` |
+| `config_models` | YAML sections this extension adds under `extensions:` (`cfg.extensions.<name>`) |
 | `env_fields` | Secret fields this extension adds to `cfg.env` |
-| `required_config_sections` | YAML sections this extension reads but does not provide |
+| `required_config_sections` | Sections under `extensions:` this extension reads but does not provide |
 | `required_env_fields` | `cfg.env` fields this extension reads but does not provide |
 | `required_tool_context_keys` | Tool context keys this extension's tools read but does not provide |
 | `requires` (class attribute) | Names of extensions this one depends on; they must be loaded and listed earlier in `LILLA_EXTENSIONS` |
@@ -449,10 +449,22 @@ class MyExtension(Extension):
         return {"google_client_secret": "GOOGLE_CLIENT_SECRET"}
 ```
 
-`get_config().google.client_id` and `get_config().env.google_client_secret` are then
-readable process-wide. Because `get_config()` is typed as the base `AppConfig`, use
-`get_section()` when you want the section back as its own model for type checking and
-completion:
+Extension sections live under the core-owned `extensions:` key in `lilla.yaml`, never at
+the top level, so the core can add a top-level section later without clashing with any
+extension:
+
+```yaml
+dashboard:
+  port: 8765
+extensions:
+  google:
+    client_id: ...
+```
+
+`get_config().extensions.google.client_id` and `get_config().env.google_client_secret`
+are then readable process-wide; there is no top-level `get_config().google`. Because
+`get_config()` is typed as the base `AppConfig`, use `get_section()` when you want the
+section back as its own model for type checking and completion:
 
 ```python
 from lilla_core.core.config import get_section
@@ -460,20 +472,31 @@ from lilla_core.core.config import get_section
 client_id = get_section("google", GoogleConfig).client_id
 ```
 
-It raises `ValueError` when the section was never declared or is not an instance of the
-given model, so a misspelled name fails loudly instead of returning nothing.
+It looks only under `extensions:` (read core sections such as `get_config().ui`
+directly) and raises `ValueError` when the section was never declared or is not an
+instance of the given model, so a misspelled name fails loudly instead of returning
+nothing.
 
 - A section is **required** when its model has at least one required field, and optional
   otherwise. A required section missing from `lilla.yaml` fails at startup.
+- Unknown keys under `extensions:` fail at startup, so a leftover section for an
+  extension that is no longer loaded does not linger unnoticed. With no extensions
+  loaded, `extensions` is empty.
+- A declared section written at the top level instead of under `extensions:` also fails
+  at startup, since otherwise it would be ignored and the model defaults would apply
+  silently. A top-level key that is also a core section name is the core's and is left
+  alone.
 - Composed env fields are always `str | None` with a default of `None`. The contract
   carries no type, so required or non-string secrets cannot be expressed this way.
 - Providing a section name or an env field name twice fails fast, even when the two
-  models are identical. Core-owned names are reserved as well.
+  models are identical. Section names may match a core-owned section (they live in a
+  separate namespace); core-owned env field names are reserved.
 - `required_config_sections()` lists sections the extension reads but does not provide,
   such as a shared `google:` section owned by another pack. `required_env_fields()` and
   `required_tool_context_keys()` do the same for `cfg.env` fields and tool context keys.
-  If nothing provides a required name (and it is not a core-owned one), the load fails
-  and names the extension that asked for it.
+  If nothing provides a required name, the load fails and names the extension that
+  asked for it. Core-owned sections are always there and are not listed here; core-owned
+  env fields and tool context keys always satisfy a requirement.
 
 ### Dependencies between extensions
 
@@ -565,7 +588,7 @@ from my_package import extension
 def test_config_section_is_composed(lilla_extensions):
     cfg = lilla_extensions(extension)
 
-    assert cfg.my_section.value == "default"
+    assert cfg.extensions.my_section.value == "default"
 ```
 
 Two fixtures come with it, both function-scoped:
@@ -585,10 +608,12 @@ from lilla_core.testing import use_extensions, write_minimal_lilla_yaml
 
 
 def test_section(tmp_path):
-    write_minimal_lilla_yaml(tmp_path, extra={"habits": {"channel": "habits-test"}})
+    write_minimal_lilla_yaml(
+        tmp_path, extra={"extensions": {"habits": {"channel": "habits-test"}}}
+    )
 
     with use_extensions(extension, config_root=tmp_path) as cfg:
-        assert cfg.habits.channel == "habits-test"
+        assert cfg.extensions.habits.channel == "habits-test"
 ```
 
 `use_extensions()` saves the current registration, the current config instance and

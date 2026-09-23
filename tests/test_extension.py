@@ -316,12 +316,11 @@ class TestConfigContributions:
                 make_extension("b", env_fields={"shared_secret": "OTHER_SECRET"}),
             ])
 
-    def test_core_section_name_is_reserved(self, make_extension) -> None:
-        """コア確定のセクション名は拡張から提供できない。"""
-        with pytest.raises(ValueError, match="reserved key 'discord'"):
-            ext_module.set_extensions([
-                make_extension("a", config_models={"discord": SampleSectionConfig}),
-            ])
+    def test_core_section_name_is_not_reserved(self, make_extension, use_extensions) -> None:
+        """拡張の節は `extensions:` の下に置かれるため、コア確定と同名でも提供できる。"""
+        use_extensions(make_extension("a", config_models={"discord": SampleSectionConfig}))
+
+        assert ext_module.get_config_models() == {"discord": SampleSectionConfig}
 
     def test_core_env_field_name_is_reserved(self, make_extension) -> None:
         """コア確定の `EnvConfig` フィールド名は拡張から提供できない。"""
@@ -571,11 +570,15 @@ class TestRequiredConfigSections:
 
         assert ext_module.get_config_models() == {"alpha": SampleSectionConfig}
 
-    def test_core_section_is_always_available(self, make_extension, use_extensions) -> None:
-        """コア確定のセクションは誰も提供しなくても要求できる。"""
-        use_extensions(make_extension("consumer", required_config_sections=["prompt"]))
-
-        assert ext_module.get_config_models() == {}
+    def test_core_section_does_not_satisfy_the_requirement(self, make_extension) -> None:
+        """コア確定のトップレベル節は `extensions:` の下に無いため、要求を満たさない。"""
+        with pytest.raises(
+            ValueError,
+            match="Extension 'consumer' requires config section 'prompt'",
+        ):
+            ext_module.set_extensions([
+                make_extension("consumer", required_config_sections=["prompt"]),
+            ])
 
     def test_unprovided_section_fails_fast(self, make_extension) -> None:
         """誰も提供していないセクションを要求したら、要求元の名前つきで落とす。"""
@@ -607,7 +610,7 @@ class TestLoadExtensionsComposesConfig:
 
         ext_module.load_extensions("pack_cfg")
 
-        assert config_module().get_config().alpha.value == "default"
+        assert config_module().get_config().extensions.alpha.value == "default"
 
     def test_declared_env_field_is_readable_after_load(
         self, register_module, make_extension, monkeypatch: pytest.MonkeyPatch

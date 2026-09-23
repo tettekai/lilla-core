@@ -57,7 +57,7 @@ def lilla_extensions(
 
         def test_config_section_is_composed(lilla_extensions):
             cfg = lilla_extensions(extension)
-            assert cfg.my_section.value == "..."
+            assert cfg.extensions.my_section.value == "..."
     """
     with ExitStack() as stack:
         def register(*extensions: "Extension") -> "AppConfig":
