@@ -71,7 +71,8 @@ def make_extension():
     """テスト用の `Extension` インスタンスを組み立てるファクトリを返す。
 
     キーワード引数はメソッド名で、値が callable ならそのままメソッドとして
-    差し込み、そうでなければ「その値を返すメソッド」として差し込む::
+    差し込み、そうでなければ「その値を返すメソッド」として差し込む。クラス
+    （`config_model=SampleSectionConfig` など）は callable でも値として扱う::
 
         ext = make_extension("pack", client_prompt_providers={"discord": [provider]})
         ext = make_extension("pack", on_message=AsyncMock(return_value=True))
@@ -85,7 +86,8 @@ def make_extension():
         ext = Extension()
         ext.name = name
         for method_name, value in contributions.items():
-            setattr(ext, method_name, value if callable(value) else _const(value))
+            is_method = callable(value) and not isinstance(value, type)
+            setattr(ext, method_name, value if is_method else _const(value))
         return ext
 
     return _make

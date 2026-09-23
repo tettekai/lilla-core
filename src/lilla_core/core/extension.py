@@ -18,16 +18,19 @@
 
 拡張どうしの依存は宣言的に書く。`requires` に依存する拡張の `name` を並べると、
 その拡張がロード済みで、かつ `LILLA_EXTENSIONS` 上で自分より前に並んでいることを
-ロード時に検証する（自動並べ替えはしない）。他の拡張が提供する YAML セクション・
-秘匿フィールド・ツール実行 context キーを読むだけなら、`required_config_sections()` /
-`required_env_fields()` / `required_tool_context_keys()` で「誰かが提供していること」を
-検証させる。汎用の `validate()` フックは持たず、実行時の検査は `setup()` で行う。
+ロード時に検証する（自動並べ替えはしない）。他の拡張が提供する秘匿フィールド・
+ツール実行 context キーを読むだけなら、`required_env_fields()` /
+`required_tool_context_keys()` で「誰かが提供していること」を検証させる（他の拡張の
+YAML セクションを読む依存は `requires` で表す）。汎用の `validate()` フックは持たず、
+実行時の検査は `setup()` で行う。
 
-設定の差分は `config_models()` / `env_fields()` で申告する。`load_extensions()`
+設定の差分は `config_model()` / `env_fields()` で申告する。`load_extensions()`
 が全拡張の申告をマージし、`core/config.py` の `compose_config()` で 1 つの
-`AppConfig` へ組んでプロセスの設定に据える。拡張の YAML セクションはコア確定の
-トップレベル節とは別の `extensions:` の下に置かれ（`get_config().extensions.<節名>`）、
-コアが後から節を確定しても拡張側の名前と衝突しない。ホストが `AppConfig` のサブクラスを
+`AppConfig` へ組んでプロセスの設定に据える。1 拡張が足す YAML セクションは
+`config_model()` が返すモデル 1 つだけで、節名は申告させず `name` から導く
+（ハイフンをアンダースコアに置き換えたもの。`google-oauth` → `extensions.google_oauth`）。
+節はコア確定のトップレベル節とは別の `extensions:` の下に置かれ
+（`get_config().extensions.<節名>`）、コアが後から節を確定しても衝突しない。ホストが `AppConfig` のサブクラスを
 書いて import 副作用で `set_config()` する仕組みは使わない（呼んでも合成結果で
 上書きされる）。そのため `LILLA_EXTENSIONS` の並び順は設定の合成に影響しない。
 
@@ -65,7 +68,9 @@ EXTENSION_ATTR = "extension"
 #: このコアが提供する `Extension` 契約のバージョン。契約を破壊的に変えたとき
 #: （メソッドのシグネチャ・戻り値の形・context のフィールドの削除や改名）に上げる。
 #: メソッドや context フィールドの追加は非破壊なので上げない。
-EXTENSION_API_VERSION = 1
+#: 2: `config_models()` / `required_config_sections()` を廃止し、節名を `name` から導く
+#: `config_model()` に置き換えた。
+EXTENSION_API_VERSION = 2
 
 #: このコアがロードを受け付ける契約バージョンの集合。旧バージョンとの互換層を
 #: 持つときはここへ足す。
@@ -96,6 +101,14 @@ DASHBOARD_GROUPS = frozenset({"main", "admin"})
 #: `name` はダッシュボードの URL パス・ハッシュ・静的ディレクトリ名へそのまま埋まるため、
 #: パスを壊す文字（`/` や `..`、空白、`%` など）を弾く。
 _EXTENSION_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+#: 契約から外したメソッド名と、その代わり。旧契約のまま上書きしている拡張を、
+#: 黙って無視せずロード時に落とすために使う（基底クラスにはもう無いので、
+#: 属性があれば拡張側の上書きと分かる）。
+_REMOVED_EXTENSION_METHODS = {
+    "config_models": "config_model() (the section name is derived from Extension.name)",
+    "required_config_sections": "requires (depend on the providing extension by name)",
+}
 
 #: 拡張が `name` に使えない名前。ダッシュボードの URL 構造（`/api` `/oauth` `/static`）と、
 #: 組み込み画面・認証エンドポイントの第 1 セグメントを押さえる。`name` はそのまま
@@ -344,20 +357,22 @@ class Extension:
     #: コアは順序を並べ替えないため、利用者が正しい順に並べる。
     requires: tuple[str, ...] = ()
 
-    def config_models(self) -> dict[str, type[BaseModel]]:
-        """この拡張が足す YAML セクションを「セクション名 -> モデル」で返す。
+    def config_model(self) -> type[BaseModel] | None:
+        """この拡張が足す YAML セクションのモデルを返す（足さないなら `None`）。
 
-        コアが起動時に `AppConfig` の `extensions` の下へ合成し、
-        `get_config().extensions.<セクション名>`（型付きなら `core/config.py` の
+        1 拡張が足せるモデルは 1 つだけで、節名は申告せず `name` から導く
+        （ハイフンをアンダースコアに置き換えたもの。`google-oauth` なら
+        `google_oauth`）。コアが起動時に `AppConfig` の `extensions` の下へ合成し、
+        `get_config().extensions.<節名>`（型付きなら `core/config.py` の
         `get_section()`）で読めるようにする。YAML でも `extensions:` の下に書き、
-        トップレベルに書くと起動時に落ちる。`extensions:` の名前空間はコア確定の
-        節と別なので、コアと同名のセクションを申告してもよい。
+        トップレベルに書くと起動時に落ちる。複数の設定を持ちたいときは、1 つの
+        モデルの子として並べる。
 
         セクションが必須かどうかはモデルから導出され、全フィールドにデフォルトが
         あれば `lilla.yaml` に節が無くてもよく、必須フィールドを 1 つでも持つなら
         節そのものが必須になる。
         """
-        return {}
+        return None
 
     def env_fields(self) -> dict[str, str]:
         """この拡張が足す秘匿フィールドを「フィールド名 -> OS 環境変数名」で返す。
@@ -367,17 +382,6 @@ class Extension:
         `None`）で、必須フィールドや文字列以外の型は表現できない。
         """
         return {}
-
-    def required_config_sections(self) -> list[str]:
-        """自分では提供しないが `get_config().extensions` で読む YAML セクション名を返す。
-
-        どの拡張も `config_models()` で提供していない名前を書いた場合はロード時に
-        fail-fast する。コア確定のトップレベル節は常にあり、`extensions:` の下にも
-        無いため、ここへは書かない（書くと誰も提供していない扱いで落ちる）。
-        存在の検査だけを行い、拡張どうしの依存を自動で解決したり、読み込み順を
-        並べ替えたりはしない（順序は `requires`）。
-        """
-        return []
 
     def required_env_fields(self) -> list[str]:
         """自分では提供しないが `get_config().env` で読む秘匿フィールド名を返す。
@@ -620,6 +624,68 @@ def _validate_api_versions(extensions: list[Extension]) -> None:
             )
 
 
+def _validate_removed_methods(extensions: list[Extension]) -> None:
+    """契約から外したメソッドを上書きしている拡張をロード時に落とす。
+
+    `api_version` の既定は現在の契約バージョンなので、宣言していない古い拡張も
+    バージョン検査を通ってしまう。外したメソッドはコアから呼ばれなくなり、その
+    申告が黙って無視されるため、ここで名前と代わりの経路を示して止める。
+
+    Raises:
+        ValueError: `_REMOVED_EXTENSION_METHODS` の名前を属性として持つ場合。
+    """
+    for ext in extensions:
+        for method_name, replacement in _REMOVED_EXTENSION_METHODS.items():
+            if hasattr(ext, method_name):
+                raise ValueError(
+                    f"Extension '{ext.name}' defines '{method_name}()', which was removed "
+                    f"from the Extension contract (api_version {EXTENSION_API_VERSION}); "
+                    f"use {replacement} instead"
+                )
+
+
+def _collect_config_models(extensions: list[Extension]) -> dict[str, Any]:
+    """各拡張の `config_model()` を「`name` から導いた節名 -> モデル」へまとめる。
+
+    `name` は一意で、形の規約（`_EXTENSION_NAME_RE`）によりアンダースコアを
+    含まないため、ハイフンの置き換えで節名どうしが衝突することはない。
+
+    Args:
+        extensions: ロード順に並んだ拡張のリスト（`name` は検証済み）。
+
+    Returns:
+        節名からモデルクラスへの dict。`config_model()` が `None` の拡張は含めない。
+
+    Raises:
+        ValueError: `config_model()` が pydantic の `BaseModel` サブクラス以外を
+            返した場合、または導いた節名が Python の識別子にならない
+            （`name` が数字で始まる）場合。
+    """
+    from pydantic import BaseModel
+
+    from lilla_core.core.config import extension_section_name
+
+    models: dict[str, Any] = {}
+    for ext in extensions:
+        model = ext.config_model()
+        if model is None:
+            continue
+        if not (isinstance(model, type) and issubclass(model, BaseModel)):
+            raise ValueError(
+                f"Extension '{ext.name}' config_model() must return a pydantic "
+                f"BaseModel subclass or None, got {model!r}"
+            )
+        section = extension_section_name(ext.name)
+        if not section.isidentifier():
+            raise ValueError(
+                f"Extension '{ext.name}' cannot declare config_model(): its section "
+                f"name '{section}' is not a valid identifier (the name must not "
+                "start with a digit)"
+            )
+        models[section] = model
+    return models
+
+
 def _validate_names(extensions: list[Extension]) -> None:
     """`name` が設定済み・一意で、経路に使える形かつ予約名でないことを検証する。
 
@@ -659,8 +725,7 @@ def _validate_required(
 ) -> None:
     """各拡張の「要求側の申告」が、誰かの提供またはコア確定の名前で満たされることを検証する。
 
-    `required_config_sections()` / `required_env_fields()` / `required_tool_context_keys()`
-    の 3 つが同じ形で使う。存在の検査だけを行い、提供側の並び順は問わない。
+    `required_env_fields()` / `required_tool_context_keys()` の 2 つが同じ形で使う。存在の検査だけを行い、提供側の並び順は問わない。
 
     Args:
         extensions: ロード順に並んだ拡張のリスト。
@@ -858,7 +923,7 @@ def set_extensions(extensions: list[Extension]) -> None:
     モジュールの import を伴わないため、テストから直接呼べる。
     `load_extensions()` は import 後にこの関数を呼ぶ。
 
-    設定の差分（`config_models()` / `env_fields()`）もここでマージ・検証するが、
+    設定の差分（`config_model()` / `env_fields()`）もここでマージ・検証するが、
     `AppConfig` への合成そのものは行わない。プロセスの設定を差し替えるのは
     `load_extensions()` の役目で、テストが拡張を登録するだけで設定を壊さずに済む。
 
@@ -868,11 +933,12 @@ def set_extensions(extensions: list[Extension]) -> None:
     Raises:
         TypeError: `Extension` のインスタンスでない要素が含まれる場合。
         ValueError: 名前または貢献キーが衝突している場合、`api_version` がこのコアの
-            受け付ける契約バージョンでない場合、コア確定の `EnvConfig` フィールド名を
-            提供した場合、`requires` の拡張が未ロードか
+            受け付ける契約バージョンでない場合、契約から外したメソッド
+            （`config_models()` など）を上書きしている場合、`config_model()` が
+            モデルクラス以外を返す・節名が識別子にならない場合、コア確定の
+            `EnvConfig` フィールド名を提供した場合、`requires` の拡張が未ロードか
             自分より後ろに並んでいる場合、または誰も提供していない名前を
-            `required_config_sections()` / `required_env_fields()` /
-            `required_tool_context_keys()` が要求している場合、
+            `required_env_fields()` / `required_tool_context_keys()` が要求している場合、
             `locale_dirs()` のカタログが名前空間の規約に違反している場合、または
             ダッシュボードの申告（`name` の形・予約名・ルートのパス接頭辞・
             ページを出すのに静的ディレクトリが無い）が規約に違反している場合。
@@ -886,19 +952,12 @@ def set_extensions(extensions: list[Extension]) -> None:
             )
     _validate_names(extensions)
     _validate_api_versions(extensions)
+    _validate_removed_methods(extensions)
     _validate_requires(extensions)
 
-    # 拡張の YAML セクションは `extensions:` の下に置かれるため、コア確定の
-    # トップレベル節と同名でも衝突しない（拡張どうしの重複だけを落とす）。
-    config_models = _merge_unique(extensions, "config_models", "config model")
+    config_models = _collect_config_models(extensions)
     env_fields = _merge_unique(
         extensions, "env_fields", "env field", reserved=core_env_field_names()
-    )
-    _validate_required(
-        extensions,
-        "required_config_sections",
-        "config section",
-        set(config_models),
     )
     _validate_required(
         extensions,
@@ -1054,7 +1113,11 @@ def get_extensions() -> list[Extension]:
 
 
 def get_config_models() -> dict[str, Any]:
-    """全拡張の YAML セクションモデルのマージ済み dict のコピーを返す。"""
+    """全拡張の `config_model()` を「節名 -> モデル」にまとめた dict のコピーを返す。
+
+    節名は各拡張の `name` から導いたもの（`extension_section_name()`）で、
+    `compose_config()` へそのまま渡せる形。
+    """
     return dict(_config_models)
 
 

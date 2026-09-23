@@ -148,11 +148,11 @@ class TestUseExtensions:
 
     def test_registers_extensions_and_composes_config(self, config_root: Path) -> None:
         """登録した拡張のセクションが合成され、`get_config()` から読める。"""
-        ext = make_extension("pack", config_models={"alpha": SampleSectionConfig})
+        ext = make_extension("my-pack", config_model=SampleSectionConfig)
 
         with use_extensions_cm(ext, config_root=config_root) as cfg:
-            assert [e.name for e in extension_module().get_extensions()] == ["pack"]
-            assert cfg.extensions.alpha.value == "default"
+            assert [e.name for e in extension_module().get_extensions()] == ["my-pack"]
+            assert cfg.extensions.my_pack.value == "default"
             assert config_module().get_config() is cfg
 
     def test_env_field_is_composed(
@@ -260,8 +260,8 @@ class TestUseExtensions:
 
         with pytest.raises(ValueError, match="Duplicate"):
             with use_extensions_cm(
-                make_extension("a", config_models={"alpha": SampleSectionConfig}),
-                make_extension("b", config_models={"alpha": SampleSectionConfig}),
+                make_extension("a", config_model=SampleSectionConfig),
+                make_extension("a", config_model=SampleSectionConfig),
                 config_root=config_root,
             ):
                 pass
@@ -333,9 +333,9 @@ class TestPytestPluginFixtures:
         generator = fixture_func(lilla_extensions)(config_root)
         register = next(generator)
 
-        cfg = register(make_extension("pack", config_models={"alpha": SampleSectionConfig}))
+        cfg = register(make_extension("pack", config_model=SampleSectionConfig))
 
-        assert cfg.extensions.alpha.value == "default"
+        assert cfg.extensions.pack.value == "default"
         assert config_module().get_config() is cfg
         assert [e.name for e in extension_module().get_extensions()] == ["pack"]
 
@@ -350,7 +350,7 @@ class TestPytestPluginFixtures:
         generator = fixture_func(lilla_extensions)(config_root)
         register = next(generator)
         register(make_extension("first"))
-        register(make_extension("second", config_models={"alpha": SampleSectionConfig}))
+        register(make_extension("second", config_model=SampleSectionConfig))
         assert [e.name for e in extension_module().get_extensions()] == ["second"]
 
         with pytest.raises(StopIteration):

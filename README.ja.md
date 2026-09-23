@@ -328,9 +328,8 @@ extension = MyExtension()
 | `dashboard_static_dir` | `/static/ext/{name}/` に載せる静的ファイルのディレクトリ。タブを出すなら直下に `page.js` を置く |
 | `dashboard_routes` | セッション認証の内側に足す HTTP ルート（`DashboardRoute`）。パスは `/api/{name}` 配下のみ |
 | `dashboard_public_routes` | 認証の外側に載せる公開ルート（OAuth の戻り先など）。パスは `/oauth/{name}` 配下のみ。`state` の検証は拡張側の責任 |
-| `config_models` | この拡張が `extensions:` の下に足す YAML セクション（`cfg.extensions.<名前>`） |
+| `config_model` | この拡張が足す YAML セクションのモデル 1 つ（足さないなら `None`）。置き場は `extensions.<name のハイフンをアンダースコアにしたもの>`（`google-oauth` なら `cfg.extensions.google_oauth`） |
 | `env_fields` | この拡張が `cfg.env` に足す秘匿フィールド |
-| `required_config_sections` | 自分では提供しないが読む `extensions:` 下のセクション |
 | `required_env_fields` | 自分では提供しないが読む `cfg.env` のフィールド |
 | `required_tool_context_keys` | 自分では提供しないが、自分のツールが読むツール context のキー |
 | `requires`（クラス属性） | 依存する拡張の名前。ロード済みで、かつ `LILLA_EXTENSIONS` で自分より前に並んでいる必要がある |
@@ -424,29 +423,34 @@ class GoogleConfig(BaseModel):
     redirect_uri: str = "http://localhost/google-callback"
 
 
-class MyExtension(Extension):
-    name = "my-extension"
+class GoogleOAuthExtension(Extension):
+    name = "google-oauth"
 
-    def config_models(self):
-        return {"google": GoogleConfig}
+    def config_model(self):
+        return GoogleConfig
 
     def env_fields(self):
         return {"google_client_secret": "GOOGLE_CLIENT_SECRET"}
 ```
 
-拡張のセクションは `lilla.yaml` のトップレベルではなく、コア確定の `extensions:` の下に
-置きます。コアが後からトップレベルに節を足しても、拡張の名前と衝突しません。
+1 つの拡張が足せるセクションのモデルは **1 つだけ** で、節名は自分では書きません。
+キーは `name` のハイフンをアンダースコアに置き換えたものです（`google-oauth` →
+`google_oauth`。ハイフンの無い名前はそのまま）。複数の設定のまとまりを持ちたいときは、
+その 1 つのモデルの子として並べてください。拡張のセクションは `lilla.yaml` の
+トップレベルではなく、コア確定の `extensions:` の下に置きます。コアが後からトップレベルに
+節を足しても、拡張の名前と衝突しません。
 
 ```yaml
 dashboard:
   port: 8765
 extensions:
-  google:
+  google_oauth:
     client_id: ...
 ```
 
-これで `get_config().extensions.google.client_id` と `get_config().env.google_client_secret`
-がプロセス全体から読めるようになります（トップレベルの `get_config().google` は作りません）。
+これで `get_config().extensions.google_oauth.client_id` と
+`get_config().env.google_client_secret` がプロセス全体から読めるようになります
+（トップレベルの `get_config().google_oauth` は作りません）。
 `get_config()` の型は基底の `AppConfig` なので、
 型検査や補完のためにセクションをそのモデルの型で受け取りたいときは `get_section()` を
 使ってください。
@@ -454,10 +458,11 @@ extensions:
 ```python
 from lilla_core.core.config import get_section
 
-client_id = get_section("google", GoogleConfig).client_id
+client_id = get_section("google-oauth", GoogleConfig).client_id
 ```
 
-探すのは `extensions:` の下だけです（コア確定の節は `get_config().ui` のように直接
+引数には拡張の `name` を渡します（節名をそのまま渡しても構いません）。探すのは
+`extensions:` の下だけです（コア確定の節は `get_config().ui` のように直接
 読みます）。セクションが申告されていない場合や、値が渡したモデルのインスタンスでない
 場合は `ValueError` になります。名前の綴りを間違えても静かに空を返すことはありません。
 
@@ -470,15 +475,18 @@ client_id = get_section("google", GoogleConfig).client_id
   コア確定の節と同じ名前のトップレベルキーはコアのものなので対象外です
 - 合成される env フィールドの型は常に `str | None`（既定値 `None`）です。契約が型を
   運ばないため、必須フィールドや文字列以外の秘匿情報はこの経路では表現できません
-- 同じセクション名・同じ env フィールド名を 2 つの拡張が提供したら、たとえモデルが
-  同一でも fail-fast します。セクション名は名前空間が別なのでコア確定の節と同じでも
-  構いませんが、コア確定の env フィールド名は予約済みです
-- `required_config_sections()` には、自分では提供しないが読むセクション名を並べます
-  （別のパックが持つ共有の `google:` セクションなど）。`required_env_fields()` と
-  `required_tool_context_keys()` は `cfg.env` のフィールドとツール context のキーについて
-  同じことをします。誰も提供していなければロードに失敗し、要求した拡張の名前を示します。
-  コア確定のセクションは常にあるのでここには書きません（コア確定の env フィールドと
-  ツール context のキーは、書いても常に満たされます）
+- `config_model()` は pydantic の `BaseModel` のサブクラスか `None` を返します。それ以外は
+  ロード時に失敗します。拡張名は一意でアンダースコアを含まないため、2 つの拡張が同じ
+  キーを導くことはありません。数字で始まる名前の拡張は、キーが識別子にならないため
+  モデルを申告できません。キーは名前空間が別なので、コア確定の節と同じでも構いません
+- 同じ env フィールド名を 2 つの拡張が提供したら fail-fast します。コア確定の env
+  フィールド名は予約済みです
+- 他の拡張のセクションを読むときは、その拡張に `requires`（下記）で依存し、
+  `cfg.extensions.<相手のキー>` を読みます。そのための別の申告はありません。
+  `required_env_fields()` と `required_tool_context_keys()` は引き続き、自分では提供しないが
+  読む `cfg.env` のフィールドとツール context のキーを並べます。誰も提供していなければ
+  ロードに失敗し、要求した拡張の名前を示します（コア確定の env フィールドとツール
+  context のキーは、書いても常に満たされます）
 
 ### 拡張どうしの依存
 
@@ -490,10 +498,7 @@ client_id = get_section("google", GoogleConfig).client_id
 ```python
 class GoogleCalendarExtension(Extension):
     name = "lilla-google-calendar"
-    requires = ("lilla-google-oauth",)
-
-    def required_config_sections(self):
-        return ["google"]
+    requires = ("lilla-google-oauth",)  # extensions.lilla_google_oauth を読む依存もこれで表す
 
     def required_env_fields(self):
         return ["google_client_secret"]
@@ -525,12 +530,14 @@ from lilla_core.core.extension import EXTENSION_API_VERSION, Extension
 
 class MyExtension(Extension):
     name = "my-extension"
-    api_version = 1  # 省略すると EXTENSION_API_VERSION
+    api_version = 2  # 省略すると EXTENSION_API_VERSION
 ```
 
 宣言したバージョンを受け付けない場合、`load_extensions()` は拡張名と両方のバージョンを
 示して失敗します。古い契約で書かれた拡張をそのまま読み込んで、起動後に壊れるのを
-防ぐためです。
+防ぐためです。現在のバージョンは 2 で、`config_models()` と `required_config_sections()` を
+`config_model()` に置き換えました。廃止したメソッドのどちらかを定義したままの拡張は、
+`api_version` を宣言していなくても、代わりの経路を示してロード時に失敗します。
 
 契約を変えるときの方針:
 

@@ -46,6 +46,12 @@ class SampleSectionConfig(BaseModel):
     value: str = "default"
 
 
+class OtherSectionConfig(BaseModel):
+    """`SampleSectionConfig` と区別するためのもう 1 つのセクションモデル。"""
+
+    other: int = 0
+
+
 def _make_module(name: str, attrs: dict) -> ModuleType:
     """`sys.modules` へ差し込むためのダミーモジュールを組み立てる。"""
     module = ModuleType(name)
@@ -76,7 +82,7 @@ class TestExtensionDefaults:
     def test_contribution_defaults_are_empty(self) -> None:
         """オーバーライドしなければ何も貢献しない。"""
         ext = Extension()
-        assert ext.config_models() == {}
+        assert ext.config_model() is None
         assert ext.env_fields() == {}
         assert ext.tool_roots() == []
         assert ext.tool_config_roots() == []
@@ -279,34 +285,80 @@ class TestValidation:
 
 
 class TestConfigContributions:
-    """`config_models()` / `env_fields()` のマージと衝突検査。"""
+    """`config_model()` / `env_fields()` のマージと衝突検査。"""
 
-    def test_contributions_are_merged_in_load_order(
+    def test_section_name_is_derived_from_the_extension_name(
         self, make_extension, use_extensions
     ) -> None:
-        """複数の拡張の申告が 1 つの dict へまとまる。"""
+        """節名は `name` のハイフンをアンダースコアに置き換えたもの。"""
         use_extensions(
-            make_extension("a", config_models={"alpha": SampleSectionConfig}),
+            make_extension("google-oauth", config_model=SampleSectionConfig),
             make_extension(
                 "b",
-                config_models={"beta": SampleSectionConfig},
+                config_model=OtherSectionConfig,
                 env_fields={"beta_secret": "BETA_SECRET"},
             ),
         )
 
         assert ext_module.get_config_models() == {
-            "alpha": SampleSectionConfig,
-            "beta": SampleSectionConfig,
+            "google_oauth": SampleSectionConfig,
+            "b": OtherSectionConfig,
         }
         assert ext_module.get_env_fields() == {"beta_secret": "BETA_SECRET"}
 
-    def test_duplicate_section_between_extensions_raises(self, make_extension) -> None:
-        """同じセクション名を 2 つの拡張が提供したら fail-fast する。"""
-        with pytest.raises(ValueError, match="Duplicate config model key 'alpha'"):
-            ext_module.set_extensions([
-                make_extension("a", config_models={"alpha": SampleSectionConfig}),
-                make_extension("b", config_models={"alpha": SampleSectionConfig}),
-            ])
+    def test_name_without_hyphen_is_used_as_is(self, make_extension, use_extensions) -> None:
+        """ハイフンの無い `name` はそのまま節名になる。"""
+        use_extensions(make_extension("habits", config_model=SampleSectionConfig))
+
+        assert ext_module.get_config_models() == {"habits": SampleSectionConfig}
+
+    def test_none_adds_no_section(self, make_extension, use_extensions) -> None:
+        """`config_model()` が `None` の拡張は節を足さない。"""
+        use_extensions(
+            make_extension("a", config_model=None),
+            make_extension("b"),
+        )
+
+        assert ext_module.get_config_models() == {}
+
+    def test_same_model_in_two_extensions_is_allowed(
+        self, make_extension, use_extensions
+    ) -> None:
+        """節名は拡張ごとに別なので、同じモデルを 2 つの拡張が使っても衝突しない。"""
+        use_extensions(
+            make_extension("a", config_model=SampleSectionConfig),
+            make_extension("b", config_model=SampleSectionConfig),
+        )
+
+        assert ext_module.get_config_models() == {
+            "a": SampleSectionConfig,
+            "b": SampleSectionConfig,
+        }
+
+    @pytest.mark.parametrize("value", [SampleSectionConfig(), {"a": SampleSectionConfig}, str])
+    def test_non_model_value_fails_fast(self, make_extension, value) -> None:
+        """モデルクラス以外を返したら拡張名つきで落とす。"""
+        with pytest.raises(ValueError, match="Extension 'a' config_model\\(\\) must return"):
+            ext_module.set_extensions([make_extension("a", config_model=value)])
+
+    def test_name_starting_with_digit_cannot_declare_a_model(self, make_extension) -> None:
+        """節名が識別子にならない `name`（数字始まり）はモデルを申告できない。"""
+        with pytest.raises(ValueError, match="'1pack' is not a valid identifier"):
+            ext_module.set_extensions([make_extension("1pack", config_model=SampleSectionConfig)])
+
+    def test_name_starting_with_digit_is_fine_without_a_model(
+        self, make_extension, use_extensions
+    ) -> None:
+        """モデルを申告しなければ数字始まりの `name` でも登録できる。"""
+        use_extensions(make_extension("1pack"))
+
+        assert ext_module.get_config_models() == {}
+
+    def test_core_section_name_is_not_reserved(self, make_extension, use_extensions) -> None:
+        """拡張の節は `extensions:` の下に置かれるため、コア確定と同名でも提供できる。"""
+        use_extensions(make_extension("discord", config_model=SampleSectionConfig))
+
+        assert ext_module.get_config_models() == {"discord": SampleSectionConfig}
 
     def test_duplicate_env_field_between_extensions_raises(self, make_extension) -> None:
         """同じ env フィールド名を 2 つの拡張が提供したら fail-fast する。"""
@@ -315,12 +367,6 @@ class TestConfigContributions:
                 make_extension("a", env_fields={"shared_secret": "SHARED_SECRET"}),
                 make_extension("b", env_fields={"shared_secret": "OTHER_SECRET"}),
             ])
-
-    def test_core_section_name_is_not_reserved(self, make_extension, use_extensions) -> None:
-        """拡張の節は `extensions:` の下に置かれるため、コア確定と同名でも提供できる。"""
-        use_extensions(make_extension("a", config_models={"discord": SampleSectionConfig}))
-
-        assert ext_module.get_config_models() == {"discord": SampleSectionConfig}
 
     def test_core_env_field_name_is_reserved(self, make_extension) -> None:
         """コア確定の `EnvConfig` フィールド名は拡張から提供できない。"""
@@ -335,9 +381,44 @@ class TestConfigContributions:
         """`set_extensions()` は登録と検証だけで、プロセスの設定を差し替えない。"""
         sentinel = config_module().get_config()
 
-        use_extensions(make_extension("a", config_models={"alpha": SampleSectionConfig}))
+        use_extensions(make_extension("a", config_model=SampleSectionConfig))
 
         assert config_module().get_config() is sentinel
+
+
+class TestRemovedMethods:
+    """契約から外したメソッドを上書きしている拡張はロード時に落とす（api_version 2）。"""
+
+    @pytest.mark.parametrize(
+        ("method_name", "value", "replacement"),
+        [
+            ("config_models", {"alpha": SampleSectionConfig}, "config_model"),
+            ("required_config_sections", ["alpha"], "requires"),
+        ],
+    )
+    def test_overriding_a_removed_method_fails_fast(
+        self, make_extension, method_name: str, value, replacement: str
+    ) -> None:
+        """上書きしていれば、メソッド名と代わりの経路を示して落とす。"""
+        with pytest.raises(ValueError, match=f"'{method_name}\\(\\)'.*use {replacement}"):
+            ext_module.set_extensions([make_extension("old", **{method_name: value})])
+
+    def test_subclass_override_is_detected(self) -> None:
+        """クラス定義で上書きした旧メソッドも検出する。"""
+
+        class OldExtension(Extension):
+            name = "old"
+
+            def config_models(self):
+                return {"alpha": SampleSectionConfig}
+
+        with pytest.raises(ValueError, match="'config_models\\(\\)'"):
+            ext_module.set_extensions([OldExtension()])
+
+    def test_base_class_no_longer_has_the_removed_methods(self) -> None:
+        """基底クラスから旧メソッドが消えている（節名を自分で書く API が無い）。"""
+        assert not hasattr(Extension, "config_models")
+        assert not hasattr(Extension, "required_config_sections")
 
 
 # ---------------------------------------------------------------------------
@@ -552,46 +633,6 @@ class TestRequiredToolContextKeys:
 
 
 # ---------------------------------------------------------------------------
-# TestRequiredConfigSections
-# ---------------------------------------------------------------------------
-
-
-class TestRequiredConfigSections:
-    """`required_config_sections()` の存在検査。"""
-
-    def test_section_provided_by_another_extension_is_accepted(
-        self, make_extension, use_extensions
-    ) -> None:
-        """他の拡張が提供していれば要求できる（提供側の並び順は問わない）。"""
-        use_extensions(
-            make_extension("consumer", required_config_sections=["alpha"]),
-            make_extension("provider", config_models={"alpha": SampleSectionConfig}),
-        )
-
-        assert ext_module.get_config_models() == {"alpha": SampleSectionConfig}
-
-    def test_core_section_does_not_satisfy_the_requirement(self, make_extension) -> None:
-        """コア確定のトップレベル節は `extensions:` の下に無いため、要求を満たさない。"""
-        with pytest.raises(
-            ValueError,
-            match="Extension 'consumer' requires config section 'prompt'",
-        ):
-            ext_module.set_extensions([
-                make_extension("consumer", required_config_sections=["prompt"]),
-            ])
-
-    def test_unprovided_section_fails_fast(self, make_extension) -> None:
-        """誰も提供していないセクションを要求したら、要求元の名前つきで落とす。"""
-        with pytest.raises(
-            ValueError,
-            match="Extension 'consumer' requires config section 'google'",
-        ):
-            ext_module.set_extensions([
-                make_extension("consumer", required_config_sections=["google"]),
-            ])
-
-
-# ---------------------------------------------------------------------------
 # TestLoadExtensionsComposesConfig
 # ---------------------------------------------------------------------------
 
@@ -605,12 +646,12 @@ class TestLoadExtensionsComposesConfig:
         """ロード後の `get_config()` で拡張のセクションが読める。"""
         register_module(
             "pack_cfg",
-            extension=make_extension("cfg", config_models={"alpha": SampleSectionConfig}),
+            extension=make_extension("my-cfg", config_model=SampleSectionConfig),
         )
 
         ext_module.load_extensions("pack_cfg")
 
-        assert config_module().get_config().extensions.alpha.value == "default"
+        assert config_module().get_config().extensions.my_cfg.value == "default"
 
     def test_declared_env_field_is_readable_after_load(
         self, register_module, make_extension, monkeypatch: pytest.MonkeyPatch
@@ -1226,6 +1267,9 @@ class TestDashboardContributions:
         assert len(ext_module.get_dashboard_pages()) == 1
         assert len(ext_module.get_dashboard_static_mounts()) == 1
 
-    def test_api_version_stays_unchanged(self) -> None:
-        """メソッドの追加だけなので契約バージョンは上げない。"""
-        assert ext_module.EXTENSION_API_VERSION == 1
+    def test_api_version_is_current(self) -> None:
+        """ダッシュボードの申告はメソッドの追加だけで版を上げていない。
+
+        版は #110（`config_models()` の廃止）で 2 へ上がった。
+        """
+        assert ext_module.EXTENSION_API_VERSION == 2

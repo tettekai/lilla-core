@@ -378,6 +378,17 @@ class TestGetSection:
         assert section.default == "idle.png"
         assert section is cfg.extensions.media
 
+    def test_accepts_the_extension_name(self, config_root) -> None:
+        """拡張の `name`（ハイフン入り）を渡しても、導いた節名で引ける。"""
+        config_root("extensions:\n  google_oauth:\n    default: g.png\n")
+        cfg = compose_config({"google_oauth": MediaConfig}, {})
+
+        by_name = _config_module.get_section("google-oauth", MediaConfig, config=cfg)
+        by_section = _config_module.get_section("google_oauth", MediaConfig, config=cfg)
+
+        assert by_name is by_section is cfg.extensions.google_oauth
+        assert by_name.default == "g.png"
+
     def test_core_section_is_not_looked_up(self, config_root) -> None:
         """コア確定のトップレベル節は探さない（`extensions:` の下だけを見る）。"""
         config_root()
@@ -420,3 +431,21 @@ class TestGetSection:
 
         with pytest.raises(ValueError, match="is a MediaConfig, not HabitsConfig"):
             _config_module.get_section("media", HabitsConfig, config=cfg)
+
+
+class TestExtensionSectionName:
+    """`extension_section_name()` による節名の導出。"""
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("google-oauth", "google_oauth"),
+            ("lilla-agent", "lilla_agent"),
+            ("habits", "habits"),
+            ("a-b-c", "a_b_c"),
+            ("google_oauth", "google_oauth"),
+        ],
+    )
+    def test_replaces_hyphens_with_underscores(self, name: str, expected: str) -> None:
+        """ハイフンだけをアンダースコアに置き換え、それ以外はそのまま返す。"""
+        assert _config_module.extension_section_name(name) == expected

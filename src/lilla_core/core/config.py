@@ -260,7 +260,8 @@ class ExtensionsConfig(BaseModel):
     """lilla.yaml の `extensions:` セクション（拡張が申告した節の置き場）。
 
     コア単体ではフィールドを 1 つも持たず、`compose_config()` が拡張の
-    `config_models()` の申告をこのモデルのサブクラスへ足す。拡張の節をコア確定の
+    `config_model()` の申告をこのモデルのサブクラスへ足す（キーは各拡張の `name` から
+    導いた節名。`extension_section_name()`）。拡張の節をコア確定の
     トップレベル節と別の名前空間に置くことで、コアが後から節を確定しても拡張側の
     名前と衝突しない。読み出しは `get_config().extensions.<節名>`（型付きなら
     `get_section()`）。
@@ -584,7 +585,7 @@ def set_config(instance: AppConfig) -> None:
 
     通常は `load_extensions()` が `compose_config()` の結果をこの関数で据える。
     拡張モジュールが import 副作用として自前のサブクラスを差し込んでも、
-    そのあとの合成結果で上書きされるため、設定の差分は `Extension.config_models()`
+    そのあとの合成結果で上書きされるため、設定の差分は `Extension.config_model()`
     / `Extension.env_fields()` から出すこと。テスト用途では上書き可
     （`_config_instance` の直接リセットも可）。
     """
@@ -646,21 +647,32 @@ def get_config() -> AppConfig:
 _SectionT = TypeVar("_SectionT", bound=BaseModel)
 
 
+def extension_section_name(extension_name: str) -> str:
+    """拡張の `name` から、その拡張の `extensions:` 下の節名を導く。
+
+    ハイフンをアンダースコアに置き換えるだけ（`google-oauth` → `google_oauth`。
+    ハイフンを含まない名前はそのまま）。拡張は節名を自分では申告しない。
+    すでに節名の形（アンダースコア区切り）の文字列を渡しても同じ値を返す。
+    """
+    return extension_name.replace("-", "_")
+
+
 def get_section(name: str, model: type[_SectionT], config: AppConfig | None = None) -> _SectionT:
     """合成済み設定の `extensions:` から拡張のセクションを取り出し、申告したモデルの型で返す。
 
-    拡張が `Extension.config_models()` で申告したセクションは
-    `get_config().extensions.<名前>` で読めるが、`get_config()` の戻り値の型は
-    `AppConfig` のため静的には見えない。本関数はセクション名とモデルを受け取り、
-    実際の値がそのモデルのインスタンスであることを検証したうえで型付きで返す
-    （`get_section("google", GoogleConfig).client_id`）。
+    拡張が `Extension.config_model()` で申告したセクションは
+    `get_config().extensions.<節名>` で読めるが、`get_config()` の戻り値の型は
+    `AppConfig` のため静的には見えない。本関数は拡張の `name`（または節名）と
+    モデルを受け取り、実際の値がそのモデルのインスタンスであることを検証したうえで
+    型付きで返す（`get_section("google-oauth", GoogleConfig).client_id`）。
 
     探すのは `extensions:` の下だけで、コア確定のトップレベル節（`ui` など）は
     対象外。コアの節は `AppConfig` に型付きで定義済みのため `get_config().ui` で読む
     （拡張がコアと同名の節を申告できるため、両方を探すと名前が 2 か所を指しうる）。
 
     Args:
-        name: YAML セクション名（`config_models()` のキー）。
+        name: 拡張の `name`（`google-oauth`）。`extension_section_name()` で節名へ
+            直すので、節名（`google_oauth`）をそのまま渡してもよい。
         model: そのセクションのモデルクラス。
         config: 読み出す設定。`None` なら `get_config()`。
 
@@ -669,20 +681,21 @@ def get_section(name: str, model: type[_SectionT], config: AppConfig | None = No
 
     Raises:
         ValueError: セクションが `extensions:` に存在しない（申告漏れ・名前違い）、
-            または実際の値が `model` のインスタンスでない（別の拡張が同名を別モデルで
-            提供している等）場合。
+            または実際の値が `model` のインスタンスでない場合。
     """
     cfg = config if config is not None else get_config()
+    section = extension_section_name(name)
     extensions = cfg.extensions
-    if name not in type(extensions).model_fields:
+    if section not in type(extensions).model_fields:
         raise ValueError(
-            f"Config section 'extensions.{name}' is not declared "
-            "(declare it via Extension.config_models() or check the name)"
+            f"Config section 'extensions.{section}' is not declared "
+            "(declare it via Extension.config_model() or check the name)"
         )
-    value = getattr(extensions, name)
+    value = getattr(extensions, section)
     if not isinstance(value, model):
         raise ValueError(
-            f"Config section 'extensions.{name}' is a {type(value).__name__}, not {model.__name__}"
+            f"Config section 'extensions.{section}' is a {type(value).__name__}, "
+            f"not {model.__name__}"
         )
     return value
 
@@ -755,7 +768,8 @@ def compose_config(
       （既定値 `None`）で、必須フィールドや非文字列は表現できない
 
     Args:
-        config_models: YAML セクション名 -> セクションモデル。
+        config_models: `extensions:` 下の節名 -> セクションモデル（`load_extensions()` は
+            `extension.get_config_models()` の、各拡張の `name` から導いた節名を渡す）。
         env_fields: `EnvConfig` に足すフィールド名 -> OS 環境変数名。
 
     Returns:
