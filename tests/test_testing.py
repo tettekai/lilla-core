@@ -118,14 +118,14 @@ class TestWriteMinimalLillaYaml:
         path = write_minimal_lilla_yaml(
             tmp_path,
             extra={
-                "habits": {"channel": "habits-test"},
+                "extensions": {"habits": {"channel": "habits-test"}},
                 "discord": {"error_channel_id": 1},
                 "ui": {"locale": "en"},
             },
         )
 
         written = yaml.safe_load(path.read_text(encoding="utf-8"))
-        assert written["habits"] == {"channel": "habits-test"}
+        assert written["extensions"] == {"habits": {"channel": "habits-test"}}
         assert written["discord"] == {"my_user_id": "123456789", "error_channel_id": 1}
         assert written["ui"] == {"timezone": "Asia/Tokyo", "locale": "en"}
 
@@ -152,7 +152,7 @@ class TestUseExtensions:
 
         with use_extensions_cm(ext, config_root=config_root) as cfg:
             assert [e.name for e in extension_module().get_extensions()] == ["pack"]
-            assert cfg.alpha.value == "default"
+            assert cfg.extensions.alpha.value == "default"
             assert config_module().get_config() is cfg
 
     def test_env_field_is_composed(
@@ -335,7 +335,7 @@ class TestPytestPluginFixtures:
 
         cfg = register(make_extension("pack", config_models={"alpha": SampleSectionConfig}))
 
-        assert cfg.alpha.value == "default"
+        assert cfg.extensions.alpha.value == "default"
         assert config_module().get_config() is cfg
         assert [e.name for e in extension_module().get_extensions()] == ["pack"]
 

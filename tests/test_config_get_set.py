@@ -90,6 +90,42 @@ class TestGetConfigWithoutSetConfig:
         """`set_config()` 未呼び出し時、`get_config()` は同じインスタンスを返す（lru_cache）。"""
         assert _config_module.get_config() is _config_module.get_config()
 
+    def test_extensions_content_is_ignored_when_not_composed(
+        self, isolated_config_root: Path
+    ) -> None:
+        """合成を経ていなければ `extensions:` の中身は検証せず、コアの節だけ読める。
+
+        拡張をロードしない運用スクリプトなどが、拡張の節を書いた `lilla.yaml` で
+        落ちないようにするため（未知キーの検査は `compose_config()` の結果にだけ掛かる）。
+        """
+        yaml_file = isolated_config_root / "lilla.yaml"
+        yaml_file.write_text(
+            yaml_file.read_text(encoding="utf-8")
+            + "extensions:\n  habits:\n    channel_id: x\n",
+            encoding="utf-8",
+        )
+
+        cfg = _config_module.get_config()
+
+        assert cfg.discord.my_user_id == "1"
+        assert cfg.extensions.model_dump() == {}
+
+    def test_plain_appconfig_still_rejects_unknown_extensions(
+        self, isolated_config_root: Path
+    ) -> None:
+        """素の `AppConfig()`（拡張 0 個で合成した場合と同じ）は未知キーで落ちる。"""
+        from pydantic import ValidationError
+
+        yaml_file = isolated_config_root / "lilla.yaml"
+        yaml_file.write_text(
+            yaml_file.read_text(encoding="utf-8")
+            + "extensions:\n  habits:\n    channel_id: x\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValidationError, match="extensions.habits"):
+            _config_module.AppConfig()
+
 
 class TestSetConfig:
     """`set_config()` 経由でインスタンスを差し込む経路。"""

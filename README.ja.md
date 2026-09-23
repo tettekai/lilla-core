@@ -328,9 +328,9 @@ extension = MyExtension()
 | `dashboard_static_dir` | `/static/ext/{name}/` に載せる静的ファイルのディレクトリ。タブを出すなら直下に `page.js` を置く |
 | `dashboard_routes` | セッション認証の内側に足す HTTP ルート（`DashboardRoute`）。パスは `/api/{name}` 配下のみ |
 | `dashboard_public_routes` | 認証の外側に載せる公開ルート（OAuth の戻り先など）。パスは `/oauth/{name}` 配下のみ。`state` の検証は拡張側の責任 |
-| `config_models` | この拡張が `AppConfig` に足す YAML セクション |
+| `config_models` | この拡張が `extensions:` の下に足す YAML セクション（`cfg.extensions.<名前>`） |
 | `env_fields` | この拡張が `cfg.env` に足す秘匿フィールド |
-| `required_config_sections` | 自分では提供しないが読む YAML セクション |
+| `required_config_sections` | 自分では提供しないが読む `extensions:` 下のセクション |
 | `required_env_fields` | 自分では提供しないが読む `cfg.env` のフィールド |
 | `required_tool_context_keys` | 自分では提供しないが、自分のツールが読むツール context のキー |
 | `requires`（クラス属性） | 依存する拡張の名前。ロード済みで、かつ `LILLA_EXTENSIONS` で自分より前に並んでいる必要がある |
@@ -434,8 +434,20 @@ class MyExtension(Extension):
         return {"google_client_secret": "GOOGLE_CLIENT_SECRET"}
 ```
 
-これで `get_config().google.client_id` と `get_config().env.google_client_secret` が
-プロセス全体から読めるようになります。`get_config()` の型は基底の `AppConfig` なので、
+拡張のセクションは `lilla.yaml` のトップレベルではなく、コア確定の `extensions:` の下に
+置きます。コアが後からトップレベルに節を足しても、拡張の名前と衝突しません。
+
+```yaml
+dashboard:
+  port: 8765
+extensions:
+  google:
+    client_id: ...
+```
+
+これで `get_config().extensions.google.client_id` と `get_config().env.google_client_secret`
+がプロセス全体から読めるようになります（トップレベルの `get_config().google` は作りません）。
+`get_config()` の型は基底の `AppConfig` なので、
 型検査や補完のためにセクションをそのモデルの型で受け取りたいときは `get_section()` を
 使ってください。
 
@@ -445,20 +457,28 @@ from lilla_core.core.config import get_section
 client_id = get_section("google", GoogleConfig).client_id
 ```
 
-セクションが申告されていない場合や、値が渡したモデルのインスタンスでない場合は
-`ValueError` になります。名前の綴りを間違えても静かに空を返すことはありません。
+探すのは `extensions:` の下だけです（コア確定の節は `get_config().ui` のように直接
+読みます）。セクションが申告されていない場合や、値が渡したモデルのインスタンスでない
+場合は `ValueError` になります。名前の綴りを間違えても静かに空を返すことはありません。
 
 - セクションは、モデルが必須フィールドを 1 つでも持てば **必須**、そうでなければ
   省略可能になります。必須セクションが `lilla.yaml` に無ければ起動時に落ちます
+- `extensions:` の下に未知のキーがあれば起動時に落ちます。外した拡張の節が払い残しの
+  まま気付かれずに残ることを防ぐためです。拡張が 0 個なら `extensions` は空です
+- 申告した節を `extensions:` ではなくトップレベルに書いた場合も起動時に落ちます
+  （そのままだと無視され、モデルの既定値のまま気付かずに動いてしまうため）。
+  コア確定の節と同じ名前のトップレベルキーはコアのものなので対象外です
 - 合成される env フィールドの型は常に `str | None`（既定値 `None`）です。契約が型を
   運ばないため、必須フィールドや文字列以外の秘匿情報はこの経路では表現できません
 - 同じセクション名・同じ env フィールド名を 2 つの拡張が提供したら、たとえモデルが
-  同一でも fail-fast します。コア確定の名前も同様に予約済みです
+  同一でも fail-fast します。セクション名は名前空間が別なのでコア確定の節と同じでも
+  構いませんが、コア確定の env フィールド名は予約済みです
 - `required_config_sections()` には、自分では提供しないが読むセクション名を並べます
   （別のパックが持つ共有の `google:` セクションなど）。`required_env_fields()` と
   `required_tool_context_keys()` は `cfg.env` のフィールドとツール context のキーについて
-  同じことをします。誰も提供しておらず、コア確定の名前でもなければロードに失敗し、
-  要求した拡張の名前を示します
+  同じことをします。誰も提供していなければロードに失敗し、要求した拡張の名前を示します。
+  コア確定のセクションは常にあるのでここには書きません（コア確定の env フィールドと
+  ツール context のキーは、書いても常に満たされます）
 
 ### 拡張どうしの依存
 
@@ -546,7 +566,7 @@ from my_package import extension
 def test_config_section_is_composed(lilla_extensions):
     cfg = lilla_extensions(extension)
 
-    assert cfg.my_section.value == "default"
+    assert cfg.extensions.my_section.value == "default"
 ```
 
 fixture は 2 つ（どちらも function scope）です。
@@ -566,10 +586,12 @@ from lilla_core.testing import use_extensions, write_minimal_lilla_yaml
 
 
 def test_section(tmp_path):
-    write_minimal_lilla_yaml(tmp_path, extra={"habits": {"channel": "habits-test"}})
+    write_minimal_lilla_yaml(
+        tmp_path, extra={"extensions": {"habits": {"channel": "habits-test"}}}
+    )
 
     with use_extensions(extension, config_root=tmp_path) as cfg:
-        assert cfg.habits.channel == "habits-test"
+        assert cfg.extensions.habits.channel == "habits-test"
 ```
 
 `use_extensions()` は入るときに現在の登録・設定インスタンス・`CONFIG_ROOT` を退避し、

@@ -256,6 +256,28 @@ class DashboardConfig(BaseModel):
     cookie_secure: bool = True
 
 
+class ExtensionsConfig(BaseModel):
+    """lilla.yaml の `extensions:` セクション（拡張が申告した節の置き場）。
+
+    コア単体ではフィールドを 1 つも持たず、`compose_config()` が拡張の
+    `config_models()` の申告をこのモデルのサブクラスへ足す。拡張の節をコア確定の
+    トップレベル節と別の名前空間に置くことで、コアが後から節を確定しても拡張側の
+    名前と衝突しない。読み出しは `get_config().extensions.<節名>`（型付きなら
+    `get_section()`）。
+
+    コア確定の他の節と違い、未知のキーは無視せず起動時に落とす。ロードしていない
+    拡張の節（拡張を外したあとの払い残し）を黙って残さないため。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _treat_null_as_empty(cls, data: Any) -> Any:
+        """`extensions:` だけ書いて中身が空（YAML の `null`）の場合を空の節として扱う。"""
+        return {} if data is None else data
+
+
 class UiConfig(BaseModel):
     """lilla.yaml の `ui:` セクション。
 
@@ -446,6 +468,34 @@ class AppConfig(BaseSettings):
     # import だけで落ちる。`default_factory` で AppConfig 構築時まで遅延させる。
     llm: LlmConfig = Field(default_factory=LlmConfig)
     ui: UiConfig = UiConfig()
+    # 拡張が申告した節の置き場。中身は `compose_config()` が合成する（拡張 0 個なら空）。
+    extensions: ExtensionsConfig = Field(default_factory=ExtensionsConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_extension_sections_at_top_level(cls, data: Any) -> Any:
+        """拡張が申告した節がトップレベルに書かれていたら起動時に落とす。
+
+        トップレベルの未知キーは `extra="ignore"` で黙って捨てられるため、
+        `extensions:` の下へ移し忘れた節は、全フィールドに既定値があるモデルだと
+        既定値のまま気付かれずに起動してしまう。合成済みモデル（`cls`）が持つ
+        拡張の節名と突き合わせて検出する。コア確定の節と同名の拡張節は
+        トップレベル側がコアのものなので対象外。
+        """
+        if not isinstance(data, dict):
+            return data
+        extension_sections = cls.model_fields["extensions"].annotation.model_fields
+        misplaced = sorted(
+            key
+            for key in data
+            if key in extension_sections and key not in AppConfig.model_fields
+        )
+        if misplaced:
+            raise ValueError(
+                "Extension config sections must be placed under 'extensions:' in lilla.yaml, "
+                f"but found at the top level: {', '.join(misplaced)}"
+            )
+        return data
 
     @classmethod
     def settings_customise_sources(
@@ -542,11 +592,37 @@ def set_config(instance: AppConfig) -> None:
     _config_instance = instance
 
 
+class _UncomposedExtensionsConfig(ExtensionsConfig):
+    """合成を経ずに組んだ設定（`_default_config()`）の `extensions:` 節。
+
+    どの拡張が載るかを知らないまま組むため、`extensions:` の下の中身は検証せずに
+    捨てる（`ExtensionsConfig` の未知キー検査は、申告を突き合わせる合成時だけ）。
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class _UncomposedAppConfig(AppConfig):
+    """`load_extensions()` を経ずに `get_config()` が組む設定。
+
+    運用スクリプトなど拡張をロードしないプロセスでも、`extensions:` を書いた
+    `lilla.yaml` からコア確定の節を読めるようにする。拡張の節は読めない。
+    """
+
+    extensions: _UncomposedExtensionsConfig = Field(
+        default_factory=_UncomposedExtensionsConfig
+    )
+
+
 @lru_cache(maxsize=1)
 def _default_config() -> AppConfig:
-    """`set_config()` が一度も呼ばれなかった場合、素の `AppConfig` を組み立てて返す。
+    """`set_config()` が一度も呼ばれなかった場合、合成前の設定を組み立てて返す。
+
+    `load_extensions()` を経ていない（＝どの拡張が載るか分からない）ため、
+    `extensions:` の下の中身は検証せず空として扱う。起動時の検証（未知キーで
+    落とす）は `compose_config()` の結果にだけ掛かる。
     """
-    return AppConfig()
+    return _UncomposedAppConfig()
 
 
 def get_config() -> AppConfig:
@@ -558,9 +634,9 @@ def get_config() -> AppConfig:
     しまい、後から `set_config()` されても反映されなくなる。
 
     型ヒント上は `AppConfig` を返すが、実体は `compose_config()` が組んだ
-    サブクラスのインスタンスで、拡張が申告したセクションも属性として持つ
-    （ダックタイピング）。拡張のセクションを静的な型付きで読みたい場合は
-    `get_section()` を使う。
+    サブクラスのインスタンスで、拡張が申告したセクションは `extensions` の下に
+    属性として持つ（`get_config().extensions.<節名>`。ダックタイピング）。
+    拡張のセクションを静的な型付きで読みたい場合は `get_section()` を使う。
     """
     if _config_instance is not None:
         return _config_instance
@@ -571,16 +647,20 @@ _SectionT = TypeVar("_SectionT", bound=BaseModel)
 
 
 def get_section(name: str, model: type[_SectionT], config: AppConfig | None = None) -> _SectionT:
-    """合成済み設定からセクションを取り出し、申告したモデルの型で返す。
+    """合成済み設定の `extensions:` から拡張のセクションを取り出し、申告したモデルの型で返す。
 
-    拡張が `Extension.config_models()` で申告したセクションは `get_config().<名前>` で
-    読めるが、`get_config()` の戻り値の型は `AppConfig` のため静的には見えない。
-    本関数はセクション名とモデルを受け取り、実際の値がそのモデルのインスタンスで
-    あることを検証したうえで型付きで返す（`get_section("google", GoogleConfig).client_id`）。
-    コア確定のセクション（`get_section("ui", UiConfig)` など）にも使える。
+    拡張が `Extension.config_models()` で申告したセクションは
+    `get_config().extensions.<名前>` で読めるが、`get_config()` の戻り値の型は
+    `AppConfig` のため静的には見えない。本関数はセクション名とモデルを受け取り、
+    実際の値がそのモデルのインスタンスであることを検証したうえで型付きで返す
+    （`get_section("google", GoogleConfig).client_id`）。
+
+    探すのは `extensions:` の下だけで、コア確定のトップレベル節（`ui` など）は
+    対象外。コアの節は `AppConfig` に型付きで定義済みのため `get_config().ui` で読む
+    （拡張がコアと同名の節を申告できるため、両方を探すと名前が 2 か所を指しうる）。
 
     Args:
-        name: YAML セクション名（`config_models()` のキー、またはコア確定の名前）。
+        name: YAML セクション名（`config_models()` のキー）。
         model: そのセクションのモデルクラス。
         config: 読み出す設定。`None` なら `get_config()`。
 
@@ -588,28 +668,30 @@ def get_section(name: str, model: type[_SectionT], config: AppConfig | None = No
         `model` のインスタンス。
 
     Raises:
-        ValueError: セクションが存在しない（申告漏れ・名前違い）、または実際の値が
-            `model` のインスタンスでない（別の拡張が同名を別モデルで提供している等）場合。
+        ValueError: セクションが `extensions:` に存在しない（申告漏れ・名前違い）、
+            または実際の値が `model` のインスタンスでない（別の拡張が同名を別モデルで
+            提供している等）場合。
     """
     cfg = config if config is not None else get_config()
-    if name not in type(cfg).model_fields:
+    extensions = cfg.extensions
+    if name not in type(extensions).model_fields:
         raise ValueError(
-            f"Config section '{name}' is not declared "
+            f"Config section 'extensions.{name}' is not declared "
             "(declare it via Extension.config_models() or check the name)"
         )
-    value = getattr(cfg, name)
+    value = getattr(extensions, name)
     if not isinstance(value, model):
         raise ValueError(
-            f"Config section '{name}' is a {type(value).__name__}, not {model.__name__}"
+            f"Config section 'extensions.{name}' is a {type(value).__name__}, not {model.__name__}"
         )
     return value
 
 
 def core_config_section_names() -> frozenset[str]:
-    """コアが確定済みの YAML セクション名（`AppConfig` のフィールド名）を返す。
+    """コアが確定済みの YAML トップレベル節名（`AppConfig` のフィールド名）を返す。
 
-    拡張が提供・要求するセクション名の検査に使う。`env` も含むため、拡張が
-    `env:` という名前のセクションを提供することはできない。
+    `env` と `extensions` も含む。拡張の節は `extensions:` の下に置かれるため、
+    拡張が同じ名前の節を申告しても衝突しない。
     """
     return frozenset(AppConfig.model_fields)
 
@@ -664,8 +746,10 @@ def compose_config(
 
     合成されるのは次の 2 つ。
 
-    - YAML セクション: `AppConfig` を基盤に `pydantic.create_model` で追加する。
-      セクションが必須かどうかは `_section_field()` がモデルから導出する
+    - YAML セクション: `ExtensionsConfig` を基盤に `pydantic.create_model` で追加し、
+      それを `AppConfig` の `extensions` フィールドの型に据える（トップレベルには
+      足さない）。セクションが必須かどうかは `_section_field()` がモデルから導出し、
+      必須のセクションが 1 つでもあれば `extensions:` 自体も必須になる
     - 秘匿フィールド: `EnvConfig` へ同様に追加し、OS 変数名のマッピング
       （`_extra_env_var_names`）も合わせて延ばす。型は常に `str | None`
       （既定値 `None`）で、必須フィールドや非文字列は表現できない
@@ -706,8 +790,13 @@ def compose_config(
         )
 
     field_definitions: dict[str, Any] = {"env": (env_model, ...)}
-    for section, model in config_models.items():
-        field_definitions[section] = _section_field(model)
+    if config_models:
+        extensions_model = create_model(
+            "ComposedExtensionsConfig",
+            __base__=ExtensionsConfig,
+            **{section: _section_field(model) for section, model in config_models.items()},
+        )
+        field_definitions["extensions"] = _section_field(extensions_model)
 
     composed = create_model("ComposedAppConfig", __base__=AppConfig, **field_definitions)
     return composed()
