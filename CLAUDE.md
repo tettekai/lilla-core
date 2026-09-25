@@ -22,10 +22,8 @@ HTTP サーバー（機械向けの Bearer API・WebSocket クライアントな
 コア本体ではなく、外部の拡張と同じ `Extension` 契約だけで書いた拡張の実装で、
 `LILLA_EXTENSIONS` に import パス（`lilla_core.extensions.google_oauth` など）を並べた
 ときだけ読み込まれる。コア本体（`extensions/` の外）から公式拡張パックを import しては
-ならず、パック内の拡張が必要とする配線も `Extension` のメソッドで表す。
-用語は「拡張（Extension）＝ `Extension` クラス 1 つ」「拡張パック（Extension Pack）＝
-複数の拡張をまとめたもの」で使い分ける（`google-oauth` は拡張、`lilla_core.extensions`
-全体が公式拡張パック）。
+ならず、公式拡張パック内の拡張が必要とする配線も `Extension` のメソッドで表す（「拡張」と
+「拡張パック」の使い分けは「開発ルール」の用語の項を参照）。
 
 lilla-core は拡張が一切登録されていない状態でも Discord bot として単体で起動できる
 ことを設計上の前提にしている。`Extension` の各メソッドは「何も貢献しない」
@@ -38,6 +36,15 @@ lilla-core は拡張が一切登録されていない状態でも Discord bot �
   拡張側の情報を必要とする場合は、直接参照せず `core/extension.py` の `Extension`
   にメソッドを追加し、拡張する側でオーバーライドしてもらう形にする
   （観測用ダッシュボードだけは例外でコア所有。「プロジェクト概要」の線引きを参照）
+- 「拡張」と「拡張パック」は次の意味で使い分ける（ドキュメント・docstring・コメント・
+  テスト名・CHANGELOG・Issue / PR の文面すべてで同じ）
+  - **拡張（Extension）**: `Extension` のサブクラス 1 つ（モジュールが export する
+    `extension` 1 個）。例: `google-oauth`、`google-calendar`
+  - **拡張パック（Extension Pack）**: 複数の拡張をまとめたもの。例: `lilla_core.extensions`
+    （コアに同梱しているものは「公式拡張パック」/ official extension pack）
+  - 1 つの拡張を「パック」と呼ばない。「公式パック」「pack」のような省略形も使わない
+  - 既存のファイルには古い曖昧な呼び方が残っていることがある。まとめて直す作業はしないが、
+    作業で追加・変更するファイルにそうした箇所があれば、その変更の中で上の呼び方に直す
 - 関数には docstring を日本語で書く
 - `logger.*()` / `raise` に渡すメッセージ文字列は英語で書く（docstring・コメントは日本語のまま）
 - Discord に見える文言（コマンドの返信・ボタンのラベル・`notify_error` に渡す文脈など）は
