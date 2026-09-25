@@ -140,7 +140,7 @@ async def main():
         logger.error(
             "MESSAGE CONTENT INTENT is not enabled in the Discord Developer Portal. "
             "Turn it on under Privileged Gateway Intents on the Bot page. "
-            "See the README setup section.",
+            "See https://github.com/tettekai/lilla-core/blob/main/docs/en/discord-bot-setup.md",
             exc_info=True,
         )
         sys.exit(1)

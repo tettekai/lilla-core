@@ -61,7 +61,7 @@ Add a scope when it helps (`feat(config): ...`).
 
 ## Scope of this repository
 
-`lilla-core` is a general-purpose agent runtime. Keep character settings, domain-specific integrations, and purpose-specific HTTP/dashboard servers out of this repo. Extend via the extension points documented in the README and `CLAUDE.md`.
+`lilla-core` is a general-purpose agent runtime. Keep character settings, domain-specific integrations, and purpose-specific HTTP/dashboard servers out of this repo. Extend via the extension points documented in [`docs/en/`](./docs/en/README.md) and `CLAUDE.md`.
 
 ## Questions
 
@@ -111,4 +111,4 @@ Conventional Commits（英語）。型は `feat` / `fix` / `refactor` / `test` /
 
 ### このリポジトリの範囲
 
-汎用のエージェント基盤だけを扱います。キャラクター設定や特定ドメイン連携などは拡張ポイント経由で外側に置いてください。
+汎用のエージェント基盤だけを扱います。キャラクター設定や特定ドメイン連携などは拡張ポイント（[`docs/ja/`](./docs/ja/README.md) を参照）経由で外側に置いてください。
