@@ -1,0 +1,8 @@
+# google-oauth 拡張がブラウザ・Discord に見せる文言（日本語）。
+#
+# トップレベルのキーは拡張名 `google-oauth` ただ 1 つ（コアのロケールカタログ規約）。
+# 文言を足すときは en.yaml にも同じキーを入れること。
+
+google-oauth:
+  callback:
+    completed: "認証が完了しました。"
