@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `README.md` / `README.ja.md` を「何か・インストール・最低限の起動・拡張の紹介・ドキュメント
+  目次へのリンク」までに短くし、登録チャンネル・部屋のノート・部屋名検索・タイムゾーン・
+  観測用ダッシュボード・Discord ボットの設定・ツール契約・拡張 API などの詳細を `docs/ja/`
+  （正）と `docs/en/`（英訳）へ移した（#121）。目次は `docs/ja/README.md` /
+  `docs/en/README.md`。PyPI 上でもリンクが切れないよう、README からのリンクは GitHub の
+  絶対 URL にした
+- Message Content Intent が未有効のときの ERROR ログが案内する先を、README の節から
+  `docs/en/discord-bot-setup.md` の URL に変えた
+
 ## [0.5.0] - 2026-09-25
 
 ### Added

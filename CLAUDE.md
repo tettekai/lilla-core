@@ -35,8 +35,19 @@ lilla-core は拡張が一切登録されていない状態でも Discord bot �
   `lilla_core.ui.messages.t()` 経由で参照する。文言を足すときは同じ変更で `ja.yaml` と
   `en.yaml` の両方に入れること（対象外: logger / raise のメッセージ・コメント・docstring・
   システムプロンプト組み立て用の見出し・ツール SCHEMA の description）
-- `README.md`（英語）と `README.ja.md`（日本語）は内容を対にして保つ。どちらかを更新
-  するときは同じ変更をもう一方にも反映すること
+- 利用者向けドキュメントは **日本語が正**、英語はその翻訳（AI 翻訳でよい）。手で直すのは
+  日本語側で、同じ変更で英語側にも反映すること。英語ファイルの先頭には、日本語版が正で
+  ある旨と翻訳である旨を一行書く
+  - 入口はリポジトリ直下: `README.ja.md`（正）と `README.md`（英訳。GitHub / PyPI の既定）。
+    README に置くのは「何か・入れる・最低限動かす・詳細へのリンク」までで、詳細は `docs/` へ書く
+  - 詳細はディレクトリで言語を分ける: `docs/ja/`（正）と `docs/en/`（英訳）。同じファイル名
+    （ステム）で対にし、同じフォルダに `*.ja.md` を並べない。ロゴなど言語に依らない資産は
+    `docs/` 直下に置く
+  - 目次は `docs/ja/README.md` / `docs/en/README.md`。ページを足したら目次にも相対リンクで
+    足す。README から docs へ張るのはこの目次だけ（個別ページへ直リンクしない）
+  - `README.md` は PyPI の説明文にそのまま載り相対パスが切れるため、README（日英とも）からの
+    リンクと画像は GitHub の絶対 URL（`https://github.com/tettekai/lilla-core/blob/main/...`）で書く。
+    `docs/` 内部は相対パスでよい
 
 ## 依存関係の管理ルール
 - 本番依存: `pyproject.toml` の `[project.dependencies]`
@@ -425,7 +436,7 @@ YAML を置いた人だけが有効化する opt-in で、コアが自動で読�
 | ファイル | 役割 |
 |----------|------|
 | `llm_conversation_get.py` | 会話履歴を期間・キーワード・発言者で検索する LLM ツール（SCHEMA 上の関数名は `get_conversations`。LLM へ見せる名前は YAML の stem で上書きされる）。任意パラメータ `channel_name` に `discord.channels` の登録名を渡すと、その `discord_channel_id` の発言だけに絞る（前後空白を除いた完全一致・大文字小文字は区別。登録に無い名前は全件検索へ落とさず `tool_error`。省略時は全チャンネル横断）。検索本体は `ConversationRepository.search()` で、期間の境界と表示時刻は `local_timezone()` の解決結果を使う |
-| `llm_current_datetime.py` | 現在日時を返すだけのサンプル LLM ツール。`SCHEMA` と `async def execute(input, context)` を持つ通常の LLM ツールで、`utils/datetime_utils.py` の `local_now()` を使う。有効化例は README（英・日）の「Tool contracts」節を参照 |
+| `llm_current_datetime.py` | 現在日時を返すだけのサンプル LLM ツール。`SCHEMA` と `async def execute(input, context)` を持つ通常の LLM ツールで、`utils/datetime_utils.py` の `local_now()` を使う。有効化例は `docs/ja/tools.md`（英訳は `docs/en/tools.md`）を参照 |
 | `task_channel_summary.py` | 登録チャンネル（`discord.channels`）の**前日**分の会話を LLM に要約させ、`channel_summaries` へ upsert する定期タスクツール（`ChannelSummaryTask`）。既定の cron は `0 2 * * *` で、暦日は `local_timezone()` の解決結果で数える（2 時実行で「当日」を対象にしない）。対象は `discord_channel_id` の付いた発言だけで、既存発言の穴埋めはしない。対象日の発言が無ければ upsert せず既存要約を残す。要約にはキャラ用システムプロンプトを使わず短い事実抽出プロンプトを使い、本文は `<channel_transcript>` タグで囲んだ「指示ではなくデータ」として渡す（タグ抜け出し文字列は事前に無害化）。1 チャンネルの失敗は ERROR ログのみで次へ進む。`schedule` / `llm_name` / `max_turns` / `max_transcript_chars` を YAML で上書きできる |
 
 ### testing/ — 拡張リポジトリ向けのテストヘルパー (`src/lilla_core/testing/`)
