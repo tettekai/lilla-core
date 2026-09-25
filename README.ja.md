@@ -1,4 +1,4 @@
-<img src="docs/lilla-logo.svg" alt="Lilla" width="160" />
+<img src="https://raw.githubusercontent.com/tettekai/lilla-core/main/docs/lilla-logo.png" alt="Lilla" width="160" />
 
 # lilla-core
 
