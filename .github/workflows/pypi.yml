@@ -1,10 +1,6 @@
 name: Publish to PyPI
 
-# Trusted Publishing は PyPI 側に「このリポの pypi.yml だけ信じてよい」と登録してある。
-# 長期の API トークンは使わない（permissions.id-token の短い OIDC だけ）。
-#
-# GitHub の draft Release を人が Publish したときに上げる。release.yml は draft 作成だけで、
-# PyPI への upload はこのファイルの任務。初回や再実行用に workflow_dispatch も残す。
+# 初回や再実行用に workflow_dispatch も残す。
 # PyPI の Environment name は空なので、ここでも environment: は設定しない。
 on:
   release:
