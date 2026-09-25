@@ -4,11 +4,18 @@ AI エージェントを構築するための汎用基盤ライブラリ。Disco
 メッセージを受け取って LLM（Ollama / OpenAI 互換）を呼び出し、tool_call ループ・
 コマンド処理・返信を行う「エージェントとしての骨格」を提供する。
 
-キャラクター設定・特定ドメイン専用のツール（外部サービス連携など）・特定用途の
-HTTP/ダッシュボードサーバーといった、利用者ごとに異なる要素はコアには含めない。
-そうした要素は `core/extension.py` の `Extension` サブクラスと、起動時に読み込む
-`LILLA_EXTENSIONS` 環境変数を通じて外部から拡張できるようにする（詳細は
-「拡張（`core/extension.py`）まとめ」節を参照）。
+キャラクター設定・特定ドメイン専用のツール（外部サービス連携など）・用途特化の
+HTTP サーバー（機械向けの Bearer API・WebSocket クライアントなど）といった、
+利用者ごとに異なる要素はコアには含めない。そうした要素は `core/extension.py` の
+`Extension` サブクラスと、起動時に読み込む `LILLA_EXTENSIONS` 環境変数を通じて
+外部から拡張できるようにする（詳細は「拡張（`core/extension.py`）まとめ」節を参照）。
+
+例外は **観測用ダッシュボード** で、これはコアが所有する。見せる中身（会話履歴・
+ユーザーメモ・ログ・管理セッション）がすべてコアの状態であり、その観測窓を利用者
+ごとに書き直す理由がないため。拡張は `dashboard_*()` の申告でここへタブと HTTP
+ルートを足す。「サーバーを持たない」という以前の方針との線引きは
+**「コアの状態を人が見る窓（コア所有）」か「用途特化のクライアント口（拡張所有）」か**
+で、前者だけがコアに入る。
 
 lilla-core は拡張が一切登録されていない状態でも Discord bot として単体で起動できる
 ことを設計上の前提にしている。`Extension` の各メソッドは「何も貢献しない」
@@ -16,10 +23,11 @@ lilla-core は拡張が一切登録されていない状態でも Discord bot �
 
 # 開発ルール
 - セキュリティ懸念事項があれば遠慮なく伝える（特にプロンプトインジェクションの危険がある場合など）
-- コアの汎用範囲を超える要素（キャラクター設定・特定ドメイン専用ツール・特定用途の
-  HTTP/ダッシュボードサーバーなど）はこのリポジトリに持ち込まない。コアがそうした
+- コアの汎用範囲を超える要素（キャラクター設定・特定ドメイン専用ツール・用途特化の
+  HTTP サーバーなど）はこのリポジトリに持ち込まない。コアがそうした
   拡張側の情報を必要とする場合は、直接参照せず `core/extension.py` の `Extension`
   にメソッドを追加し、拡張する側でオーバーライドしてもらう形にする
+  （観測用ダッシュボードだけは例外でコア所有。「プロジェクト概要」の線引きを参照）
 - 関数には docstring を日本語で書く
 - `logger.*()` / `raise` に渡すメッセージ文字列は英語で書く（docstring・コメントは日本語のまま）
 - Discord に見える文言（コマンドの返信・ボタンのラベル・`notify_error` に渡す文脈など）は
@@ -60,20 +68,31 @@ lilla-core は拡張が一切登録されていない状態でも Discord bot �
   新しく「今日」「いま」を扱うコードは `date.today()` / `datetime.now()` を直接書かず、
   `utils/datetime_utils.py` の `local_now()` / `local_timezone()` を通すこと
 - コアの汎用範囲を超える固有の設定フィールド（特定の外部サービス連携など）は `AppConfig` に
-  追加しない。拡張する側が `Extension.config_models()`（YAML セクション名 → セクションモデル）と
+  追加しない。拡張する側が `Extension.config_model()`（セクションモデル 1 つ。節名は申告せず
+  `name` のハイフンをアンダースコアにしたもの＝`core/config.py` の `extension_section_name()`）と
   `Extension.env_fields()`（`EnvConfig` のフィールド名 → OS 環境変数名）で申告し、
   `load_extensions()` が `core/config.py` の `compose_config()` で 1 つの `AppConfig` へ合成する。
+  拡張の YAML セクションはトップレベルではなくコア確定の `extensions:` の下に置き
+  （`cfg.extensions.<節名>`。トップレベルの `cfg.<節名>` は作らない）、コアが後から
+  トップレベルに節を足しても拡張の名前と衝突しないようにする。`extensions:` の下の
+  未知キー（ロードしていない拡張の払い残し）と、申告した節がトップレベルに書かれている
+  場合（移し忘れ。コア確定と同名のキーは除く）はどちらも起動時に落とす
   ホストが `AppConfig` のサブクラスを手書きして import 副作用で `set_config()` する方式は使わない
   （呼んでも合成結果で上書きされる）
-- 拡張側のコードが自分のセクションを読むときは、`get_config().<名前>`（型は `AppConfig` のまま）
-  ではなく `core/config.py` の `get_section("<名前>", <モデル>)` を使うと静的な型が付く
-- 合成の規則: セクションモデルが必須フィールドを 1 つでも持てばそのセクションは必須になり、
-  全フィールドにデフォルトがあれば `lilla.yaml` に節が無くてもよい。`env_fields()` で足す
+- 拡張側のコードが自分のセクションを読むときは、`get_config().extensions.<節名>`（型は付かない）
+  ではなく `core/config.py` の `get_section("<拡張の name>", <モデル>)` を使うと静的な型が付く
+  （節名を渡してもよい）。
+  `get_section()` は `extensions:` の下だけを探し、コア確定の節は対象外（`get_config().ui` のように直接読む）
+- 合成の規則: セクションモデルが必須フィールドを 1 つでも持てばそのセクションは必須になり
+  （その場合 `extensions:` 自体も必須）、全フィールドにデフォルトがあれば `lilla.yaml` に節が
+  無くてもよい。`env_fields()` で足す
   フィールドの型は常に `str | None`（既定値 `None`）で、必須フィールドや文字列以外は表現できない
-- 自分では提供しないが読むセクションは `Extension.required_config_sections()` に並べる。
-  誰も提供しておらず、コア確定のセクションでもなければロード時に fail-fast する。
-  秘匿フィールドとツール実行 context キーも同じ形で `required_env_fields()` /
-  `required_tool_context_keys()` に並べる
+- 1 拡張が足せる設定モデルは 1 つだけ。複数の設定のまとまりは 1 つのモデルの子として並べる
+  （節名を自分で書く API は持たない。旧 `config_models()` / `required_config_sections()` は
+  `EXTENSION_API_VERSION` 2 で廃止し、定義したままの拡張はロード時に落とす）
+- 他の拡張の節を読む依存は `requires`（拡張名）で表す。自分では提供しないが読む秘匿
+  フィールドとツール実行 context キーは `required_env_fields()` /
+  `required_tool_context_keys()` に並べ、誰も提供していなければロード時に fail-fast する
 - 他の拡張に依存する場合はクラス属性 `requires`（拡張名のタプル）で宣言する。依存先が
   未ロード、または `LILLA_EXTENSIONS` で自分より後ろに並んでいればロード時に fail-fast する
   （コアは並べ替えない）。汎用の `validate()` フックは持たず、実行時の検査は `setup()` で行う
@@ -221,15 +240,15 @@ lilla-core 自体は起動スクリプトを持たない（ライブラリとし
 ### ルート直下
 | ファイル | 役割 |
 |----------|------|
-| `bot.py` | Discord ボット本体。設定・コマンド・ツール・コア確定リポジトリの初期化と、Discord イベントの各 handler への委譲を統括する。起動直後（他の import より前）に `load_extensions()` で環境変数 `LILLA_EXTENSIONS`（カンマ区切り）が指すモジュールを import し、各モジュールの `extension` を集めて検証する（未設定ならコア単体で起動する）。`on_ready` / `on_message` / `on_interaction` は `handlers/` の各ハンドラへ委譲するだけの薄いラッパー |
+| `bot.py` | Discord ボット本体。設定・コマンド・ツール・コア確定リポジトリの初期化と、Discord イベントの各 handler への委譲を統括する。起動直後（他の import より前）に `load_extensions()` で環境変数 `LILLA_EXTENSIONS`（カンマ区切り）が指すモジュールを import し、各モジュールの `extension` を集めて検証する（未設定ならコア単体で起動する）。`on_ready` / `on_message` / `on_interaction` は `handlers/` の各ハンドラへ委譲するだけの薄いラッパー。`main()` は拡張の `setup()` をロード順に await したあと `handlers/dashboard_server.py` の `start_dashboard_server()` で観測用ダッシュボードを起こし、最後に Discord へ接続する |
 | `bot_client.py` | Discord `commands.Bot` インスタンスの生成のみを担う共有モジュール。`bot.py` をスクリプト実行した際の多重ロード（Discord 未接続の幽霊インスタンス生成）を防ぐため、`bot` インスタンスを参照する側は必ずこのモジュールから import する |
 | `log_handler.py` | MongoDB へのログ書き込みハンドラー（`MongoDBHandler`。レベル別 TTL 付き） |
 
 ### コア基盤 (`src/lilla_core/core/`)
 | ファイル | 役割 |
 |----------|------|
-| `config.py` | Pydantic ベースの設定管理（`AppConfig`）。`${CONFIG_ROOT}/lilla.yaml` はネスト構造のまま同じ形のセクションモデル（`cfg.discord.my_user_id` など）へ読み込み、`.env` / OS 環境変数は `EnvConfig`（`cfg.env.discord_token` など）へ読み込む（YAML の項目を環境変数で上書きする経路は持たない。YAML トップレベルの `env:` は警告して無視する）。複数 LLM プロバイダの動的選択に対応。`ui.locale`（`UiConfig`）は Discord に見せる文言のロケールを、`ui.timezone`（同じく `UiConfig`。IANA 名か未指定）は「人間側の今日 / いま」のタイムゾーンを決める（未指定なら OS のローカル。不正な名前・空文字はバリデーションで起動時に落とす）。コアの汎用範囲を超えるフィールドは持たず、拡張側が申告した YAML セクション・秘匿フィールドを `compose_config()` が `pydantic.create_model` で `AppConfig` / `EnvConfig` へ動的に足して 1 つのモデルに合成する（拡張分の OS 変数名はモジュールレベルの `_extra_env_var_names` に登録し、`EnvConfigSettingsSource` が `_VAR_NAMES` へ重ねて読む。pydantic のモデル本体に置いたアンダースコア始まりの属性はプライベート属性扱いになり `settings_customise_sources()` から読めないため、クラス属性ではなくモジュールのレジストリで持つ）。合成に使う名前の検査用に `core_config_section_names()` / `core_env_field_names()` を公開する。拡張が申告したセクションを型付きで取り出す `get_section(name, model, config=None)` も持つ（未申告の名前・モデル不一致は `ValueError`。コア確定のセクションにも使える）。`get_config()` / `set_config()` でプロセス全体の設定インスタンスを共有し、通常は `load_extensions()` が合成結果を `set_config()` する |
-| `extension.py` | コアの外から機能を差し込むための `Extension` 基底クラスと、そのロード・参照 API。`Extension` は Adapter 型で、起動時リポジトリ・メッセージフック・起動処理（`setup`。引数は `SetupContext` 1 つ）・結果配送・クライアント固有プロンプト（加算式）・会話開始フック（加算式。引数は `ConversationContext` 1 つ）・ツール実行 context プロバイダ・追加ツールルート・追加コマンドパッケージの各メソッドに「何も貢献しない」デフォルトを持つ。`load_extensions()` が `LILLA_EXTENSIONS` のモジュールを import して各 `extension` を集め、`set_extensions()` が貢献キーの衝突を検証して登録し、続けて `compose_config()` の結果を `set_config()` でプロセスの設定に据える（拡張どうしの重複は fail-fast）。設定の合成そのものは `core/config.py` に閉じており、このモジュールは pydantic の組み立て詳細を知らない。`set_extensions()` は登録と検証だけで設定を差し替えないため、テストは拡張を登録してもプロセスの設定を壊さない。`lilla_core/bot.py` が拡張モジュールを直接 import しないための唯一の橋渡し層 |
+| `config.py` | Pydantic ベースの設定管理（`AppConfig`）。`${CONFIG_ROOT}/lilla.yaml` はネスト構造のまま同じ形のセクションモデル（`cfg.discord.my_user_id` など）へ読み込み、`.env` / OS 環境変数は `EnvConfig`（`cfg.env.discord_token` など）へ読み込む（YAML の項目を環境変数で上書きする経路は持たない。YAML トップレベルの `env:` は警告して無視する）。複数 LLM プロバイダの動的選択に対応。`dashboard`（`DashboardConfig`。`host` / `port` / `cookie_secure`。全項目に既定があり節そのものを省略できる）は観測用ダッシュボードの listen 先と Cookie 属性を決める。`ui.locale`（`UiConfig`）は Discord に見せる文言のロケールを、`ui.timezone`（同じく `UiConfig`。IANA 名か未指定）は「人間側の今日 / いま」のタイムゾーンを決める（未指定なら OS のローカル。不正な名前・空文字はバリデーションで起動時に落とす）。コアの汎用範囲を超えるフィールドは持たず、拡張側が申告した YAML セクション・秘匿フィールドを `compose_config()` が `pydantic.create_model` で動的に足して 1 つのモデルに合成する。YAML セクションはコア確定の `extensions`（`ExtensionsConfig`。`extra="forbid"` で未知キーは起動時に落とし、中身の無い `extensions:` は空として扱う）のサブクラスへ足し、秘匿フィールドは `EnvConfig` へ足す。申告した節がトップレベルに書かれていたら `AppConfig` の before バリデータが移し忘れとして落とす（コア確定と同名のキーは除く）（拡張分の OS 変数名はモジュールレベルの `_extra_env_var_names` に登録し、`EnvConfigSettingsSource` が `_VAR_NAMES` へ重ねて読む。pydantic のモデル本体に置いたアンダースコア始まりの属性はプライベート属性扱いになり `settings_customise_sources()` から読めないため、クラス属性ではなくモジュールのレジストリで持つ）。コア確定の名前の一覧として `core_config_section_names()` / `core_env_field_names()` を公開する。拡張の `name` から `extensions:` 下の節名を導く `extension_section_name()`（ハイフン → アンダースコア）と、拡張が申告したセクションを型付きで取り出す `get_section(name, model, config=None)` も持つ（`name` は拡張名でも節名でもよい。`extensions:` の下だけを探す。未申告の名前・モデル不一致は `ValueError`。コア確定のセクションは対象外）。`get_config()` / `set_config()` でプロセス全体の設定インスタンスを共有し、通常は `load_extensions()` が合成結果を `set_config()` する。`set_config()` が一度も呼ばれていなければ `get_config()` は `_default_config()`（`_UncomposedAppConfig`）を返し、これはどの拡張が載るか分からないため `extensions:` の中身を検証せずに捨てる（拡張をロードしない運用スクリプトが、拡張の節を書いた `lilla.yaml` で落ちないようにするため。素の `AppConfig()` と `compose_config()` の結果は未知キーで落とす） |
+| `extension.py` | コアの外から機能を差し込むための `Extension` 基底クラスと、そのロード・参照 API。観測用ダッシュボードへの差し込み（`dashboard_page` / `dashboard_static_dir` / `dashboard_routes` / `dashboard_public_routes`）も申告の型（`DashboardPage` / `DashboardRoute` / `DashboardPageEntry` / `DashboardStaticMount`）と集約をここに持つ（それを載せる HTTP サーバー本体は `handlers/dashboard_server.py`）。`Extension` は Adapter 型で、起動時リポジトリ・メッセージフック・起動処理（`setup`。引数は `SetupContext` 1 つ）・結果配送・クライアント固有プロンプト（加算式）・会話開始フック（加算式。引数は `ConversationContext` 1 つ）・ツール実行 context プロバイダ・追加ツールルート・追加コマンドパッケージの各メソッドに「何も貢献しない」デフォルトを持つ。`load_extensions()` が `LILLA_EXTENSIONS` のモジュールを import して各 `extension` を集め、`set_extensions()` が貢献キーの衝突を検証して登録し、続けて `compose_config()` の結果を `set_config()` でプロセスの設定に据える（拡張どうしの重複は fail-fast）。設定の合成そのものは `core/config.py` に閉じており、このモジュールは pydantic の組み立て詳細を知らない。`set_extensions()` は登録と検証だけで設定を差し替えないため、テストは拡張を登録してもプロセスの設定を壊さない。`lilla_core/bot.py` が拡張モジュールを直接 import しないための唯一の橋渡し層 |
 | `exceptions.py` | `ReauthenticationRequiredError`（外部 API 再認証要求時）・`LLMError`（LLM 呼び出し失敗時）の例外定義 |
 | `error_notify.py` | コマンド実行系・定期タスク実行系のエラー出力を一元化する（`notify_error`）。ERROR ログと Discord のエラー通知チャンネル（`discord.error_channel_id`。チャンネル ID で指定し、`bot.get_channel()` による ID 解決のみを行う。名前によるギルド横断検索は行わない）の 2 箇所にのみ出力し、元チャンネルへの `message.reply()` は行わない（bot 間チャンネルで相手 bot が reply に反応するのを防ぐため）。チャンネル未設定・ID 不正・未発見・送信失敗時は WARNING ログのみで、例外は投げない |
 | `http_util.py` | 全 HTTP リクエストの共通ユーティリティ（`send_http_request` / `stream_http_request`）。プロキシ自動適用、リクエスト/レスポンスの秘匿情報（`client_secret` 等）・base64 画像のログマスキングつき |
@@ -260,10 +279,14 @@ lilla-core 自体は起動スクリプトを持たない（ライブラリとし
 | `selftest.py` | `!selftest [full]` — リラの基本機能が壊れていないかを人間が確認するための自己診断コマンド。プロセス応答・MongoDB 疎通・コマンドレジストリ件数・タスクツール件数を実行し、`full` を付けると LLM 疎通確認（`check_llm`。LLM API の課金が 1 往復分発生する）も追加する。チェック本体は `services/system_checks.py` に置き、生存確認と共有する。結果は要約（✅/❌ の箇条書き）を本文、詳細（`elapsed_ms` / `detail`）を添付ファイル（`selftest_result.txt`）にして常に呼び出し元チャンネルへ返す（診断が目的のため `notify_error` オンリーにはしない）。各チェック関数が内部で例外を捕捉するため 1 件の失敗が他のチェックを妨げない。**コンテナやプロセスに対しては何も作用しない**（結果を報告するだけ） |
 
 ### 外部トリガー入り口層 (`src/lilla_core/handlers/`)
-コアが持つのは Discord のメッセージ/インタラクション/コマンドのディスパッチと定期タスクの実行のみ。
-HTTP サーバー・ダッシュボードサーバー・WebSocket サーバーのような、対話クライアントを
-増やす実装はこのリポジトリには含めず、`Extension.setup()` を通じて `main()` の
-起動シーケンスへ差し込むことができる。
+コアが持つのは Discord のメッセージ/インタラクション/コマンドのディスパッチ・定期タスクの実行と、
+観測用ダッシュボードの HTTP サーバー（`dashboard_server.py`）。ダッシュボードは
+コアの状態を人が見る窓なのでコア所有で、`bot.py` の `main()` が起こす。
+
+一方、**対話クライアントを増やす実装**（機械向け Bearer API・WebSocket サーバーなど）は
+このリポジトリには含めず、`Extension.setup()` を通じて `main()` の起動シーケンスへ
+差し込む。拡張はダッシュボードにもタブ・HTTP ルートを足せるが、それは
+`dashboard_*()` の申告経由で、リスナーを自分で持つわけではない。
 
 | ファイル | 役割 |
 |----------|------|
@@ -272,6 +295,7 @@ HTTP サーバー・ダッシュボードサーバー・WebSocket サーバー�
 | `interaction_handler.py` | Discord のインタラクション（ボタン押下）イベントのディスパッチ。`custom_id` のプレフィックスで処理を振り分け、`approve:` / `reject:` は `handlers/approval_flow.py` へ、`command:{コマンド文字列}` は `handlers/command_handler.py` へ汎用的に委譲し、`action:{uuid}` 形式の保留中アクション（`button_actions`）のみ自身で取得・実行して結果を followup で返す。保留中アクションはツール名で特別扱いせず常に `execute_tool_call` を通すため、会話履歴には残らない。デフォルトではオーナー以外のインタラクションを拒否する（プレフィックス分岐より前で一括拒否。`message_handler.py` と同じ判定パターン）。コアは汎用ランタイムであり、より緩い権限モデルは利用側の拡張で差し替え可能という位置づけ。`bot` / `tools` / `llm_tools` は引数で受け取る |
 | `message_handler.py` | Discord のメッセージ受信イベントのディスパッチ。メッセージフック（`extension.dispatch_on_message()`。拡張が 0 個なら常に `False`）→ 承認フロー振り分け → コマンド処理 → 通常会話、の順に処理する。通常会話は画像添付の変換（`services/image_attachment.py` へ委譲。サイズ超過・ダウンロード失敗で None が返ったら会話処理自体を行わない）・`run_conversation` の呼び出し・応答の分割送信と会話履歴保存を担い、送信中タスクをチャンネル単位で保持して後続メッセージ受信時に先行タスクをキャンセルする。`bot` / `tools` / `llm_tools` / `message_hook` は引数で受け取る |
 | `request_params.py` | HTTP ハンドラー共通のリクエスト入力解析ユーティリティ。整数クエリパラメータのデフォルト値・範囲丸め付き取得（`parse_int_param`）、JSON ボディのパース（`parse_json_body`）、`ObjectId` へのパス変数変換（`parse_object_id`）を提供する。aiohttp のレスポンス生成自体は呼び出し側（拡張側の HTTP ハンドラーなど）に委ねる |
+| `dashboard_server.py` | 観測用ダッシュボードの HTTP サーバー。**コアが所有し、`bot.py` の `main()` が拡張の `setup()` のあと・Discord 接続の前に起こす**（申告の集約が終わっていること・拡張の起動が失敗したら観測窓も開かないこと、の 2 つが理由）。listen 先は `dashboard.host` / `dashboard.port`。**パスワード認証つき**: `auth_middleware` が既定拒否でリクエストを振り分け、`/`・`/static/*`・`/oauth/*`・`/api/auth/status`（画面分岐用）・`/api/login` のみ認証対象外、`/api/setup` はパスワード未登録時のみ通し登録済みなら 403、それ以外はセッション Cookie 必須で未認証は 401。パスワードは bcrypt（コスト 12。イベントループを塞がないようスレッドプール実行）で `admin_credentials` に 1 件だけ保持し、ログイン成功時に `secrets.token_urlsafe(32)` のセッション ID を発行して SHA-256 ハッシュだけを `admin_sessions` に保存する（生の ID は HttpOnly・SameSite=Strict の Cookie にのみ存在）。有効期限は認証のたびに `expires_at` をアプリ側で比較して判定し、TTL インデックスは物理削除（掃除）専用。ログイン失敗は IP ごとに直近 60 秒で 5 回までで、超えると 429（カウンタはプロセス内メモリのみ・再起動でリセット）。画面の一覧は `GET /api/dashboard/nav` が返し、組み込み 4 画面（`_BUILTIN_PAGES`）に `get_dashboard_pages()` が返す拡張のページをロード順で足す。拡張の申告は `_add_extension_routes()` が載せる: 静的ファイル（`/static/ext/{name}/`。認証不要）・セッション API（`/api/{name}`。Cookie 必須）・公開ルート（`/oauth/{name}`。認証不要）。静的ファイルは `/static` の一括配信より **先** に登録する（aiohttp は登録順に最初にマッチしたリソースを使うため、後に回すと `/static` に吸われて 404 になる）。設定はモジュールの import 時ではなく呼び出しのたびに `get_config()` で引く |
 | `task_handler.py` | `trigger="task"` のツールの実行を管理する。APScheduler（`BackgroundScheduler`）による定期ジョブ管理。実行 context は LLM ツールと同じ注入モデルで、`core/extension.py` の `build_tool_context()`（拡張の `tool_context_providers()` の値）に `discord_client` / `now` / `llm_tools` を重ねる。タイムゾーンは `local_timezone()` の解決結果（`ui.timezone`、未指定なら OS のローカル）で、`CronTrigger` はスケジューラの設定を引き継がないため crontab 式にも同じタイムゾーンを明示的に渡す。ジョブは `asyncio.run_coroutine_threadsafe` で Discord の `bot.loop` に投げる |
 
 ### ビジネスロジック層 (`src/lilla_core/services/`)
@@ -287,6 +311,43 @@ HTTP サーバー・ダッシュボードサーバー・WebSocket サーバー�
 | `message_util.py` | メッセージ送信ユーティリティ。フラグパース（`parse_message_flags`）・タイムスタンプ prefix の付与/除去（`prepend_timestamp_prefix` / `strip_timestamp_prefix`）・システムプロンプト埋め込み用セッションメモリブロックの整形（`format_session_memory_block`）・LLM 出力の META ブロック（JSON）の抽出（`extract_meta_block`）・外部エージェントとやりとりする FrontMatter 付きメッセージの組み立て/解釈（`build_correlation_frontmatter` / `parse_correlation_frontmatter`）・DM チャンネルの解決と Discord への送信（`resolve_dm_channel` / `send_to_discord`） |
 | `session_memory_manager.py` | 単一領域のセッションメモリ（作業の途中状態や一時的な意図）をプロセス内メモリで保持する。TTL 付き、MongoDB 永続化なし。更新は LLM 出力の META アクション `set_session_memory` 経由で行う |
 | `system_checks.py` | 生存確認（liveness。拡張側の HTTP ヘルスチェックエンドポイントなどから利用される想定）と自己診断（`!selftest`）が共有する個別チェック関数群（`CheckResult` / `check_process_alive` / `check_mongodb` / `check_command_registry` / `check_task_tools` / `check_llm`）。どの関数を組み合わせるかは呼び出し側が選ぶ。各関数は内部で例外を捕捉し、失敗時も例外を投げず `ok=False` の `CheckResult` を返す（1 件の失敗が他のチェックを妨げない）。`check_mongodb` は 3 秒、`check_llm` は LLM 往復のみ 30 秒の内部タイムアウトを持つ。`check_llm` は本番同様に `build_system_prompt` でプロンプトを組み立ててトークン数（tiktoken `cl100k_base` の概算。システムプロンプトのみが対象）を計測してから `chat_to_llm("ping")` を送る。プロバイダーは `runtime_state.get_active_llm_name()`（`None` なら `llm.default`）で解決した「今実際に使われているもの」を使う。detail にはシステムプロンプト本文を含めない（ユーザーメモ等の私的な内容が結果に残るのを避けるため） |
+
+### 観測用ダッシュボード UI (`src/lilla_core/dashboard/`)
+`handlers/dashboard_server.py` が静的ファイルとして配信する SPA。`locales/` と同じく
+パッケージ同梱で、hatchling が wheel に含める（`packages = ["src/lilla_core"]` 配下）。
+
+| ファイル | 役割 |
+|----------|------|
+| `index.html` | ダッシュボードの HTML（Alpine.js ベース） |
+| `app.js` | ダッシュボードの JavaScript ロジック |
+| `style.css` | ダッシュボードのスタイル |
+
+画面は `view`（`loading` / `setup` / `login` / `dashboard`）で切り替える単一 SPA で、
+`init()` が `GET /api/auth/status` を叩いて分岐する（`setup_required` の判定を
+`authenticated` より必ず先に行う。DB リセット直後に古いセッション Cookie が残っていても
+`/setup` を優先表示するため）。API 呼び出しは共通ラッパー `authedFetch` を通し、401 を
+検知したら `login` 画面へ強制遷移させる。
+
+画面の一覧は `startDashboard()` が `GET /api/dashboard/nav` から 1 度だけ取り、`setNav()` が
+`routeByHash` / `hashByName` を組み立てる（対応表をフロントに直書きせず、組み込みも拡張も
+同じカタログから引く）。取得に失敗したら `FALLBACK_PAGES`（組み込み 4 画面）へ落として、
+ナビが取れないだけでダッシュボードごと使えなくならないようにする。`navigate()` は
+`location.hash` を書き換えるだけで、描画とデータ取得は `hashchange` 経由の `resolveRoute()`
+に一本化する。表に無いハッシュは Home へ落とし、`replaceState` で `#/` へ正規化する。
+`group === 'main'` は中央ナビ（`mainNav`）、`'admin'` は右上のオーバーフローメニュー
+（`adminNav`）に Logout と同列で並ぶ。
+
+カタログの `module`（拡張ページの JS モジュール URL）を持つ画面は `x-ref="extSlot"` の
+スロットに描く。`mountExtPage()` が `import(module)` して `mount(el, ctx)` を呼び、画面を
+離れるときに `unmount()` を呼ぶ（`unmount` の export は任意）。`ctx` に渡すのは
+`authedFetch` と `formatDate` だけで、Alpine のコンポーネント内部は渡さない。`import()` の
+失敗・`mount()` の不在はスロット内のエラー表示に留めて SPA 全体を止めない。タブを素早く
+切り替えたときに古い `import()` の完了が新しい画面を上書きしないよう、`_extToken` の世代で
+捨てる。組み込み 4 画面（Home / Conversations / Memos / Logs）の DOM は `index.html` の
+ままで、JS モジュール化はしていない。
+
+**この SPA の文言は日本語の直書き**で、`ui/messages.py` のカタログ管理外。`t()` のルールは
+Discord に見せる文言が対象で、ダッシュボードの国際化は別途対応する。
 
 ### UI 文言 (`src/lilla_core/ui/`・`src/lilla_core/locales/`)
 Discord に見せる短い文言のカタログ。表示言語は `lilla.yaml` の `ui.locale`（既定 `ja`）だけで
@@ -341,8 +402,8 @@ Discord に見せる短い文言のカタログ。表示言語は `lilla.yaml` �
 | `tool_cache_repository.py` | ツール実行結果を `tool_cache` コレクションに TTL 付きでキャッシュ・取得する |
 | `button_actions_repository.py` | Discord ボタン押下で実行する保留中アクションを MongoDB に保存（7 日間 TTL）。取得と削除を原子的に行う `find_one_and_delete` でボタンの二重押下による二重実行を防ぐ |
 | `pending_tool_calls_repository.py` | 外部エージェントへの非同期依頼（結果待ち）を `pending_tool_calls` コレクションに保存・照会する。`expire_at` の TTL インデックス（`expireAfterSeconds: 0`）でレコードごとに有効期限を持ち、pending → completed の遷移は `find_one_and_update` で原子的に行う（結果の二重配送防止） |
-| `admin_credential_repository.py` | 管理用ダッシュボード等を拡張側で実装する場合に使う想定の、管理者パスワード（bcrypt ハッシュ）のリポジトリ。`admin_credentials` コレクションに固定 `_id` で 1 件だけ保持する。`$setOnInsert` の upsert で登録するため、既にある場合は上書きせず False を返す（再設定の禁止を DB 側でも担保）。パスワードを忘れた場合はこのレコードを手動削除すると再設定が有効になる |
-| `admin_session_repository.py` | 上記の管理者ログインのセッションを `admin_sessions` コレクションで管理する想定のリポジトリ。保存するのはセッション ID の SHA-256 ハッシュ（`_id`）と `expires_at`（発行時刻 + 30 日）で、生のセッション ID は保持しない。`expires_at` の TTL インデックス（`expireAfterSeconds: 0`）は放置セッションの掃除用途で、認証判定は `find_valid` が `expires_at > 現在時刻` を毎回比較して行う。ログアウト時は `delete` で即座に消す |
+| `admin_credential_repository.py` | 観測用ダッシュボード（`handlers/dashboard_server.py`）のログインに使う管理者パスワード（bcrypt ハッシュ）のリポジトリ。`admin_credentials` コレクションに固定 `_id` で 1 件だけ保持する。`$setOnInsert` の upsert で登録するため、既にある場合は上書きせず False を返す（再設定の禁止を DB 側でも担保）。パスワードを忘れた場合はこのレコードを手動削除すると再設定が有効になる |
+| `admin_session_repository.py` | 上記の管理者ログインのセッションを `admin_sessions` コレクションで管理するリポジトリ。保存するのはセッション ID の SHA-256 ハッシュ（`_id`）と `expires_at`（発行時刻 + 30 日）で、生のセッション ID は保持しない。`expires_at` の TTL インデックス（`expireAfterSeconds: 0`）は放置セッションの掃除用途で、認証判定は `find_valid` が `expires_at > 現在時刻` を毎回比較して行う。ログアウト時は `delete` で即座に消す |
 
 ### tool_support/ — ツール開発者向け共通ヘルパー (`src/lilla_core/tool_support/`)
 `execute(input, context) -> dict` というツールの契約自体は変えず、ツール本体の実装の中でだけ
@@ -378,7 +439,7 @@ conftest と黙って干渉しうるため）。利用側は自分のルート `
 
 | ファイル | 役割 |
 |----------|------|
-| `__init__.py` | pytest 非依存のヘルパー。`use_extensions(*extensions, config_root=None)` は登録内容・設定インスタンス（`core/config.py` の `_config_instance`。`get_config()` は未設定でも既定を返すためモジュール変数を直接退避する）・OS 変数名のレジストリ・`CONFIG_ROOT` を退避してから `set_extensions()` → `compose_config()` → `set_config()` を行い、合成した `AppConfig` を yield して、抜けるとき（例外時も）すべて元へ戻すコンテキストマネージャ。`write_minimal_lilla_yaml(directory, ...)` はコアが必須にしている項目（`discord.my_user_id` / `llm.default` と対応する `llm.providers.<名前>` / `ui.timezone: Asia/Tokyo`）だけの `lilla.yaml` を書き出し、`extra` があれば同じネストで深いマージをする（拡張が必須にしているセクション用） |
+| `__init__.py` | pytest 非依存のヘルパー。`use_extensions(*extensions, config_root=None)` は登録内容・設定インスタンス（`core/config.py` の `_config_instance`。`get_config()` は未設定でも既定を返すためモジュール変数を直接退避する）・OS 変数名のレジストリ・`CONFIG_ROOT` を退避してから `set_extensions()` → `compose_config()` → `set_config()` を行い、合成した `AppConfig` を yield して、抜けるとき（例外時も）すべて元へ戻すコンテキストマネージャ。`write_minimal_lilla_yaml(directory, ...)` はコアが必須にしている項目（`discord.my_user_id` / `llm.default` と対応する `llm.providers.<名前>` / `ui.timezone: Asia/Tokyo`）だけの `lilla.yaml` を書き出し、`extra` があれば同じネストで深いマージをする（拡張が必須にしているセクション用。`{"extensions": {"habits": {...}}}` の形で渡す） |
 | `pytest_plugin.py` | 上記を包む function scope の fixture 2 つ。`lilla_config_root` は `tmp_path` に最小構成の `lilla.yaml` を書いて `CONFIG_ROOT` を向け、`DISCORD_TOKEN` が無ければダミー値を入れてそのディレクトリを返す。`lilla_extensions` は `register(*extensions) -> AppConfig` を返し、内部で `use_extensions()` に入って teardown でまとめて抜ける（複数回呼んだら後入れ先出しで戻す） |
 
 ## tests/ — テスト
@@ -393,14 +454,17 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
 起動スクリプト（LILLA_EXTENSIONS を設定。未指定でも起動可能）
   → lilla_core/bot.py 起動
   ├→ load_extensions()（LILLA_EXTENSIONS の各モジュールを import し、module.extension を
-  │    集めて衝突を検証 → config_models() / env_fields() の申告を compose_config() で
+  │    集めて衝突を検証 → config_model() / env_fields() の申告を compose_config() で
   │    AppConfig へ合成し set_config()。未指定でも合成は走り、素の AppConfig になる）
   ├→ 設定読み込み（get_config()）+ ログ設定（setup_logging）
   ├→ コマンド読み込み (commands.load_all_commands で commands/ と command_packages() を動的ロード)
   ├→ ツール読み込み (llm_tool_loader + task_tool_loader。探索ルートは tool_paths.resolve_tool_roots())
   ├→ main() 実行
   │    ├→ 各拡張の setup() をロード順に await
-  │    │    （HTTP サーバー等、対話クライアントを増やす拡張の起動など）
+  │    │    （機械向け HTTP サーバー等、対話クライアントを増やす拡張の起動など）
+  │    ├→ 観測用ダッシュボードを起動（handlers/dashboard_server.start_dashboard_server。
+  │    │    組み込み 4 画面 + 拡張の dashboard_page() / dashboard_routes() /
+  │    │    dashboard_public_routes() / dashboard_static_dir() を載せる）
   │    └→ Discord へ接続（bot.start）
   ├→ 接続完了時 (on_ready):
   │    ├→ コア確定リポジトリ + 拡張の startup_repos() を init_collection() で初期化
@@ -436,20 +500,27 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
 | `tool_config_roots` | `get_tool_config_roots` / `tool_paths.resolve_tool_config_files` | 拡張が同梱する既定のツール YAML（`llm_*.yaml` / `task_*.yaml`）のディレクトリ。ローダーは「拡張の同梱分（ロード順）→ `config_root/tools`」の順に集め、同じ stem は `config_root/tools` 側が丸ごと上書きする。拡張どうしの同じ stem は fail-fast。`enabled: false` の YAML はロードしない（同梱ツールを止めるには `config_root/tools` に同名で置く）。`type: self` の `.py` が同梱ディレクトリに置かれうるため、`resolve_tool_dirs()` にも含める |
 | `locale_dirs` | `get_locale_dirs(extensions=None)` / `ui.messages.validate_catalogs` | 拡張が同梱する UI 文言カタログ（`{locale}.yaml`）のディレクトリ。トップレベルのキーはその拡張の `name` ただ 1 つでなければならず、違反・コアのトップレベルキーとの衝突は登録時に `ValueError` で fail-fast する。1 つの拡張が複数返したらロード順に浅くマージする。存在しないディレクトリは WARNING で読み飛ばす（ロケールごとに 1 回） |
 | `command_packages` | `get_command_packages` | `load_all_commands()` が追加で走査するパッケージ |
-| `config_models` | `get_config_models`（全件） | `AppConfig` に足す YAML セクション名 → セクションモデル |
+| `dashboard_page` | `get_dashboard_pages` | 観測用ダッシュボードへ足すタブ 1 つ（`DashboardPage(label, group)`。`group` は `main` / `admin`）。経路は申告せず `Extension.name` から導出する（`#/{name}` / `#/admin/{name}` / `/api/{name}` / `/oauth/{name}` / `/static/ext/{name}/`）。コアが返すのは導出済みの `DashboardPageEntry` |
+| `dashboard_static_dir` | `get_dashboard_static_mounts` | ホストが `/static/ext/{name}/` に載せる静的ファイルのディレクトリ。タブを出すなら直下に `page.js` を置く（返さないとロード時に落ちる） |
+| `dashboard_routes` | `get_dashboard_routes` | ホストがセッション認証の内側へ足す HTTP ルート（`DashboardRoute(method, path, handler)`）。パスは `/api/{name}` 配下のみ |
+| `dashboard_public_routes` | `get_dashboard_public_routes` | ホストが認証の外側へ載せる公開ルート（OAuth の戻り先など）。パスは `/oauth/{name}` 配下のみで、`state` の検証は拡張側の責任 |
+| `config_model` | `get_config_models`（全件。「導いた節名 → モデル」） | `extensions:` の下に足す YAML セクションのモデル 1 つ（足さないなら `None`）。節名は `name` のハイフンをアンダースコアにしたもの（`cfg.extensions.<節名>` で読む。コア確定の節と同名でもよい）。`BaseModel` サブクラス以外・数字始まりの `name` での申告はロード時に落とす |
 | `env_fields` | `get_env_fields`（全件） | `EnvConfig` に足すフィールド名 → OS 環境変数名 |
-| `required_config_sections` | `set_extensions` の検証 | 自分では提供しないが読む YAML セクション名 |
 | `required_env_fields` | `set_extensions` の検証 | 自分では提供しないが読む `EnvConfig` のフィールド名（コア確定のフィールドは常に利用可） |
 | `required_tool_context_keys` | `set_extensions` の検証 | 自分では提供しないが、自分のツールが読むツール実行 context のキー名（`client_type` / `call_tool` などコアの共通キーは常に利用可） |
 | `requires`（クラス属性） | `set_extensions` の検証 | 依存する拡張の `name` のタプル。未ロード、または自分より後ろに並んでいれば fail-fast |
-| `api_version`（クラス属性） | `set_extensions` の検証 | 拡張が書かれた契約バージョン（既定は `EXTENSION_API_VERSION`）。`SUPPORTED_EXTENSION_API_VERSIONS` に無い値、または整数以外は fail-fast |
+| `api_version`（クラス属性） | `set_extensions` の検証 | 拡張が書かれた契約バージョン（既定は `EXTENSION_API_VERSION`。現在 2）。`SUPPORTED_EXTENSION_API_VERSIONS` に無い値、または整数以外は fail-fast。廃止したメソッド（`config_models` / `required_config_sections`）を定義している拡張も、版の宣言によらず fail-fast（`_REMOVED_EXTENSION_METHODS`） |
 
 ### 衝突は fail-fast
 拡張どうしで以下が重複したら、静かな後勝ちにせずロード時に例外を投げる。
 
-- `Extension.name`（未設定・空文字も落とす）
-- `config_models()` の YAML セクション名 / `env_fields()` のフィールド名
-  （コア確定の名前との重複も落とす）
+- `Extension.name`（未設定・空文字も落とす。加えて `^[a-z0-9][a-z0-9-]*$` に合わない形と、
+  `RESERVED_EXTENSION_NAMES`（`api` / `oauth` / `static` / `admin` / `dashboard` / `auth` /
+  `login` / `logout` / `setup` / `home` / `conversations` / `memos` / `logs`）の予約名も落とす。
+  `name` はダッシュボードの URL・ハッシュ・静的ディレクトリ名へそのまま埋まるため）
+- `env_fields()` のフィールド名（コア確定の名前との重複も落とす）。`config_model()` の節名は
+  一意な `name` から導き、`name` はアンダースコアを含まないため衝突しない（`extensions:` の
+  下に置かれるので、コア確定の節と同名でも構わない）
 - ツール実行 context プロバイダのキー（コアが注入する共通キーとの重複も落とす）
 - `result_deliveries` の `client_type`（`client_prompt_providers` / `conversation_start_hooks` は
   加算式で、同じ `client_type` に複数の拡張が足せる。値がリストでない場合だけ落とす）
@@ -461,6 +532,9 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
   コアのカタログのトップレベルキー（`selftest` など）と同じとき（`set_extensions()` が
   `ui/messages.py` の `validate_catalogs()` で登録前に検出。拡張どうしの衝突は `name` の
   重複検査で防がれる）
+- ダッシュボードのルート申告が自分の接頭辞（`/api/{name}` / `/oauth/{name}`）の外を指すとき、
+  または `dashboard_page()` を返すのに `dashboard_static_dir()` を返していないとき
+  （`page.js` が 404 になるため）
 
 コア内蔵のデフォルトとの重複は衝突にしない。`client_type="discord"` のシステム
 プロンプトは拡張が 1 つでも出していればそれら（連結）を使い、誰も出していなければ
@@ -473,7 +547,7 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
 エラー通知チャンネルへ出したうえで「処理済み」として扱う（プロセスは落とさない）。
 
 ### 起動順の規約
-設定は `config_models()` / `env_fields()` の申告から合成するため、`LILLA_EXTENSIONS` の
+設定は `config_model()` / `env_fields()` の申告から合成するため、`LILLA_EXTENSIONS` の
 並び順は設定に影響しない（ホスト設定モジュールを先頭に置く規約は不要になった）。順序が
 効くのは `on_message` の連鎖・`setup()` の await 順・`tool_roots()` の探索順といった
 「ロード順に処理するもの」だけ。コアが検証するのは `requires` で宣言された依存先が

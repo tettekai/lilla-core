@@ -46,6 +46,12 @@ class SampleSectionConfig(BaseModel):
     value: str = "default"
 
 
+class OtherSectionConfig(BaseModel):
+    """`SampleSectionConfig` と区別するためのもう 1 つのセクションモデル。"""
+
+    other: int = 0
+
+
 def _make_module(name: str, attrs: dict) -> ModuleType:
     """`sys.modules` へ差し込むためのダミーモジュールを組み立てる。"""
     module = ModuleType(name)
@@ -76,7 +82,7 @@ class TestExtensionDefaults:
     def test_contribution_defaults_are_empty(self) -> None:
         """オーバーライドしなければ何も貢献しない。"""
         ext = Extension()
-        assert ext.config_models() == {}
+        assert ext.config_model() is None
         assert ext.env_fields() == {}
         assert ext.tool_roots() == []
         assert ext.tool_config_roots() == []
@@ -279,34 +285,80 @@ class TestValidation:
 
 
 class TestConfigContributions:
-    """`config_models()` / `env_fields()` のマージと衝突検査。"""
+    """`config_model()` / `env_fields()` のマージと衝突検査。"""
 
-    def test_contributions_are_merged_in_load_order(
+    def test_section_name_is_derived_from_the_extension_name(
         self, make_extension, use_extensions
     ) -> None:
-        """複数の拡張の申告が 1 つの dict へまとまる。"""
+        """節名は `name` のハイフンをアンダースコアに置き換えたもの。"""
         use_extensions(
-            make_extension("a", config_models={"alpha": SampleSectionConfig}),
+            make_extension("google-oauth", config_model=SampleSectionConfig),
             make_extension(
                 "b",
-                config_models={"beta": SampleSectionConfig},
+                config_model=OtherSectionConfig,
                 env_fields={"beta_secret": "BETA_SECRET"},
             ),
         )
 
         assert ext_module.get_config_models() == {
-            "alpha": SampleSectionConfig,
-            "beta": SampleSectionConfig,
+            "google_oauth": SampleSectionConfig,
+            "b": OtherSectionConfig,
         }
         assert ext_module.get_env_fields() == {"beta_secret": "BETA_SECRET"}
 
-    def test_duplicate_section_between_extensions_raises(self, make_extension) -> None:
-        """同じセクション名を 2 つの拡張が提供したら fail-fast する。"""
-        with pytest.raises(ValueError, match="Duplicate config model key 'alpha'"):
-            ext_module.set_extensions([
-                make_extension("a", config_models={"alpha": SampleSectionConfig}),
-                make_extension("b", config_models={"alpha": SampleSectionConfig}),
-            ])
+    def test_name_without_hyphen_is_used_as_is(self, make_extension, use_extensions) -> None:
+        """ハイフンの無い `name` はそのまま節名になる。"""
+        use_extensions(make_extension("habits", config_model=SampleSectionConfig))
+
+        assert ext_module.get_config_models() == {"habits": SampleSectionConfig}
+
+    def test_none_adds_no_section(self, make_extension, use_extensions) -> None:
+        """`config_model()` が `None` の拡張は節を足さない。"""
+        use_extensions(
+            make_extension("a", config_model=None),
+            make_extension("b"),
+        )
+
+        assert ext_module.get_config_models() == {}
+
+    def test_same_model_in_two_extensions_is_allowed(
+        self, make_extension, use_extensions
+    ) -> None:
+        """節名は拡張ごとに別なので、同じモデルを 2 つの拡張が使っても衝突しない。"""
+        use_extensions(
+            make_extension("a", config_model=SampleSectionConfig),
+            make_extension("b", config_model=SampleSectionConfig),
+        )
+
+        assert ext_module.get_config_models() == {
+            "a": SampleSectionConfig,
+            "b": SampleSectionConfig,
+        }
+
+    @pytest.mark.parametrize("value", [SampleSectionConfig(), {"a": SampleSectionConfig}, str])
+    def test_non_model_value_fails_fast(self, make_extension, value) -> None:
+        """モデルクラス以外を返したら拡張名つきで落とす。"""
+        with pytest.raises(ValueError, match="Extension 'a' config_model\\(\\) must return"):
+            ext_module.set_extensions([make_extension("a", config_model=value)])
+
+    def test_name_starting_with_digit_cannot_declare_a_model(self, make_extension) -> None:
+        """節名が識別子にならない `name`（数字始まり）はモデルを申告できない。"""
+        with pytest.raises(ValueError, match="'1pack' is not a valid identifier"):
+            ext_module.set_extensions([make_extension("1pack", config_model=SampleSectionConfig)])
+
+    def test_name_starting_with_digit_is_fine_without_a_model(
+        self, make_extension, use_extensions
+    ) -> None:
+        """モデルを申告しなければ数字始まりの `name` でも登録できる。"""
+        use_extensions(make_extension("1pack"))
+
+        assert ext_module.get_config_models() == {}
+
+    def test_core_section_name_is_not_reserved(self, make_extension, use_extensions) -> None:
+        """拡張の節は `extensions:` の下に置かれるため、コア確定と同名でも提供できる。"""
+        use_extensions(make_extension("discord", config_model=SampleSectionConfig))
+
+        assert ext_module.get_config_models() == {"discord": SampleSectionConfig}
 
     def test_duplicate_env_field_between_extensions_raises(self, make_extension) -> None:
         """同じ env フィールド名を 2 つの拡張が提供したら fail-fast する。"""
@@ -314,13 +366,6 @@ class TestConfigContributions:
             ext_module.set_extensions([
                 make_extension("a", env_fields={"shared_secret": "SHARED_SECRET"}),
                 make_extension("b", env_fields={"shared_secret": "OTHER_SECRET"}),
-            ])
-
-    def test_core_section_name_is_reserved(self, make_extension) -> None:
-        """コア確定のセクション名は拡張から提供できない。"""
-        with pytest.raises(ValueError, match="reserved key 'discord'"):
-            ext_module.set_extensions([
-                make_extension("a", config_models={"discord": SampleSectionConfig}),
             ])
 
     def test_core_env_field_name_is_reserved(self, make_extension) -> None:
@@ -336,9 +381,44 @@ class TestConfigContributions:
         """`set_extensions()` は登録と検証だけで、プロセスの設定を差し替えない。"""
         sentinel = config_module().get_config()
 
-        use_extensions(make_extension("a", config_models={"alpha": SampleSectionConfig}))
+        use_extensions(make_extension("a", config_model=SampleSectionConfig))
 
         assert config_module().get_config() is sentinel
+
+
+class TestRemovedMethods:
+    """契約から外したメソッドを上書きしている拡張はロード時に落とす（api_version 2）。"""
+
+    @pytest.mark.parametrize(
+        ("method_name", "value", "replacement"),
+        [
+            ("config_models", {"alpha": SampleSectionConfig}, "config_model"),
+            ("required_config_sections", ["alpha"], "requires"),
+        ],
+    )
+    def test_overriding_a_removed_method_fails_fast(
+        self, make_extension, method_name: str, value, replacement: str
+    ) -> None:
+        """上書きしていれば、メソッド名と代わりの経路を示して落とす。"""
+        with pytest.raises(ValueError, match=f"'{method_name}\\(\\)'.*use {replacement}"):
+            ext_module.set_extensions([make_extension("old", **{method_name: value})])
+
+    def test_subclass_override_is_detected(self) -> None:
+        """クラス定義で上書きした旧メソッドも検出する。"""
+
+        class OldExtension(Extension):
+            name = "old"
+
+            def config_models(self):
+                return {"alpha": SampleSectionConfig}
+
+        with pytest.raises(ValueError, match="'config_models\\(\\)'"):
+            ext_module.set_extensions([OldExtension()])
+
+    def test_base_class_no_longer_has_the_removed_methods(self) -> None:
+        """基底クラスから旧メソッドが消えている（節名を自分で書く API が無い）。"""
+        assert not hasattr(Extension, "config_models")
+        assert not hasattr(Extension, "required_config_sections")
 
 
 # ---------------------------------------------------------------------------
@@ -553,42 +633,6 @@ class TestRequiredToolContextKeys:
 
 
 # ---------------------------------------------------------------------------
-# TestRequiredConfigSections
-# ---------------------------------------------------------------------------
-
-
-class TestRequiredConfigSections:
-    """`required_config_sections()` の存在検査。"""
-
-    def test_section_provided_by_another_extension_is_accepted(
-        self, make_extension, use_extensions
-    ) -> None:
-        """他の拡張が提供していれば要求できる（提供側の並び順は問わない）。"""
-        use_extensions(
-            make_extension("consumer", required_config_sections=["alpha"]),
-            make_extension("provider", config_models={"alpha": SampleSectionConfig}),
-        )
-
-        assert ext_module.get_config_models() == {"alpha": SampleSectionConfig}
-
-    def test_core_section_is_always_available(self, make_extension, use_extensions) -> None:
-        """コア確定のセクションは誰も提供しなくても要求できる。"""
-        use_extensions(make_extension("consumer", required_config_sections=["prompt"]))
-
-        assert ext_module.get_config_models() == {}
-
-    def test_unprovided_section_fails_fast(self, make_extension) -> None:
-        """誰も提供していないセクションを要求したら、要求元の名前つきで落とす。"""
-        with pytest.raises(
-            ValueError,
-            match="Extension 'consumer' requires config section 'google'",
-        ):
-            ext_module.set_extensions([
-                make_extension("consumer", required_config_sections=["google"]),
-            ])
-
-
-# ---------------------------------------------------------------------------
 # TestLoadExtensionsComposesConfig
 # ---------------------------------------------------------------------------
 
@@ -602,12 +646,12 @@ class TestLoadExtensionsComposesConfig:
         """ロード後の `get_config()` で拡張のセクションが読める。"""
         register_module(
             "pack_cfg",
-            extension=make_extension("cfg", config_models={"alpha": SampleSectionConfig}),
+            extension=make_extension("my-cfg", config_model=SampleSectionConfig),
         )
 
         ext_module.load_extensions("pack_cfg")
 
-        assert config_module().get_config().alpha.value == "default"
+        assert config_module().get_config().extensions.my_cfg.value == "default"
 
     def test_declared_env_field_is_readable_after_load(
         self, register_module, make_extension, monkeypatch: pytest.MonkeyPatch
@@ -888,3 +932,344 @@ class TestDispatchOnMessage:
         assert mock_notify_error.await_args[0][0] is bot
         assert "broken-pack" in mock_notify_error.await_args[0][1]
         assert mock_notify_error.await_args[0][2] is error
+
+
+# ---------------------------------------------------------------------------
+# TestExtensionNameRules
+# ---------------------------------------------------------------------------
+
+
+class TestExtensionNameRules:
+    """`name` は経路へそのまま埋まるため、形と予約語を検査する。"""
+
+    @pytest.mark.parametrize(
+        "name",
+        ["Google-OAuth", "google_oauth", "google oauth", "../evil", "a/b", "-lead", "café"],
+    )
+    def test_invalid_name_shapes_are_rejected(self, make_extension, name: str) -> None:
+        """URL を壊しうる文字を含む `name` はロード時に落とす。"""
+        with pytest.raises(ValueError, match="must match"):
+            ext_module.set_extensions([make_extension(name)])
+
+    @pytest.mark.parametrize("name", sorted(ext_module.RESERVED_EXTENSION_NAMES))
+    def test_reserved_names_are_rejected(self, make_extension, name: str) -> None:
+        """組み込みの経路と衝突する `name` はロード時に落とす。"""
+        with pytest.raises(ValueError, match="is reserved by the core"):
+            ext_module.set_extensions([make_extension(name)])
+
+    @pytest.mark.parametrize("name", ["google-oauth", "a", "0", "lilla-agent2"])
+    def test_valid_names_are_accepted(self, make_extension, name: str) -> None:
+        """英小文字・数字・ハイフンからなる名前は通る。"""
+        ext_module.set_extensions([make_extension(name)])
+
+        assert [e.name for e in ext_module.get_extensions()] == [name]
+
+    def test_path_traversal_in_name_cannot_slip_through_route_checks(
+        self, make_extension
+    ) -> None:
+        """`name` に `/` が入るとパス検査を素通りしうるので、名前の段で落とす。"""
+        route = ext_module.DashboardRoute("GET", "/api/x/../../evil", AsyncMock())
+        with pytest.raises(ValueError, match="must match"):
+            ext_module.set_extensions([
+                make_extension("x/../../evil", dashboard_routes=[route])
+            ])
+
+
+# ---------------------------------------------------------------------------
+# TestDashboardPage
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardPage:
+    """`DashboardPage` の値の検査（`Literal` は実行時に効かないため明示的に見る）。"""
+
+    def test_accepts_known_groups(self) -> None:
+        """`main` / `admin` はそのまま通る。"""
+        assert ext_module.DashboardPage("Habits", "main").group == "main"
+        assert ext_module.DashboardPage("Habits", "admin").group == "admin"
+
+    def test_unknown_group_raises(self) -> None:
+        """未知の `group` はインスタンス生成の時点で落とす。"""
+        with pytest.raises(ValueError, match="group must be one of"):
+            ext_module.DashboardPage("Habits", "sidebar")
+
+    @pytest.mark.parametrize("label", ["", "   ", None])
+    def test_blank_label_raises(self, label) -> None:
+        """空の `label` はナビに出しようがないので落とす。"""
+        with pytest.raises(ValueError, match="label must be a non-empty string"):
+            ext_module.DashboardPage(label, "main")
+
+
+# ---------------------------------------------------------------------------
+# TestDashboardRoute
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardRoute:
+    """`DashboardRoute` の値の検査と正規化。"""
+
+    def test_method_is_normalized_to_upper(self) -> None:
+        """メソッドは大文字へ揃える（ホスト側での分岐を単純にするため）。"""
+        assert ext_module.DashboardRoute("get", "/api/x", AsyncMock()).method == "GET"
+
+    def test_relative_path_raises(self) -> None:
+        """`/` 始まりでないパスは落とす。"""
+        with pytest.raises(ValueError, match="must start with"):
+            ext_module.DashboardRoute("GET", "api/x", AsyncMock())
+
+    def test_blank_method_raises(self) -> None:
+        """空のメソッドは落とす。"""
+        with pytest.raises(ValueError, match="method must be a non-empty string"):
+            ext_module.DashboardRoute("  ", "/api/x", AsyncMock())
+
+    def test_non_callable_handler_raises(self) -> None:
+        """ハンドラーが callable でなければ落とす。"""
+        with pytest.raises(ValueError, match="handler must be callable"):
+            ext_module.DashboardRoute("GET", "/api/x", "not-a-handler")
+
+
+# ---------------------------------------------------------------------------
+# TestDashboardContributions
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardContributions:
+    """ダッシュボード申告の集約と、`name` からの経路の導出。"""
+
+    def test_defaults_contribute_nothing(self, make_extension) -> None:
+        """申告しない拡張はダッシュボードに何も足さない。"""
+        ext = Extension()
+        assert ext.dashboard_page() is None
+        assert ext.dashboard_static_dir() is None
+        assert ext.dashboard_routes() == []
+        assert ext.dashboard_public_routes() == []
+
+        ext_module.set_extensions([make_extension("plain")])
+
+        assert ext_module.get_dashboard_pages() == []
+        assert ext_module.get_dashboard_static_mounts() == []
+        assert ext_module.get_dashboard_routes() == []
+        assert ext_module.get_dashboard_public_routes() == []
+
+    def test_paths_are_derived_from_name(self, make_extension, tmp_path: Path) -> None:
+        """Issue の対応表どおりに経路が決まる（常用グループ）。"""
+        ext_module.set_extensions([
+            make_extension(
+                "google-oauth",
+                dashboard_page=ext_module.DashboardPage("Google", "main"),
+                dashboard_static_dir=tmp_path,
+            )
+        ])
+
+        (entry,) = ext_module.get_dashboard_pages()
+        assert entry.name == "google-oauth"
+        assert entry.label == "Google"
+        assert entry.group == "main"
+        assert entry.hash == "#/google-oauth"
+        assert entry.api_prefix == "/api/google-oauth"
+        assert entry.callback_prefix == "/oauth/google-oauth"
+        assert entry.static_url == "/static/ext/google-oauth/"
+        assert entry.module_url == "/static/ext/google-oauth/page.js"
+
+    def test_admin_group_uses_admin_hash(self, make_extension, tmp_path: Path) -> None:
+        """管理グループのページは `#/admin/{name}` に載る。"""
+        ext_module.set_extensions([
+            make_extension(
+                "google-oauth",
+                dashboard_page=ext_module.DashboardPage("Google", "admin"),
+                dashboard_static_dir=tmp_path,
+            )
+        ])
+
+        assert ext_module.get_dashboard_pages()[0].hash == "#/admin/google-oauth"
+
+    def test_pages_keep_load_order(self, make_extension, tmp_path: Path) -> None:
+        """ページの並びは `LILLA_EXTENSIONS` のロード順。"""
+        ext_module.set_extensions([
+            make_extension(
+                "first-pack",
+                dashboard_page=ext_module.DashboardPage("First", "main"),
+                dashboard_static_dir=tmp_path,
+            ),
+            make_extension("middle-pack"),
+            make_extension(
+                "last-pack",
+                dashboard_page=ext_module.DashboardPage("Last", "admin"),
+                dashboard_static_dir=tmp_path,
+            ),
+        ])
+
+        assert [p.name for p in ext_module.get_dashboard_pages()] == [
+            "first-pack",
+            "last-pack",
+        ]
+
+    def test_static_mount_url_is_derived(self, make_extension, tmp_path: Path) -> None:
+        """静的ディレクトリは `/static/ext/{name}/` へ載る形で返る。"""
+        ext_module.set_extensions([
+            make_extension("habits", dashboard_static_dir=tmp_path)
+        ])
+
+        (mount,) = ext_module.get_dashboard_static_mounts()
+        assert mount.name == "habits"
+        assert mount.url_prefix == "/static/ext/habits/"
+        assert mount.directory == tmp_path
+
+    def test_missing_static_dir_logs_warning(
+        self, make_extension, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """存在しないディレクトリは WARNING のみで、登録自体は通す。"""
+        missing = tmp_path / "nope"
+        with caplog.at_level("WARNING"):
+            ext_module.set_extensions([
+                make_extension("habits", dashboard_static_dir=missing)
+            ])
+
+        assert "does not exist" in caplog.text
+        assert ext_module.get_dashboard_static_mounts()[0].directory == missing
+
+    def test_page_without_static_dir_raises(self, make_extension) -> None:
+        """ページを出すのに静的ディレクトリが無いと `page.js` が 404 になるので落とす。"""
+        with pytest.raises(ValueError, match="no dashboard_static_dir"):
+            ext_module.set_extensions([
+                make_extension(
+                    "habits", dashboard_page=ext_module.DashboardPage("Habits", "main")
+                )
+            ])
+
+    def test_static_dir_without_page_is_allowed(
+        self, make_extension, tmp_path: Path
+    ) -> None:
+        """タブを出さずに静的ファイルだけ載せる拡張も許す。"""
+        ext_module.set_extensions([
+            make_extension("habits", dashboard_static_dir=tmp_path)
+        ])
+
+        assert ext_module.get_dashboard_pages() == []
+        assert len(ext_module.get_dashboard_static_mounts()) == 1
+
+    def test_wrong_page_type_raises(self, make_extension) -> None:
+        """`DashboardPage` でも `None` でもない戻り値は落とす。"""
+        with pytest.raises(ValueError, match="must return a DashboardPage or None"):
+            ext_module.set_extensions([
+                make_extension("habits", dashboard_page={"label": "Habits"})
+            ])
+
+    def test_routes_are_concatenated_in_load_order(self, make_extension) -> None:
+        """セッションルートはロード順に連結される。"""
+        first = ext_module.DashboardRoute("GET", "/api/pack-a", AsyncMock())
+        second = ext_module.DashboardRoute("POST", "/api/pack-a/items", AsyncMock())
+        third = ext_module.DashboardRoute("GET", "/api/pack-b/list", AsyncMock())
+        ext_module.set_extensions([
+            make_extension("pack-a", dashboard_routes=[first, second]),
+            make_extension("pack-b", dashboard_routes=[third]),
+        ])
+
+        assert ext_module.get_dashboard_routes() == [first, second, third]
+
+    def test_public_routes_are_concatenated_in_load_order(self, make_extension) -> None:
+        """公開ルートもロード順に連結される。"""
+        first = ext_module.DashboardRoute("GET", "/oauth/pack-a/callback", AsyncMock())
+        second = ext_module.DashboardRoute("GET", "/oauth/pack-b", AsyncMock())
+        ext_module.set_extensions([
+            make_extension("pack-a", dashboard_public_routes=[first]),
+            make_extension("pack-b", dashboard_public_routes=[second]),
+        ])
+
+        assert ext_module.get_dashboard_public_routes() == [first, second]
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/api/other/items", "/api/packs", "/api", "/oauth/pack/callback", "/static/x"],
+    )
+    def test_route_outside_api_prefix_raises(self, make_extension, path: str) -> None:
+        """`/api/{name}` の外を指すセッションルートは落とす。"""
+        route = ext_module.DashboardRoute("GET", path, AsyncMock())
+        with pytest.raises(ValueError, match="outside its allowed prefix"):
+            ext_module.set_extensions([
+                make_extension("pack", dashboard_routes=[route])
+            ])
+
+    @pytest.mark.parametrize(
+        "path", ["/oauth/other/callback", "/oauth/packs", "/oauth", "/api/pack"]
+    )
+    def test_public_route_outside_oauth_prefix_raises(
+        self, make_extension, path: str
+    ) -> None:
+        """`/oauth/{name}` の外を指す公開ルートは落とす。"""
+        route = ext_module.DashboardRoute("GET", path, AsyncMock())
+        with pytest.raises(ValueError, match="outside its allowed prefix"):
+            ext_module.set_extensions([
+                make_extension("pack", dashboard_public_routes=[route])
+            ])
+
+    def test_prefix_itself_is_allowed(self, make_extension) -> None:
+        """接頭辞そのもの（`/api/{name}` / `/oauth/{name}`）は許す。"""
+        api = ext_module.DashboardRoute("GET", "/api/pack", AsyncMock())
+        public = ext_module.DashboardRoute("GET", "/oauth/pack", AsyncMock())
+        ext_module.set_extensions([
+            make_extension("pack", dashboard_routes=[api], dashboard_public_routes=[public])
+        ])
+
+        assert ext_module.get_dashboard_routes() == [api]
+        assert ext_module.get_dashboard_public_routes() == [public]
+
+    def test_non_route_element_raises(self, make_extension) -> None:
+        """aiohttp のルートなど別の型を混ぜたら落とす。"""
+        with pytest.raises(ValueError, match="must return DashboardRoute instances"):
+            ext_module.set_extensions([
+                make_extension("pack", dashboard_routes=[("GET", "/api/pack")])
+            ])
+
+    def test_non_list_routes_raise(self, make_extension) -> None:
+        """リスト以外を返したら落とす。"""
+        with pytest.raises(ValueError, match="must return a list"):
+            ext_module.set_extensions([
+                make_extension(
+                    "pack",
+                    dashboard_routes=ext_module.DashboardRoute(
+                        "GET", "/api/pack", AsyncMock()
+                    ),
+                )
+            ])
+
+    def test_invalid_declaration_leaves_registration_untouched(
+        self, make_extension, tmp_path: Path
+    ) -> None:
+        """検証はグローバルを書き換える前に行うので、失敗しても前の登録が残る。"""
+        ext_module.set_extensions([
+            make_extension(
+                "good-pack",
+                dashboard_page=ext_module.DashboardPage("Good", "main"),
+                dashboard_static_dir=tmp_path,
+            )
+        ])
+
+        bad = ext_module.DashboardRoute("GET", "/api/elsewhere", AsyncMock())
+        with pytest.raises(ValueError):
+            ext_module.set_extensions([make_extension("bad-pack", dashboard_routes=[bad])])
+
+        assert [p.name for p in ext_module.get_dashboard_pages()] == ["good-pack"]
+
+    def test_getters_return_copies(self, make_extension, tmp_path: Path) -> None:
+        """戻り値を書き換えても登録内容には影響しない。"""
+        ext_module.set_extensions([
+            make_extension(
+                "pack",
+                dashboard_page=ext_module.DashboardPage("Pack", "main"),
+                dashboard_static_dir=tmp_path,
+            )
+        ])
+
+        ext_module.get_dashboard_pages().clear()
+        ext_module.get_dashboard_static_mounts().clear()
+
+        assert len(ext_module.get_dashboard_pages()) == 1
+        assert len(ext_module.get_dashboard_static_mounts()) == 1
+
+    def test_api_version_is_current(self) -> None:
+        """ダッシュボードの申告はメソッドの追加だけで版を上げていない。
+
+        版は #110（`config_models()` の廃止）で 2 へ上がった。
+        """
+        assert ext_module.EXTENSION_API_VERSION == 2

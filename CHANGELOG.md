@@ -7,6 +7,105 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-25
+
+### Added
+
+- 観測用ダッシュボードの HTTP サーバーをコアが起動するようになった
+  （`handlers/dashboard_server.py`）。`bot.py` の `main()` が拡張の `setup()` を
+  await したあと、Discord へ接続する前に起こす（申告の集約が `load_extensions()` で
+  済んでいること・拡張の起動が失敗したら観測窓も開かないこと、の 2 つが理由）。
+  提供するのは初期設定 / ログイン / セッション Cookie による認証と、会話履歴・
+  ユーザーメモ・ログの API、拡張のページを並べる `GET /api/dashboard/nav`、および
+  #105 で入った拡張の申告の配線（`/static/ext/{name}/`（認証不要）・`/api/{name}`
+  （Cookie 必須）・`/oauth/{name}`（認証の外側））。SPA（Alpine.js・ハッシュ
+  ルーティング・拡張ページの `import()` + `mount()` / `unmount()`）は
+  `src/lilla_core/dashboard/` にパッケージ同梱し、`locales/` と同じく wheel へ入る。
+  拡張が 0 個でも組み込み 4 画面（Home / Conversations / Memos / Logs）で起動する
+  （`Extension` の契約は変えていないので `EXTENSION_API_VERSION` は 1 のまま）
+- コア確定の YAML セクション `dashboard:` を追加（`DashboardConfig`）。`host`
+  （既定 `0.0.0.0`）・`port`（既定 `8765`）・`cookie_secure`（既定 `true`）の 3 つで、
+  全項目に既定があるため `lilla.yaml` に節そのものが無くても起動する。
+  **このポートは管理画面を開く。** パスワード未登録の間は `POST /api/setup` に
+  先に到達した者が管理者パスワードを決められるブートストラップなので、公開
+  ネットワークへ晒さないこと（前段でアクセス制御を掛けるか、`host` を
+  `127.0.0.1` に絞る）。詳細は README と `SECURITY.md` を参照
+
+### Changed
+
+- **BREAKING**: 拡張の設定節名を `Extension.name` から導くようにし、`EXTENSION_API_VERSION` を
+  **2** に上げた（#110。受け付けるのも 2 だけ）
+  - `Extension.config_models() -> dict[str, type[BaseModel]]` を廃止し、
+    `config_model() -> type[BaseModel] | None` に置き換えた。1 拡張が足せるモデルは 1 つで、
+    節名は `name` のハイフンをアンダースコアに置き換えたもの（`google-oauth` →
+    `extensions.google_oauth`。ハイフンの無い名前はそのまま）。節名を自分で書く API は無い。
+    複数の設定を持つ拡張は 1 つのモデルの子としてまとめること
+  - `Extension.required_config_sections()` を廃止した。他の拡張の節を読む依存は
+    `requires`（拡張名）で表す。`required_env_fields()` / `required_tool_context_keys()` は残る
+  - 廃止した 2 メソッドのどちらかを定義したままの拡張は、`api_version` を宣言していなくても
+    代わりの経路を示してロード時に fail-fast する（黙って無視しない）
+  - `config_model()` が `BaseModel` のサブクラス以外を返す拡張、および `name` が数字で始まり
+    節名が識別子にならない拡張がモデルを申告した場合もロード時に fail-fast する
+  - `core/config.py` に `extension_section_name(name)` を追加。`get_section()` は拡張の `name`
+    （`get_section("google-oauth", GoogleConfig)`）でも節名でも引ける
+  - `get_config_models()` は「導いた節名 -> モデル」を返す（`compose_config()` の引数の形は不変）
+- **BREAKING**: 拡張が `config_models()` で申告した YAML セクションの置き場を、
+  トップレベルからコア確定の `extensions:` の下へ移した（#109）。読み出しは
+  `get_config().extensions.<節名>` で、トップレベルの `get_config().<節名>` は作らない。
+  `lilla.yaml` も同じ形に書き換えること（`google:` → `extensions:` の下の `google:`）。
+  `config_models()` の書き方（節名を自分で返す形）は変えていないので
+  `EXTENSION_API_VERSION` は 1 のまま
+  - 名前空間が別になったため、コア確定の節と同名のセクションを申告しても起動できる
+    （これまでは予約名としてロード時に fail-fast していた）
+  - `extensions:` の下に、ロードしていない拡張のキーがあれば起動時に落とす
+    （払い残しの検出）。拡張が 0 個なら `extensions` は空
+  - 申告した節をトップレベルに書いたままの場合も、移し忘れとして起動時に落とす
+    （トップレベルの未知キーは無視されるため、既定値のまま気付かず動くのを防ぐ）。
+    コア確定と同名のトップレベルキーはコアのものなので対象外
+  - `get_section(name, model)` は `extensions:` の下だけを探すようになった。
+    **コア確定の節（`get_section("ui", UiConfig)` など）は取れなくなった**ので、
+    `get_config().ui` のように直接読むこと
+  - `required_config_sections()` はコア確定の節名では満たされなくなった
+    （コアの節は `extensions:` の下に無いため）。書いている場合は外すこと
+  - `load_extensions()` を経ずに `get_config()` を呼んだとき（拡張をロードしない
+    運用スクリプトなど）は、`extensions:` の中身を検証せずに捨て、コア確定の節だけを
+    読む。どの拡張が載るか分からないためで、未知キーの検査は合成結果にだけ掛かる
+- **コアの設計方針の線引きを更新した。** これまで「HTTP/ダッシュボードサーバーは
+  コアに含めない」としていたが、観測用ダッシュボードはコアが所有することにした
+  （見せる中身がすべてコアの状態のため）。用途特化のサーバー（機械向けの Bearer
+  API・WebSocket クライアントなど）を拡張側に置く方針は変わらない。
+  `dashboard` はコア確定のセクション名になったため、**同名の YAML セクションを
+  申告している拡張はロード時に fail-fast する**（`config_models()` から外すこと）
+
+### Added
+
+- 拡張が観測用ダッシュボードへ差し込むための申告を `Extension` に追加。
+  `dashboard_page()`（タブ 1 つ。`DashboardPage(label, group)` で `group` は
+  `main` / `admin`）・`dashboard_static_dir()`（`/static/ext/{name}/` に載せる
+  ディレクトリ。タブを出すなら直下に `page.js`）・`dashboard_routes()`（セッション
+  認証の内側。パスは `/api/{name}` 配下のみ）・`dashboard_public_routes()`（認証の
+  外側。パスは `/oauth/{name}` 配下のみ）の 4 つで、いずれも既定は「何も貢献しない」。
+  経路の識別子は既存の `Extension.name` だけで、ハッシュ（`#/{name}` / `#/admin/{name}`）・
+  API 接頭辞・公開コールバック・静的 URL・JS モジュール URL はコアが `name` から導出する
+  （新しい ID 欄は作らない）。集約結果は `get_dashboard_pages()`（導出済みの
+  `DashboardPageEntry`）・`get_dashboard_static_mounts()`・`get_dashboard_routes()` ・
+  `get_dashboard_public_routes()` からロード順で読める。ルートは aiohttp の型ではなく
+  コア独自の `DashboardRoute(method, path, handler)` で受け取り、`Extension` 契約を
+  HTTP ライブラリのバージョンに縛らない。ダッシュボードの HTTP サーバー本体はコアには
+  含まれず、申告を集めて配るところまでがコアの役目（メソッドの追加のみで非破壊。
+  `EXTENSION_API_VERSION` は 1 のまま据え置き）
+
+### Changed
+
+- **`Extension.name` の形を検査するようになった。** `name` はダッシュボードの URL
+  パス・ハッシュ・静的ディレクトリ名へそのまま埋まるため、`^[a-z0-9][a-z0-9-]*$` に
+  合わない名前（大文字・アンダースコア・空白・`/`・`..` など）はロード時に `ValueError`
+  で落ちる。加えて、組み込みの経路と衝突する名前（`api` / `oauth` / `static` / `admin` /
+  `dashboard` / `auth` / `login` / `logout` / `setup` / `home` / `conversations` /
+  `memos` / `logs`）を `RESERVED_EXTENSION_NAMES` として予約し、使った拡張は落とす。
+  該当する `name` の拡張は改名が必要（既存の `google-oauth` / `google-calendar` /
+  `lilla-agent` はいずれも影響を受けない）
+
 ## [0.4.1] - 2026-09-19
 
 ### Added

@@ -8,10 +8,14 @@ Discord ボットとして常駐し、メッセージを受け取って LLM（Ol
 呼び出し、tool_call ループ・コマンド処理・返信を行う「エージェントとしての骨格」を
 提供します。
 
-キャラクター設定・特定ドメイン専用のツール（外部サービス連携など）・特定用途の
-HTTP/ダッシュボードサーバーといった、利用者ごとに異なる要素はコアには含めません。
-そうした要素は `Extension`（`core/extension.py`）のサブクラスと、起動時に読み込む
-`LILLA_EXTENSIONS` 環境変数を通じて外部から拡張できるようにしています。
+キャラクター設定・特定ドメイン専用のツール（外部サービス連携など）・用途特化の
+HTTP サーバー（機械向けの Bearer API など）といった、利用者ごとに異なる要素はコアには
+含めません。そうした要素は `Extension`（`core/extension.py`）のサブクラスと、起動時に
+読み込む `LILLA_EXTENSIONS` 環境変数を通じて外部から拡張できるようにしています。
+
+例外は **観測用ダッシュボード** で、これはコアが持ちます。見せる中身（会話履歴・
+ユーザーメモ・ログ）がすべてコアの状態だからです。拡張は `dashboard_*()` の申告で
+ここへタブと HTTP ルートを足せます。
 
 lilla-core は拡張を 1 つも読み込まない状態でも Discord bot として単体で起動できる
 ことを設計上の前提にしています。`Extension` の各メソッドは「何も貢献しない」
@@ -190,6 +194,38 @@ type: lilla_core.builtin_tools.llm_conversation_get
 > その環境で `ui.timezone` を未指定にすると、cron のスケジュールも「今日」も UTC に
 > なります。日付が重要な場合は必ず明示してください。
 
+### 観測用ダッシュボード
+
+コアは起動時に、会話履歴・ユーザーメモ・ログを人が見るための HTTP ダッシュボードを
+立ち上げます。有効無効のフラグはありません（起動するなら常に端末が開きます）。
+設定は `lilla.yaml` の `dashboard:` で、節そのものを省略すると既定値になります。
+
+```yaml
+dashboard:
+  host: "0.0.0.0"     # listen するアドレス（既定）
+  port: 8765          # listen するポート（既定）
+  cookie_secure: true # セッション Cookie に Secure を付けるか（既定）
+```
+
+> **セキュリティ上の注意**
+>
+> このポートは管理画面です。パスワードが未登録のあいだは `POST /api/setup` が誰でも
+> 通るブートストラップなので、**そのポートに先に到達した人が管理者パスワードを決められます**
+> （登録後は 403 で恒久的にブロックされます）。
+>
+> - 既定の `host` は全インターフェース（`0.0.0.0`）です。コンテナ運用を前提にしているため
+>   で、**このポートを公開ネットワークへ直接晒さないでください**。前段にアクセス制御
+>   （リバースプロキシや Zero Trust など）を置くか、同一ホストからしか使わないなら
+>   `host: 127.0.0.1` に絞ってください
+> - **起動したら最初に初期パスワードを設定してください**（`/` を開くと初期設定画面が出ます）
+> - `cookie_secure: true` は HTTPS 経由を前提にした安全側の既定です。LAN 内で
+>   `http://<host>:8765` へ直接アクセスする運用では `false` にしないと、ログインはできても
+>   Cookie が送信されずログイン状態を維持できません
+
+`/oauth/{拡張名}` 配下だけは認証ミドルウェアの外に出ます（OAuth の戻り先など、ブラウザが
+セッションを持たない状態で叩く公開 GET のため）。前段でアクセス制御を掛ける場合は、この
+接頭辞だけをバイパスする構成になります。
+
 ### Discordボットのセットアップ
 
 [Discord Developer Portal](https://discord.com/developers/applications) のアプリケーション
@@ -288,9 +324,12 @@ extension = MyExtension()
 | `tool_config_roots` | 拡張が同梱する既定のツール YAML（`llm_*.yaml` / `task_*.yaml`）のディレクトリ。`${CONFIG_ROOT}/tools` に同じ stem の YAML があればそちらが丸ごと勝つ。同梱ツールを止めるにはそこに `enabled: false` の YAML を置く |
 | `locale_dirs` | 拡張が同梱する UI 文言カタログ（`{locale}.yaml`）のディレクトリ。カタログのトップレベルキーはその拡張の `name` ただ 1 つでなければならない |
 | `command_packages` | `@register_command` を探す追加パッケージ |
-| `config_models` | この拡張が `AppConfig` に足す YAML セクション |
+| `dashboard_page` | 観測用ダッシュボードへ足すタブ 1 つ（`DashboardPage(label, group)`）。`group` は `main`（常用ナビ）か `admin`（管理メニュー）。経路は申告せず `name` から導出する |
+| `dashboard_static_dir` | `/static/ext/{name}/` に載せる静的ファイルのディレクトリ。タブを出すなら直下に `page.js` を置く |
+| `dashboard_routes` | セッション認証の内側に足す HTTP ルート（`DashboardRoute`）。パスは `/api/{name}` 配下のみ |
+| `dashboard_public_routes` | 認証の外側に載せる公開ルート（OAuth の戻り先など）。パスは `/oauth/{name}` 配下のみ。`state` の検証は拡張側の責任 |
+| `config_model` | この拡張が足す YAML セクションのモデル 1 つ（足さないなら `None`）。置き場は `extensions.<name のハイフンをアンダースコアにしたもの>`（`google-oauth` なら `cfg.extensions.google_oauth`） |
 | `env_fields` | この拡張が `cfg.env` に足す秘匿フィールド |
-| `required_config_sections` | 自分では提供しないが読む YAML セクション |
 | `required_env_fields` | 自分では提供しないが読む `cfg.env` のフィールド |
 | `required_tool_context_keys` | 自分では提供しないが、自分のツールが読むツール context のキー |
 | `requires`（クラス属性） | 依存する拡張の名前。ロード済みで、かつ `LILLA_EXTENSIONS` で自分より前に並んでいる必要がある |
@@ -325,6 +364,52 @@ env フィールド名・ツール context のキー・結果配送の `client_t
 フックには `ConversationContext.client_state` として、LLM ツールには context の
 `client_state` キーとしてそのまま渡します。
 
+### ダッシュボードへの差し込み
+
+拡張は観測用ダッシュボードにタブを 1 つと、HTTP ルートを足せます。経路の識別子は
+`Extension.name` ただ 1 つで、ハッシュ・API 接頭辞・公開コールバック・静的 URL は
+すべてコアが `name` から導出します（新しい ID 欄はありません）。`name = "google-oauth"`
+のとき次のようになります。
+
+| 用途 | 値 |
+|------|-----|
+| 常用ハッシュ | `#/google-oauth` |
+| 管理ハッシュ | `#/admin/google-oauth` |
+| セッション API | `/api/google-oauth` |
+| 公開コールバック | `/oauth/google-oauth/callback` |
+| 静的ファイル | `/static/ext/google-oauth/` |
+| JS モジュール | `/static/ext/google-oauth/page.js` |
+
+```python
+class MyExtension(Extension):
+    name = "my-pack"
+
+    def dashboard_page(self) -> DashboardPage | None:
+        return DashboardPage(label="My Pack", group="main")
+
+    def dashboard_static_dir(self) -> Path | None:
+        return Path(__file__).parent / "dashboard"
+
+    def dashboard_routes(self) -> list[DashboardRoute]:
+        return [DashboardRoute("GET", "/api/my-pack/items", handle_items)]
+```
+
+コアが集めた結果は `get_dashboard_pages()`（導出済みの `DashboardPageEntry`）・
+`get_dashboard_static_mounts()`・`get_dashboard_routes()`・`get_dashboard_public_routes()`
+から、いずれもロード順で読めます。これらを実際に載せるのはコアのダッシュボード
+サーバー（`handlers/dashboard_server.py`）で、`bot.py` の `main()` が拡張の `setup()` の
+あとに起こします。
+
+`name` は URL にそのまま埋まるため、`^[a-z0-9][a-z0-9-]*$` に合わない名前と、
+コアが押さえている予約名（`api` / `oauth` / `static` / `admin` / `dashboard` /
+`auth` / `login` / `logout` / `setup` / `home` / `conversations` / `memos` / `logs`）は
+ロード時に fail-fast します。ルートのパスが自分の接頭辞の外にある場合、タブを出すのに
+`dashboard_static_dir()` を返していない場合も同様です。
+
+`dashboard_public_routes()` に載せたルートは **誰でも叩けます**。ホスト前段の
+アクセス制御で公開コールバックだけを通す構成でも、`state` の検証は拡張側の責任です。
+認証が要る処理は `dashboard_routes()` へ置いてください。
+
 ### 設定の合成
 
 拡張は自分が足す設定を申告し、コアが起動時にすべての申告から 1 つの Pydantic
@@ -338,41 +423,70 @@ class GoogleConfig(BaseModel):
     redirect_uri: str = "http://localhost/google-callback"
 
 
-class MyExtension(Extension):
-    name = "my-extension"
+class GoogleOAuthExtension(Extension):
+    name = "google-oauth"
 
-    def config_models(self):
-        return {"google": GoogleConfig}
+    def config_model(self):
+        return GoogleConfig
 
     def env_fields(self):
         return {"google_client_secret": "GOOGLE_CLIENT_SECRET"}
 ```
 
-これで `get_config().google.client_id` と `get_config().env.google_client_secret` が
-プロセス全体から読めるようになります。`get_config()` の型は基底の `AppConfig` なので、
+1 つの拡張が足せるセクションのモデルは **1 つだけ** で、節名は自分では書きません。
+キーは `name` のハイフンをアンダースコアに置き換えたものです（`google-oauth` →
+`google_oauth`。ハイフンの無い名前はそのまま）。複数の設定のまとまりを持ちたいときは、
+その 1 つのモデルの子として並べてください。拡張のセクションは `lilla.yaml` の
+トップレベルではなく、コア確定の `extensions:` の下に置きます。コアが後からトップレベルに
+節を足しても、拡張の名前と衝突しません。
+
+```yaml
+dashboard:
+  port: 8765
+extensions:
+  google_oauth:
+    client_id: ...
+```
+
+これで `get_config().extensions.google_oauth.client_id` と
+`get_config().env.google_client_secret` がプロセス全体から読めるようになります
+（トップレベルの `get_config().google_oauth` は作りません）。
+`get_config()` の型は基底の `AppConfig` なので、
 型検査や補完のためにセクションをそのモデルの型で受け取りたいときは `get_section()` を
 使ってください。
 
 ```python
 from lilla_core.core.config import get_section
 
-client_id = get_section("google", GoogleConfig).client_id
+client_id = get_section("google-oauth", GoogleConfig).client_id
 ```
 
-セクションが申告されていない場合や、値が渡したモデルのインスタンスでない場合は
-`ValueError` になります。名前の綴りを間違えても静かに空を返すことはありません。
+引数には拡張の `name` を渡します（節名をそのまま渡しても構いません）。探すのは
+`extensions:` の下だけです（コア確定の節は `get_config().ui` のように直接
+読みます）。セクションが申告されていない場合や、値が渡したモデルのインスタンスでない
+場合は `ValueError` になります。名前の綴りを間違えても静かに空を返すことはありません。
 
 - セクションは、モデルが必須フィールドを 1 つでも持てば **必須**、そうでなければ
   省略可能になります。必須セクションが `lilla.yaml` に無ければ起動時に落ちます
+- `extensions:` の下に未知のキーがあれば起動時に落ちます。外した拡張の節が払い残しの
+  まま気付かれずに残ることを防ぐためです。拡張が 0 個なら `extensions` は空です
+- 申告した節を `extensions:` ではなくトップレベルに書いた場合も起動時に落ちます
+  （そのままだと無視され、モデルの既定値のまま気付かずに動いてしまうため）。
+  コア確定の節と同じ名前のトップレベルキーはコアのものなので対象外です
 - 合成される env フィールドの型は常に `str | None`（既定値 `None`）です。契約が型を
   運ばないため、必須フィールドや文字列以外の秘匿情報はこの経路では表現できません
-- 同じセクション名・同じ env フィールド名を 2 つの拡張が提供したら、たとえモデルが
-  同一でも fail-fast します。コア確定の名前も同様に予約済みです
-- `required_config_sections()` には、自分では提供しないが読むセクション名を並べます
-  （別のパックが持つ共有の `google:` セクションなど）。`required_env_fields()` と
-  `required_tool_context_keys()` は `cfg.env` のフィールドとツール context のキーについて
-  同じことをします。誰も提供しておらず、コア確定の名前でもなければロードに失敗し、
-  要求した拡張の名前を示します
+- `config_model()` は pydantic の `BaseModel` のサブクラスか `None` を返します。それ以外は
+  ロード時に失敗します。拡張名は一意でアンダースコアを含まないため、2 つの拡張が同じ
+  キーを導くことはありません。数字で始まる名前の拡張は、キーが識別子にならないため
+  モデルを申告できません。キーは名前空間が別なので、コア確定の節と同じでも構いません
+- 同じ env フィールド名を 2 つの拡張が提供したら fail-fast します。コア確定の env
+  フィールド名は予約済みです
+- 他の拡張のセクションを読むときは、その拡張に `requires`（下記）で依存し、
+  `cfg.extensions.<相手のキー>` を読みます。そのための別の申告はありません。
+  `required_env_fields()` と `required_tool_context_keys()` は引き続き、自分では提供しないが
+  読む `cfg.env` のフィールドとツール context のキーを並べます。誰も提供していなければ
+  ロードに失敗し、要求した拡張の名前を示します（コア確定の env フィールドとツール
+  context のキーは、書いても常に満たされます）
 
 ### 拡張どうしの依存
 
@@ -384,10 +498,7 @@ client_id = get_section("google", GoogleConfig).client_id
 ```python
 class GoogleCalendarExtension(Extension):
     name = "lilla-google-calendar"
-    requires = ("lilla-google-oauth",)
-
-    def required_config_sections(self):
-        return ["google"]
+    requires = ("lilla-google-oauth",)  # extensions.lilla_google_oauth を読む依存もこれで表す
 
     def required_env_fields(self):
         return ["google_client_secret"]
@@ -419,12 +530,14 @@ from lilla_core.core.extension import EXTENSION_API_VERSION, Extension
 
 class MyExtension(Extension):
     name = "my-extension"
-    api_version = 1  # 省略すると EXTENSION_API_VERSION
+    api_version = 2  # 省略すると EXTENSION_API_VERSION
 ```
 
 宣言したバージョンを受け付けない場合、`load_extensions()` は拡張名と両方のバージョンを
 示して失敗します。古い契約で書かれた拡張をそのまま読み込んで、起動後に壊れるのを
-防ぐためです。
+防ぐためです。現在のバージョンは 2 で、`config_models()` と `required_config_sections()` を
+`config_model()` に置き換えました。廃止したメソッドのどちらかを定義したままの拡張は、
+`api_version` を宣言していなくても、代わりの経路を示してロード時に失敗します。
 
 契約を変えるときの方針:
 
@@ -460,7 +573,7 @@ from my_package import extension
 def test_config_section_is_composed(lilla_extensions):
     cfg = lilla_extensions(extension)
 
-    assert cfg.my_section.value == "default"
+    assert cfg.extensions.my_section.value == "default"
 ```
 
 fixture は 2 つ（どちらも function scope）です。
@@ -480,10 +593,12 @@ from lilla_core.testing import use_extensions, write_minimal_lilla_yaml
 
 
 def test_section(tmp_path):
-    write_minimal_lilla_yaml(tmp_path, extra={"habits": {"channel": "habits-test"}})
+    write_minimal_lilla_yaml(
+        tmp_path, extra={"extensions": {"habits": {"channel": "habits-test"}}}
+    )
 
     with use_extensions(extension, config_root=tmp_path) as cfg:
-        assert cfg.habits.channel == "habits-test"
+        assert cfg.extensions.habits.channel == "habits-test"
 ```
 
 `use_extensions()` は入るときに現在の登録・設定インスタンス・`CONFIG_ROOT` を退避し、

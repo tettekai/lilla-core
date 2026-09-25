@@ -211,6 +211,37 @@ class TestPathsConfig:
         assert not hasattr(paths, "allowed_tool_paths")
 
 
+class TestDashboardConfig:
+    """`dashboard` セクション（観測用ダッシュボードの HTTP サーバー）。"""
+
+    def test_defaults_when_section_absent(self, isolated_config_root: Path) -> None:
+        """`dashboard:` を書かなくても既定値で起動できる（節そのものが省略可）。"""
+        _write_yaml(isolated_config_root)
+        cfg = AppConfig(env={"discord_token": "dummy"}, _env_file=None)
+
+        assert cfg.dashboard.host == "0.0.0.0"
+        assert cfg.dashboard.port == 8765
+        assert cfg.dashboard.cookie_secure is True
+
+    def test_values_from_yaml(self, isolated_config_root: Path) -> None:
+        """`host` / `port` / `cookie_secure` を YAML から読み取る。"""
+        _write_yaml(
+            isolated_config_root,
+            'discord:\n  my_user_id: "1"\n'
+            "dashboard:\n  host: 127.0.0.1\n  port: 9000\n  cookie_secure: false\n"
+            + _DUMMY_LLM_YAML,
+        )
+        cfg = AppConfig(env={"discord_token": "dummy"}, _env_file=None)
+
+        assert cfg.dashboard.host == "127.0.0.1"
+        assert cfg.dashboard.port == 9000
+        assert cfg.dashboard.cookie_secure is False
+
+    def test_is_a_core_section_name(self) -> None:
+        """コア確定のセクションなので、拡張が同名を申告するとロード時に落ちる。"""
+        assert "dashboard" in _config_module.core_config_section_names()
+
+
 class TestUiConfig:
     """`ui` セクション（Discord 向け文言のロケール）。"""
 
