@@ -17,7 +17,7 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [タイムゾーン](timezone.md) — `ui.timezone`
 - [観測用ダッシュボード](dashboard.md) — 公開面への注意を含む
 - [ツール契約](tools.md) — LLM ツール・task ツール・組み込みツール
-- [Google OAuth / Google Calendar（公式パック）](google.md) — `lilla_core.extensions` の同梱拡張
+- [Google OAuth / Google Calendar（公式拡張パック）](google.md) — `lilla_core.extensions` の同梱拡張
 
 ## 拡張
 

@@ -9,7 +9,7 @@
 
 ### Added
 
-- 公式パックの第 1 段として、Google OAuth2 と Google Calendar の拡張をコアに同梱した
+- 公式拡張パックの第 1 段として、Google OAuth2 と Google Calendar の拡張をコアに同梱した
   （#126）。ソースは `lilla_core/extensions/` 下で、`LILLA_EXTENSIONS` に import パス
   （`lilla_core.extensions.google_oauth` / `lilla_core.extensions.google_calendar`）を
   並べたときだけ読み込まれる。未指定なら今までどおりコア単体で起動する（別パッケージや

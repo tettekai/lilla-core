@@ -44,7 +44,7 @@ An extension subclasses `lilla_core.core.extension.Extension`, overrides only th
 it needs, and exposes itself from its module as `extension = MyExtension()`.
 
 Google OAuth (`lilla_core.extensions.google_oauth`) and Google Calendar
-(`lilla_core.extensions.google_calendar`) ship with the core as official packs. Each is
+(`lilla_core.extensions.google_calendar`) ship with the core as an official extension pack. Each is
 loaded only when listed in `LILLA_EXTENSIONS`.
 
 ## Documentation

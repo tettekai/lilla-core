@@ -1,4 +1,4 @@
-"""Google Calendar の設定・クライアント・LLM ツールをまとめた公式パック。
+"""Google Calendar の設定・クライアント・LLM ツールをまとめた拡張（公式拡張パックの 1 つ）。
 
 `LILLA_EXTENSIONS` には `lilla_core.extensions.google_calendar` として、
 `lilla_core.extensions.google_oauth`（`GoogleOAuthClient` の提供元）より後に並べて

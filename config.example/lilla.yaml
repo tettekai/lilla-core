@@ -41,7 +41,7 @@ paths:
   tool_root: /tmp/lilla-tools
 
 # 拡張が申告した節は、トップレベルではなく `extensions:` の下に置く。
-# 下は公式パック（LILLA_EXTENSIONS に lilla_core.extensions.google_oauth /
+# 下は公式拡張パック（LILLA_EXTENSIONS に lilla_core.extensions.google_oauth /
 # lilla_core.extensions.google_calendar を並べたとき）の例。ロードしていない拡張の節を
 # 残すと起動時に落ちるため、使わないならコメントアウトのままにする。
 # extensions:

@@ -1,6 +1,6 @@
-# Google OAuth / Google Calendar（公式パック）
+# Google OAuth / Google Calendar（公式拡張パック）
 
-コアには公式パックとして、Google OAuth2 と Google Calendar の拡張を同梱しています。
+コアには公式拡張パックとして、Google OAuth2 と Google Calendar の拡張を同梱しています。
 どちらも外部の拡張と同じ `Extension` 契約だけで書かれており、`LILLA_EXTENSIONS` に
 import パスを並べたときだけ読み込まれます。並べなければ今までどおりコア単体で起動します
 （別パッケージや extras は不要です）。
@@ -86,8 +86,8 @@ Calendar が要求するスコープは `https://www.googleapis.com/auth/calenda
 
 ## カレンダーのツール
 
-ツール本体はパック内にあり、YAML は利用者の `${CONFIG_ROOT}/tools/` に置きます
-（パックは YAML を同梱しません）。`type` はファイル名で解決されます。
+ツール本体は `google-calendar` 拡張の中にあり、YAML は利用者の `${CONFIG_ROOT}/tools/` に
+置きます（拡張は YAML を同梱しません）。`type` はファイル名で解決されます。
 
 ```yaml
 # ${CONFIG_ROOT}/tools/llm_calendar_get.yaml
@@ -109,7 +109,7 @@ type: llm_calendar_create
 
 ## 他の Google API を足す（`GoogleOAuthClient`）
 
-Tasks や Health など、パックに無い Google API は自分の拡張で足します。クライアントは
+Tasks や Health など、公式拡張パックに無い Google API は自分の拡張で足します。クライアントは
 `GoogleOAuthClient` を継承し、`CREDENTIAL_TYPE` と `SCOPES` だけを定義します。
 トークンの取得・更新、認証ヘッダ、認可フローの開始、コールバックは共有されます
 （戻り先は増やしません）。

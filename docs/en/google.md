@@ -1,11 +1,11 @@
-# Google OAuth / Google Calendar (official packs)
+# Google OAuth / Google Calendar (official extension pack)
 
 > This page is a translation of the [Japanese original](../ja/google.md). If the two
 > differ, the Japanese version is authoritative.
 
-The core ships the Google OAuth2 and Google Calendar extensions as official packs. Both
-are written against the same `Extension` contract as any external extension, and they
-are loaded only when you list their import paths in `LILLA_EXTENSIONS`. If you do not
+The core ships the Google OAuth2 and Google Calendar extensions as an official extension
+pack. Both are written against the same `Extension` contract as any external extension,
+and they are loaded only when you list their import paths in `LILLA_EXTENSIONS`. If you do not
 list them, the core starts on its own as before (no separate package or extras needed).
 
 | Import path | `name` | Role |
@@ -94,8 +94,8 @@ the dashboard port.
 
 ## Calendar tools
 
-The tool code lives in the pack; the YAML lives in your `${CONFIG_ROOT}/tools/` (the
-pack does not bundle YAML). `type` is resolved by file name.
+The tool code lives in the `google-calendar` extension; the YAML lives in your
+`${CONFIG_ROOT}/tools/` (the extension does not bundle YAML). `type` is resolved by file name.
 
 ```yaml
 # ${CONFIG_ROOT}/tools/llm_calendar_get.yaml
@@ -117,8 +117,8 @@ execution context (or `primary`) for backward compatibility.
 
 ## Adding other Google APIs (`GoogleOAuthClient`)
 
-Add Google APIs the packs do not cover (Tasks, Health, ...) in your own extension. The
-client subclasses `GoogleOAuthClient` and defines only `CREDENTIAL_TYPE` and `SCOPES`.
+Add Google APIs the official extension pack does not cover (Tasks, Health, ...) in your
+own extension. The client subclasses `GoogleOAuthClient` and defines only `CREDENTIAL_TYPE` and `SCOPES`.
 Token handling, auth headers, starting the authorization flow, and the callback are
 shared (you do not add another callback).
 

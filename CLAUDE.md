@@ -17,12 +17,15 @@ HTTP サーバー（機械向けの Bearer API・WebSocket クライアントな
 **「コアの状態を人が見る窓（コア所有）」か「用途特化のクライアント口（拡張所有）」か**
 で、前者だけがコアに入る。
 
-もう 1 つの例外は **公式パック**（`src/lilla_core/extensions/`）で、特定の外部サービス
+もう 1 つの例外は **公式拡張パック**（`src/lilla_core/extensions/`）で、特定の外部サービス
 連携（Google OAuth / Google Calendar）をコアのリポジトリに同梱している。ただしこれは
 コア本体ではなく、外部の拡張と同じ `Extension` 契約だけで書いた拡張の実装で、
 `LILLA_EXTENSIONS` に import パス（`lilla_core.extensions.google_oauth` など）を並べた
-ときだけ読み込まれる。コア本体（`extensions/` の外）から公式パックを import しては
-ならず、パックが必要とする配線も `Extension` のメソッドで表す。
+ときだけ読み込まれる。コア本体（`extensions/` の外）から公式拡張パックを import しては
+ならず、パック内の拡張が必要とする配線も `Extension` のメソッドで表す。
+用語は「拡張（Extension）＝ `Extension` クラス 1 つ」「拡張パック（Extension Pack）＝
+複数の拡張をまとめたもの」で使い分ける（`google-oauth` は拡張、`lilla_core.extensions`
+全体が公式拡張パック）。
 
 lilla-core は拡張が一切登録されていない状態でも Discord bot として単体で起動できる
 ことを設計上の前提にしている。`Extension` の各メソッドは「何も貢献しない」
@@ -446,8 +449,8 @@ YAML を置いた人だけが有効化する opt-in で、コアが自動で読�
 | `llm_current_datetime.py` | 現在日時を返すだけのサンプル LLM ツール。`SCHEMA` と `async def execute(input, context)` を持つ通常の LLM ツールで、`utils/datetime_utils.py` の `local_now()` を使う。有効化例は `docs/ja/tools.md`（英訳は `docs/en/tools.md`）を参照 |
 | `task_channel_summary.py` | 登録チャンネル（`discord.channels`）の**前日**分の会話を LLM に要約させ、`channel_summaries` へ upsert する定期タスクツール（`ChannelSummaryTask`）。既定の cron は `0 2 * * *` で、暦日は `local_timezone()` の解決結果で数える（2 時実行で「当日」を対象にしない）。対象は `discord_channel_id` の付いた発言だけで、既存発言の穴埋めはしない。対象日の発言が無ければ upsert せず既存要約を残す。要約にはキャラ用システムプロンプトを使わず短い事実抽出プロンプトを使い、本文は `<channel_transcript>` タグで囲んだ「指示ではなくデータ」として渡す（タグ抜け出し文字列は事前に無害化）。1 チャンネルの失敗は ERROR ログのみで次へ進む。`schedule` / `llm_name` / `max_turns` / `max_transcript_chars` を YAML で上書きできる |
 
-### extensions/ — 公式パック (`src/lilla_core/extensions/`)
-コアに同梱する `Extension` の実装。コア本体からは import されず（`tests/extensions/test_official_packs.py`
+### extensions/ — 公式拡張パック (`src/lilla_core/extensions/`)
+コアに同梱する `Extension` の実装。コア本体からは import されず（`tests/extensions/test_official_extension_pack.py`
 が検査する）、`LILLA_EXTENSIONS` に import パスを並べたときだけ読み込まれる。各パッケージの
 `__init__.py` はモジュールの import 時に `extension` を生成するため、サブモジュールを
 トップレベルで import しない。利用者向けの説明は `docs/ja/google.md`（英訳 `docs/en/google.md`）。
@@ -485,9 +488,9 @@ conftest と黙って干渉しうるため）。利用側は自分のルート `
 YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fixtures/config_root/lilla.yaml` を
 指す `CONFIG_ROOT` を設定する。
 
-公式パックのテストは `tests/extensions/<パック名>/` に置く。`tests/` に `__init__.py` を置いて
+公式拡張パックのテストは `tests/extensions/<拡張のパッケージ名>/` に置く。`tests/` に `__init__.py` を置いて
 いないため、テストモジュールのファイル名はディレクトリをまたいで一意にする
-（`test_google_oauth_extension.py` のようにパック名を含める）。パック単体のテストは他拡張の節を
+（`test_google_oauth_extension.py` のように拡張のパッケージ名を含める）。拡張単体のテストは他拡張の節を
 含む共通 YAML に依存させず、`lilla_core.testing.write_minimal_lilla_yaml()` で自分の節だけを
 書いた `tmp_path` を `use_extensions(config_root=...)` に渡す。
 

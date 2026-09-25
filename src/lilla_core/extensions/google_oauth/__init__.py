@@ -1,4 +1,4 @@
-"""Google OAuth2 の認可・トークン処理だけを受け持つ公式パック。
+"""Google OAuth2 の認可・トークン処理だけを受け持つ拡張（公式拡張パックの 1 つ）。
 
 `LILLA_EXTENSIONS` に `lilla_core.extensions.google_oauth` として、それを `requires`
 する拡張（`lilla_core.extensions.google_calendar` など）より前に並べて読み込む。

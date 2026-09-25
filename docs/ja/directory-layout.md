@@ -15,7 +15,7 @@ src/lilla_core/
 ├── api/                  # LLM クライアント（Ollama / OpenAI 互換）
 ├── repository/           # MongoDB へのデータ永続化
 ├── builtin_tools/        # コア組み込みツール（opt-in）
-├── extensions/           # 公式パック（Google OAuth / Calendar。LILLA_EXTENSIONS で opt-in）
+├── extensions/           # 公式拡張パック（Google OAuth / Calendar。LILLA_EXTENSIONS で opt-in）
 ├── tool_support/         # ツール実装向けの opt-in ヘルパー群
 └── testing/              # 拡張リポジトリ向けのテストヘルパー（opt-in）
 tests/                    # pytest による単体テスト
