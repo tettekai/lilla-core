@@ -18,6 +18,17 @@ name: Release
 # レビュー用 Webhook とは別のシークレットに分ける（リリース専用ルーティン向け）。
 # 未設定の場合は draft 作成（または既存 draft の検出）までは成功させ、通知だけを
 # WARNING ログでスキップする（ジョブは失敗させない）。
+#
+# Webhook のペイロード契約（JSON、いずれも必須）:
+#   action            "release" 固定
+#   owner             リポジトリオーナー（github.repository_owner）
+#   repo              リポジトリ名（github.event.repository.name）
+#   repository        "owner/repo" 形式（github.repository）
+#   version           pyproject.toml から読んだバージョン（例: "1.2.3"）
+#   tag               リリースタグ（例: "v1.2.3"）
+#   draft_release_url 作成済み、または既存の draft Release の URL
+#   pr_number         マージされたリリース PR の番号
+#   pr_url            同 PR の URL
 on:
   pull_request:
     types: [closed]
