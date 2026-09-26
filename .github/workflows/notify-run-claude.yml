@@ -85,7 +85,7 @@ jobs:
             exit 1
           fi
 
-          session_url=$(jq -r '.session_url // .url // .session.url // empty' /tmp/response.json 2>/dev/null || true)
+          session_url=$(jq -r '.claude_code_session_url // .session_url // .url // .session.url // empty' /tmp/response.json 2>/dev/null || true)
           echo "session_url=${session_url}" >> "${GITHUB_OUTPUT}"
 
       - name: Remove run-claude label
@@ -107,9 +107,12 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
-            const sessionUrl = process.env.SESSION_URL;
-            const body = sessionUrl
-              ? `Claude Code Routine を起動しました。\n\nSession: ${sessionUrl}`
+            // Only link a plain https URL so the response cannot break out of
+            // the Markdown link syntax; anything else falls back to plain text.
+            const sessionUrl = (process.env.SESSION_URL || "").trim();
+            const linkable = /^https:\/\/[^\s()<>\[\]]+$/.test(sessionUrl);
+            const body = linkable
+              ? `Claude Code Routine を起動しました。[セッションを開く](${sessionUrl})`
               : "Claude Code Routine を起動しました。";
             await github.rest.issues.createComment({
               owner: context.repo.owner,
