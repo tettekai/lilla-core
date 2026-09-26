@@ -27,8 +27,8 @@
           <span x-text="minPasswordLength"></span>文字以上で入力してください。<br>
           セットアップトークンは bot の起動ログ（WARNING）に出ています。
         </p>
-        <input type="password" x-model="setupToken" placeholder="セットアップトークン"
-          autocomplete="off" :disabled="setupSubmitting">
+        <input type="text" x-model="setupToken" placeholder="セットアップトークン"
+          autocomplete="off" autocapitalize="off" spellcheck="false" :disabled="setupSubmitting">
         <input type="password" x-model="setupPassword" placeholder="パスワード"
           autocomplete="new-password" :disabled="setupSubmitting">
         <input type="password" x-model="setupPasswordConfirm" placeholder="パスワード（確認）"
