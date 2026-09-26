@@ -7,6 +7,27 @@
 
 ## [Unreleased]
 
+### Added
+
+- 公式拡張パックの第 1 段として、Google OAuth2 と Google Calendar の拡張をコアに同梱した
+  （#126）。ソースは `lilla_core/extensions/` 下で、`LILLA_EXTENSIONS` に import パス
+  （`lilla_core.extensions.google_oauth` / `lilla_core.extensions.google_calendar`）を
+  並べたときだけ読み込まれる。未指定なら今までどおりコア単体で起動する（別パッケージや
+  extras にはしていない）
+  - `google-oauth`: YAML の `extensions.google_oauth`（`client_id` / `redirect_uri`）と
+    `GOOGLE_CLIENT_SECRET`（`cfg.env.google_client_secret`）を申告し、認可コードの戻り先
+    `GET /oauth/google-oauth/callback` をダッシュボードの公開ルートとして載せる。
+    他の Google API 拡張が継承する `GoogleOAuthClient`
+    （`lilla_core.extensions.google_oauth.client`）を提供し、サブクラスは
+    `CREDENTIAL_TYPE` と `SCOPES` だけを持てばよい。Calendar を載せなくても単独で使える
+  - `google-calendar`（`requires = ("google-oauth",)`）: YAML の
+    `extensions.google_calendar.calendars` と、LLM ツール `llm_calendar_get` /
+    `llm_calendar_create`（YAML は利用者の `${CONFIG_ROOT}/tools` に置く）。タイムゾーンは
+    `ui.timezone` を使い、独自の TZ 設定は持たない
+  - コールバックは `state` を保存済みの値との完全一致だけで検証し、credential_type を
+    固定の一覧で絞らない（`GoogleOAuthClient` を継承する任意の拡張の種別を受け付ける）
+  - 詳細は `docs/ja/google.md`（英訳 `docs/en/google.md`）
+
 ### Changed
 
 - `README.md` / `README.ja.md` を「何か・インストール・最低限の起動・拡張の紹介・ドキュメント

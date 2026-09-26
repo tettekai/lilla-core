@@ -17,6 +17,14 @@ HTTP サーバー（機械向けの Bearer API・WebSocket クライアントな
 **「コアの状態を人が見る窓（コア所有）」か「用途特化のクライアント口（拡張所有）」か**
 で、前者だけがコアに入る。
 
+もう 1 つの例外は **公式拡張パック**（`src/lilla_core/extensions/`）で、特定の外部サービス
+連携（Google OAuth / Google Calendar）をコアのリポジトリに同梱している。ただしこれは
+コア本体ではなく、外部の拡張と同じ `Extension` 契約だけで書いた拡張の実装で、
+`LILLA_EXTENSIONS` に import パス（`lilla_core.extensions.google_oauth` など）を並べた
+ときだけ読み込まれる。コア本体（`extensions/` の外）から公式拡張パックを import しては
+ならず、公式拡張パック内の拡張が必要とする配線も `Extension` のメソッドで表す（「拡張」と
+「拡張パック」の使い分けは「開発ルール」の用語の項を参照）。
+
 lilla-core は拡張が一切登録されていない状態でも Discord bot として単体で起動できる
 ことを設計上の前提にしている。`Extension` の各メソッドは「何も貢献しない」
 デフォルトを持ち、コアが拡張の有無に依存しないようにする。
@@ -28,6 +36,15 @@ lilla-core は拡張が一切登録されていない状態でも Discord bot �
   拡張側の情報を必要とする場合は、直接参照せず `core/extension.py` の `Extension`
   にメソッドを追加し、拡張する側でオーバーライドしてもらう形にする
   （観測用ダッシュボードだけは例外でコア所有。「プロジェクト概要」の線引きを参照）
+- 「拡張」と「拡張パック」は次の意味で使い分ける（ドキュメント・docstring・コメント・
+  テスト名・CHANGELOG・Issue / PR の文面すべてで同じ）
+  - **拡張（Extension）**: `Extension` のサブクラス 1 つ（モジュールが export する
+    `extension` 1 個）。例: `google-oauth`、`google-calendar`
+  - **拡張パック（Extension Pack）**: 複数の拡張をまとめたもの。例: `lilla_core.extensions`
+    （コアに同梱しているものは「公式拡張パック」/ official extension pack）
+  - 1 つの拡張を「パック」と呼ばない。「公式パック」「pack」のような省略形も使わない
+  - 既存のファイルには古い曖昧な呼び方が残っていることがある。まとめて直す作業はしないが、
+    作業で追加・変更するファイルにそうした箇所があれば、その変更の中で上の呼び方に直す
 - 関数には docstring を日本語で書く
 - `logger.*()` / `raise` に渡すメッセージ文字列は英語で書く（docstring・コメントは日本語のまま）
 - Discord に見える文言（コマンドの返信・ボタンのラベル・`notify_error` に渡す文脈など）は
@@ -439,6 +456,24 @@ YAML を置いた人だけが有効化する opt-in で、コアが自動で読�
 | `llm_current_datetime.py` | 現在日時を返すだけのサンプル LLM ツール。`SCHEMA` と `async def execute(input, context)` を持つ通常の LLM ツールで、`utils/datetime_utils.py` の `local_now()` を使う。有効化例は `docs/ja/tools.md`（英訳は `docs/en/tools.md`）を参照 |
 | `task_channel_summary.py` | 登録チャンネル（`discord.channels`）の**前日**分の会話を LLM に要約させ、`channel_summaries` へ upsert する定期タスクツール（`ChannelSummaryTask`）。既定の cron は `0 2 * * *` で、暦日は `local_timezone()` の解決結果で数える（2 時実行で「当日」を対象にしない）。対象は `discord_channel_id` の付いた発言だけで、既存発言の穴埋めはしない。対象日の発言が無ければ upsert せず既存要約を残す。要約にはキャラ用システムプロンプトを使わず短い事実抽出プロンプトを使い、本文は `<channel_transcript>` タグで囲んだ「指示ではなくデータ」として渡す（タグ抜け出し文字列は事前に無害化）。1 チャンネルの失敗は ERROR ログのみで次へ進む。`schedule` / `llm_name` / `max_turns` / `max_transcript_chars` を YAML で上書きできる |
 
+### extensions/ — 公式拡張パック (`src/lilla_core/extensions/`)
+コアに同梱する `Extension` の実装。コア本体からは import されず（`tests/extensions/test_official_extension_pack.py`
+が検査する）、`LILLA_EXTENSIONS` に import パスを並べたときだけ読み込まれる。各パッケージの
+`__init__.py` はモジュールの import 時に `extension` を生成するため、サブモジュールを
+トップレベルで import しない。利用者向けの説明は `docs/ja/google.md`（英訳 `docs/en/google.md`）。
+
+| ファイル | 役割 |
+|----------|------|
+| `google_oauth/__init__.py` | `GoogleOAuthExtension`（`name = "google-oauth"`）と `extensions.google_oauth` のモデル `GoogleConfig`（`client_id` / `redirect_uri`。全項目に既定値）。申告するのは `config_model()`・`env_fields()`（`google_client_secret` → `GOOGLE_CLIENT_SECRET`）・`locale_dirs()`（`google_oauth/locales/`）・`dashboard_public_routes()`（`GET /oauth/google-oauth/callback`。接頭辞はコアの `DASHBOARD_PUBLIC_PREFIX` を参照せずリテラルで書く）。他の拡張に依存しないため、Calendar 抜きで単独でも載せられる |
+| `google_oauth/client.py` | Google API クライアントの共通基底クラス `GoogleOAuthClient`。サブクラス（Calendar や利用者側の Tasks / Health など）は `CREDENTIAL_TYPE` と `SCOPES` だけを定義する。設定からの組み立て（`from_config()`。`get_section("google-oauth", GoogleConfig)` と `cfg.env.google_client_secret` を読む）・認証ヘッダ（`_auth_headers`）・JSON リクエスト（`_request_json`）・認可フロー開始（`start_authentication`）を共通提供する |
+| `google_oauth/token.py` | アクセストークンの取得・リフレッシュ（`get_google_access_token`。invalid_grant は `ReauthenticationRequiredError`）と認可 URL の組み立て（`start_google_authentication`。`state` は `{credential_type}:{乱数}` で、種別ごとに `credentials` へ保存する）。スコープ定数は持たない |
+| `google_oauth/callback.py` | `GET /oauth/google-oauth/callback`（認可コード → トークンの交換）。認証の外側に載る公開ルートのため、`state` から復元した種別の保存済み `state` と完全一致しない要求は 400 で弾き、一致した直後に `state` を消す。credential_type を固定の一覧では絞らない（どの種別が来るかは継承する拡張ごとに決まるため。発行していない `state` は照合で弾ける）。完了時の文言は `t("google-oauth.callback.completed")` |
+| `google_oauth/locales/{ja,en}.yaml` | 上記の文言カタログ（トップレベルは `google-oauth` のみ） |
+| `google_calendar/__init__.py` | `GoogleCalendarExtension`（`name = "google-calendar"`、`requires = ("google-oauth",)`）と `extensions.google_calendar` のモデル（`GoogleCalendarConfig` / `CalendarEntryConfig`。`calendars` のみ）。`required_env_fields()` で `google_client_secret` を要求し、`tool_roots()` で同梱の `tools/` をツール探索ルートへ足す（YAML は利用者の `${CONFIG_ROOT}/tools` のものを使い、`tool_config_roots()` での同梱はしない）。TZ 設定は持たず `ui.timezone` を使う |
+| `google_calendar/client.py` | `GoogleCalendarClient`（`CREDENTIAL_TYPE = "google_calendar"`、スコープは `calendar.events` のみ）。複数カレンダーの予定の取得・マージ（`get_events`）と作成（`create_event`。時間指定の `timeZone` は `ui.timezone` から解決した IANA 名）。シングルトンは `get_google_calendar_client()` |
+| `google_calendar/tools/llm_calendar_get.py` | （LLM ツール）予定の取得。`attendees` を除去し、登録済みカレンダーの ID を `friendly_name` に置き換える。カレンダー一覧は `get_section("google-calendar", GoogleCalendarConfig)` から読む |
+| `google_calendar/tools/llm_calendar_create.py` | （LLM ツール）予定の作成。書き込み先は `calendars` に登録済みの `friendly_name` に限る。`build_schema` で `friendly_name` 一覧を `calendar` パラメータの enum へ注入する |
+
 ### testing/ — 拡張リポジトリ向けのテストヘルパー (`src/lilla_core/testing/`)
 拡張を別リポジトリで開発するときに、どのリポジトリも書くことになる「自分の `Extension` を
 登録し、設定を合成し、テストが終わったらプロセスの状態を元へ戻す」セットアップを肩代わりする
@@ -459,6 +494,12 @@ conftest と黙って干渉しうるため）。利用側は自分のルート `
 ルートを追加し、`AppConfig.env` の必須フィールド用にダミーの環境変数（`DISCORD_TOKEN`）と、
 YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fixtures/config_root/lilla.yaml` を
 指す `CONFIG_ROOT` を設定する。
+
+公式拡張パックのテストは `tests/extensions/<拡張のパッケージ名>/` に置く。`tests/` に `__init__.py` を置いて
+いないため、テストモジュールのファイル名はディレクトリをまたいで一意にする
+（`test_google_oauth_extension.py` のように拡張のパッケージ名を含める）。拡張単体のテストは他拡張の節を
+含む共通 YAML に依存させず、`lilla_core.testing.write_minimal_lilla_yaml()` で自分の節だけを
+書いた `tmp_path` を `use_extensions(config_root=...)` に渡す。
 
 ## 処理フロー概要
 ```
