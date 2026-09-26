@@ -13,6 +13,9 @@
 
 - 初期設定（``POST /api/setup``）: ``admin_credentials`` が未登録のときだけ通り、
   bcrypt ハッシュを 1 件だけ登録する。登録後は 403 で恒久的にブロックする。
+  未登録のあいだは起動時に一度きりのセットアップトークンを生成して起動ログ
+  （WARNING）にだけ出し、ボディの ``setup_token`` がそれと一致したときだけ受け付ける
+  （ポートに先着した第三者に管理者パスワードを決めさせないため）。
 - ログイン（``POST /api/login``）: ``bcrypt.checkpw`` で検証し、成功したら
   ``secrets.token_urlsafe(32)`` のセッション ID を発行して SHA-256 ハッシュを
   ``admin_sessions`` に保存し、生の ID を HttpOnly Cookie で返す。
@@ -70,6 +73,14 @@ MAX_PASSWORD_BYTES = 72
 LOGIN_ATTEMPT_WINDOW_SECONDS = 60
 #: 時間窓内に許容するログイン失敗回数。これを超えると一時ブロックする
 LOGIN_MAX_FAILURES = 5
+
+#: 一度きりのセットアップトークンの長さ（``secrets.token_urlsafe`` に渡すバイト数）
+SETUP_TOKEN_BYTES = 32
+
+#: パスワード未登録のあいだだけ有効な一度きりのセットアップトークン。
+#: プロセス内メモリにだけ持ち、登録に成功したら捨てる。再起動すると作り直すため、
+#: 古いトークンは無効になる。
+_setup_token: str | None = None
 
 #: 認証を要求しないパス（完全一致）
 _AUTH_EXEMPT_PATHS = frozenset({"/", "/api/auth/status", "/api/login"})
@@ -481,6 +492,69 @@ async def _is_setup_required() -> bool:
     return not await get_admin_credential_repo().exists()
 
 
+def _ensure_setup_token() -> str:
+    """一度きりのセットアップトークンを返す（無ければ生成して起動ログへ出す）。
+
+    トークンを外へ出すのはこの WARNING ログだけで、画面の HTML や認証前に読める
+    API 応答には載せない（載せるとポートに届く人が誰でも使えてしまうため）。
+    パスワード登録後に ``admin_credentials`` を手動削除した場合も、次に要求された
+    時点でここから新しいトークンが出る。
+
+    Returns:
+        現在有効なセットアップトークン。
+    """
+    global _setup_token
+    if _setup_token is None:
+        _setup_token = secrets.token_urlsafe(SETUP_TOKEN_BYTES)
+        logger.warning(
+            "Dashboard admin password is not set. Open the dashboard and enter this "
+            "one-time setup token on the setup screen: %s",
+            _setup_token,
+        )
+    return _setup_token
+
+
+def _discard_setup_token() -> None:
+    """セットアップトークンを捨てる（パスワード登録が済んだとき用）。"""
+    global _setup_token
+    _setup_token = None
+
+
+def _is_valid_setup_token(token: object) -> bool:
+    """送られてきたセットアップトークンが現在のものと一致するかを返す。
+
+    Args:
+        token: リクエストボディの ``setup_token``。
+
+    Returns:
+        一致すれば True。未生成・文字列以外・空文字は False。
+    """
+    if _setup_token is None or not isinstance(token, str) or not token:
+        return False
+    return secrets.compare_digest(token.encode("utf-8"), _setup_token.encode("utf-8"))
+
+
+async def _prepare_setup_token_on_startup() -> None:
+    """起動時、パスワード未登録ならセットアップトークンを生成してログへ出す。
+
+    MongoDB に届かないなどで判定できなくても起動は止めない（初期設定画面を
+    開いたときに ``_ensure_setup_token()`` があらためて生成する）。
+    """
+    try:
+        setup_required = await _is_setup_required()
+    except Exception:
+        logger.warning(
+            "Could not check whether dashboard setup is required; "
+            "the setup token will be issued on first access",
+            exc_info=True,
+        )
+        return
+    if setup_required:
+        _ensure_setup_token()
+    else:
+        _discard_setup_token()
+
+
 async def _get_valid_session(request: web.Request) -> dict | None:
     """リクエストの Cookie から有効なセッションを取得する。
 
@@ -564,6 +638,9 @@ async def handle_api_auth_status(request: web.Request) -> web.Response:
     """
     setup_required = await _is_setup_required()
     if setup_required:
+        # 起動後に admin_credentials が手動削除された場合に備え、ここでも用意する
+        # （トークンそのものは応答に載せない）
+        _ensure_setup_token()
         return web.json_response({"setup_required": True, "authenticated": False})
 
     authenticated = await _get_valid_session(request) is not None
@@ -576,12 +653,21 @@ async def handle_api_setup(request: web.Request) -> web.Response:
     登録済みかどうかの判定は ``auth_middleware`` 側で行っており、ここへ到達する
     のは未登録のときだけ。競合で二重に登録されないよう、リポジトリ側でも
     ``$setOnInsert`` により後勝ちの上書きを防いでいる。
+
+    ボディの ``setup_token`` が起動ログに出した一度きりのトークンと一致しなければ
+    403 で拒否し、パスワードは作らない。ヘッダでの代替は受け付けない。
     """
     from lilla_core.repository.admin_credential_repository import get_admin_credential_repo
 
     body, ok = await parse_json_body(request)
     if not ok or not isinstance(body, dict):
         return web.Response(status=400, text="Invalid JSON body")
+
+    if not _is_valid_setup_token(body.get("setup_token")):
+        # 起動後に admin_credentials が消された場合など、未生成ならここで出す
+        _ensure_setup_token()
+        logger.warning("Rejected dashboard setup with a missing or invalid setup token")
+        return web.Response(status=403, text="Invalid setup token")
 
     password = body.get("password")
     error = validate_password(password)
@@ -590,6 +676,8 @@ async def handle_api_setup(request: web.Request) -> web.Response:
 
     password_hash = await _hash_password(password)
     saved = await get_admin_credential_repo().save_password_hash(password_hash)
+    # 登録できてもできなくても（競合で先に登録済み）パスワードは存在するので捨てる
+    _discard_setup_token()
     if not saved:
         return web.Response(status=403, text="Setup already completed")
 
@@ -760,6 +848,8 @@ async def start_dashboard_server() -> None:
     app.router.add_get("/api/dashboard/nav", handle_api_dashboard_nav)
     _add_extension_routes(app)
     app.router.add_static("/static", DASHBOARD_DIR)
+
+    await _prepare_setup_token_on_startup()
 
     runner = web.AppRunner(app)
     await runner.setup()
