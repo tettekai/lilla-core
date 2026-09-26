@@ -18,6 +18,7 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [LLM プロバイダーの回しごと選択](llm-resolver.md) — `llm.providers` の `type: resolver`
 - [観測用ダッシュボード](dashboard.md) — 公開面への注意を含む
 - [ツール契約](tools.md) — LLM ツール・task ツール・組み込みツール
+- [判定ヘルパー（Jev）](jev.md) — 任意の `lilla_core.tool_support.jev`
 - [Google OAuth / Google Calendar（公式拡張パック）](google.md) — `lilla_core.extensions` の同梱拡張
 
 ## 拡張

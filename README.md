@@ -47,6 +47,16 @@ Google OAuth (`lilla_core.extensions.google_oauth`) and Google Calendar
 (`lilla_core.extensions.google_calendar`) ship with the core as an official extension pack. Each is
 loaded only when listed in `LILLA_EXTENSIONS`.
 
+## Optional decision helper (Jev)
+
+`ask_jev()` in `lilla_core.tool_support.jev` is a thin helper that sends a state and typed
+questions (Choice / Score / Noul) to TypeSafe's System One model (Jev) and returns answers with
+probabilities. Use it where you need a fast pick from a fixed set of answers, such as a gate
+before running a tool or model selection in an LLM resolver. The core does not depend on this
+API, and the TypeSafe SDK is not a required dependency. Only code that imports the helper calls
+it; the API key comes from an argument or the `TYPESAFE_API_KEY` environment variable. See
+[Decision helper (Jev)](https://github.com/tettekai/lilla-core/blob/main/docs/en/jev.md).
+
 ## Documentation
 
 - [Documentation index](https://github.com/tettekai/lilla-core/blob/main/docs/en/README.md)

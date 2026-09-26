@@ -20,6 +20,7 @@ The index of the lilla-core user documentation.
 - [Choosing the LLM provider per turn](llm-resolver.md) — `type: resolver` in `llm.providers`
 - [The observability dashboard](dashboard.md) — including the exposure warning
 - [Tool contracts](tools.md) — LLM tools, task tools, built-in tools
+- [Decision helper (Jev)](jev.md) — the optional `lilla_core.tool_support.jev`
 - [Google OAuth / Google Calendar (official extension pack)](google.md) — extensions bundled in `lilla_core.extensions`
 
 ## Extensions

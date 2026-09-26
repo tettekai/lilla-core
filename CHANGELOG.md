@@ -9,6 +9,14 @@
 
 ### Added
 
+- 任意の判定ヘルパー `lilla_core.tool_support.jev` を足した（#134）。`ask_jev(state, questions)`
+  が TypeSafe の System One モデル（Jev）へ POST を 1 本送り、Choice / Score / Noul の答えを
+  型つき（`ChoiceAnswer` / `ScoreAnswer` / `NoulAnswer`）で返す。コアのどこからも import せず、
+  TypeSafe SDK などの新しい依存も足していない。API キーは引数か環境変数 `TYPESAFE_API_KEY`、
+  エンドポイント（既定 `https://api.typesafe.ai/v1/systemone`）とモデル（既定 `jev-latest`）は
+  引数で上書きできる。キー欠落・HTTP 失敗・タイムアウト・応答破損は `JevError` の派生で投げる。
+  詳細は `docs/ja/jev.md`（英訳 `docs/en/jev.md`）
+
 - `llm.providers` に `type: resolver` を足し、回しごとに具体プロバイダーをホストの
   スクリプトで選べるようにした（#132）。キーの決め方（呼び出し側の `llm_name` →
   `!model` → `llm.default`）は変えず、決まったキーが resolver 型のときだけ
