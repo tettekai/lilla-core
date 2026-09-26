@@ -17,6 +17,7 @@ The index of the lilla-core user documentation.
 - [Channel notes (nightly summary)](channel-notes.md)
 - [Searching history by room name](history-search.md)
 - [Timezone](timezone.md) — `ui.timezone`
+- [Choosing the LLM provider per turn](llm-resolver.md) — `type: resolver` in `llm.providers`
 - [The observability dashboard](dashboard.md) — including the exposure warning
 - [Tool contracts](tools.md) — LLM tools, task tools, built-in tools
 - [Google OAuth / Google Calendar (official extension pack)](google.md) — extensions bundled in `lilla_core.extensions`
