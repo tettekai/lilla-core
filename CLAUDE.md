@@ -449,6 +449,7 @@ Discord に見せる短い文言のカタログ。表示言語は `lilla.yaml` �
 | `context_ex.py` | `execute(input, context)` の `context`(dict) を便利に扱う薄いラッパー（`ContextEx`、opt-in）。`call_tool` の注入を前提とし、ローダー側の dict ベース処理には影響しない |
 | `tool_response_ex.py` | ツール実行結果 dict（`success` / `tool_name` / `data` / `error` 形式）を便利に扱う薄いラッパー（`ToolResponseEx`、opt-in） |
 | `date_range.py` | `today` / `yesterday` / `tomorrow` / `last_N_days` / `next_N_days` / `this_week` / `last_week` / `YYYY-MM-DD` / `YYYY-MM-DD/YYYY-MM-DD` 形式の日付範囲 Value Object（`DateRange`。週は日曜始まり・土曜終わり）と、時刻まで指定できる `DateTimeRange`。相対指定の基準日は `local_timezone()` が解決したタイムゾーンのカレンダー日付 |
+| `jev.py` | TypeSafe System One（Jev）を呼ぶ任意の判定ヘルパー（`ask_jev`）。state と型のある質問（`choice_question` / `score_question` / `noul_question` で組み立てるか同じ形の dict）を `send_http_request` で POST 1 本送り、答えを `ChoiceAnswer` / `ScoreAnswer` / `NoulAnswer` で返す。コアのどこからも import せず（import しない限り外部へ出ない）、SDK などの依存も足さない。API キーは引数か環境変数 `TYPESAFE_API_KEY`（YAML には書かない）、エンドポイント・モデル・タイムアウトは引数で上書きできる。失敗は `JevError` の派生（`JevConfigError` / `JevRequestError` / `JevResponseError`）。プロバイダー名への変換や閾値の方針は持たず、呼び出し側に置く |
 
 ### builtin_tools/ — コア組み込みツール (`src/lilla_core/builtin_tools/`)
 個人データ・外部サービス依存の無い、コア単体でも動くツールを置く場所。`pip install`

@@ -44,6 +44,15 @@ python -m lilla_core.bot
 （`lilla_core.extensions.google_calendar`）を同梱しています。どちらも `LILLA_EXTENSIONS` に
 並べたときだけ読み込まれます。
 
+## 任意の判定ヘルパー（Jev）
+
+`lilla_core.tool_support.jev` の `ask_jev()` は、TypeSafe の System One モデル（Jev）に
+状態と型のある質問（Choice / Score / Noul）を送り、確率つきの答えを受け取る薄いヘルパーです。
+ツール実行前のゲートや LLM resolver のモデル選択など、「定まった答えの中から速く選ぶ」場所で
+使えます。コアはこの API に依存せず、TypeSafe の SDK も必須依存に入れていません。import した
+コードからだけ呼ばれ、API キーは引数か環境変数 `TYPESAFE_API_KEY` から読みます。詳細は
+[判定ヘルパー（Jev）](https://github.com/tettekai/lilla-core/blob/main/docs/ja/jev.md) を参照してください。
+
 ## ドキュメント
 
 - [ドキュメント目次](https://github.com/tettekai/lilla-core/blob/main/docs/ja/README.md)
