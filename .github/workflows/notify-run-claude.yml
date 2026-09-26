@@ -1,0 +1,119 @@
+name: Notify run-claude Routine
+
+# Fire the "run-claude" Claude Code Routine when the run-claude label is
+# added to an Issue. This is a separate, human-triggered path from the
+# Grok Bot auto / auto-now routines (notify-grok-bot-auto-now.yml): those
+# run automatically on low-judgement follow-ups, this one only runs when a
+# person explicitly attaches the label from the Issue screen.
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  notify:
+    if: github.event.label.name == 'run-claude'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Fire Claude Code Routine
+        id: fire
+        env:
+          ROUTINE_URL: ${{ secrets.RUN_CLAUDE_ROUTINE_URL }}
+          ROUTINE_TOKEN: ${{ secrets.RUN_CLAUDE_ROUTINE_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          HTML_URL: ${{ github.event.issue.html_url }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ROUTINE_URL}" ] || [ -z "${ROUTINE_TOKEN}" ]; then
+            echo "Missing RUN_CLAUDE_ROUTINE_URL or RUN_CLAUDE_ROUTINE_TOKEN" >&2
+            exit 1
+          fi
+
+          # Normalize CRLF so the YAML block scalar below stays well-formed.
+          normalized_body=$(printf '%s' "${ISSUE_BODY}" | sed 's/\r$//')
+
+          header="<routine-fire-payload>
+          repository: ${REPOSITORY}
+          issue_number: ${ISSUE_NUMBER}
+          html_url: ${HTML_URL}
+          title: ${ISSUE_TITLE}
+          body: |
+          "
+          footer="
+          </routine-fire-payload>"
+
+          # Keep the whole "text" value within the API's 65536 char limit,
+          # prioritizing the head of the body when it has to be cut.
+          max_len=65536
+          safety_margin=200
+          budget=$((max_len - ${#header} - ${#footer} - safety_margin))
+          if [ "${budget}" -lt 0 ]; then
+            budget=0
+          fi
+
+          # Indent each body line by two spaces to nest under "body: |".
+          indented_body=$(printf '%s\n' "${normalized_body}" | sed 's/^/  /')
+          if [ "${#indented_body}" -gt "${budget}" ]; then
+            indented_body="${indented_body:0:budget}"
+            indented_body="${indented_body}
+            (truncated)"
+          fi
+
+          text="${header}${indented_body}${footer}"
+
+          jq -n --arg text "${text}" '{text: $text}' > /tmp/payload.json
+
+          http_code=$(curl -sS -o /tmp/response.json -w '%{http_code}' \
+            -X POST "${ROUTINE_URL}" \
+            -H "Authorization: Bearer ${ROUTINE_TOKEN}" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "Content-Type: application/json" \
+            --data-binary @/tmp/payload.json)
+
+          echo "HTTP status: ${http_code}"
+          cat /tmp/response.json
+
+          if [ "${http_code}" -lt 200 ] || [ "${http_code}" -ge 300 ]; then
+            echo "Routine fire failed with HTTP ${http_code}" >&2
+            exit 1
+          fi
+
+          session_url=$(jq -r '.session_url // .url // .session.url // empty' /tmp/response.json 2>/dev/null || true)
+          echo "session_url=${session_url}" >> "${GITHUB_OUTPUT}"
+
+      - name: Remove run-claude label
+        if: success()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.issues.removeLabel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              name: "run-claude",
+            });
+
+      - name: Comment on Issue
+        if: success()
+        env:
+          SESSION_URL: ${{ steps.fire.outputs.session_url }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const sessionUrl = process.env.SESSION_URL;
+            const body = sessionUrl
+              ? `Claude Code Routine を起動しました。\n\nSession: ${sessionUrl}`
+              : "Claude Code Routine を起動しました。";
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body,
+            });
