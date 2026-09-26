@@ -36,7 +36,8 @@ environment variable wins). If neither sets it, `/app/config` is used.
 
 `lilla.yaml` must define at least one entry under `llm.providers`, and `llm.default`
 must match one of those provider names — otherwise startup fails with a
-`ValidationError`.
+`ValidationError`. For `type: resolver` entries, which pick a provider per turn, see
+[Choosing the LLM provider per turn](llm-resolver.md).
 
 > **Privacy note:** `config.example/logging.yaml` sets the root logger to `DEBUG`.
 > At that level, `core/http_util.py` logs request/response bodies to stdout, which

@@ -102,6 +102,93 @@ def conversation_service(with_mocked_modules, mock_cfg: MagicMock):
 
 
 # ---------------------------------------------------------------------------
+# TestLlmResolverExpansion
+# ---------------------------------------------------------------------------
+
+
+class TestLlmResolverExpansion:
+    """`run_conversation` が resolver 型のキーを具体プロバイダーへ展開して LLM を呼ぶこと。"""
+
+    async def test_resolved_name_is_passed_to_llm(
+        self, conversation_service, mock_memory_manager_instance, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`resolve_llm_name` の戻り値で chat_to_llm が呼ばれる。"""
+        mock_chat = AsyncMock(return_value="ok")
+        monkeypatch.setattr(conversation_service, "chat_to_llm", mock_chat)
+        mock_resolve = AsyncMock(return_value="concrete")
+        monkeypatch.setattr(conversation_service, "resolve_llm_name", mock_resolve)
+        mock_memory_manager_instance.load_conversation_history_with_timestamps.return_value = [
+            {"role": "user", "content": "[May 04 09:10] hello"},
+        ]
+
+        await conversation_service.run_conversation(
+            {}, client_type="discord", discord_channel_id=42, llm_name="router"
+        )
+
+        assert mock_chat.call_args.kwargs["llm_name"] == "concrete"
+        args, kwargs = mock_resolve.call_args
+        assert args == ("router",)
+        assert kwargs["client_type"] == "discord"
+        assert kwargs["discord_channel_id"] == 42
+        assert kwargs["has_image"] is False
+        assert kwargs["user_content"].endswith("hello")
+
+    async def test_resolved_name_is_used_in_tool_loop(
+        self, conversation_service, mock_llm_module, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """tools ありの経路でも展開後の名前で chat_to_llm_with_tools が呼ばれる。"""
+        monkeypatch.setattr(conversation_service, "resolve_llm_name", AsyncMock(return_value="concrete"))
+        mock_with_tools = AsyncMock(return_value={
+            "content": "done", "tool_calls": None, "finish_reason": "stop",
+            "raw_message": {"role": "assistant", "content": "done"},
+        })
+        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_with_tools)
+
+        await conversation_service.run_conversation({"t": {"name": "t"}}, llm_name="router")
+
+        assert mock_with_tools.call_args.kwargs["llm_name"] == "concrete"
+
+    async def test_has_image_true_for_image_override(
+        self, conversation_service, mock_memory_manager_instance, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """今回の差し替え content に画像パートがあれば `has_image=True`。"""
+        monkeypatch.setattr(conversation_service, "chat_to_llm", AsyncMock(return_value="ok"))
+        mock_resolve = AsyncMock(return_value="concrete")
+        monkeypatch.setattr(conversation_service, "resolve_llm_name", mock_resolve)
+        mock_memory_manager_instance.load_conversation_history_with_timestamps.return_value = [
+            {"role": "user", "content": "[May 04 09:10] 見て [画像 1 枚添付]"},
+        ]
+        rich = [
+            {"type": "text", "text": "見て"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]
+
+        await conversation_service.run_conversation({}, override_last_user_content=rich)
+
+        assert mock_resolve.call_args.kwargs["has_image"] is True
+
+    async def test_image_only_in_past_history_is_not_has_image(
+        self, conversation_service, mock_memory_manager_instance, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """過去ターンの履歴に画像があっただけでは `has_image=False`。"""
+        monkeypatch.setattr(conversation_service, "chat_to_llm", AsyncMock(return_value="ok"))
+        mock_resolve = AsyncMock(return_value="concrete")
+        monkeypatch.setattr(conversation_service, "resolve_llm_name", mock_resolve)
+        mock_memory_manager_instance.load_conversation_history_with_timestamps.return_value = [
+            {"role": "user", "content": [
+                {"type": "text", "text": "old"},
+                {"type": "image_url", "image_url": {"url": "x"}},
+            ]},
+            {"role": "assistant", "content": "seen"},
+            {"role": "user", "content": "now text only"},
+        ]
+
+        await conversation_service.run_conversation({})
+
+        assert mock_resolve.call_args.kwargs["has_image"] is False
+
+
+# ---------------------------------------------------------------------------
 # TestRunConversation
 # ---------------------------------------------------------------------------
 

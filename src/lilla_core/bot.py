@@ -45,6 +45,7 @@ from lilla_core.repository.admin_session_repository import get_admin_session_rep
 from lilla_core.repository.channel_summary_repository import get_channel_summary_repo
 from lilla_core.handlers import message_handler, interaction_handler, task_handler
 from lilla_core.handlers.dashboard_server import start_dashboard_server
+from lilla_core.services.llm_resolver import validate_llm_resolvers
 
 setup_logging()
 
@@ -70,6 +71,10 @@ _CORE_STARTUP_REPOS = [
 bot.http.proxy = _config.proxy.resolve_url()
 if _config.env.http_proxy_user and _config.env.http_proxy_pass:
     bot.http.proxy_auth = aiohttp.BasicAuth(_config.env.http_proxy_user, _config.env.http_proxy_pass)
+
+# `llm.providers` の resolver 型エントリのスクリプトを読み込み、`resolve` 関数が
+# 無ければここで起動を止める（fail-fast）。
+validate_llm_resolvers(_config)
 
 # コマンド・ツールをロード（起動時に一度だけ）
 load_all_commands()

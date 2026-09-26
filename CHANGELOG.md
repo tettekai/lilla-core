@@ -9,6 +9,21 @@
 
 ### Added
 
+- `llm.providers` に `type: resolver` を足し、回しごとに具体プロバイダーをホストの
+  スクリプトで選べるようにした（#132）。キーの決め方（呼び出し側の `llm_name` →
+  `!model` → `llm.default`）は変えず、決まったキーが resolver 型のときだけ
+  `run_conversation` がスクリプトの `resolve(ctx)`（`LlmResolveContext`。`client_type` /
+  チャンネル / 直近発話の要約 / `has_image` など）を呼んで展開する
+  - 項目は `script`（`CONFIG_ROOT` 配下の `.py`。必須）・`fallback`（具体プロバイダー名。
+    必須）・`timeout_seconds`（任意。既定 10 秒）。`None`・未知名・別の resolver 名・
+    例外・タイムアウトは警告ログを出して `fallback` に落ち、会話は止まらない（深さ 1）
+  - `script` が `CONFIG_ROOT` の外・ファイル不在・`resolve` 不在、`fallback` が台帳に
+    無い / resolver 型、は起動時に失敗する
+  - `run_conversation` を通らず `chat_to_llm` などへ resolver 名が直接渡った場合は、
+    スクリプトを呼ばずに `fallback` を使う
+  - コピーして使えるテンプレを `lilla_core/templates/llm_resolver.py` に同梱した。
+    詳細は `docs/ja/llm-resolver.md`（英訳 `docs/en/llm-resolver.md`）
+
 - 公式拡張パックの第 1 段として、Google OAuth2 と Google Calendar の拡張をコアに同梱した
   （#126）。ソースは `lilla_core/extensions/` 下で、`LILLA_EXTENSIONS` に import パス
   （`lilla_core.extensions.google_oauth` / `lilla_core.extensions.google_calendar`）を
@@ -30,6 +45,9 @@
 
 ### Changed
 
+- `llm.providers` の `url` / `model` は `ollama` / `openai_compat` のときだけ必須になった
+  （resolver 型では書けない）。具体プロバイダーに `script` / `fallback` を書くと起動時に
+  失敗する（#132）
 - `README.md` / `README.ja.md` を「何か・インストール・最低限の起動・拡張の紹介・ドキュメント
   目次へのリンク」までに短くし、登録チャンネル・部屋のノート・部屋名検索・タイムゾーン・
   観測用ダッシュボード・Discord ボットの設定・ツール契約・拡張 API などの詳細を `docs/ja/`
