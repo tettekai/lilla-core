@@ -53,6 +53,13 @@
 
 ### Changed
 
+- MongoDB ログハンドラの書き込みをイベントループから外した（#2）。`setup_logging()` が
+  `logging.yaml` の `mongodb` ハンドラを `QueueHandler` + `QueueListener` 経由に付け替え、
+  `insert_one` は別スレッドで行う（ロガーに付くのは `QueueHandler`。`logging.yaml` の書き方は
+  変わらない）。ログ文書の形・レベル別 TTL は従来どおり
+- `mongodb` ハンドラがあるとき、起動時に MongoDB へ届かなければ約 5 秒
+  （`serverSelectionTimeoutMS=5000`）で起動を失敗させるようにした（従来は pymongo 既定の
+  約 30 秒待ってから落ちていた）。`mongodb` ハンドラが無ければ従来どおり接続しない
 - `llm.providers` の `url` / `model` は `ollama` / `openai_compat` のときだけ必須になった
   （resolver 型では書けない）。具体プロバイダーに `script` / `fallback` を書くと起動時に
   失敗する（#132）

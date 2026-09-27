@@ -11,15 +11,16 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-# pymongo をモックしてから import する
+from pymongo.errors import ServerSelectionTimeoutError
+
+from lilla_core.log_handler import SERVER_SELECTION_TIMEOUT_MS, MongoDBHandler
+
+# MongoClient は lilla_core.log_handler の名前空間で差し替える（実 Mongo へは接続しない）
 _mock_collection = MagicMock()
 _mock_db = MagicMock()
 _mock_db.__getitem__ = MagicMock(return_value=_mock_collection)
 _mock_client_instance = MagicMock()
 _mock_client_instance.__getitem__ = MagicMock(return_value=_mock_db)
-
-with patch("pymongo.MongoClient", return_value=_mock_client_instance):
-    from lilla_core.log_handler import MongoDBHandler
 
 
 TTL_HOURS = {"debug": 72, "info": 240, "warning": 720, "error": 720}
@@ -28,7 +29,7 @@ TTL_HOURS = {"debug": 72, "info": 240, "warning": 720, "error": 720}
 def _make_handler(ttl_hours=None):
     """テスト用の MongoDBHandler を生成する。"""
     _mock_collection.reset_mock()
-    with patch("pymongo.MongoClient", return_value=_mock_client_instance):
+    with patch("lilla_core.log_handler.MongoClient", return_value=_mock_client_instance):
         return MongoDBHandler(
             uri="mongodb://localhost:27017",
             db_name="testdb",
@@ -42,7 +43,7 @@ class TestMongoDBHandlerInit:
     def test_creates_expires_at_ttl_index(self):
         """expires_at フィールドに TTL インデックスが作成されること。"""
         _mock_collection.reset_mock()
-        with patch("pymongo.MongoClient", return_value=_mock_client_instance):
+        with patch("lilla_core.log_handler.MongoClient", return_value=_mock_client_instance):
             MongoDBHandler(
                 uri="mongodb://localhost:27017",
                 db_name="testdb",
@@ -57,13 +58,38 @@ class TestMongoDBHandlerInit:
     def test_default_ttl_hours_when_none(self):
         """ttl_hours=None の場合はデフォルト値が使われること。"""
         _mock_collection.reset_mock()
-        with patch("pymongo.MongoClient", return_value=_mock_client_instance):
+        with patch("lilla_core.log_handler.MongoClient", return_value=_mock_client_instance):
             handler = MongoDBHandler(
                 uri="mongodb://localhost:27017",
                 db_name="testdb",
                 ttl_hours=None,
             )
         assert handler._ttl_hours == {"debug": 72, "info": 240, "warning": 720, "error": 720}
+
+    def test_uses_short_server_selection_timeout(self):
+        """既定の約 30 秒ではなく短い serverSelectionTimeoutMS を明示すること。"""
+        _mock_collection.reset_mock()
+        with patch(
+            "lilla_core.log_handler.MongoClient", return_value=_mock_client_instance
+        ) as mock_client_cls:
+            MongoDBHandler(uri="mongodb://localhost:27017", db_name="testdb")
+        assert mock_client_cls.call_args[1]["serverSelectionTimeoutMS"] == SERVER_SELECTION_TIMEOUT_MS
+        assert SERVER_SELECTION_TIMEOUT_MS <= 5000
+
+    def test_unreachable_mongo_raises_and_closes_client(self):
+        """起動時に MongoDB へ届かなければ RuntimeError で落ち、クライアントを閉じること。"""
+        collection = MagicMock()
+        collection.create_index.side_effect = ServerSelectionTimeoutError("localhost:27017: refused")
+        db = MagicMock()
+        db.__getitem__ = MagicMock(return_value=collection)
+        client = MagicMock()
+        client.__getitem__ = MagicMock(return_value=db)
+        with patch("lilla_core.log_handler.MongoClient", return_value=client):
+            with pytest.raises(RuntimeError, match="could not reach MongoDB") as exc_info:
+                MongoDBHandler(uri="mongodb://user:secret@localhost:27017", db_name="testdb")
+        assert isinstance(exc_info.value.__cause__, ServerSelectionTimeoutError)
+        assert "secret" not in str(exc_info.value)
+        client.close.assert_called_once()
 
 
 class TestMongoDBHandlerEmit:
@@ -200,3 +226,22 @@ class TestMongoDBHandlerLoopGuard:
         )
         handler.emit(record)
         _mock_collection.insert_one.assert_called_once()
+
+
+class TestMongoDBHandlerEmitFailure:
+    """実行中の insert_one 失敗のテスト。"""
+
+    def test_insert_failure_is_handled_without_raising(self):
+        """insert_one が例外を投げても emit は例外を伝播させず handleError に任せること。"""
+        handler = _make_handler()
+        _mock_collection.insert_one.side_effect = ServerSelectionTimeoutError("down")
+        record = logging.LogRecord(
+            name="myapp", level=logging.INFO, pathname="", lineno=0,
+            msg="app log", args=(), exc_info=None,
+        )
+        try:
+            with patch.object(handler, "handleError") as mock_handle_error:
+                handler.emit(record)
+            mock_handle_error.assert_called_once_with(record)
+        finally:
+            _mock_collection.insert_one.side_effect = None
