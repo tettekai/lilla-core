@@ -501,7 +501,7 @@ class TestApprovedMessage:
         assert proxy.attachments == []
 
     def test_delegates_other_attributes(self) -> None:
-        """未定義の属性は承認依頼メッセージへ委譲する。"""
+        """未定義の属性は承認依頼メッセージへ委譲する（`reply` は自前なので対象外）。"""
         approval_message = _make_approval_message("承認依頼")
         approval_message.author.display_name = "リラ"
 
@@ -527,3 +527,45 @@ class TestApprovedMessage:
         proxy = approval_flow.ApprovedMessage(approval_message, "!runtask x", None)
 
         assert proxy.channel is approval_message.channel
+
+    async def test_reply_sends_to_original_channel_without_reference(self) -> None:
+        """`reply` は元チャンネルへ `send` し、承認依頼メッセージへは返信しない。"""
+        approval_message = _make_approval_message("承認依頼")
+        approval_message.reply = AsyncMock()
+        original_channel = MagicMock()
+        original_channel.send = AsyncMock()
+
+        proxy = approval_flow.ApprovedMessage(
+            approval_message, "!model", original_channel
+        )
+        await proxy.reply("切り替えました")
+
+        original_channel.send.assert_awaited_once_with("切り替えました")
+        approval_message.reply.assert_not_called()
+        approval_message.channel.send.assert_not_called()
+
+    async def test_reply_falls_back_to_approval_channel(self) -> None:
+        """元チャンネルを解決できなかった場合は承認チャンネルへ送る。"""
+        approval_message = _make_approval_message("承認依頼")
+        approval_message.reply = AsyncMock()
+        approval_message.channel.send = AsyncMock()
+
+        proxy = approval_flow.ApprovedMessage(approval_message, "!model", None)
+        await proxy.reply("切り替えました")
+
+        approval_message.channel.send.assert_awaited_once_with("切り替えました")
+        approval_message.reply.assert_not_called()
+
+    async def test_reply_passes_through_send_kwargs(self) -> None:
+        """`send()` の追加引数（添付など）はそのまま素通しする。"""
+        approval_message = _make_approval_message("承認依頼")
+        original_channel = MagicMock()
+        original_channel.send = AsyncMock()
+        file_obj = MagicMock()
+
+        proxy = approval_flow.ApprovedMessage(
+            approval_message, "!selftest", original_channel
+        )
+        await proxy.reply("結果", file=file_obj)
+
+        original_channel.send.assert_awaited_once_with("結果", file=file_obj)

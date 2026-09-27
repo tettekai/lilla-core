@@ -65,6 +65,16 @@
 - Message Content Intent が未有効のときの ERROR ログが案内する先を、README の節から
   `docs/en/discord-bot-setup.md` の URL に変えた
 
+### Fixed
+
+- 承認後に実行したコマンド（`!model` / `!cleardirty` / `!enable_tools` / `!disable_tools` など）の
+  完了メッセージが、元の依頼チャンネルではなく承認チャンネルに付いていたのを直した（#5）。
+  `ApprovedMessage.reply` が承認依頼メッセージへ委譲していたため、差し替えた `channel` が
+  discord.py の `Message.reply()` に使われていなかった。自前の `reply` を持たせ、`custom_id` から
+  解決した元チャンネルへ `send` する（解決できないときは従来どおり承認チャンネルへ落とす）。
+  送信は元メッセージへの参照付き返信にしないので、相手 bot が「自分への返信」と見なして
+  再応答することもない。実行内容の信頼境界は変わらず、元メッセージの再取得もしない
+
 ### Security
 
 - 観測用ダッシュボードの初期設定（`POST /api/setup`）に一度きりのセットアップトークンを
