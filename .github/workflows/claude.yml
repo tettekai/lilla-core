@@ -334,6 +334,20 @@ jobs:
         with:
           fetch-depth: 1
 
+      # fetch-depth: 1 の使い捨てチェックアウトのため、キャッシュ無しでは毎回まっさら
+      # な状態から pip install することになっていた。pip のダウンロードキャッシュを
+      # 効かせつつ、Claude が起動する前に依存を入れておくことで、Claude 自身の
+      # ターンから pip install を追い出す（起動直後に pytest / mypy が使える）
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@cfc3eb22bfed5c26ef66e3223c982af27e4524de # v1.0.231
