@@ -235,12 +235,16 @@ class ApprovedMessage:
     実行内容は承認依頼メッセージから復元済みの文字列がすべてであり、添付ファイルを
     再度読ませてはいけない（`message.txt` は BODY ではなくコマンド全文のため）。
     そこで `content` を復元済みの文字列に、`attachments` を空に固定し、それ以外の属性
-    （`reply` / `author` など）は承認依頼メッセージへ委譲する。
+    （`author` など）は承認依頼メッセージへ委譲する。
 
-    `channel` だけは、`message.reply` を使うコマンドの返信が承認チャンネルではなく
-    元の依頼チャンネルへ届くよう、渡された元チャンネルを優先する。元チャンネルは
-    `custom_id` の channel_id から解決したもので、実行内容の信頼境界には関与しない
-    （返信先の決定にしか使わない）。
+    `channel` は、コマンドの完了メッセージが承認チャンネルではなく元の依頼チャンネルへ
+    届くよう、渡された元チャンネルを優先する。元チャンネルは `custom_id` の channel_id
+    から解決したもので、実行内容の信頼境界には関与しない（返信先の決定にしか使わない）。
+
+    `reply` も承認依頼メッセージへ委譲せず自前で持つ。委譲すると discord.py の
+    `Message.reply()` が承認依頼メッセージへの返信になり、差し替えた `channel` が
+    使われないため。送信先は `channel` で、元メッセージへの参照は付けない（相手 bot が
+    「自分への返信」と見なして再応答するのを防ぐため）。
     """
 
     def __init__(self, approval_message, content: str, original_channel=None) -> None:
@@ -261,6 +265,22 @@ class ApprovedMessage:
     def channel(self):
         """返信先チャンネル。元チャンネルが解決できていればそちらを使う。"""
         return self._original_channel or self._approval_message.channel
+
+    async def reply(self, content=None, **kwargs):
+        """コマンドの完了メッセージを `channel` へ送る。
+
+        参照付きの返信（`Message.reply`）ではなく素の `send` を使う。承認依頼メッセージ
+        への委譲を避けることで完了メッセージが元チャンネルへ届き、かつ元メッセージへの
+        参照を付けないことで相手 bot の再応答を誘発しない。
+
+        Args:
+            content: 送信する本文。
+            **kwargs: `Messageable.send()` へそのまま渡す追加引数。
+
+        Returns:
+            送信した Discord メッセージ。
+        """
+        return await self.channel.send(content, **kwargs)
 
     def __getattr__(self, name: str):
         """未定義の属性アクセスを承認依頼メッセージへ委譲する。"""
