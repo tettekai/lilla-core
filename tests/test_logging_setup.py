@@ -5,13 +5,20 @@
 """
 from __future__ import annotations
 
+import logging
+import logging.handlers
+import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+from pymongo.errors import ServerSelectionTimeoutError
 
-from lilla_core.core.logging_setup import setup_logging
+from lilla_core.core import logging_setup
+from lilla_core.core.logging_setup import setup_logging, stop_logging_listener
+from lilla_core.log_handler import MongoDBHandler
 
 
 def _make_config(config_root: Path) -> MagicMock:
@@ -120,3 +127,165 @@ class TestNoLoggingYaml:
 
         mock_basic_config.assert_called_once()
         mock_dict_config.assert_not_called()
+
+
+@pytest.fixture
+def restore_logging():
+    """実際に dictConfig を走らせるテストのあと、ルートロガーと listener を元へ戻す。"""
+    root = logging.getLogger()
+    saved_handlers = list(root.handlers)
+    saved_level = root.level
+    yield
+    stop_logging_listener()
+    for h in list(root.handlers):
+        root.removeHandler(h)
+    for h in saved_handlers:
+        root.addHandler(h)
+    root.setLevel(saved_level)
+
+
+def _mongo_client_mock(collection: MagicMock) -> MagicMock:
+    """client[db][collection] が collection を返す MongoClient 相当のモックを作る。"""
+    db = MagicMock()
+    db.__getitem__ = MagicMock(return_value=collection)
+    client = MagicMock()
+    client.__getitem__ = MagicMock(return_value=db)
+    return client
+
+
+def _write_mongodb_yaml(config_root: Path) -> None:
+    """mongodb ハンドラをルートに付けた logging.yaml を書く。"""
+    _write_logging_yaml(
+        config_root,
+        {
+            "version": 1,
+            "disable_existing_loggers": False,
+            "handlers": {
+                "mongodb": {"()": "lilla_core.log_handler.MongoDBHandler", "level": "INFO"},
+            },
+            "root": {"level": "DEBUG", "handlers": ["mongodb"]},
+        },
+    )
+
+
+class TestMongodbHandlerViaQueue:
+    """mongodb ハンドラは QueueHandler + QueueListener 経由で書き込む。"""
+
+    def test_root_gets_queue_handler_and_insert_runs_off_caller_thread(
+        self, tmp_path: Path, restore_logging
+    ) -> None:
+        """logger.info は insert_one の完了を待たずに戻り、書き込みは別スレッドで行われる。"""
+        _write_mongodb_yaml(tmp_path)
+        config = _make_config(tmp_path)
+        release = threading.Event()
+        inserted = threading.Event()
+        insert_threads: list[threading.Thread] = []
+
+        def slow_insert(doc):
+            insert_threads.append(threading.current_thread())
+            release.wait(5)
+            inserted.set()
+
+        collection = MagicMock()
+        collection.insert_one.side_effect = slow_insert
+
+        with patch("lilla_core.core.logging_setup.get_config", return_value=config), patch(
+            "lilla_core.log_handler.MongoClient", return_value=_mongo_client_mock(collection)
+        ):
+            setup_logging()
+
+        root = logging.getLogger()
+        assert not any(isinstance(h, MongoDBHandler) for h in root.handlers)
+        assert any(isinstance(h, logging.handlers.QueueHandler) for h in root.handlers)
+        assert logging_setup._mongodb_listener is not None
+
+        started = time.monotonic()
+        logging.getLogger("lilla_test.queue").info("hello %s", "world")
+        assert time.monotonic() - started < 1.0
+        assert not inserted.is_set()
+
+        release.set()
+        stop_logging_listener()  # 残りを書き切ってから止まる
+
+        assert inserted.is_set()
+        assert insert_threads and insert_threads[0] is not threading.current_thread()
+        doc = collection.insert_one.call_args[0][0]
+        assert doc["message"] == "hello world"
+        assert doc["levelname"] == "INFO"
+        assert set(doc) == {"asctime", "levelname", "message", "created_at", "expires_at"}
+
+    def test_level_below_handler_is_not_written(self, tmp_path: Path, restore_logging) -> None:
+        """mongodb ハンドラのレベル未満のレコードは書き込まれない。"""
+        _write_mongodb_yaml(tmp_path)
+        config = _make_config(tmp_path)
+        collection = MagicMock()
+
+        with patch("lilla_core.core.logging_setup.get_config", return_value=config), patch(
+            "lilla_core.log_handler.MongoClient", return_value=_mongo_client_mock(collection)
+        ):
+            setup_logging()
+
+        logging.getLogger("lilla_test.queue").debug("debug only")
+        stop_logging_listener()
+        collection.insert_one.assert_not_called()
+
+    def test_insert_failure_does_not_stop_listener(self, tmp_path: Path, restore_logging) -> None:
+        """実行中の insert_one 失敗で listener が止まらず、後続のレコードも書き込まれる。"""
+        _write_mongodb_yaml(tmp_path)
+        config = _make_config(tmp_path)
+        collection = MagicMock()
+        collection.insert_one.side_effect = [ServerSelectionTimeoutError("down"), None]
+
+        with patch("lilla_core.core.logging_setup.get_config", return_value=config), patch(
+            "lilla_core.log_handler.MongoClient", return_value=_mongo_client_mock(collection)
+        ), patch.object(MongoDBHandler, "handleError") as mock_handle_error:
+            setup_logging()
+            logger = logging.getLogger("lilla_test.queue")
+            logger.info("first")
+            logger.info("second")
+            stop_logging_listener()
+
+        assert collection.insert_one.call_count == 2
+        mock_handle_error.assert_called_once()
+
+
+class TestMongodbStartupFailFast:
+    """mongodb ハンドラがあるのに MongoDB へ届かなければ起動を失敗させる。"""
+
+    def test_unreachable_mongo_raises(self, tmp_path: Path, restore_logging) -> None:
+        _write_mongodb_yaml(tmp_path)
+        config = _make_config(tmp_path)
+        collection = MagicMock()
+        collection.create_index.side_effect = ServerSelectionTimeoutError("refused")
+
+        with patch("lilla_core.core.logging_setup.get_config", return_value=config), patch(
+            "lilla_core.log_handler.MongoClient", return_value=_mongo_client_mock(collection)
+        ):
+            with pytest.raises(ValueError) as exc_info:
+                setup_logging()
+
+        cause = exc_info.value.__cause__
+        assert isinstance(cause, RuntimeError)
+        assert "could not reach MongoDB" in str(cause)
+        assert logging_setup._mongodb_listener is None
+
+    def test_no_mongodb_handler_does_not_connect(self, tmp_path: Path, restore_logging) -> None:
+        """mongodb ハンドラが無いときは MongoClient を作らない。"""
+        _write_logging_yaml(
+            tmp_path,
+            {
+                "version": 1,
+                "disable_existing_loggers": False,
+                "handlers": {"console": {"class": "logging.StreamHandler"}},
+                "root": {"level": "INFO", "handlers": ["console", "mongodb"]},
+            },
+        )
+        config = _make_config(tmp_path)
+
+        with patch("lilla_core.core.logging_setup.get_config", return_value=config), patch(
+            "lilla_core.log_handler.MongoClient"
+        ) as mock_client_cls:
+            setup_logging()
+
+        mock_client_cls.assert_not_called()
+        assert logging_setup._mongodb_listener is None
