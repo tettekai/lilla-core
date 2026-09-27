@@ -26,6 +26,12 @@ name: Release PR
 # GITHUB_TOKEN はこのリポジトリで PR 作成が許可されていない（release-prep.yml の
 # コメント参照）ため、release-prep.yml と同じ secrets.RELEASE_PR_TOKEN を使う。
 # 未設定の場合はこのジョブが失敗する。
+#
+# PR 作成以外（ラベルの作成・PR へのラベル付与・既存 PR の確認）は GITHUB_TOKEN で行う。
+# ラベルの作成には issues: write、PR へのラベル付与（gh pr edit --add-label。GraphQL の
+# addLabelsToLabelable）には pull-requests: write が要る。pull-requests: read のままだと
+# 「Resource not accessible by integration」で失敗し、release ラベルが付かないまま
+# マージされて release.yml がスキップされる（release-prep.yml と同じ権限に揃えている）。
 on:
   pull_request:
     types: [closed]
@@ -43,7 +49,8 @@ jobs:
     permissions:
       contents: read
       issues: write
-      pull-requests: read
+      # release ラベルを PR に付ける（Add release label）ために write が必要
+      pull-requests: write
     steps:
       - name: Ensure release label exists
         env:

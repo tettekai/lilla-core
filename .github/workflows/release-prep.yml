@@ -21,8 +21,9 @@ name: Release prep
 # 「Notify Grok Bot to create PR after Claude finishes」ステップのコメント参照）ため、
 # PR 作成のみリポジトリ secret RELEASE_PR_TOKEN（このリポジトリ 1 つに絞った
 # fine-grained PAT。Pull requests: Read and write のみで足りる。Contents は
-# GITHUB_TOKEN 側の contents:write で足りており、ラベル付与も GITHUB_TOKEN の
-# issues:write で別ステップとして行うため、Issues 権限は不要）を使う。
+# GITHUB_TOKEN 側の contents:write で足りており、ラベル付与も GITHUB_TOKEN で
+# 別ステップとして行う（ラベル作成は issues:write、PR へのラベル付与は
+# pull-requests:write）ため、Issues 権限は不要）を使う。
 # 未設定の場合はこのジョブが失敗する。
 on:
   workflow_dispatch:
