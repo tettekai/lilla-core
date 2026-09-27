@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-27
+
 ### Added
 
 - 任意の判定ヘルパー `lilla_core.tool_support.jev` を足した（#134）。`ask_jev(state, questions)`
