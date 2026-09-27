@@ -168,6 +168,77 @@ class TestLoadExtensions:
         with pytest.raises(ValueError, match="Duplicate extension name"):
             ext_module.load_extensions("pack_a,pack_a")
 
+    def test_short_name_resolves_to_official_extension_pack(
+        self, register_module, make_extension
+    ) -> None:
+        """`.` を含まない短縮名は公式拡張パック配下として読み込める。"""
+        register_module(
+            "lilla_core.extensions.short_demo", extension=make_extension("short-demo")
+        )
+
+        loaded = ext_module.load_extensions("short_demo")
+
+        assert [e.name for e in loaded] == ["short-demo"]
+
+    def test_full_official_path_still_works(
+        self, register_module, make_extension
+    ) -> None:
+        """フルパス指定は従来どおり動く（短縮名は追加の記法であって必須ではない）。"""
+        register_module(
+            "lilla_core.extensions.short_demo", extension=make_extension("short-demo")
+        )
+
+        loaded = ext_module.load_extensions("lilla_core.extensions.short_demo")
+
+        assert [e.name for e in loaded] == ["short-demo"]
+
+    def test_dotted_third_party_path_does_not_fall_back(
+        self, register_module, make_extension
+    ) -> None:
+        """`.` を含むパスは公式拡張パックへフォールバックしない。"""
+        register_module(
+            "lilla_core.extensions.not_used", extension=make_extension("not-used")
+        )
+
+        with pytest.raises(ModuleNotFoundError):
+            ext_module.load_extensions("third_party.not_used")
+
+    def test_missing_short_name_raises(self) -> None:
+        """公式拡張パックにも該当が無い短縮名は fail-fast。"""
+        with pytest.raises(ModuleNotFoundError):
+            ext_module.load_extensions("no_such_official_extension_at_all")
+
+
+# ---------------------------------------------------------------------------
+# TestImportExtensionModule
+# ---------------------------------------------------------------------------
+
+
+class TestImportExtensionModule:
+    """`_import_extension_module()` の短縮名解決ロジック単体のテスト。"""
+
+    def test_internal_import_failure_does_not_fall_back(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """モジュール自体は存在するが内部の import が別名で失敗した場合はフォールバックしない。
+
+        フォールバックの対象は「短縮名そのものが見つからない」ときに限る。同名の
+        モジュールが見つかったうえで初期化に失敗した場合は、公式拡張パックへ
+        逃げずその場で失敗する。
+        """
+
+        def _fake_import(name: str):
+            if name == "flaky_pack":
+                raise ModuleNotFoundError(
+                    "missing dependency", name="some_missing_dependency"
+                )
+            raise AssertionError(f"unexpected import attempt: {name}")
+
+        monkeypatch.setattr(ext_module.importlib, "import_module", _fake_import)
+
+        with pytest.raises(ModuleNotFoundError, match="missing dependency"):
+            ext_module._import_extension_module("flaky_pack")
+
 
 # ---------------------------------------------------------------------------
 # TestValidation

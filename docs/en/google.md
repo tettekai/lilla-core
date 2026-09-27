@@ -19,9 +19,21 @@ List `google_oauth` **before** any extension that `requires` it (a wrong order f
 startup; the core does not reorder).
 
 ```bash
-export LILLA_EXTENSIONS=lilla_core.extensions.google_oauth,lilla_core.extensions.google_calendar
+export LILLA_EXTENSIONS=google_oauth,google_calendar
 export GOOGLE_CLIENT_SECRET=...
 ```
+
+The official extension pack can be referenced by its short module name
+(`google_oauth` / `google_calendar`) alone. The line above is equivalent to (the full
+path form still works as before):
+
+```bash
+export LILLA_EXTENSIONS=lilla_core.extensions.google_oauth,lilla_core.extensions.google_calendar
+```
+
+The short form only applies to names without a `.`. Anything containing a `.` (a
+third-party pack, or a fully-qualified path to an official extension) is used as-is;
+it is never expanded into the official extension pack.
 
 You can also load OAuth alone, without Calendar, just for your own Google API extension
 (Tasks and so on). In that case list only `lilla_core.extensions.google_oauth` and put
