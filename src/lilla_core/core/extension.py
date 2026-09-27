@@ -4,7 +4,9 @@
 `LILLA_EXTENSIONS`（カンマ区切りの import パス）が指すモジュールを
 `load_extensions()` で読み込む。各モジュールは `Extension` のインスタンスを
 `extension` 属性として 1 つだけ export する。未設定・空なら 0 個で、
-コア単体起動になる。
+コア単体起動になる。`.` を含まない項目（例: `google_oauth`）はそのまま
+import できなければ公式拡張パック（`lilla_core.extensions.google_oauth`）を
+補ってもう一度だけ試す短縮名記法にも対応する（`_import_extension_module()`）。
 
 `Extension` は Adapter 型で、全メソッドに「何もしない」デフォルトがある。
 拡張は使うものだけをオーバーライドする。
@@ -52,6 +54,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 
 if TYPE_CHECKING:
@@ -64,6 +67,10 @@ EXTENSIONS_ENV_VAR = "LILLA_EXTENSIONS"
 
 #: 各拡張モジュールが `Extension` インスタンスを export する属性名。
 EXTENSION_ATTR = "extension"
+
+#: `LILLA_EXTENSIONS` の短縮名（`.` を含まないモジュール名）を解決するときに補う接頭辞。
+#: 公式拡張パック（`src/lilla_core/extensions/`）だけが対象で、第三者パックには適用しない。
+_OFFICIAL_EXTENSION_PACKAGE_PREFIX = "lilla_core.extensions."
 
 #: このコアが提供する `Extension` 契約のバージョン。契約を破壊的に変えたとき
 #: （メソッドのシグネチャ・戻り値の形・context のフィールドの削除や改名）に上げる。
@@ -1059,6 +1066,41 @@ def reset_extensions() -> None:
     set_extensions([])
 
 
+def _import_extension_module(module_path: str) -> ModuleType:
+    """`LILLA_EXTENSIONS` の 1 項目を、公式拡張パックの短縮名にも対応して import する。
+
+    次の順で解決する。
+
+    1. `module_path` をそのまま import する
+    2. `.` を含まず、かつ 1. が `module_path` 自身の不在による `ModuleNotFoundError`
+       のときだけ、`lilla_core.extensions.` を補ってもう一度 import する
+    3. どちらも無ければ 1. の `ModuleNotFoundError` をそのまま送出する
+
+    `.` を含むパス（第三者パックや、すでにフルパスで書いた公式拡張）は 2. を行わない。
+    また、`module_path` は見つかったがその内部の import が別の名前で失敗した場合
+    （初期化失敗）は 1. の例外の `name` が `module_path` と一致しないため 2. へは
+    進まず、その場で失敗する（公式パックへのフォールバックは「短縮名そのものが
+    見つからない」場合に限る）。
+
+    Args:
+        module_path: `LILLA_EXTENSIONS` に書かれた import パス 1 件。
+
+    Returns:
+        import できたモジュール。
+
+    Raises:
+        ModuleNotFoundError: 短縮名の解決も含めて import できなかった場合。
+    """
+    try:
+        return importlib.import_module(module_path)
+    except ModuleNotFoundError as exc:
+        if "." in module_path or exc.name != module_path:
+            raise
+        return importlib.import_module(
+            f"{_OFFICIAL_EXTENSION_PACKAGE_PREFIX}{module_path}"
+        )
+
+
 def load_extensions(spec: str | None = None) -> list[Extension]:
     """`LILLA_EXTENSIONS` が指すモジュールを import して拡張を登録する。
 
@@ -1069,6 +1111,11 @@ def load_extensions(spec: str | None = None) -> list[Extension]:
     コアの他の初期化（`get_config()` / コマンド・ツールのロード）より前に
     呼ぶこと。ここで組んだ設定インスタンスを以降の `get_config()` が返すため。
 
+    `.` を含まない短縮名（例: `google_oauth`）は、そのまま import できなければ
+    `lilla_core.extensions.` を補ってもう一度だけ import を試みる
+    （`_import_extension_module`）。公式拡張パック向けの短縮記法で、`.` を含む
+    パス（第三者パックや、すでにフルパスで書いた公式拡張）には適用しない。
+
     Args:
         spec: カンマ区切りの import パス。`None` なら `LILLA_EXTENSIONS` を読む。
 
@@ -1076,7 +1123,7 @@ def load_extensions(spec: str | None = None) -> list[Extension]:
         ロード順に並んだ `Extension` インスタンスのリスト。
 
     Raises:
-        ImportError: モジュールを import できない場合。
+        ImportError: モジュールを import できない場合（短縮名の解決も失敗した場合を含む）。
         AttributeError: モジュールが `extension` 属性を持たない場合。
         TypeError: `extension` が `Extension` インスタンスでない場合。
         ValueError: 名前または貢献キーが衝突している場合、`requires` の依存が
@@ -1089,7 +1136,7 @@ def load_extensions(spec: str | None = None) -> list[Extension]:
     module_paths = [part.strip() for part in spec.split(",") if part.strip()]
     extensions: list[Extension] = []
     for module_path in module_paths:
-        module = importlib.import_module(module_path)
+        module = _import_extension_module(module_path)
         if not hasattr(module, EXTENSION_ATTR):
             raise AttributeError(
                 f"Extension module '{module_path}' must export "

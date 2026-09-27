@@ -16,9 +16,20 @@ import パスを並べたときだけ読み込まれます。並べなければ�
 落ちます。コアは並べ替えません）。
 
 ```bash
-export LILLA_EXTENSIONS=lilla_core.extensions.google_oauth,lilla_core.extensions.google_calendar
+export LILLA_EXTENSIONS=google_oauth,google_calendar
 export GOOGLE_CLIENT_SECRET=...
 ```
+
+公式拡張パックはモジュール名（`google_oauth` / `google_calendar`）だけの短縮記法で
+指定できます。上は次と同じ意味です（フルパスの指定は今までどおり使えます）。
+
+```bash
+export LILLA_EXTENSIONS=lilla_core.extensions.google_oauth,lilla_core.extensions.google_calendar
+```
+
+短縮記法が効くのは `.` を含まない名前だけです。`.` を含む書き方（第三者パックや、
+すでにフルパスで書いた公式拡張）はそのままのパスとして扱われ、公式拡張パックへの
+補完は行いません。
 
 Calendar を使わず、自作の Google API 拡張（Tasks など）のためだけに OAuth を載せることも
 できます。その場合は `lilla_core.extensions.google_oauth` だけを並べ、自作の拡張を

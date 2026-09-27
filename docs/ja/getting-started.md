@@ -71,7 +71,9 @@ export LILLA_EXTENSIONS=my_extension_package,another_pack
 python -m lilla_core.bot
 ```
 
-拡張の書き方は [拡張の基本](extensions.md) を参照してください。
+拡張の書き方は [拡張の基本](extensions.md) を参照してください。公式拡張パック
+（`lilla_core.extensions` 配下）はモジュール名だけの短縮記法でも指定できます
+（[Google OAuth / Google Calendar](google.md#有効化)）。
 
 ## テスト
 

@@ -74,7 +74,9 @@ export LILLA_EXTENSIONS=my_extension_package,another_pack
 python -m lilla_core.bot
 ```
 
-See [Extension basics](extensions.md) for how to write one.
+See [Extension basics](extensions.md) for how to write one. The official extension
+pack (under `lilla_core.extensions`) can also be referenced by its short module name
+([Google OAuth / Google Calendar](google.md#enabling)).
 
 ## Testing
 
