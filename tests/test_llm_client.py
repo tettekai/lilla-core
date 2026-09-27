@@ -145,3 +145,22 @@ async def test_chat_to_llm_with_tools_keeps_content_none_when_tool_calls_present
 
     assert result["content"] is None
     assert result["finish_reason"] == "tool_calls"
+
+
+async def test_chat_to_llm_with_resolver_name_uses_fallback_without_script() -> None:
+    """resolver 型の名前を直接渡すと、スクリプトを呼ばずにその fallback で呼ぶ。"""
+    resolver = MagicMock(type="resolver", fallback="concrete")
+    providers = {"router": resolver, "concrete": _PROVIDER}
+    response_body = json.dumps({"choices": [{"message": {"content": "ok"}}]})
+    with (
+        patch.object(llm_client, "get_config") as mock_get_config,
+        patch.object(
+            llm_client, "send_http_request", new=AsyncMock(return_value=response_body)
+        ) as mock_send,
+    ):
+        mock_get_config.return_value.get_llm_provider.side_effect = lambda name=None: providers[name]
+        mock_get_config.return_value.system_prompt = "system"
+        result = await llm_client.chat_to_llm("hi", llm_name="router")
+
+    assert result == "ok"
+    assert mock_send.call_args.kwargs["data"]["model"] == "test-model"

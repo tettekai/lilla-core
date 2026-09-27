@@ -7,6 +7,94 @@
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-27
+
+### Added
+
+- 任意の判定ヘルパー `lilla_core.tool_support.jev` を足した（#134）。`ask_jev(state, questions)`
+  が TypeSafe の System One モデル（Jev）へ POST を 1 本送り、Choice / Score / Noul の答えを
+  型つき（`ChoiceAnswer` / `ScoreAnswer` / `NoulAnswer`）で返す。コアのどこからも import せず、
+  TypeSafe SDK などの新しい依存も足していない。API キーは引数か環境変数 `TYPESAFE_API_KEY`、
+  エンドポイント（既定 `https://api.typesafe.ai/v1/systemone`）とモデル（既定 `jev-latest`）は
+  引数で上書きできる。キー欠落・HTTP 失敗・タイムアウト・応答破損は `JevError` の派生で投げる。
+  詳細は `docs/ja/jev.md`（英訳 `docs/en/jev.md`）
+
+- `llm.providers` に `type: resolver` を足し、回しごとに具体プロバイダーをホストの
+  スクリプトで選べるようにした（#132）。キーの決め方（呼び出し側の `llm_name` →
+  `!model` → `llm.default`）は変えず、決まったキーが resolver 型のときだけ
+  `run_conversation` がスクリプトの `resolve(ctx)`（`LlmResolveContext`。`client_type` /
+  チャンネル / 直近発話の要約 / `has_image` など）を呼んで展開する
+  - 項目は `script`（`CONFIG_ROOT` 配下の `.py`。必須）・`fallback`（具体プロバイダー名。
+    必須）・`timeout_seconds`（任意。既定 10 秒）。`None`・未知名・別の resolver 名・
+    例外・タイムアウトは警告ログを出して `fallback` に落ち、会話は止まらない（深さ 1）
+  - `script` が `CONFIG_ROOT` の外・ファイル不在・`resolve` 不在、`fallback` が台帳に
+    無い / resolver 型、は起動時に失敗する
+  - `run_conversation` を通らず `chat_to_llm` などへ resolver 名が直接渡った場合は、
+    スクリプトを呼ばずに `fallback` を使う
+  - コピーして使えるテンプレを `lilla_core/templates/llm_resolver.py` に同梱した。
+    詳細は `docs/ja/llm-resolver.md`（英訳 `docs/en/llm-resolver.md`）
+
+- 公式拡張パックの第 1 段として、Google OAuth2 と Google Calendar の拡張をコアに同梱した
+  （#126）。ソースは `lilla_core/extensions/` 下で、`LILLA_EXTENSIONS` に import パス
+  （`lilla_core.extensions.google_oauth` / `lilla_core.extensions.google_calendar`）を
+  並べたときだけ読み込まれる。未指定なら今までどおりコア単体で起動する（別パッケージや
+  extras にはしていない）
+  - `google-oauth`: YAML の `extensions.google_oauth`（`client_id` / `redirect_uri`）と
+    `GOOGLE_CLIENT_SECRET`（`cfg.env.google_client_secret`）を申告し、認可コードの戻り先
+    `GET /oauth/google-oauth/callback` をダッシュボードの公開ルートとして載せる。
+    他の Google API 拡張が継承する `GoogleOAuthClient`
+    （`lilla_core.extensions.google_oauth.client`）を提供し、サブクラスは
+    `CREDENTIAL_TYPE` と `SCOPES` だけを持てばよい。Calendar を載せなくても単独で使える
+  - `google-calendar`（`requires = ("google-oauth",)`）: YAML の
+    `extensions.google_calendar.calendars` と、LLM ツール `llm_calendar_get` /
+    `llm_calendar_create`（YAML は利用者の `${CONFIG_ROOT}/tools` に置く）。タイムゾーンは
+    `ui.timezone` を使い、独自の TZ 設定は持たない
+  - コールバックは `state` を保存済みの値との完全一致だけで検証し、credential_type を
+    固定の一覧で絞らない（`GoogleOAuthClient` を継承する任意の拡張の種別を受け付ける）
+  - 詳細は `docs/ja/google.md`（英訳 `docs/en/google.md`）
+
+### Changed
+
+- MongoDB ログハンドラの書き込みをイベントループから外した（#2）。`setup_logging()` が
+  `logging.yaml` の `mongodb` ハンドラを `QueueHandler` + `QueueListener` 経由に付け替え、
+  `insert_one` は別スレッドで行う（ロガーに付くのは `QueueHandler`。`logging.yaml` の書き方は
+  変わらない）。ログ文書の形・レベル別 TTL は従来どおり
+- `mongodb` ハンドラがあるとき、起動時に MongoDB へ届かなければ約 5 秒
+  （`serverSelectionTimeoutMS=5000`）で起動を失敗させるようにした（従来は pymongo 既定の
+  約 30 秒待ってから落ちていた）。`mongodb` ハンドラが無ければ従来どおり接続しない
+- `llm.providers` の `url` / `model` は `ollama` / `openai_compat` のときだけ必須になった
+  （resolver 型では書けない）。具体プロバイダーに `script` / `fallback` を書くと起動時に
+  失敗する（#132）
+- `README.md` / `README.ja.md` を「何か・インストール・最低限の起動・拡張の紹介・ドキュメント
+  目次へのリンク」までに短くし、登録チャンネル・部屋のノート・部屋名検索・タイムゾーン・
+  観測用ダッシュボード・Discord ボットの設定・ツール契約・拡張 API などの詳細を `docs/ja/`
+  （正）と `docs/en/`（英訳）へ移した（#121）。目次は `docs/ja/README.md` /
+  `docs/en/README.md`。PyPI 上でもリンクが切れないよう、README からのリンクは GitHub の
+  絶対 URL にした
+- Message Content Intent が未有効のときの ERROR ログが案内する先を、README の節から
+  `docs/en/discord-bot-setup.md` の URL に変えた
+
+### Fixed
+
+- 承認後に実行したコマンド（`!model` / `!cleardirty` / `!enable_tools` / `!disable_tools` など）の
+  完了メッセージが、元の依頼チャンネルではなく承認チャンネルに付いていたのを直した（#5）。
+  `ApprovedMessage.reply` が承認依頼メッセージへ委譲していたため、差し替えた `channel` が
+  discord.py の `Message.reply()` に使われていなかった。自前の `reply` を持たせ、`custom_id` から
+  解決した元チャンネルへ `send` する（解決できないときは従来どおり承認チャンネルへ落とす）。
+  送信は元メッセージへの参照付き返信にしないので、相手 bot が「自分への返信」と見なして
+  再応答することもない。実行内容の信頼境界は変わらず、元メッセージの再取得もしない
+
+### Security
+
+- 観測用ダッシュボードの初期設定（`POST /api/setup`）に一度きりのセットアップトークンを
+  必須にした（#125）。管理パスワードが未登録のあいだ、起動時に推測できないトークンを生成して
+  起動ログへ WARNING で一度だけ出し、ボディの `setup_token` がそれと一致したときだけ登録を
+  受け付ける（不足・不一致は 403 でパスワードを作らない。ヘッダでの代替は無い）。初期設定画面
+  にトークンの入力欄を足した。トークンは画面の HTML にも認証前の API 応答にも載せないので、
+  ポートに先着しただけでは管理者パスワードを決められない（ログを読める人は決められる）。
+  登録に成功したらトークンは捨て、未登録のまま再起動すると新しいトークンになる。既に
+  パスワードを登録済みのデプロイは動作が変わらない
+
 ## [0.5.0] - 2026-09-25
 
 ### Added

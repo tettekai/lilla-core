@@ -20,6 +20,7 @@ from lilla_core.core.extension import (
 from lilla_core.core.runtime_state import is_tools_disabled
 from lilla_core.api.llm_client import chat_to_llm, chat_to_llm_with_tools
 from lilla_core.loaders.llm_tool_loader import build_tools_param, execute_tool_call
+from lilla_core.services.llm_resolver import content_has_image, resolve_llm_name
 from lilla_core.services.memory_manager import get_memory_manager
 from lilla_core.services.message_util import extract_meta_block, prepend_timestamp_prefix
 from lilla_core.services.session_memory_manager import get_session_memory_manager
@@ -154,6 +155,9 @@ async def run_conversation(
         非同期依頼ツールなど、後から同じチャンネルへ結果を返すツールが参照する。
     llm_name : str, optional
         使用する LLM プロバイダー名。None の場合はデフォルトプロバイダーを使用する。
+        決まったキーが `type: resolver` なら、履歴を組み立てたあとにスクリプトの
+        `resolve(ctx)` で具体プロバイダーへ展開する（`services/llm_resolver.py`）。
+        会話開始フックの `ConversationContext.llm_name` は展開前のキーのまま。
     inject_user_content : str | list, optional
         履歴の末尾に user メッセージとして追加する一時プロンプト。
         ハートビートなど MongoDB に保存しないが LLM には渡したい場合に使う。
@@ -207,10 +211,26 @@ async def run_conversation(
     )
     history = await memory_manager.load_conversation_history_with_timestamps()
 
-    if override_last_user_content is not None and history and history[-1]["role"] == "user":
+    override_applied = (
+        override_last_user_content is not None and bool(history) and history[-1]["role"] == "user"
+    )
+    if override_applied:
         history[-1] = {"role": "user", "content": _stamp_user_content(override_last_user_content)}
     if inject_user_content is not None:
         history.append({"role": "user", "content": _stamp_user_content(inject_user_content)})
+
+    # 決まったキーが resolver 型なら、ここで回しごとに具体プロバイダーへ展開する。
+    # 入口（Discord・拡張のクライアント・task）ごとに複製しないよう、ここに一本化する。
+    # 画像の有無は今回 LLM へ実際に渡す入力（適用された差し替え・追加分）だけから
+    # 判断し、過去の履歴は見ない。
+    llm_name = await resolve_llm_name(
+        llm_name,
+        client_type=client_type,
+        discord_channel_id=discord_channel_id,
+        user_content=history[-1]["content"] if history and history[-1]["role"] == "user" else None,
+        has_image=(override_applied and content_has_image(override_last_user_content))
+        or content_has_image(inject_user_content),
+    )
 
     if not llm_tools:
         reply = await chat_to_llm(history, system_prompt=system_prompt, llm_name=llm_name)

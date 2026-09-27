@@ -178,7 +178,8 @@ class ConversationContext:
     client_state: Any = None
     #: Discord からの会話ならそのチャンネル ID。
     discord_channel_id: int | None = None
-    #: 使用する LLM プロバイダー名。`None` なら既定。
+    #: 使用する LLM プロバイダー名。`None` なら既定。`type: resolver` のキーは
+    #: フックの後で具体プロバイダーへ展開されるため、ここには展開前の名前が載る。
     llm_name: str | None = None
 
 

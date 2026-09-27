@@ -40,6 +40,8 @@ function dashboardApp() {
     loginPassword: '',
     loginError: '',
     loginSubmitting: false,
+    // 起動ログに出た一度きりのトークン（サーバーは画面へ埋めないので人が貼り付ける）
+    setupToken: '',
     setupPassword: '',
     setupPasswordConfirm: '',
     setupError: '',
@@ -293,6 +295,11 @@ function dashboardApp() {
     async submitSetup() {
       this.setupError = '';
       const password = this.setupPassword;
+      const setupToken = this.setupToken.trim();
+      if (!setupToken) {
+        this.setupError = 'セットアップトークンを入力してください';
+        return;
+      }
       if (password.length < this.minPasswordLength) {
         this.setupError = `パスワードは${this.minPasswordLength}文字以上で設定してください`;
         return;
@@ -306,9 +313,10 @@ function dashboardApp() {
         const res = await fetch('/api/setup', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password }),
+          body: JSON.stringify({ password, setup_token: setupToken }),
         });
         if (res.ok) {
+          this.setupToken = '';
           this.setupPassword = '';
           this.setupPasswordConfirm = '';
           // 自動ログインさせず、明示的にログインさせる

@@ -18,7 +18,9 @@ handlers:
     formatter: standard
     stream: ext://sys.stdout
   mongodb:
-    # uri と db_name は logging_setup.setup_logging() で AppConfig から注入される
+    # uri と db_name は logging_setup.setup_logging() で AppConfig から注入される。
+    # 書き込みは setup_logging() が QueueHandler + QueueListener の別スレッドへ回す
+    # （ロガーに直接付くのは QueueHandler）。起動時に MongoDB へ届かなければ約 5 秒で起動失敗する
     (): lilla_core.log_handler.MongoDBHandler
     level: INFO
     formatter: standard

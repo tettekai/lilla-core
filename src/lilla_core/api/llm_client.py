@@ -62,6 +62,25 @@ def _ensure_system_prompt(
     return [{"role": "system", "content": effective_prompt}, *messages]
 
 
+def _get_provider(llm_name: str | None):
+    """HTTP を出せる具体プロバイダーの設定を返す。
+
+    `llm_name` が resolver 型なら、スクリプトは呼ばずにそのエントリの `fallback` を返す。
+    回しごとの展開は `run_conversation` が済ませてから具体名を渡すため、ここへ resolver
+    名が届くのは文脈を持たない直接呼び出し（`chat_to_llm` を直に呼ぶタスクや
+    `!selftest` など）だけで、その場合は fallback を使う。
+    """
+    config = get_config()
+    provider = config.get_llm_provider(llm_name)
+    if provider.type == "resolver":
+        logger.debug(
+            "LLM provider '%s' is a resolver; using its fallback '%s' for a direct call",
+            llm_name or config.llm.default, provider.fallback,
+        )
+        return config.get_llm_provider(provider.fallback)
+    return provider
+
+
 def _resolve_api_key(provider) -> str:
     """プロバイダー設定から API キーを解決する。
 
@@ -98,6 +117,7 @@ async def chat_to_llm(
     """
     LLMにチャットメッセージを送信し、応答を取得します。
     llm_name でプロバイダーを指定します。None の場合はデフォルトプロバイダーを使用します。
+    resolver 型の名前を渡した場合はスクリプトを呼ばず、そのエントリの fallback を使います。
     messagesには list[dict[str, Any]] 形式か、文字列（ユーザーメッセージ）を渡せます。
     文字列の場合は {"role": "user", "content": messages} に変換します。
     system_prompt を指定した場合はそれを使用し、未指定の場合はデフォルトのシステムプロンプトを使用します。
@@ -106,7 +126,7 @@ async def chat_to_llm(
         messages = [{"role": "user", "content": messages}]
     messages = _ensure_system_prompt(messages, system_prompt)
 
-    provider = get_config().get_llm_provider(llm_name)
+    provider = _get_provider(llm_name)
 
     if provider.type == "ollama":
         return await _chat_ollama(messages, provider)
@@ -177,7 +197,8 @@ async def chat_to_llm_with_tools(
     tools : list | None
         LLM に渡すツール定義リスト
     llm_name : str | None
-        使用するプロバイダー名。None の場合はデフォルト。
+        使用するプロバイダー名。None の場合はデフォルト。resolver 型なら
+        スクリプトを呼ばずにその fallback を使う。
 
     Returns
     -------
@@ -191,7 +212,7 @@ async def chat_to_llm_with_tools(
     """
     messages = _ensure_system_prompt(messages, system_prompt)
 
-    provider = get_config().get_llm_provider(llm_name)
+    provider = _get_provider(llm_name)
 
     if provider.type == "ollama":
         await _wake_ollama_if_needed(provider)
@@ -297,7 +318,8 @@ async def chat_to_llm_responses(
     tools : list | None
         組み込みツール（または将来の function calling 用）のツール定義リスト。
     llm_name : str | None
-        使用するプロバイダー名。None の場合はデフォルト。
+        使用するプロバイダー名。None の場合はデフォルト。resolver 型なら
+        スクリプトを呼ばずにその fallback を使う。
 
     Returns
     -------
@@ -309,7 +331,7 @@ async def chat_to_llm_responses(
             "raw_output": list            # Responses API の output 配列そのまま
         }
     """
-    provider = get_config().get_llm_provider(llm_name)
+    provider = _get_provider(llm_name)
 
     if provider.type != "openai_compat":
         raise ValueError(

@@ -647,6 +647,10 @@ class TestHandleApiUserMemoDetail:
 # ---------------------------------------------------------------------------
 
 
+#: テストで発行済みとして扱うセットアップトークン
+_TOKEN = "test-setup-token"
+
+
 def _make_admin_cred_repo(exists: bool = False, password_hash: bytes | None = None) -> MagicMock:
     """AdminCredentialRepository のモックを生成する。"""
     repo = MagicMock()
@@ -1052,6 +1056,11 @@ class TestHandleApiAuthStatus:
 
 
 class TestHandleApiSetup:
+    @pytest.fixture(autouse=True)
+    def _issued_token(self, dashboard_server) -> None:
+        """起動時にトークンが発行済みの状態から始める。"""
+        dashboard_server._setup_token = _TOKEN
+
     async def test_saves_bcrypt_hash(self, dashboard_server, mock_web, monkeypatch) -> None:
         """妥当なパスワードで bcrypt ハッシュが保存される。"""
         import bcrypt
@@ -1061,7 +1070,10 @@ class TestHandleApiSetup:
         mock_web.json_response.reset_mock()
 
         await dashboard_server.handle_api_setup(
-            _make_auth_request(path="/api/setup", body={"password": "correct-horse-battery"})
+            _make_auth_request(
+                path="/api/setup",
+                body={"password": "correct-horse-battery", "setup_token": _TOKEN},
+            )
         )
 
         cred_repo.save_password_hash.assert_awaited_once()
@@ -1075,7 +1087,10 @@ class TestHandleApiSetup:
         _patch_admin_repos(monkeypatch, cred_repo, _make_admin_session_repo())
 
         await dashboard_server.handle_api_setup(
-            _make_auth_request(path="/api/setup", body={"password": "correct-horse-battery"})
+            _make_auth_request(
+                path="/api/setup",
+                body={"password": "correct-horse-battery", "setup_token": _TOKEN},
+            )
         )
 
         saved_hash = cred_repo.save_password_hash.call_args[0][0]
@@ -1088,7 +1103,10 @@ class TestHandleApiSetup:
         mock_web.Response.reset_mock()
 
         await dashboard_server.handle_api_setup(
-            _make_auth_request(path="/api/setup", body={"password": "a" * 11})
+            _make_auth_request(
+                path="/api/setup",
+                body={"password": "a" * 11, "setup_token": _TOKEN},
+            )
         )
 
         assert mock_web.Response.call_args[1]["status"] == 400
@@ -1100,7 +1118,7 @@ class TestHandleApiSetup:
         _patch_admin_repos(monkeypatch, cred_repo, _make_admin_session_repo())
         mock_web.Response.reset_mock()
 
-        await dashboard_server.handle_api_setup(_make_auth_request(path="/api/setup", body={}))
+        await dashboard_server.handle_api_setup(_make_auth_request(path="/api/setup", body={"setup_token": _TOKEN}))
 
         assert mock_web.Response.call_args[1]["status"] == 400
 
@@ -1126,10 +1144,198 @@ class TestHandleApiSetup:
         mock_web.Response.reset_mock()
 
         await dashboard_server.handle_api_setup(
+            _make_auth_request(
+                path="/api/setup",
+                body={"password": "correct-horse-battery", "setup_token": _TOKEN},
+            )
+        )
+
+        assert mock_web.Response.call_args[1]["status"] == 403
+
+    async def test_rejects_missing_token(self, dashboard_server, mock_web, monkeypatch) -> None:
+        """setup_token が無ければ 403 で拒否し、パスワードは作らない。"""
+        cred_repo = _make_admin_cred_repo(exists=False)
+        _patch_admin_repos(monkeypatch, cred_repo, _make_admin_session_repo())
+        mock_web.Response.reset_mock()
+
+        await dashboard_server.handle_api_setup(
             _make_auth_request(path="/api/setup", body={"password": "correct-horse-battery"})
         )
 
         assert mock_web.Response.call_args[1]["status"] == 403
+        cred_repo.save_password_hash.assert_not_awaited()
+        assert dashboard_server._setup_token == _TOKEN
+
+    @pytest.mark.parametrize("token", ["wrong-token", "", 123, None])
+    async def test_rejects_invalid_token(
+        self, dashboard_server, mock_web, monkeypatch, token
+    ) -> None:
+        """一致しない・文字列でないトークンは 403 で拒否する。"""
+        cred_repo = _make_admin_cred_repo(exists=False)
+        _patch_admin_repos(monkeypatch, cred_repo, _make_admin_session_repo())
+        mock_web.Response.reset_mock()
+
+        await dashboard_server.handle_api_setup(
+            _make_auth_request(
+                path="/api/setup",
+                body={"password": "correct-horse-battery", "setup_token": token},
+            )
+        )
+
+        assert mock_web.Response.call_args[1]["status"] == 403
+        cred_repo.save_password_hash.assert_not_awaited()
+
+    async def test_token_is_checked_before_password(
+        self, dashboard_server, mock_web, monkeypatch
+    ) -> None:
+        """トークンが無ければ、パスワードの妥当性より先に 403 で拒否する。"""
+        _patch_admin_repos(
+            monkeypatch, _make_admin_cred_repo(exists=False), _make_admin_session_repo()
+        )
+        mock_web.Response.reset_mock()
+
+        await dashboard_server.handle_api_setup(
+            _make_auth_request(path="/api/setup", body={"password": "short"})
+        )
+
+        assert mock_web.Response.call_args[1]["status"] == 403
+
+    async def test_rejects_when_no_token_issued(
+        self, dashboard_server, mock_web, monkeypatch, caplog
+    ) -> None:
+        """未発行なら何を送っても拒否し、新しいトークンをログへ出す。"""
+        dashboard_server._setup_token = None
+        cred_repo = _make_admin_cred_repo(exists=False)
+        _patch_admin_repos(monkeypatch, cred_repo, _make_admin_session_repo())
+        mock_web.Response.reset_mock()
+
+        with caplog.at_level("WARNING", logger=dashboard_server.logger.name):
+            await dashboard_server.handle_api_setup(
+                _make_auth_request(
+                    path="/api/setup",
+                    body={"password": "correct-horse-battery", "setup_token": _TOKEN},
+                )
+            )
+
+        assert mock_web.Response.call_args[1]["status"] == 403
+        cred_repo.save_password_hash.assert_not_awaited()
+        issued = dashboard_server._setup_token
+        assert issued and issued != _TOKEN
+        assert issued in caplog.text
+
+    async def test_discards_token_after_success(
+        self, dashboard_server, mock_web, monkeypatch
+    ) -> None:
+        """登録に成功したらトークンを捨てる（同じトークンは二度と使えない）。"""
+        _patch_admin_repos(
+            monkeypatch, _make_admin_cred_repo(exists=False), _make_admin_session_repo()
+        )
+
+        await dashboard_server.handle_api_setup(
+            _make_auth_request(
+                path="/api/setup",
+                body={"password": "correct-horse-battery", "setup_token": _TOKEN},
+            )
+        )
+
+        assert dashboard_server._setup_token is None
+
+    async def test_discards_token_when_already_saved(
+        self, dashboard_server, mock_web, monkeypatch
+    ) -> None:
+        """競合で既に登録済みだった場合もトークンを捨てる。"""
+        cred_repo = _make_admin_cred_repo(exists=False)
+        cred_repo.save_password_hash = AsyncMock(return_value=False)
+        _patch_admin_repos(monkeypatch, cred_repo, _make_admin_session_repo())
+
+        await dashboard_server.handle_api_setup(
+            _make_auth_request(
+                path="/api/setup",
+                body={"password": "correct-horse-battery", "setup_token": _TOKEN},
+            )
+        )
+
+        assert dashboard_server._setup_token is None
+
+
+class TestSetupToken:
+    """一度きりのセットアップトークンの発行。"""
+
+    def test_ensure_generates_once_and_logs(self, dashboard_server, caplog) -> None:
+        """未発行なら生成して WARNING で 1 度だけ出し、以降は同じ値を返す。"""
+        with caplog.at_level("WARNING", logger=dashboard_server.logger.name):
+            first = dashboard_server._ensure_setup_token()
+            second = dashboard_server._ensure_setup_token()
+
+        assert first == second
+        assert len(first) >= 43  # 32 バイトの urlsafe base64
+        assert caplog.text.count(first) == 1
+
+    async def test_startup_issues_token_when_setup_required(
+        self, dashboard_server, monkeypatch
+    ) -> None:
+        """パスワード未登録で起動したらトークンを発行する。"""
+        _patch_admin_repos(
+            monkeypatch, _make_admin_cred_repo(exists=False), _make_admin_session_repo()
+        )
+
+        await dashboard_server._prepare_setup_token_on_startup()
+
+        assert dashboard_server._setup_token
+
+    async def test_startup_issues_new_token_each_process(
+        self, dashboard_server, monkeypatch
+    ) -> None:
+        """再起動（モジュールの読み直し）ごとに別のトークンになる。"""
+        _patch_admin_repos(
+            monkeypatch, _make_admin_cred_repo(exists=False), _make_admin_session_repo()
+        )
+        await dashboard_server._prepare_setup_token_on_startup()
+        old = dashboard_server._setup_token
+        dashboard_server._setup_token = None  # 再起動相当
+
+        await dashboard_server._prepare_setup_token_on_startup()
+
+        assert dashboard_server._setup_token != old
+
+    async def test_startup_does_not_issue_when_configured(
+        self, dashboard_server, monkeypatch, caplog
+    ) -> None:
+        """パスワード登録済みならトークンを発行せず、ログにも出さない。"""
+        _patch_admin_repos(
+            monkeypatch, _make_admin_cred_repo(exists=True), _make_admin_session_repo()
+        )
+
+        with caplog.at_level("WARNING", logger=dashboard_server.logger.name):
+            await dashboard_server._prepare_setup_token_on_startup()
+
+        assert dashboard_server._setup_token is None
+        assert "setup token" not in caplog.text
+
+    async def test_startup_survives_repo_failure(self, dashboard_server, monkeypatch) -> None:
+        """登録状況を確認できなくても起動は止めない。"""
+        cred_repo = _make_admin_cred_repo()
+        cred_repo.exists = AsyncMock(side_effect=RuntimeError("mongo down"))
+        _patch_admin_repos(monkeypatch, cred_repo, _make_admin_session_repo())
+
+        await dashboard_server._prepare_setup_token_on_startup()
+
+        assert dashboard_server._setup_token is None
+
+    async def test_auth_status_does_not_expose_token(
+        self, dashboard_server, mock_web, monkeypatch
+    ) -> None:
+        """初期設定が必要でも /api/auth/status はトークンを返さない（発行だけする）。"""
+        _patch_admin_repos(
+            monkeypatch, _make_admin_cred_repo(exists=False), _make_admin_session_repo()
+        )
+        mock_web.json_response.reset_mock()
+
+        await dashboard_server.handle_api_auth_status(_make_auth_request(path="/api/auth/status"))
+
+        payload = mock_web.json_response.call_args[0][0]
+        assert payload == {"setup_required": True, "authenticated": False}
+        assert dashboard_server._setup_token
 
 
 # ---------------------------------------------------------------------------

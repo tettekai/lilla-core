@@ -35,12 +35,22 @@ def _apply_dotenv_to_os_environ() -> None:
 _apply_dotenv_to_os_environ()
 
 
-class LlmProviderConfig(BaseModel):
-    """LLMプロバイダーの設定モデル。"""
+#: `LlmProviderConfig.type` のうち、実際に LLM へ HTTP を出す具体プロバイダーの種別。
+CONCRETE_LLM_PROVIDER_TYPES = ("ollama", "openai_compat")
 
-    type: Literal["ollama", "openai_compat"]  # "ollama" or "openai_compat"
-    url: str
-    model: str
+
+class LlmProviderConfig(BaseModel):
+    """LLMプロバイダーの設定モデル。
+
+    `type` が `ollama` / `openai_compat` のエントリは具体プロバイダーで、`url` /
+    `model` が必須。`resolver` のエントリは回しごとに具体プロバイダー名を選ぶ
+    スクリプト（`script`）と、選べなかったときの落とし先（`fallback`）を持ち、
+    自身は HTTP を出さない（`url` / `model` などは書かない）。
+    """
+
+    type: Literal["ollama", "openai_compat", "resolver"]
+    url: str | None = None
+    model: str | None = None
     # ollama タイプのみ
     wakeup_file: str | None = None
     wol_sleep_seconds: int = 30
@@ -48,6 +58,54 @@ class LlmProviderConfig(BaseModel):
     api_key_env: str | None = None
     # プロバイダー固有の追加パラメータ（POSTボディのトップレベルに展開される）
     extra_params: dict[str, Any] = {}
+    # resolver タイプのみ
+    # `resolve(ctx)` を定義した Python ファイルのパス（`${config_root}` 展開・
+    # `file:` 接頭は任意。相対パスは `CONFIG_ROOT` 基準。`CONFIG_ROOT` 配下のみ）
+    script: str | None = None
+    # `resolve` が具体名を返せなかったときに使う具体プロバイダー名
+    fallback: str | None = None
+    # `async def resolve` の待ち時間の上限（秒）。超えたら `fallback` へ落とす
+    timeout_seconds: float = 10.0
+
+    @model_validator(mode="after")
+    def _validate_fields_for_type(self) -> "LlmProviderConfig":
+        """`type` ごとに必須・不可の項目が揃っていることを検証する。
+
+        具体プロバイダーは `url` / `model` が必須で `script` / `fallback` を持たない。
+        resolver は `script` / `fallback` が必須で、HTTP を出さないため `url` /
+        `model` / `api_key_env` / `wakeup_file` / `extra_params` を持たない。
+        """
+        if self.type == "resolver":
+            missing = [name for name in ("script", "fallback") if not getattr(self, name)]
+            if missing:
+                raise ValueError(
+                    f"llm provider of type 'resolver' requires: {', '.join(missing)}"
+                )
+            unexpected = [
+                name
+                for name in ("url", "model", "api_key_env", "wakeup_file")
+                if getattr(self, name) is not None
+            ]
+            if self.extra_params:
+                unexpected.append("extra_params")
+            if unexpected:
+                raise ValueError(
+                    "llm provider of type 'resolver' must not set: " + ", ".join(unexpected)
+                )
+            if self.timeout_seconds <= 0:
+                raise ValueError("llm provider timeout_seconds must be positive")
+        else:
+            missing = [name for name in ("url", "model") if not getattr(self, name)]
+            if missing:
+                raise ValueError(
+                    f"llm provider of type '{self.type}' requires: {', '.join(missing)}"
+                )
+            unexpected = [name for name in ("script", "fallback") if getattr(self, name) is not None]
+            if unexpected:
+                raise ValueError(
+                    f"llm provider of type '{self.type}' must not set: {', '.join(unexpected)}"
+                )
+        return self
 
 
 class DiscordChannelConfig(BaseModel):
@@ -326,7 +384,8 @@ class LlmConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_default_provider_exists(self) -> "LlmConfig":
-        """`default` が `providers` のキーに存在することを検証する。
+        """`default` が `providers` のキーに存在すること、resolver の `fallback` が
+        台帳にある具体プロバイダー（resolver 以外）を指すことを検証する。
 
         `llm:` セクション自体を省略した場合もクラスデフォルト
         （`default="ollama-gemma3"`, `providers={}`）に対してこの検証が走り、
@@ -338,7 +397,57 @@ class LlmConfig(BaseModel):
                 f"llm.default '{self.default}' is not defined in llm.providers. "
                 f"Available providers: {available}"
             )
+        for name, provider in self.providers.items():
+            if provider.type != "resolver":
+                continue
+            target = self.providers.get(provider.fallback)
+            if target is None:
+                raise ValueError(
+                    f"llm.providers.{name}.fallback '{provider.fallback}' is not defined in llm.providers"
+                )
+            if target.type == "resolver":
+                raise ValueError(
+                    f"llm.providers.{name}.fallback '{provider.fallback}' must be a concrete provider, "
+                    "not a resolver"
+                )
         return self
+
+
+def resolve_llm_resolver_script_path(spec: str, config_root: str | Path) -> Path:
+    """resolver 型プロバイダーの `script` を実ファイルパスへ解決する。
+
+    書き方は資源パスの解決（`utils/resource_loader.py`）に合わせ、`${config_root}` を
+    展開し、`file:` 接頭は付けても付けなくてもよい。スクリプトは単一ファイルなので
+    `dir:` は受け付けない。相対パスは `config_root` 基準で解決する。
+
+    `CONFIG_ROOT` は拡張モジュールと同じ信頼レベル（`SECURITY.md`）のため、解決後の
+    パスが `config_root` の外を指す場合（`..` や外を指すシンボリックリンク）は落とす。
+
+    Args:
+        spec: `lilla.yaml` に書かれた `script` の値。
+        config_root: `${config_root}` 展開と相対パスの基準に使うディレクトリ。
+
+    Returns:
+        シンボリックリンクを解決した絶対パス（存在確認はしない）。
+
+    Raises:
+        ValueError: `dir:` 指定、または `config_root` の外を指す場合。
+    """
+    root = Path(config_root).resolve()
+    expanded = spec.replace("${config_root}", str(config_root)).strip()
+    if expanded.startswith("dir:"):
+        raise ValueError(f"llm resolver script must be a single file, not dir: {spec!r}")
+    if expanded.startswith("file:"):
+        expanded = expanded[len("file:"):]
+    path = Path(expanded)
+    if not path.is_absolute():
+        path = root / path
+    resolved = path.resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError(
+            f"llm resolver script must be under CONFIG_ROOT ({root}): {spec!r}"
+        )
+    return resolved
 
 
 class EnvConfig(BaseModel):
@@ -497,6 +606,24 @@ class AppConfig(BaseSettings):
                 f"but found at the top level: {', '.join(misplaced)}"
             )
         return data
+
+    @model_validator(mode="after")
+    def _validate_llm_resolver_scripts(self) -> "AppConfig":
+        """resolver 型プロバイダーの `script` が `CONFIG_ROOT` 配下の実在ファイルか検証する。
+
+        `resolve` 関数の有無（モジュールの import が要る）はここでは見ず、起動時に
+        `services/llm_resolver.py` の `validate_llm_resolvers()` が確かめる。
+        """
+        for name, provider in self.llm.providers.items():
+            if provider.type != "resolver":
+                continue
+            try:
+                path = resolve_llm_resolver_script_path(provider.script, self.env.config_root)
+            except ValueError as e:
+                raise ValueError(f"llm.providers.{name}.script: {e}") from e
+            if not path.is_file():
+                raise ValueError(f"llm.providers.{name}.script does not exist: {path}")
+        return self
 
     @classmethod
     def settings_customise_sources(

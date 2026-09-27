@@ -1,0 +1,8 @@
+# Messages the google-oauth extension shows in the browser or on Discord (English).
+#
+# The only top-level key is the extension name `google-oauth` (core catalog rule).
+# When adding a message, add the same key to ja.yaml as well.
+
+google-oauth:
+  callback:
+    completed: "Authentication complete."
