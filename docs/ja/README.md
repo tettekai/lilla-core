@@ -14,6 +14,7 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [登録チャンネル](channels.md) — `discord.channels`
 - [部屋のノート（深夜要約）](channel-notes.md)
 - [会話履歴の部屋名検索](history-search.md)
+- [スケジュール実行で LLM に委譲する通知](scheduled-llm.md)
 - [タイムゾーン](timezone.md) — `ui.timezone`
 - [LLM プロバイダーの回しごと選択](llm-resolver.md) — `llm.providers` の `type: resolver`
 - [観測用ダッシュボード](dashboard.md) — 公開面への注意を含む

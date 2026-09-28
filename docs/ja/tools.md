@@ -77,6 +77,7 @@ opt-in で有効になります。
 | `lilla_core.builtin_tools.llm_current_datetime` | LLM | 現在日時を返すだけのサンプル |
 | `lilla_core.builtin_tools.llm_conversation_get` | LLM | [会話履歴の部屋名検索](history-search.md) |
 | `lilla_core.builtin_tools.task_channel_summary` | task | [部屋のノート（深夜要約）](channel-notes.md) |
+| `lilla_core.builtin_tools.task_scheduled_llm` | task | [スケジュール実行で LLM に委譲する通知](scheduled-llm.md) |
 
 サンプルを有効化する例（`${CONFIG_ROOT}/tools/llm_current_datetime.yaml`）:
 
