@@ -26,7 +26,7 @@ def prompt_file(tmp_path: Path) -> Path:
 #: タスクの初期化で `available_tools` を展開する対象のロード済み LLM ツール。
 _LLM_TOOLS = {
     "llm_weather": {"schema": {"name": "weather"}, "supported_client_type": "all"},
-    "llm_diary": {"schema": {"name": "diary"}, "supported_client_type": "task"},
+    "llm_conversation_get": {"schema": {"name": "get_conversations"}, "supported_client_type": "task"},
 }
 
 
@@ -144,14 +144,14 @@ class TestScheduledLlmTask:
         cfg.tools.main_available_tools = ["llm_weather"]
         with patch("lilla_core.loaders.llm_tool_loader.get_config", return_value=cfg):
             task = _make_task(
-                prompt_file, available_tools=["$main", "llm_diary", "llm_weather"]
+                prompt_file, available_tools=["$main", "llm_conversation_get", "llm_weather"]
             )
 
         await task.execute({"discord_client": MagicMock(), "now": _NOW})
 
         assert mock_run_conversation.await_args.kwargs["allowed_tool_names"] == [
             "llm_weather",
-            "llm_diary",
+            "llm_conversation_get",
         ]
 
     def test_exposes_schedule_from_yaml(self, prompt_file: Path) -> None:

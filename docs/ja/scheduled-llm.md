@@ -58,7 +58,7 @@ available_tools:               # 通常会話と同じ一式
 
 available_tools:               # 通常会話の一式に、この実行だけのツールを足す
   - $main
-  - llm_diary_draft_faircopy_get
+  - llm_conversation_get        # type: lilla_core.builtin_tools.llm_conversation_get
 ```
 
 特定の実行だけに渡したいツールは、ツール YAML を `supported_client_type: task` にし、

@@ -721,8 +721,8 @@ class TestResolveAvailableTools:
 
     def test_unknown_token_fails(self, llm_tool_loader) -> None:
         """`$main` 以外のトークンは未実装なので失敗する。"""
-        with pytest.raises(ValueError, match=r"\$diary"):
-            llm_tool_loader.resolve_available_tools(["$diary"], _tools(tool_a="all"))
+        with pytest.raises(ValueError, match=r"\$other"):
+            llm_tool_loader.resolve_available_tools(["$other"], _tools(tool_a="all"))
 
     @pytest.mark.parametrize("entries", [None, "tool_a", [1], [""]])
     def test_rejects_malformed_input(self, llm_tool_loader, entries) -> None:

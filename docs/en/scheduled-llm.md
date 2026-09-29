@@ -62,7 +62,7 @@ available_tools:               # the same set as a normal conversation
 
 available_tools:               # the conversation's set plus a tool just for this run
   - $main
-  - llm_diary_draft_faircopy_get
+  - llm_conversation_get        # type: lilla_core.builtin_tools.llm_conversation_get
 ```
 
 To give a tool to one particular run only, set `supported_client_type: task` in that
