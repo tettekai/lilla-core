@@ -206,6 +206,44 @@ class TestRunConversation:
         assert result == "fallback reply"
         mock_chat.assert_called_once()
 
+    async def test_empty_allowed_tool_names_uses_chat_to_llm(
+        self, conversation_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """allowed_tool_names=[] ならツールを渡さず chat_to_llm を使う。"""
+        mock_chat = AsyncMock(return_value="no tools reply")
+        mock_with_tools = AsyncMock()
+        monkeypatch.setattr(conversation_service, "chat_to_llm", mock_chat)
+        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_with_tools)
+
+        result = await conversation_service.run_conversation(
+            {"tool_a": {"schema": {}}}, client_type="task", allowed_tool_names=[]
+        )
+
+        assert result == "no tools reply"
+        mock_with_tools.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("allowed_tool_names", "expected"),
+        [(None, ["main_tool"]), (["task_tool"], ["task_tool"])],
+    )
+    async def test_allowed_tool_names_overrides_main_available_tools(
+        self, conversation_service, mock_cfg, monkeypatch: pytest.MonkeyPatch,
+        allowed_tool_names, expected,
+    ) -> None:
+        """allowed_tool_names を渡せばそれを、None なら main_available_tools を使う。"""
+        mock_cfg.tools.main_available_tools = ["main_tool"]
+        build = MagicMock(return_value=[{"name": "x"}])
+        monkeypatch.setattr(conversation_service, "build_tools_param", build)
+
+        await conversation_service.run_conversation(
+            {"main_tool": {}, "task_tool": {}},
+            client_type="task",
+            allowed_tool_names=allowed_tool_names,
+        )
+
+        assert build.call_args.kwargs["allowed_names"] == expected
+        assert build.call_args.kwargs["client_type"] == "task"
+
     async def test_does_not_save_or_duplicate_user_message(
         self, conversation_service, mock_memory_manager_instance, monkeypatch: pytest.MonkeyPatch
     ) -> None:

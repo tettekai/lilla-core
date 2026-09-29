@@ -14,11 +14,24 @@
   `${CONFIG_ROOT}/tools/task_*.yaml` に `type` を書いたときだけ opt-in で有効になる。
   YAML から `schedule`（cron）・`target`（通知先。`{DISCORD_MY_USER_ID}` は
   `discord.my_user_id` に置換）・`llm_provider`（必須）・`prompt`（必須。`file:` / `dir:` の
-  source spec）を読み、`client_type="task"` で 1 往復させたうえで、返答が
+  source spec）・`available_tools`（必須。この実行で LLM に見せるツールの許可リスト。#159）を
+  読み、`client_type="task"` で 1 往復させたうえで、返答が
   `NO_NOTIFICATION`（`*` で囲んだ形も含む）または空なら会話履歴にも残さず Discord へも
   送らない。それ以外の返答はアシスタント発言として会話履歴へ追記して `target` へ送る。
   プロンプト中の `{{now}}` は `ui.timezone` で解決した実行時刻に置き換わる。
   詳細は `docs/ja/scheduled-llm.md`（英訳 `docs/en/scheduled-llm.md`）
+  - `available_tools` はキーが無ければ起動時に失敗し、`main_available_tools` を継承しない。
+    空リストはツールなし、`$main` はその位置で `tools.main_available_tools` の中身（未設定なら
+    ロード済みの LLM ツールすべて）に展開され、並べた stem と合わせて許可リストになる。
+    ロード済みでない stem・`$main` 以外のトークンは起動時に失敗する。実際に渡すのはそのうち
+    `supported_client_type` が `task` / `all` のツールだけで、`supported_client_type: task` の
+    ツールをこのリストにだけ書けば、それを並べたタスクにだけ見せられる
+- ツールの許可リストを展開する `lilla_core.loaders.llm_tool_loader.resolve_available_tools()`
+  を足した（#159）。YAML stem と `$main` の並びを受け取り、`build_tools_param` の
+  `allowed_names` に渡せる stem のリストを返す（`supported_client_type` ではここで絞らない）
+- `run_conversation()` に `allowed_tool_names` 引数を足した（#159）。その回だけ LLM に見せる
+  ツールの許可リストで、省略（`None`）時は従来どおり `tools.main_available_tools`、空リストなら
+  ツールを渡さない
 - `LILLA_EXTENSIONS` で公式拡張パックをモジュール名だけの短縮記法で指定できるようにした
   （#153）。例えば `google_oauth` は `lilla_core.extensions.google_oauth` と同じ意味になる。
   `.` を含まない項目がそのまま import できないときだけ `lilla_core.extensions.` を補って
