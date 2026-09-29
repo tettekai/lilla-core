@@ -7,7 +7,7 @@
 opt-in で有効になります。
 
 ```yaml
-type: lilla_core.builtin_tools.task_channel_summary
+type: task_channel_summary
 # schedule: "0 2 * * *"      # 既定値。ui.timezone で解釈されます
 # llm_name: summarizer       # 既定は llm.default
 # max_turns: 500             # 1 チャンネルあたり読む発言数

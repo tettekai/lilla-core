@@ -278,3 +278,30 @@ class TestScheduledLlmTask:
         assert isinstance(entry["instance"], ScheduledLlmTask)
         assert entry["trigger"] == "task"
         assert entry["scheduled"] is True
+
+    def test_loads_via_file_name(self, tmp_path: Path, prompt_file: Path) -> None:
+        """`type: task_scheduled_llm`（ファイル名）でも builtin_tools ルートからロードできる。"""
+        from lilla_core.loaders import task_tool_loader, tool_paths
+
+        config_root = tmp_path / "config_root"
+        tools_dir = config_root / "tools"
+        tools_dir.mkdir(parents=True)
+        (tools_dir / "task_scheduled_llm.yaml").write_text(
+            "type: task_scheduled_llm\n"
+            'schedule: "0 8 * * *"\n'
+            "target: dm:{DISCORD_MY_USER_ID}\n"
+            "llm_provider: reminder\n"
+            f"prompt: file:{prompt_file}\n"
+            "available_tools: []\n",
+            encoding="utf-8",
+        )
+
+        result = task_tool_loader.load_all_tools(
+            tool_roots=[tool_paths.BUILTIN_TOOLS_ROOT], config_root=config_root, class_map={}
+        )
+
+        entry = result["task_scheduled_llm"]
+        # ファイル経由でロードするとクラスオブジェクトは別物になるため名前で確認する。
+        assert type(entry["instance"]).__name__ == "ScheduledLlmTask"
+        assert entry["trigger"] == "task"
+        assert entry["scheduled"] is True

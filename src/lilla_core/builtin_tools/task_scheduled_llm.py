@@ -7,7 +7,8 @@ cron で起きて、YAML で指定したプロンプトを `client_type="task"` 
 通知が増えない。
 
 コアは自動では読み込まない。`${CONFIG_ROOT}/tools/task_*.yaml` に
-`type: lilla_core.builtin_tools.task_scheduled_llm` を置くと opt-in で有効化できる。
+`type: task_scheduled_llm` を置くと opt-in で有効化できる（import パス形式の
+`type: lilla_core.builtin_tools.task_scheduled_llm` も使える）。
 
 YAML の項目:
 

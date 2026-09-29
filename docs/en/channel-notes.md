@@ -10,7 +10,7 @@ disabled until you opt in by adding this YAML to
 `${CONFIG_ROOT}/tools/task_channel_summary.yaml`:
 
 ```yaml
-type: lilla_core.builtin_tools.task_channel_summary
+type: task_channel_summary
 # schedule: "0 2 * * *"      # default; interpreted in ui.timezone
 # llm_name: summarizer       # default: llm.default
 # max_turns: 500             # messages read per channel
