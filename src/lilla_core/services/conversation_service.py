@@ -127,6 +127,7 @@ async def run_conversation(
     inject_user_content=None,
     override_last_user_content=None,
     tool_call_notifier: Callable[[str], Awaitable[None]] | None = None,
+    allowed_tool_names: list[str] | None = None,
 ) -> str:
     """会話履歴を読み込み、tool_call ループを回して返答を返す。
 
@@ -170,6 +171,11 @@ async def run_conversation(
         渡して呼び出されるコールバック。client_type == "discord" のときのみ実際に
         使われる（`execute_tool_call` 側でガードされる）。Discord 以外の呼び出し元
         （拡張が増やす対話クライアント種別, task）は渡さない想定。
+    allowed_tool_names : list[str] | None, optional
+        この回だけ LLM に見せるツールの許可リスト（展開済みの YAML stem。
+        `llm_tool_loader.resolve_available_tools` の戻り値を想定）。None なら
+        `tools.main_available_tools` を使う。空リストならツールを渡さない。
+        いずれの場合も、続けて `supported_client_type` で絞る。
 
     Returns
     -------
@@ -232,14 +238,18 @@ async def run_conversation(
         or content_has_image(inject_user_content),
     )
 
-    if not llm_tools:
+    if not llm_tools or allowed_tool_names == []:
         reply = await chat_to_llm(history, system_prompt=system_prompt, llm_name=llm_name)
         return _apply_meta_actions(reply)
 
     tools_param = build_tools_param(
         llm_tools,
         client_type=client_type,
-        allowed_names=_config.tools.main_available_tools,
+        allowed_names=(
+            _config.tools.main_available_tools
+            if allowed_tool_names is None
+            else allowed_tool_names
+        ),
     )
     messages = list(history)
     max_iterations = _config.llm.max_tool_call_iterations

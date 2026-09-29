@@ -23,6 +23,22 @@ def prompt_file(tmp_path: Path) -> Path:
     return path
 
 
+#: タスクの初期化で `available_tools` を展開する対象のロード済み LLM ツール。
+_LLM_TOOLS = {
+    "llm_weather": {"schema": {"name": "weather"}, "supported_client_type": "all"},
+    "llm_conversation_get": {"schema": {"name": "get_conversations"}, "supported_client_type": "task"},
+}
+
+
+@pytest.fixture(autouse=True)
+def loaded_llm_tools():
+    """タスクの初期化が参照するロード済み LLM ツールを差し替える。"""
+    with patch(
+        "lilla_core.loaders.llm_tool_loader.get_llm_tools", return_value=_LLM_TOOLS
+    ):
+        yield _LLM_TOOLS
+
+
 @pytest.fixture
 def mock_cfg() -> MagicMock:
     """`discord.my_user_id` を持つ AppConfig モック。"""
@@ -73,6 +89,7 @@ def _make_task(prompt_file: Path, **overrides) -> ScheduledLlmTask:
         "target": "dm:{DISCORD_MY_USER_ID}",
         "llm_provider": "reminder",
         "prompt": f"file:{prompt_file}",
+        "available_tools": [],
     }
     config.update(overrides)
     return ScheduledLlmTask(config, "task_scheduled_llm")
@@ -88,6 +105,54 @@ class TestScheduledLlmTask:
         """`prompt` が無ければ初期化時に落ちる。"""
         with pytest.raises(ValueError, match="prompt"):
             _make_task(prompt_file, prompt=None)
+
+    def test_requires_available_tools(self, prompt_file: Path) -> None:
+        """`available_tools` のキーが無ければ初期化時に落ちる（継承しない）。"""
+        config = {
+            "type": "lilla_core.builtin_tools.task_scheduled_llm",
+            "llm_provider": "reminder",
+            "prompt": f"file:{prompt_file}",
+        }
+        with pytest.raises(ValueError, match="available_tools"):
+            ScheduledLlmTask(config, "task_scheduled_llm")
+
+    @pytest.mark.parametrize(
+        "available_tools", [None, "llm_weather", ["llm_missing"], ["$unknown"]]
+    )
+    def test_invalid_available_tools_fail_on_init(
+        self, prompt_file: Path, available_tools
+    ) -> None:
+        """展開できない `available_tools` は初期化時に落ちる。"""
+        with pytest.raises(ValueError, match="available_tools"):
+            _make_task(prompt_file, available_tools=available_tools)
+
+    async def test_empty_available_tools_passes_empty_allow_list(
+        self, wired, prompt_file: Path, mock_run_conversation
+    ) -> None:
+        """空リストは空の許可リスト（ツールなし）として渡す。"""
+        await _make_task(prompt_file).execute(
+            {"discord_client": MagicMock(), "now": _NOW}
+        )
+
+        assert mock_run_conversation.await_args.kwargs["allowed_tool_names"] == []
+
+    async def test_passes_expanded_available_tools(
+        self, wired, prompt_file: Path, mock_run_conversation
+    ) -> None:
+        """`$main` を展開し、並べた stem と合わせた許可リストを渡す。"""
+        cfg = MagicMock()
+        cfg.tools.main_available_tools = ["llm_weather"]
+        with patch("lilla_core.loaders.llm_tool_loader.get_config", return_value=cfg):
+            task = _make_task(
+                prompt_file, available_tools=["$main", "llm_conversation_get", "llm_weather"]
+            )
+
+        await task.execute({"discord_client": MagicMock(), "now": _NOW})
+
+        assert mock_run_conversation.await_args.kwargs["allowed_tool_names"] == [
+            "llm_weather",
+            "llm_conversation_get",
+        ]
 
     def test_exposes_schedule_from_yaml(self, prompt_file: Path) -> None:
         """`schedule` は YAML の値をそのまま公開する（未設定なら None）。"""
@@ -200,7 +265,8 @@ class TestScheduledLlmTask:
             'schedule: "0 8 * * *"\n'
             "target: dm:{DISCORD_MY_USER_ID}\n"
             "llm_provider: reminder\n"
-            f"prompt: file:{prompt_file}\n",
+            f"prompt: file:{prompt_file}\n"
+            "available_tools: []\n",
             encoding="utf-8",
         )
 

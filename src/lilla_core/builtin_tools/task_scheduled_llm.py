@@ -17,6 +17,9 @@ YAML の項目:
 - `llm_provider` … 必須。`run_conversation` に渡す LLM プロバイダー名
 - `prompt` … 必須。`utils/resource_loader.py` の `load_text_resources` にそのまま
   渡す source spec（`file:` / `dir:`。リストでもよい）
+- `available_tools` … 必須。この実行で LLM に見せるツールの許可リスト（YAML stem と
+  `$main` の並び）。`llm_tool_loader.resolve_available_tools` で展開する。空リストは
+  ツールなしで、キーが無い場合は継承せず初期化で落とす
 """
 from __future__ import annotations
 
@@ -59,15 +62,19 @@ class ScheduledLlmTask:
     def __init__(self, config: dict, name: str) -> None:
         """YAML 設定からタスクを組み立てる。
 
-        `llm_provider` / `prompt` はこのタスクの前提なので、欠けていれば
-        起動時（ツールのロード時）に落とす。
+        `llm_provider` / `prompt` / `available_tools` はこのタスクの前提なので、
+        欠けていれば起動時（ツールのロード時）に落とす。`available_tools` は
+        ロード済みの LLM ツールに対してここで展開し、展開に失敗しても落とす
+        （書き忘れと「ツールなし」を区別するため、キーが無いときに
+        `main_available_tools` を継承することはしない）。
 
         Args:
             config: タスクツールの YAML 設定（`_yaml_path` 付き）。
             name: YAML のファイル名 stem（ツール名）。
 
         Raises:
-            ValueError: `llm_provider` または `prompt` が無い場合。
+            ValueError: `llm_provider` / `prompt` / `available_tools` が無い場合、
+                または `available_tools` を展開できない場合。
         """
         self._config = config or {}
         self.name = name
@@ -84,6 +91,11 @@ class ScheduledLlmTask:
             raise ValueError(f"Task tool {name} requires llm_provider")
         if not self._prompt_sources:
             raise ValueError(f"Task tool {name} requires prompt")
+        if "available_tools" not in self._config:
+            raise ValueError(f"Task tool {name} requires available_tools")
+        self._allowed_tool_names = self._resolve_available_tools(
+            self._config["available_tools"]
+        )
 
     async def execute(self, context: dict) -> None:
         """LLM に 1 往復させ、通知が必要なら `target` へ送る。
@@ -132,6 +144,7 @@ class ScheduledLlmTask:
             client_type="task",
             llm_name=self._llm_provider,
             inject_user_content=prompt,
+            allowed_tool_names=self._allowed_tool_names,
         )
         if _is_no_notification(reply):
             logger.info(
@@ -144,6 +157,30 @@ class ScheduledLlmTask:
             context.get("discord_client"), target, reply, get_conversation_repo()
         )
         logger.info("[scheduled_llm] %s sent a notification to %s", self.name, target)
+
+    def _resolve_available_tools(self, entries) -> list[str]:
+        """`available_tools` をロード済みの LLM ツールに対して展開する。
+
+        Args:
+            entries: YAML の `available_tools` の値。
+
+        Returns:
+            展開済みの YAML stem のリスト（空ならツールなし）。
+
+        Raises:
+            ValueError: 展開できない場合（リストでない・未知のトークンや stem など）。
+        """
+        from lilla_core.loaders.llm_tool_loader import (
+            get_llm_tools,
+            resolve_available_tools,
+        )
+
+        try:
+            return resolve_available_tools(entries, get_llm_tools())
+        except ValueError as e:
+            raise ValueError(
+                f"Task tool {self.name} has invalid available_tools: {e}"
+            ) from e
 
     def _resolve_target(self) -> str | None:
         """通知先を解決する（`{DISCORD_MY_USER_ID}` を `discord.my_user_id` に置換）。

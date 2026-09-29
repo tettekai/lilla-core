@@ -651,6 +651,112 @@ class TestBuildToolsParam:
 
 
 # ---------------------------------------------------------------------------
+# TestResolveAvailableTools
+# ---------------------------------------------------------------------------
+
+
+def _tools(**supported: str) -> dict[str, dict]:
+    """stem → supported_client_type から最小の llm_tools を作る。"""
+    return {
+        name: {"schema": {"name": name}, "execute": AsyncMock(), "supported_client_type": sct}
+        for name, sct in supported.items()
+    }
+
+
+class TestResolveAvailableTools:
+    def test_keeps_stems_as_is(self, llm_tool_loader) -> None:
+        """YAML stem は並べた順のまま残る。"""
+        llm_tools = _tools(tool_a="all", tool_b="all")
+        assert llm_tool_loader.resolve_available_tools(
+            ["tool_b", "tool_a"], llm_tools
+        ) == ["tool_b", "tool_a"]
+
+    def test_empty_list_is_no_tools(self, llm_tool_loader, mock_cfg) -> None:
+        """空リストは空のまま（main_available_tools は見ない）。"""
+        mock_cfg.tools.main_available_tools = ["tool_a"]
+        assert llm_tool_loader.resolve_available_tools([], _tools(tool_a="all")) == []
+
+    def test_main_expands_in_place(self, llm_tool_loader, mock_cfg) -> None:
+        """`$main` は main_available_tools の中身にその位置で展開される。"""
+        mock_cfg.tools.main_available_tools = ["tool_a", "tool_b"]
+        llm_tools = _tools(tool_a="all", tool_b="all", tool_c="task")
+        assert llm_tool_loader.resolve_available_tools(
+            ["tool_c", "$main"], llm_tools
+        ) == ["tool_c", "tool_a", "tool_b"]
+
+    def test_main_without_filter_means_all_loaded(self, llm_tool_loader, mock_cfg) -> None:
+        """main_available_tools が未設定なら `$main` はロード済みの全ツール。"""
+        mock_cfg.tools.main_available_tools = None
+        llm_tools = _tools(tool_a="all", tool_b="discord")
+        assert llm_tool_loader.resolve_available_tools(["$main"], llm_tools) == [
+            "tool_a",
+            "tool_b",
+        ]
+
+    def test_removes_duplicates(self, llm_tool_loader, mock_cfg) -> None:
+        """展開後の重複は最初の出現だけを残す。"""
+        mock_cfg.tools.main_available_tools = ["tool_a", "tool_b"]
+        llm_tools = _tools(tool_a="all", tool_b="all")
+        assert llm_tool_loader.resolve_available_tools(
+            ["tool_b", "$main", "$main"], llm_tools
+        ) == ["tool_b", "tool_a"]
+
+    def test_does_not_filter_by_client_type(self, llm_tool_loader) -> None:
+        """supported_client_type ではここで絞らない。"""
+        llm_tools = _tools(tool_a="discord", tool_b="task")
+        assert llm_tool_loader.resolve_available_tools(
+            ["tool_a", "tool_b"], llm_tools
+        ) == ["tool_a", "tool_b"]
+
+    def test_unknown_stem_fails(self, llm_tool_loader) -> None:
+        """ロード済みでない stem が残れば失敗する。"""
+        with pytest.raises(ValueError, match="tool_x"):
+            llm_tool_loader.resolve_available_tools(["tool_x"], _tools(tool_a="all"))
+
+    def test_unknown_stem_from_main_fails(self, llm_tool_loader, mock_cfg) -> None:
+        """`$main` の展開で残った未ロードの stem も失敗させる。"""
+        mock_cfg.tools.main_available_tools = ["tool_gone"]
+        with pytest.raises(ValueError, match="tool_gone"):
+            llm_tool_loader.resolve_available_tools(["$main"], _tools(tool_a="all"))
+
+    def test_unknown_token_fails(self, llm_tool_loader) -> None:
+        """`$main` 以外のトークンは未実装なので失敗する。"""
+        with pytest.raises(ValueError, match=r"\$other"):
+            llm_tool_loader.resolve_available_tools(["$other"], _tools(tool_a="all"))
+
+    @pytest.mark.parametrize("entries", [None, "tool_a", [1], [""]])
+    def test_rejects_malformed_input(self, llm_tool_loader, entries) -> None:
+        """リストでない・空や文字列以外の要素は失敗する。"""
+        with pytest.raises(ValueError):
+            llm_tool_loader.resolve_available_tools(entries, _tools(tool_a="all"))
+
+    def test_task_only_tool_is_shown_only_where_listed(
+        self, llm_tool_loader, mock_cfg
+    ) -> None:
+        """task 専用ツールは、それを並べた task 実行にだけ渡り、他には出ない。"""
+        mock_cfg.tools.main_available_tools = ["tool_a"]
+        llm_tools = _tools(tool_a="all", tool_d="task", tool_ui="discord")
+
+        listed = llm_tool_loader.resolve_available_tools(
+            ["$main", "tool_d", "tool_ui"], llm_tools
+        )
+        other_task = llm_tool_loader.resolve_available_tools(["$main"], llm_tools)
+
+        def names(allowed, client_type):
+            return [
+                s["name"]
+                for s in llm_tool_loader.build_tools_param(
+                    llm_tools, client_type=client_type, allowed_names=allowed
+                )
+            ]
+
+        # 並べたタスク: task 専用ツールは出るが discord 専用ツールは交差で落ちる。
+        assert names(listed, "task") == ["tool_a", "tool_d"]
+        assert names(other_task, "task") == ["tool_a"]
+        assert names(mock_cfg.tools.main_available_tools, "discord") == ["tool_a"]
+
+
+# ---------------------------------------------------------------------------
 # TestExecuteToolCall
 # ---------------------------------------------------------------------------
 
