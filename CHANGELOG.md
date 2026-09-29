@@ -9,6 +9,16 @@
 
 ### Added
 
+- スケジュール実行で LLM に処理を委譲する組み込みタスクツール
+  `lilla_core.builtin_tools.task_scheduled_llm` を足した（#157）。既定では読み込まれず、
+  `${CONFIG_ROOT}/tools/task_*.yaml` に `type` を書いたときだけ opt-in で有効になる。
+  YAML から `schedule`（cron）・`target`（通知先。`{DISCORD_MY_USER_ID}` は
+  `discord.my_user_id` に置換）・`llm_provider`（必須）・`prompt`（必須。`file:` / `dir:` の
+  source spec）を読み、`client_type="task"` で 1 往復させたうえで、返答が
+  `NO_NOTIFICATION`（`*` で囲んだ形も含む）または空なら会話履歴にも残さず Discord へも
+  送らない。それ以外の返答はアシスタント発言として会話履歴へ追記して `target` へ送る。
+  プロンプト中の `{{now}}` は `ui.timezone` で解決した実行時刻に置き換わる。
+  詳細は `docs/ja/scheduled-llm.md`（英訳 `docs/en/scheduled-llm.md`）
 - `LILLA_EXTENSIONS` で公式拡張パックをモジュール名だけの短縮記法で指定できるようにした
   （#153）。例えば `google_oauth` は `lilla_core.extensions.google_oauth` と同じ意味になる。
   `.` を含まない項目がそのまま import できないときだけ `lilla_core.extensions.` を補って

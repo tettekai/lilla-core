@@ -80,6 +80,7 @@ enabled by default; each one is opt-in, enabled only when you put its YAML under
 | `lilla_core.builtin_tools.llm_current_datetime` | LLM | A sample that just returns the current date and time |
 | `lilla_core.builtin_tools.llm_conversation_get` | LLM | [Searching history by room name](history-search.md) |
 | `lilla_core.builtin_tools.task_channel_summary` | task | [Channel notes (nightly summary)](channel-notes.md) |
+| `lilla_core.builtin_tools.task_scheduled_llm` | task | [Scheduled notifications delegated to the LLM](scheduled-llm.md) |
 
 Enabling the sample (`${CONFIG_ROOT}/tools/llm_current_datetime.yaml`):
 

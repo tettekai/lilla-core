@@ -16,6 +16,7 @@ The index of the lilla-core user documentation.
 - [Registered channels](channels.md) — `discord.channels`
 - [Channel notes (nightly summary)](channel-notes.md)
 - [Searching history by room name](history-search.md)
+- [Scheduled notifications delegated to the LLM](scheduled-llm.md)
 - [Timezone](timezone.md) — `ui.timezone`
 - [Choosing the LLM provider per turn](llm-resolver.md) — `type: resolver` in `llm.providers`
 - [The observability dashboard](dashboard.md) — including the exposure warning
