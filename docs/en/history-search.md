@@ -9,7 +9,7 @@ by default; opt in by adding this YAML under `${CONFIG_ROOT}/tools/` (the name t
 sees is the YAML's file name):
 
 ```yaml
-type: lilla_core.builtin_tools.llm_conversation_get
+type: llm_conversation_get
 ```
 
 - It narrows by `datetime_range` (`today`, `last_7_days`, `2026-04-20/2026-04-26`, ...),

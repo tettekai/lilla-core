@@ -2,10 +2,15 @@
 
 LLM ツール（`llm_tool_loader`）と task ツール（`task_tool_loader`）は同じ
 ルート集合を探索する。ルートは `paths.tool_root` を先頭に、拡張の
-`tool_roots()` をロード順で足したもの。
+`tool_roots()` をロード順で足し、最後にコア組み込みツール
+（`lilla_core/builtin_tools`。`BUILTIN_TOOLS_ROOT`）を足したもの。組み込みツールも
+拡張と同じ仕組みでファイル名から引けるようにするためで、探索先に入っていても
+YAML が無いツールはロードしない（opt-in は変わらない）。
 
 同名のツールファイルが複数のルートにあると、どちらが使われるかが暗黙になる
-ため fail-fast する（先頭マッチで静かに採らない）。1 つのルートの中に同名
+ため fail-fast する（先頭マッチで静かに採らない）。ただし `builtin_tools` は
+常に負ける側で、ホストや拡張に同名ファイルがあればそちらを使い、起動は止めない
+（利用者が同名で差し替えられるようにするため）。1 つのルートの中に同名
 ファイルが複数ある場合は従来どおり先頭マッチを使う。
 
 追加ルートは **ファイル探索だけ** に使い、`sys.path` へは挿入しない。
@@ -45,17 +50,25 @@ from lilla_core.core.extension import get_tool_config_roots, get_tool_roots
 
 logger = logging.getLogger(__name__)
 
+# コア組み込みツール（`lilla_core/builtin_tools`）のディレクトリ。常に最後の探索ルート。
+BUILTIN_TOOLS_ROOT = Path(__file__).resolve().parent.parent / "builtin_tools"
+
 
 def resolve_tool_roots() -> list[Path]:
     """探索対象のツールルートを順序付きで返す。
 
     `paths.tool_root` が先頭で、そのあとに拡張の `tool_roots()` がロード順で
-    続く。同じディレクトリを指す重複は取り除く（解決後のパスで比較する）。
+    続き、最後にコア組み込みツールの `BUILTIN_TOOLS_ROOT` が付く。同じ
+    ディレクトリを指す重複は取り除く（解決後のパスで比較する）。
 
     Returns:
         重複を除いたツールルートのリスト。
     """
-    roots: list[Path] = [get_config().paths.tool_root, *get_tool_roots()]
+    roots: list[Path] = [
+        get_config().paths.tool_root,
+        *get_tool_roots(),
+        BUILTIN_TOOLS_ROOT,
+    ]
     unique: list[Path] = []
     seen: set[Path] = set()
     for root in roots:
@@ -72,8 +85,9 @@ def resolve_tool_dirs(
 ) -> list[Path]:
     """ツールの `.py` をロードしてよいディレクトリを解決済みのパスで返す。
 
-    探索ルート（`tool_roots`。省略時は `resolve_tool_roots()`）に、`type: self` の
-    `.py` が置かれる `config_root/tools`（省略時は設定の `env.config_root`）を足す。
+    探索ルート（`tool_roots`。省略時は `resolve_tool_roots()`。末尾に
+    `BUILTIN_TOOLS_ROOT` を含む）に、`type: self` の `.py` が置かれる
+    `config_root/tools`（省略時は設定の `env.config_root`）を足す。
 
     Args:
         tool_roots: 探索に使ったツールルート。`None` なら設定と拡張から解決する。
@@ -212,8 +226,19 @@ def import_tool_module(tool_type: str) -> ModuleType | None:
         return None
 
 
+def _is_builtin_tools_root(root: Path) -> bool:
+    """`root` がコア組み込みツールのディレクトリ（またはその配下）かを返す。"""
+    resolved = Path(root).resolve()
+    return resolved.is_relative_to(BUILTIN_TOOLS_ROOT)
+
+
 def find_tool_file(tool_type: str, tool_roots: list[Path]) -> Path | None:
     """各ルートを再帰的に検索し、`{tool_type}.py` にマッチするファイルを返す。
+
+    コア組み込みツールのルート（`BUILTIN_TOOLS_ROOT`）は常に負ける側として扱い、
+    ホストや拡張のルートにマッチがあればそちらを返す（組み込みツールは同名で
+    差し替えられる）。組み込み以外のルートどうしで同名の場合は従来どおり
+    fail-fast する。
 
     Args:
         tool_type: YAML の `type` 値（例: `"llm_web_search"`）。
@@ -223,14 +248,15 @@ def find_tool_file(tool_type: str, tool_roots: list[Path]) -> Path | None:
         マッチしたファイルパス。見つからない場合は `None`。
 
     Raises:
-        ValueError: 複数のルートに同名のツールファイルがある場合。
+        ValueError: 組み込み以外の複数のルートに同名のツールファイルがある場合。
     """
     matches: list[Path] = []
+    builtin_matches: list[Path] = []
     for root in tool_roots:
         if not root.is_dir():
             continue
         for match in root.rglob(f"{tool_type}.py"):
-            matches.append(match)
+            (builtin_matches if _is_builtin_tools_root(root) else matches).append(match)
             break
 
     if len(matches) > 1:
@@ -238,4 +264,11 @@ def find_tool_file(tool_type: str, tool_roots: list[Path]) -> Path | None:
             f"Tool file '{tool_type}.py' found in multiple tool roots: "
             f"{[str(m) for m in matches]}"
         )
-    return matches[0] if matches else None
+    if matches:
+        if builtin_matches:
+            logger.info(
+                "Tool file '%s.py' from %s overrides the built-in one at %s",
+                tool_type, matches[0].parent, builtin_matches[0],
+            )
+        return matches[0]
+    return builtin_matches[0] if builtin_matches else None

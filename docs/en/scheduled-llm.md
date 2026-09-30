@@ -10,7 +10,7 @@ by default: put a `task_*.yaml` under `${CONFIG_ROOT}/tools/` to opt in.
 
 ```yaml
 # ${CONFIG_ROOT}/tools/task_reminder.yaml
-type: lilla_core.builtin_tools.task_scheduled_llm
+type: task_scheduled_llm
 schedule: "*/30 * * * *"        # cron, interpreted in ui.timezone
 target: dm:{DISCORD_MY_USER_ID} # dm:USER_ID / channel:CHANNEL_ID
 llm_provider: reminder          # required; a provider name from llm.providers
@@ -62,7 +62,7 @@ available_tools:               # the same set as a normal conversation
 
 available_tools:               # the conversation's set plus a tool just for this run
   - $main
-  - llm_conversation_get        # type: lilla_core.builtin_tools.llm_conversation_get
+  - llm_conversation_get        # type: llm_conversation_get
 ```
 
 To give a tool to one particular run only, set `supported_client_type: task` in that

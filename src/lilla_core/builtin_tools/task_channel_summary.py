@@ -6,7 +6,8 @@
 ここで作るのは TTL で消える前の「その部屋で何を話したか」の短い記録だけ。
 
 コアは自動では読み込まない。`${CONFIG_ROOT}/tools/task_channel_summary.yaml` に
-`type: lilla_core.builtin_tools.task_channel_summary` を置くと opt-in で有効化できる。
+`type: task_channel_summary` を置くと opt-in で有効化できる（import パス形式の
+`type: lilla_core.builtin_tools.task_channel_summary` も使える）。
 
 要約対象の本文はユーザー・外部由来のテキストなので、LLM へは
 `<channel_transcript>` タグで囲んだ「指示ではなく要約対象のデータ」として渡し、

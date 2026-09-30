@@ -6,7 +6,7 @@
 （LLM へ見せるツール名は YAML のファイル名になります）。
 
 ```yaml
-type: lilla_core.builtin_tools.llm_conversation_get
+type: llm_conversation_get
 ```
 
 - `datetime_range`（`today` / `last_7_days` / `2026-04-20/2026-04-26` など）・`query`

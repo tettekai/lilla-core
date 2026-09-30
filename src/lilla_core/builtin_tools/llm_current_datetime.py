@@ -1,8 +1,8 @@
 """現在日時を返すだけのサンプル LLM ツール。
 
 個人データ・外部サービスへの依存を持たない、コア組み込みツールの実例。
-`${CONFIG_ROOT}/tools/` に `type: lilla_core.builtin_tools.llm_current_datetime` の
-YAML を置くと有効化できる。
+`${CONFIG_ROOT}/tools/` に `type: llm_current_datetime` の YAML を置くと有効化できる
+（import パス形式の `type: lilla_core.builtin_tools.llm_current_datetime` も使える）。
 """
 from __future__ import annotations
 

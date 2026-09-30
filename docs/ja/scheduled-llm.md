@@ -7,7 +7,7 @@ LLM に委譲すると書きやすくなります。そのための定期タス�
 
 ```yaml
 # ${CONFIG_ROOT}/tools/task_reminder.yaml
-type: lilla_core.builtin_tools.task_scheduled_llm
+type: task_scheduled_llm
 schedule: "*/30 * * * *"        # cron。ui.timezone で解釈されます
 target: dm:{DISCORD_MY_USER_ID} # dm:USER_ID / channel:CHANNEL_ID
 llm_provider: reminder          # 必須。llm.providers のプロバイダー名
@@ -58,7 +58,7 @@ available_tools:               # 通常会話と同じ一式
 
 available_tools:               # 通常会話の一式に、この実行だけのツールを足す
   - $main
-  - llm_conversation_get        # type: lilla_core.builtin_tools.llm_conversation_get
+  - llm_conversation_get        # type: llm_conversation_get
 ```
 
 特定の実行だけに渡したいツールは、ツール YAML を `supported_client_type: task` にし、

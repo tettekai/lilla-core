@@ -7,6 +7,17 @@
 
 ## [Unreleased]
 
+### Changed
+
+- コア組み込みツール（`lilla_core/builtin_tools`）を**常に最後のツール探索ルート**として
+  足した（#161）。ツール YAML の `type` にファイル名（`type: task_scheduled_llm` など）を
+  書けるようになり、文書もそちらを正の書き方にした。従来の import パス形式
+  （`type: lilla_core.builtin_tools.task_scheduled_llm`）も引き続き使えるため、既存の YAML は
+  そのまま動く。探索ルートに入るだけでは有効にならず、`${CONFIG_ROOT}/tools/` に YAML を
+  置いたときだけロードする opt-in は変わらない。同名ファイルの扱いは、ホストや拡張に同名が
+  あればそちらが勝ち（組み込みは常に負ける側で、起動は止まらない）、組み込み以外どうしの
+  同名は従来どおり起動時に失敗する
+
 ### Added
 
 - スケジュール実行で LLM に処理を委譲する組み込みタスクツール
