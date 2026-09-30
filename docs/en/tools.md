@@ -99,6 +99,26 @@ default; each one is opt-in, enabled only when you put its YAML under
 | `llm_conversation_get` | LLM | [Searching history by room name](history-search.md) |
 | `task_channel_summary` | task | [Channel notes (nightly summary)](channel-notes.md) |
 | `task_scheduled_llm` | task | [Scheduled notifications delegated to the LLM](scheduled-llm.md) |
+| `llm_expert` | LLM | Delegation to an expert sub-agent (see below) |
+
+### `llm_expert` (expert agent)
+
+A tool that delegates work to a sub-agent with its own system prompt and toolset. The
+implementation lives in the core; the prompt, the tools it may use and the LLM are written
+in YAML (`${CONFIG_ROOT}/tools/llm_*.yaml`). You can add more YAML files to get several
+experts from one implementation. Write the file name `llm_expert` as the `type`.
+
+```yaml
+type: llm_expert
+description: Health data expert. Delegate questions about condition and exercise
+prompt: dir:${config_root}/prompt/experts/health
+llm_provider: grok            # optional
+available_tools: [llm_health_get]   # `$main` expands to tools.main_available_tools
+```
+
+Combining `api: responses` with `grok_tools` makes a single call that uses the Responses
+API's built-in tools (`api: responses` together with `available_tools` is not supported).
+If the expert needs re-authentication, it aborts and passes that request up as it is.
 
 Enabling the sample (`${CONFIG_ROOT}/tools/llm_current_datetime.yaml`):
 

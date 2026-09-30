@@ -95,6 +95,26 @@
 | `llm_conversation_get` | LLM | [会話履歴の部屋名検索](history-search.md) |
 | `task_channel_summary` | task | [部屋のノート（深夜要約）](channel-notes.md) |
 | `task_scheduled_llm` | task | [スケジュール実行で LLM に委譲する通知](scheduled-llm.md) |
+| `llm_expert` | LLM | 専門家サブエージェントへの委譲（後述） |
+
+### `llm_expert`（専門家エージェント）
+
+独自のシステムプロンプトとツールセットを持つサブエージェントへ処理を委譲するツールです。
+実装はコアが持ち、プロンプト・使えるツール・LLM は YAML（`${CONFIG_ROOT}/tools/llm_*.yaml`）
+に書きます。1 つの実装から YAML を増やして複数の専門家を作れます。`type` にはファイル名
+`llm_expert` を書きます。
+
+```yaml
+type: llm_expert
+description: 健康データの専門家。体調や運動についての質問を委譲する
+prompt: dir:${config_root}/prompt/experts/health
+llm_provider: grok            # 省略可
+available_tools: [llm_health_get]   # `$main` は tools.main_available_tools に展開される
+```
+
+`api: responses` と `grok_tools` を組み合わせると、Responses API の組み込みツールを使った
+単発呼び出しになります（`api: responses` と `available_tools` の併用は未対応です）。
+専門家の中で再認証が必要になった場合は、処理を中断してその要求をそのまま伝えます。
 
 サンプルを有効化する例（`${CONFIG_ROOT}/tools/llm_current_datetime.yaml`）:
 
