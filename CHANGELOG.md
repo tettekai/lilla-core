@@ -7,6 +7,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- 専門家サブエージェントへ委譲する LLM ツール `llm_expert` をコア組み込みツール
+  （`lilla_core/builtin_tools/llm_expert.py`）として追加した（#163）。lilla-agent の
+  `tools/experts/llm_expert.py` から移したもので、`SCHEMA` / `execute` の契約は変えていない。
+  YAML（`prompt` / `llm_provider` / `available_tools` / `api` / `grok_tools`）は従来どおり
+  `${CONFIG_ROOT}/tools` に置き、`type: llm_expert`（ファイル名）と書く。ホストや拡張に同名の
+  `llm_expert.py` があればそちらが優先される。詳細は `docs/ja/tools.md`
+
 ### Changed
 
 - コア組み込みツール（`lilla_core/builtin_tools`）を**常に最後のツール探索ルート**として
