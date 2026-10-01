@@ -43,6 +43,7 @@ extension = MyExtension()
 | `dashboard_static_dir` | `/static/ext/{name}/` に載せる静的ファイルのディレクトリ。タブを出すなら直下に `page.js` を置く |
 | `dashboard_routes` | セッション認証の内側に足す HTTP ルート（`DashboardRoute`）。パスは `/api/{name}` 配下のみ |
 | `dashboard_public_routes` | 認証の外側に載せる公開ルート（OAuth の戻り先など）。パスは `/oauth/{name}` 配下のみ。`state` の検証は拡張側の責任 |
+| `http_routes` | 共有 HTTP サーバー（ダッシュボードとは別ポート）に足すルート（`HttpRoute(method, path, handler, auth)`）。パスの接頭辞に制約は無く、`auth` は `bearer`（既定）/ `public` / `deferred`（[共有 HTTP サーバー](http-server.md)） |
 | `config_model` | この拡張が足す YAML セクションのモデル 1 つ（足さないなら `None`）。置き場は `extensions.<name のハイフンをアンダースコアにしたもの>`（`google-oauth` なら `cfg.extensions.google_oauth`）（[設定の合成](extension-config.md)） |
 | `env_fields` | この拡張が `cfg.env` に足す秘匿フィールド |
 | `required_env_fields` | 自分では提供しないが読む `cfg.env` のフィールド |
@@ -54,7 +55,8 @@ extension = MyExtension()
 
 貢献キーは **拡張どうし** で衝突してはいけません。`Extension.name`・YAML セクション名・
 env フィールド名・ツール context のキー・結果配送の `client_type`・コマンド名・複数ルートに
-またがる同名ツールファイルのいずれも、静かに勝者を決めず起動時に fail-fast します。
+またがる同名ツールファイル・共有 HTTP サーバーのメソッドとパス（コアのルートとの重なりも含む）の
+いずれも、静かに勝者を決めず起動時に fail-fast します。
 クライアント固有プロンプトと会話開始フックだけは設計上の例外で、`client_type` ごとの
 リストをロード順に連結するため、複数の拡張が同じクライアントへ足せます。
 

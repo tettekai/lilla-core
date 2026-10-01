@@ -9,7 +9,7 @@ src/lilla_core/
 ├── bot_client.py         # Shared module holding the commands.Bot instance
 ├── core/                 # Config management, the Extension base class, shared utilities
 ├── commands/             # `!command` implementations (one file per command)
-├── handlers/             # Dispatch for Discord events/commands, scheduled tasks, dashboard server
+├── handlers/             # Dispatch for Discord events/commands, scheduled tasks, dashboard and shared HTTP servers
 ├── services/             # tool_call loop, conversation history, system prompt build
 ├── dashboard/            # SPA for the observability dashboard (static files)
 ├── ui/ locales/          # Catalogs of user-facing Discord text (ja / en)

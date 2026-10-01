@@ -24,6 +24,11 @@ it shows (conversation history, user memos, logs) is core state. Extensions add 
 HTTP routes to it through their `dashboard_*()` declarations
 ([The observability dashboard](dashboard.md)).
 
+The core also owns the **shared HTTP server** for machine-facing clients, but it only
+carries what every user shares: liveness, the tool-run APIs, and Bearer authentication.
+Client-specific routes (media delivery, WebSockets, and so on) are declared by extensions
+through `http_routes()` ([The shared HTTP server](http-server.md)).
+
 lilla-core is designed to be able to start as a standalone Discord bot with zero
 extensions loaded. Every `Extension` method has a safe default that contributes
 nothing, so the core never depends on the presence of extensions.

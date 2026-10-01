@@ -47,6 +47,7 @@ Load the module by listing it in `LILLA_EXTENSIONS`
 | `dashboard_static_dir` | Directory served at `/static/ext/{name}/`. Put `page.js` at its root when the extension contributes a tab |
 | `dashboard_routes` | HTTP routes (`DashboardRoute`) mounted inside session auth. Paths must live under `/api/{name}` |
 | `dashboard_public_routes` | Public routes mounted outside session auth (OAuth callbacks and the like). Paths must live under `/oauth/{name}`; validating `state` is the extension's job |
+| `http_routes` | Routes added to the shared HTTP server (a separate port from the dashboard), as `HttpRoute(method, path, handler, auth)`. No path prefix restriction; `auth` is `bearer` (default) / `public` / `deferred` ([The shared HTTP server](http-server.md)) |
 | `config_model` | The one YAML section model this extension adds, or `None`. It lives at `extensions.<name with hyphens as underscores>` (`cfg.extensions.google_oauth` for `google-oauth`) ([Config composition](extension-config.md)) |
 | `env_fields` | Secret fields this extension adds to `cfg.env` |
 | `required_env_fields` | `cfg.env` fields this extension reads but does not provide |
@@ -58,7 +59,8 @@ Load the module by listing it in `LILLA_EXTENSIONS`
 
 Contribution keys must not collide **between extensions**: duplicate `Extension.name`,
 config section names, env field names, tool context keys, result-delivery `client_type`
-keys, command names, or tool file names across different roots all fail fast at startup
+keys, command names, tool file names across different roots, or shared HTTP server
+method-and-path pairs (including overlaps with core routes) all fail fast at startup
 rather than silently picking a winner. Client prompts and conversation start hooks are
 the exception by design: they are lists per `client_type` and are concatenated in load
 order, so several extensions can contribute to the same client.

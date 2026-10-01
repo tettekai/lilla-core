@@ -242,6 +242,38 @@ class TestDashboardConfig:
         assert "dashboard" in _config_module.core_config_section_names()
 
 
+class TestHttpConfig:
+    """`http` セクション（機械向けクライアントの共有 HTTP サーバー）。"""
+
+    def test_defaults_when_section_absent(self, isolated_config_root: Path) -> None:
+        """`http:` を書かなくても既定値で起動できる（節そのものが省略可・CORS は無効）。"""
+        _write_yaml(isolated_config_root)
+        cfg = AppConfig(env={"discord_token": "dummy"}, _env_file=None)
+
+        assert cfg.http.host == "0.0.0.0"
+        assert cfg.http.port == 8080
+        assert cfg.http.cors_allowed_origins == []
+
+    def test_values_from_yaml(self, isolated_config_root: Path) -> None:
+        """`host` / `port` / `cors_allowed_origins` を YAML から読み取る。"""
+        _write_yaml(
+            isolated_config_root,
+            'discord:\n  my_user_id: "1"\n'
+            "http:\n  host: 127.0.0.1\n  port: 80\n"
+            '  cors_allowed_origins:\n    - "http://localhost:3000"\n'
+            + _DUMMY_LLM_YAML,
+        )
+        cfg = AppConfig(env={"discord_token": "dummy"}, _env_file=None)
+
+        assert cfg.http.host == "127.0.0.1"
+        assert cfg.http.port == 80
+        assert cfg.http.cors_allowed_origins == ["http://localhost:3000"]
+
+    def test_is_a_core_section_name(self) -> None:
+        """コア確定のセクション名として扱われる。"""
+        assert "http" in _config_module.core_config_section_names()
+
+
 class TestUiConfig:
     """`ui` セクション（Discord 向け文言のロケール）。"""
 

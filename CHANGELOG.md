@@ -9,6 +9,23 @@
 
 ### Added
 
+- 機械向けクライアントの共有 HTTP サーバー（`handlers/http_server.py`）を追加した（#172）。
+  `bot.py` の `main()` が拡張の `setup()`・ダッシュボードのあとに起こし、Discord から
+  抜けるときに止める。ダッシュボードとは別ポート・別認証で、設定は新しいコア確定の
+  `http:` 節（`host` 既定 `0.0.0.0` / `port` 既定 `8080` / `cors_allowed_origins` 既定は空）。
+  節を省略しても起動するため、**既存の構成でも 8080 番ポートを新たに listen する**
+  （使っているポートと重なる場合は `http.port` を変える）
+  - コアのエンドポイントは `GET /`（生存確認。公開）・`POST /api/tools/call`（LLM ツールの
+    直接呼び出し）・`POST /api/runtask`（task ツールの手動実行）の 3 本。後ろ 2 本は Bearer 必須
+  - 認証は既定拒否の Bearer トークン。トークンは新しい `repository/client_token_repository.py`
+    が `client_tokens` コレクションに SHA-256 ハッシュだけを保持し（期限なし・同じ label の
+    再発行で置き換え）、照合は `verify_client_token()`。発行の CLI はホスト側で用意する
+  - 拡張は新しいメソッド `Extension.http_routes()` で `HttpRoute(method, path, handler, auth)`
+    を申告してルートを足せる。パスの接頭辞に制約は無く、`auth` は `bearer`（既定）/
+    `public` / `deferred`（ハンドラ側で別方式の認証）。コアのルートや他の拡張とメソッド・
+    パスが重なるとロード時に失敗する。メソッドの追加なので `EXTENSION_API_VERSION` は据え置き
+  - 詳細は `docs/ja/http-server.md`
+
 - 専門家サブエージェントへ委譲する LLM ツール `llm_expert` をコア組み込みツール
   （`lilla_core/builtin_tools/llm_expert.py`）として追加した（#163）。lilla-agent の
   `tools/experts/llm_expert.py` から移したもので、`SCHEMA` / `execute` の契約は変えていない。
