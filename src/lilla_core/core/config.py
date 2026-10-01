@@ -314,6 +314,25 @@ class DashboardConfig(BaseModel):
     cookie_secure: bool = True
 
 
+class HttpConfig(BaseModel):
+    """lilla.yaml の `http:` セクション（機械向けクライアントの共有 HTTP サーバー）。
+
+    `handlers/http_server.py` が使う。全フィールドに既定があるため、`lilla.yaml` に
+    節そのものが無くてもよい（既定のまま `0.0.0.0:8080` で起動する）。
+    ダッシュボード（`dashboard:`）とは別のポート・別の認証（Bearer トークン）。
+    """
+
+    #: listen するアドレス。既定は全インターフェース（コンテナ運用が前提）。
+    #: 公開ルート（`GET /` の生存確認と、拡張が `public` で申告したもの）以外は
+    #: Bearer トークン必須だが、同一ホストからしか使わない運用では `127.0.0.1` に絞れる。
+    host: str = "0.0.0.0"
+    #: listen するポート。
+    port: int = 8080
+    #: CORS を許可するオリジン。空なら CORS ヘッダーを一切付けない。`"*"` を含めると
+    #: 全オリジンを許可する。
+    cors_allowed_origins: list[str] = []
+
+
 class ExtensionsConfig(BaseModel):
     """lilla.yaml の `extensions:` セクション（拡張が申告した節の置き場）。
 
@@ -573,6 +592,7 @@ class AppConfig(BaseSettings):
     tools: ToolsConfig = ToolsConfig()
     commands: CommandsConfig = CommandsConfig()
     dashboard: DashboardConfig = DashboardConfig()
+    http: HttpConfig = HttpConfig()
     # `LlmConfig()` を直接デフォルト値にすると、クラス定義（モジュール import）の
     # 時点で即座にインスタンス化・検証されてしまい、YAML の内容に関わらず
     # import だけで落ちる。`default_factory` で AppConfig 構築時まで遅延させる。
