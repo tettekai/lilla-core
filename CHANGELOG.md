@@ -29,6 +29,12 @@
 - 依存の版上げ（第1弾・パッチ／小幅）。pyyaml 6.0.3、python-dotenv 1.2.3、apscheduler 3.11.3、
   開発依存の pytest 9.1.1、pytest-asyncio 1.4.0 へ更新した（`==` 固定は維持）（#167）
 
+### Fixed
+
+- `type: task_scheduled_llm` で `available_tools` キーが無いときに起動が落ちていたのを修正し、
+  省略時はツールなしとしてロードするようにした（#170）。`available_tools: []` は従来どおり
+  ツールなしで、キーがあり値が不正なときは引き続き起動時に失敗する
+
 ### Added
 
 - スケジュール実行で LLM に処理を委譲する組み込みタスクツール

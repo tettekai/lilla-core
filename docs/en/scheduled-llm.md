@@ -15,7 +15,7 @@ schedule: "*/30 * * * *"        # cron, interpreted in ui.timezone
 target: dm:{DISCORD_MY_USER_ID} # dm:USER_ID / channel:CHANNEL_ID
 llm_provider: reminder          # required; a provider name from llm.providers
 prompt: dir:${config_root}/prompts/reminder  # required; file: / dir: (a list works too)
-available_tools:                # required; tools the LLM sees on this run ([] for none)
+available_tools:                # optional; tools the LLM sees on this run (omit or [] for none)
   - $main
 ```
 
@@ -34,19 +34,20 @@ like with the same `type` but different `schedule` / `target` / `prompt`.
 - `prompt` … **required**. Passed straight through as a
   [`file:` / `dir:` source spec](tools.md). `dir:` concatenates the `.md` / `.txt` files
   in that directory in ascending file-name order. Startup fails if it is missing
-- `available_tools` … **required**. The allow-list of tools the LLM sees on this run
-  (see below). Startup fails if the key is missing
+- `available_tools` … optional. The allow-list of tools the LLM sees on this run (see
+  below). If the key is missing, the task starts up with no tools. Startup fails if the
+  key is present but its value is invalid
 
 ## The tool allow-list (`available_tools`)
 
 Each scheduled LLM task has its own tool allow-list. It never silently inherits the
-normal conversation's `tools.main_available_tools` (so that "no tools" and a forgotten
-key can be told apart).
+normal conversation's `tools.main_available_tools`.
 
 - Each entry is a tool YAML stem (such as `llm_weather`) or the token `$main`
 - `$main` expands in place to the contents of `tools.main_available_tools`. When
   `main_available_tools` is unset (no filtering), it means every loaded LLM tool
-- An empty list `[]` means no tools (`main_available_tools` is not consulted)
+- An empty list `[]`, or omitting the key entirely, both mean no tools
+  (`main_available_tools` is not consulted)
 - Duplicates are removed after expansion. A stem that is not loaded, or any token other
   than `$main`, makes startup fail
 - Only the tools in the expanded list whose `supported_client_type` is `task` or `all`
@@ -55,6 +56,7 @@ key can be told apart).
 Examples:
 
 ```yaml
+# omitting the available_tools key entirely also means no tools (same as below)
 available_tools: []            # no tools
 
 available_tools:               # the same set as a normal conversation
