@@ -18,9 +18,10 @@ YAML の項目:
 - `llm_provider` … 必須。`run_conversation` に渡す LLM プロバイダー名
 - `prompt` … 必須。`utils/resource_loader.py` の `load_text_resources` にそのまま
   渡す source spec（`file:` / `dir:`。リストでもよい）
-- `available_tools` … 必須。この実行で LLM に見せるツールの許可リスト（YAML stem と
-  `$main` の並び）。`llm_tool_loader.resolve_available_tools` で展開する。空リストは
-  ツールなしで、キーが無い場合は継承せず初期化で落とす
+- `available_tools` … 任意。この実行で LLM に見せるツールの許可リスト（YAML stem と
+  `$main` の並び）。`llm_tool_loader.resolve_available_tools` で展開する。空リスト、
+  またはキーが無い場合はどちらもツールなし（`main_available_tools` は継承しない）。
+  値はあるが不正（リストでない・未知のトークンや stem など）なときだけ初期化で落とす
 """
 from __future__ import annotations
 
@@ -63,19 +64,18 @@ class ScheduledLlmTask:
     def __init__(self, config: dict, name: str) -> None:
         """YAML 設定からタスクを組み立てる。
 
-        `llm_provider` / `prompt` / `available_tools` はこのタスクの前提なので、
-        欠けていれば起動時（ツールのロード時）に落とす。`available_tools` は
-        ロード済みの LLM ツールに対してここで展開し、展開に失敗しても落とす
-        （書き忘れと「ツールなし」を区別するため、キーが無いときに
-        `main_available_tools` を継承することはしない）。
+        `llm_provider` / `prompt` はこのタスクの前提なので、欠けていれば起動時
+        （ツールのロード時）に落とす。`available_tools` は任意で、キーが無い
+        場合は空リスト（ツールなし。`main_available_tools` は継承しない）として
+        扱い、キーがあるのに展開できない（不正な）場合だけ落とす。
 
         Args:
             config: タスクツールの YAML 設定（`_yaml_path` 付き）。
             name: YAML のファイル名 stem（ツール名）。
 
         Raises:
-            ValueError: `llm_provider` / `prompt` / `available_tools` が無い場合、
-                または `available_tools` を展開できない場合。
+            ValueError: `llm_provider` / `prompt` が無い場合、または
+                `available_tools` が指定されているが展開できない場合。
         """
         self._config = config or {}
         self.name = name
@@ -92,10 +92,8 @@ class ScheduledLlmTask:
             raise ValueError(f"Task tool {name} requires llm_provider")
         if not self._prompt_sources:
             raise ValueError(f"Task tool {name} requires prompt")
-        if "available_tools" not in self._config:
-            raise ValueError(f"Task tool {name} requires available_tools")
         self._allowed_tool_names = self._resolve_available_tools(
-            self._config["available_tools"]
+            self._config.get("available_tools", [])
         )
 
     async def execute(self, context: dict) -> None:

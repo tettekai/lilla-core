@@ -12,7 +12,7 @@ schedule: "*/30 * * * *"        # cron。ui.timezone で解釈されます
 target: dm:{DISCORD_MY_USER_ID} # dm:USER_ID / channel:CHANNEL_ID
 llm_provider: reminder          # 必須。llm.providers のプロバイダー名
 prompt: dir:${config_root}/prompts/reminder  # 必須。file: / dir:（リストも可）
-available_tools:                # 必須。この実行で LLM に見せるツール（[] でツールなし）
+available_tools:                # 任意。この実行で LLM に見せるツール（省略・[] でツールなし）
   - $main
 ```
 
@@ -30,19 +30,19 @@ YAML のファイル名（stem）がツール名になるので、同じ `type` 
 - `prompt` … **必須**。[`file:` / `dir:` の source spec](tools.md) をそのまま渡します。
   `dir:` はそのディレクトリの `.md` / `.txt` をファイル名昇順で連結します。無ければ
   起動時に失敗します
-- `available_tools` … **必須**。この実行で LLM に見せるツールの許可リストです（後述）。
-  キーが無ければ起動時に失敗します
+- `available_tools` … 任意。この実行で LLM に見せるツールの許可リストです（後述）。
+  キーが無ければツールなしとして起動します。キーがあり値が不正なら起動時に失敗します
 
 ## ツールの許可リスト（`available_tools`）
 
 スケジュール LLM は、実行ごとにツールの許可リストを持ちます。通常会話の
-`tools.main_available_tools` を黙って引き継ぐことはしません（「ツールなし」と
-書き忘れを区別するため）。
+`tools.main_available_tools` を黙って引き継ぐことはしません。
 
 - 要素はツール YAML の stem（`llm_weather` など）か、トークン `$main` です
 - `$main` はその位置で `tools.main_available_tools` の中身に展開されます。
   `main_available_tools` が未設定（絞り込みなし）なら、ロード済みの LLM ツールすべてです
-- 空リスト `[]` はツールなしです（`main_available_tools` は見ません）
+- 空リスト `[]`、またはキーそのものの省略はどちらもツールなしです
+  （`main_available_tools` は見ません）
 - 展開後の重複は除かれます。ロード済みでない stem や、`$main` 以外のトークンが
   あれば起動時に失敗します
 - 実際に LLM へ渡すのは、展開したリストのうち `supported_client_type` が `task` か
@@ -51,6 +51,7 @@ YAML のファイル名（stem）がツール名になるので、同じ `type` 
 書き分けの例:
 
 ```yaml
+# available_tools キーそのものを省略してもツールなし（上と同じ）
 available_tools: []            # ツールなし
 
 available_tools:               # 通常会話と同じ一式

@@ -106,15 +106,22 @@ class TestScheduledLlmTask:
         with pytest.raises(ValueError, match="prompt"):
             _make_task(prompt_file, prompt=None)
 
-    def test_requires_available_tools(self, prompt_file: Path) -> None:
-        """`available_tools` のキーが無ければ初期化時に落ちる（継承しない）。"""
+    async def test_missing_available_tools_defaults_to_empty_allow_list(
+        self, wired, prompt_file: Path, mock_run_conversation
+    ) -> None:
+        """`available_tools` のキーが無ければツールなし（継承しない）として起動する。"""
         config = {
             "type": "lilla_core.builtin_tools.task_scheduled_llm",
+            "schedule": "*/30 * * * *",
+            "target": "dm:{DISCORD_MY_USER_ID}",
             "llm_provider": "reminder",
             "prompt": f"file:{prompt_file}",
         }
-        with pytest.raises(ValueError, match="available_tools"):
-            ScheduledLlmTask(config, "task_scheduled_llm")
+        task = ScheduledLlmTask(config, "task_scheduled_llm")
+
+        await task.execute({"discord_client": MagicMock(), "now": _NOW})
+
+        assert mock_run_conversation.await_args.kwargs["allowed_tool_names"] == []
 
     @pytest.mark.parametrize(
         "available_tools", [None, "llm_weather", ["llm_missing"], ["$unknown"]]
