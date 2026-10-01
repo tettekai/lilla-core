@@ -25,8 +25,54 @@ Including `"*"` in `cors_allowed_origins` allows every origin. Otherwise the req
 | Method and path | Auth | What it does |
 |-----------------|------|--------------|
 | `GET /` | public | Liveness. Checks MongoDB connectivity only and returns `200 {"status": "ok"}` / `503 {"status": "unhealthy"}` (no details; those go to the server log only) |
+| `GET /api/selftest` | Bearer | Self-diagnosis (the `!selftest` equivalent). Add `?full=true` to also check LLM connectivity (which costs money). See the section below |
 | `POST /api/tools/call` | Bearer | Calls an LLM tool directly. Body: `{"tool": "<name>", "parameters": {...}}`. The name may be the YAML stem or the SCHEMA function name. Returns `{"success": true, "tool_name": ..., "data": ...}` or `{"success": false, "tool_name": ..., "error": ...}` |
 | `POST /api/runtask` | Bearer | Runs a task tool by hand (the `!runtask` equivalent). Body: `{"tool": "<name>", "params": {...}}`. Returns `202` without waiting for the run |
+
+## Self-diagnosis (`GET /api/selftest`)
+
+Runs the same checks as Discord's `!selftest` over HTTP. It is meant for mechanical smoke
+tests run locally and **requires authentication** (Bearer). The set of checks lives in one
+place only — `run_selftest_checks()` in `services/system_checks.py` — so Discord and HTTP
+can never disagree.
+
+- Normal (no query): process liveness, MongoDB connectivity, command registry count,
+  task tool count
+- `?full=true`: all of the above plus an LLM connectivity check. **This costs one LLM API
+  round trip every time.** (Truthy values for `full` are `true` / `1` / `yes` / `on`, plus a
+  bare `?full` with no value; case does not matter. Anything else means normal mode.)
+
+This endpoint does nothing to the container or the process; it only reports.
+
+```console
+$ curl -sS -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/selftest
+```
+
+```json
+{
+  "ok": true,
+  "mode": "normal",
+  "summary": {"ok": 4, "total": 4},
+  "checks": [
+    {"name": "process_alive", "ok": true, "detail": "...", "elapsed_ms": 0.0},
+    {"name": "mongodb", "ok": true, "detail": "...", "elapsed_ms": 2.3},
+    {"name": "command_registry", "ok": true, "detail": "...", "elapsed_ms": 0.0},
+    {"name": "task_tools", "ok": true, "detail": "...", "elapsed_ms": 0.0}
+  ]
+}
+```
+
+`checks` corresponds to the `!selftest` attachment (`selftest_result.txt`) and `summary` to
+the summary in the Discord message body. The `detail` strings come from the `ui.locale`
+catalog.
+
+The status code is `200` when every check passes and `503` when at least one fails (the
+body has the same shape either way, so both `curl -f` and `jq -e .ok` work).
+
+> This has a different job from the `GET /` liveness check. `GET /` only looks at MongoDB
+> connectivity, as material for deciding whether to restart, and returns no details because
+> it is unauthenticated. Diagnostic details (`detail`) are only returned by this endpoint,
+> which sits inside authentication.
 
 ## Authentication
 

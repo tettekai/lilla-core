@@ -1432,7 +1432,13 @@ class TestHttpRouteContributions:
 
     @pytest.mark.parametrize(
         ("method", "path"),
-        [("GET", "/"), ("HEAD", "/"), ("POST", "/api/tools/call"), ("*", "/api/runtask")],
+        [
+            ("GET", "/"),
+            ("HEAD", "/"),
+            ("GET", "/api/selftest"),
+            ("POST", "/api/tools/call"),
+            ("*", "/api/runtask"),
+        ],
     )
     def test_conflict_with_core_route_raises(self, make_extension, method: str, path: str) -> None:
         """コアのルートと重なる申告は落ちる（HEAD は GET、`*` は全メソッドと重なる）。"""

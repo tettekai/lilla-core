@@ -21,8 +21,51 @@ http:
 | メソッド・パス | 認証 | 内容 |
 |----------------|------|------|
 | `GET /` | 公開 | 生存確認。MongoDB 疎通だけを見て `200 {"status": "ok"}` / `503 {"status": "unhealthy"}` を返す（詳細は返さず、サーバーログにだけ出す） |
+| `GET /api/selftest` | Bearer | 自己診断（`!selftest` 相当）。`?full=true` を付けると LLM 疎通確認も行う（課金あり）。詳しくは下の節 |
 | `POST /api/tools/call` | Bearer | LLM ツールを直接呼ぶ。ボディは `{"tool": "<名前>", "parameters": {...}}`。名前は YAML の stem でも SCHEMA の関数名でもよい。結果は `{"success": true, "tool_name": ..., "data": ...}` か `{"success": false, "tool_name": ..., "error": ...}` |
 | `POST /api/runtask` | Bearer | task ツールを手動実行する（`!runtask` 相当）。ボディは `{"tool": "<名前>", "params": {...}}`。実行は待たずに `202` を返す |
+
+## 自己診断（`GET /api/selftest`）
+
+Discord の `!selftest` と同じチェックを HTTP から実行します。ローカルでの機械的な
+スモークテストに使える想定で、**認証必須**（Bearer）です。チェックの組み合わせは
+`services/system_checks.py` の `run_selftest_checks()` に 1 か所だけ持つため、Discord と
+HTTP で結果が食い違いません。
+
+- 通常（クエリなし）: プロセス応答・MongoDB 疎通・コマンドレジストリ件数・タスクツール件数
+- `?full=true`: 上記に加えて LLM 疎通確認も行う。**LLM API の課金が 1 往復分発生します**
+  （`full` の真値は `true` / `1` / `yes` / `on` と、値を書かない `?full`。大文字小文字は
+  区別しません。それ以外の値は通常モードです）
+
+このエンドポイントはコンテナやプロセスに対して何も作用せず、結果を報告するだけです。
+
+```console
+$ curl -sS -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/selftest
+```
+
+```json
+{
+  "ok": true,
+  "mode": "normal",
+  "summary": {"ok": 4, "total": 4},
+  "checks": [
+    {"name": "process_alive", "ok": true, "detail": "プロセスは応答しています", "elapsed_ms": 0.0},
+    {"name": "mongodb", "ok": true, "detail": "ping に応答しました", "elapsed_ms": 2.3},
+    {"name": "command_registry", "ok": true, "detail": "登録コマンド数: 11", "elapsed_ms": 0.0},
+    {"name": "task_tools", "ok": true, "detail": "タスクツール数: 3", "elapsed_ms": 0.0}
+  ]
+}
+```
+
+`checks` は `!selftest` の添付ファイル（`selftest_result.txt`）に相当し、`summary` は
+Discord 本文の要約に相当します。`detail` の文言は `ui.locale` のカタログから引きます。
+
+ステータスコードは全チェック成功で `200`、1 件でも失敗すれば `503` です（本文は
+どちらでも同じ形なので、`curl -f` でも `jq -e .ok` でも判定できます）。
+
+> `GET /` の生存確認とは役割が別です。`GET /` は「再起動すべきか」を判断する材料として
+> MongoDB 疎通だけを見て、認証が無いぶん詳細を返しません。診断の詳細（`detail`）を返すのは
+> 認証の内側にあるこのエンドポイントだけです。
 
 ## 認証
 
