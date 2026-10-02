@@ -161,6 +161,101 @@ class TestAuthMiddleware:
 
 
 # ---------------------------------------------------------------------------
+# TestSelftest
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mock_selftest(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    """自己診断のチェック一式を差し替える（既定は全件成功）。"""
+    mock = AsyncMock(
+        return_value=[
+            CheckResult(name="process_alive", ok=True, detail="ok", elapsed_ms=0.1),
+            CheckResult(name="mongodb", ok=True, detail="ok", elapsed_ms=1.5),
+        ]
+    )
+    monkeypatch.setattr(http_server, "run_selftest_checks", mock)
+    return mock
+
+
+class TestSelftest:
+    """`GET /api/selftest`（`!selftest` 相当の診断 API）。"""
+
+    async def test_requires_token(self, client: TestClient, mock_selftest: AsyncMock) -> None:
+        """未認証では診断 API に届かない（チェックも走らせない）。"""
+        resp = await client.get("/api/selftest")
+
+        assert resp.status == 401
+        mock_selftest.assert_not_awaited()
+
+    async def test_returns_summary_and_details(
+        self, make_client, mock_selftest: AsyncMock
+    ) -> None:
+        """全件成功なら 200 で、要約と各チェックの詳細を返す。"""
+        c = await make_client(tools=TOOLS)
+
+        resp = await c.get("/api/selftest", headers=AUTH)
+
+        assert resp.status == 200
+        assert await resp.json() == {
+            "ok": True,
+            "mode": "normal",
+            "summary": {"ok": 2, "total": 2},
+            "checks": [
+                {"name": "process_alive", "ok": True, "detail": "ok", "elapsed_ms": 0.1},
+                {"name": "mongodb", "ok": True, "detail": "ok", "elapsed_ms": 1.5},
+            ],
+        }
+        mock_selftest.assert_awaited_once_with(TOOLS, False)
+
+    async def test_failure_returns_503_with_report(
+        self, client: TestClient, mock_selftest: AsyncMock
+    ) -> None:
+        """1 件でも失敗していれば 503。本文には結果一式を載せる。"""
+        mock_selftest.return_value = [
+            CheckResult(name="process_alive", ok=True, detail="ok", elapsed_ms=0.1),
+            CheckResult(name="mongodb", ok=False, detail="timed out", elapsed_ms=3000.0),
+        ]
+
+        resp = await client.get("/api/selftest", headers=AUTH)
+
+        assert resp.status == 503
+        body = await resp.json()
+        assert body["ok"] is False
+        assert body["summary"] == {"ok": 1, "total": 2}
+        assert body["checks"][1]["detail"] == "timed out"
+
+    @pytest.mark.parametrize("query", ["?full=true", "?full=1", "?full=YES", "?full=on", "?full"])
+    async def test_full_query_adds_llm_check(
+        self, client: TestClient, mock_selftest: AsyncMock, query: str
+    ) -> None:
+        """`full` の真値（値なしを含む）で LLM 疎通確認ありのモードになる。"""
+        resp = await client.get(f"/api/selftest{query}", headers=AUTH)
+
+        assert (await resp.json())["mode"] == "full"
+        assert mock_selftest.await_args.args[1] is True
+
+    @pytest.mark.parametrize("query", ["", "?full=false", "?full=0", "?full=nope"])
+    async def test_other_values_stay_normal(
+        self, client: TestClient, mock_selftest: AsyncMock, query: str
+    ) -> None:
+        """`full` 未指定・真値以外は通常モード（課金のある LLM 疎通確認はしない）。"""
+        resp = await client.get(f"/api/selftest{query}", headers=AUTH)
+
+        assert (await resp.json())["mode"] == "normal"
+        assert mock_selftest.await_args.args[1] is False
+
+    async def test_liveness_stays_minimal(
+        self, client: TestClient, mock_selftest: AsyncMock
+    ) -> None:
+        """公開の `GET /` は診断の詳細を載せず、自己診断も走らせない。"""
+        resp = await client.get("/")
+
+        assert await resp.json() == {"status": "ok"}
+        mock_selftest.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # TestToolsCall
 # ---------------------------------------------------------------------------
 

@@ -121,6 +121,7 @@ HTTP_ROUTE_AUTH_MODES = frozenset({"bearer", "public", "deferred"})
 CORE_HTTP_ROUTES = frozenset(
     {
         ("GET", "/"),
+        ("GET", "/api/selftest"),
         ("POST", "/api/tools/call"),
         ("POST", "/api/runtask"),
     }

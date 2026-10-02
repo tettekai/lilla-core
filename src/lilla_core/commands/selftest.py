@@ -6,7 +6,8 @@
 一切作用せず、結果を報告するだけ）。
 
 チェック本体は `services/system_checks.py` に置き、生存確認（`handle_root`）と
-共有する（二重実装しない）。
+共有する（二重実装しない）。どのチェックを実行するかの組み合わせも同モジュールの
+`run_selftest_checks()` に持ち、診断 API（`GET /api/selftest`）と同じ結果になるようにする。
 
 - `!selftest` … プロセス応答・MongoDB 疎通・コマンドレジストリ件数・タスクツール件数
 - `!selftest full` … 上記に加えて LLM 疎通確認（`check_llm`）も実行する
@@ -18,23 +19,13 @@
 from __future__ import annotations
 
 import io
-import logging
 
 import discord
 
 from lilla_core.commands.registry import register_command
-from lilla_core.services.system_checks import (
-    CheckResult,
-    check_command_registry,
-    check_llm,
-    check_mongodb,
-    check_process_alive,
-    check_task_tools,
-)
+from lilla_core.services.system_checks import CheckResult, run_selftest_checks
 from lilla_core.ui.messages import t
 from lilla_core.utils.datetime_utils import local_now
-
-logger = logging.getLogger(__name__)
 
 #: 詳細結果を添付する際のファイル名。
 RESULT_FILENAME = "selftest_result.txt"
@@ -98,23 +89,7 @@ async def handle_selftest(message, arg: str, tools: dict, bot) -> None:
     """
     full_mode = arg.strip().lower() == FULL_MODE_ARG
 
-    results = [
-        await check_process_alive(),
-        await check_mongodb(),
-        await check_command_registry(),
-        await check_task_tools(tools),
-    ]
-    if full_mode:
-        results.append(await check_llm())
-
-    for result in results:
-        logger.info(
-            "[SELFTEST] %s: %s (%sms) %s",
-            result.name,
-            "OK" if result.ok else "NG",
-            result.elapsed_ms,
-            result.detail,
-        )
+    results = await run_selftest_checks(tools, full_mode)
 
     attachment = discord.File(
         io.BytesIO(_build_detail(results).encode("utf-8")), filename=RESULT_FILENAME

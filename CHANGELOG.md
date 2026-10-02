@@ -9,6 +9,18 @@
 
 ### Added
 
+- 共有 HTTP サーバーに `!selftest` 相当の診断 API `GET /api/selftest` を追加した（#168）。
+  Bearer 必須で、`?full=true`（値なしの `?full` も同じ）を付けると LLM 疎通確認も行う
+  （LLM API の課金が 1 往復分発生する）。本文は `{"ok", "mode", "summary", "checks"}` の
+  JSON で、`summary` が Discord 本文の要約・`checks`（`name` / `ok` / `detail` /
+  `elapsed_ms`）が添付ファイルの詳細に相当する。全チェック成功で 200、1 件でも失敗すれば 503
+  - 実行するチェックの組み合わせは `services/system_checks.py` の新しい
+    `run_selftest_checks(tools, full_mode)` に 1 か所だけ持ち、`!selftest` と共有する
+    （Discord と HTTP で結果が食い違わない）
+  - 公開の `GET /` は生存確認のまま変えていない（MongoDB 疎通だけを見て `{"status": ...}`
+    のみ返す）。診断の詳細を返すのは認証の内側のこのエンドポイントだけ
+  - 詳細は `docs/ja/http-server.md`
+
 - 機械向けクライアントの共有 HTTP サーバー（`handlers/http_server.py`）を追加した（#172）。
   `bot.py` の `main()` が拡張の `setup()`・ダッシュボードのあとに起こし、Discord から
   抜けるときに止める。ダッシュボードとは別ポート・別認証で、設定は新しいコア確定の

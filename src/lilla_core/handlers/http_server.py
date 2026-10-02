@@ -4,10 +4,11 @@
 管理画面）とは別のポート・別の認証で、ホストのアプリ（モバイル / デスクトップの
 クライアントなど）やローカルのスクリプトが HTTP で叩く入口になる。
 
-コアが持つのは次の 3 本だけで、クライアント固有のルート（メディア配信・WebSocket など）は
+コアが持つのは次の 4 本だけで、クライアント固有のルート（メディア配信・WebSocket など）は
 拡張が ``Extension.http_routes()`` で申告して載せる。
 
 - ``GET /``: 生存確認（liveness。公開）
+- ``GET /api/selftest``: 自己診断（``!selftest`` 相当。Bearer 必須）
 - ``POST /api/tools/call``: LLM ツールの直接呼び出し（Bearer 必須）
 - ``POST /api/runtask``: task ツールの手動実行（Bearer 必須）
 
@@ -36,9 +37,13 @@ from lilla_core.repository.client_token_repository import (
     get_client_token_repo,
     verify_client_token,
 )
-from lilla_core.services.system_checks import check_mongodb
+from lilla_core.services.system_checks import check_mongodb, run_selftest_checks
 
 logger = logging.getLogger(__name__)
+
+#: ``GET /api/selftest`` の ``full`` クエリで「真」と解釈する値（大文字小文字は区別しない）。
+#: 値を書かない ``?full`` も真として扱う（aiohttp は値なしのクエリを空文字で渡すため）。
+_FULL_TRUE_VALUES = frozenset({"", "1", "true", "yes", "on"})
 
 #: 起動時に渡されたツールレジストリなど。拡張のハンドラには渡さない（コアのハンドラだけが読む）。
 LLM_TOOLS_KEY = web.AppKey("llm_tools", dict)
@@ -158,6 +163,54 @@ async def handle_root(request: web.Request) -> web.Response:
     )
 
 
+async def handle_api_selftest(request: web.Request) -> web.Response:
+    """GET /api/selftest - 自己診断（``!selftest`` / ``!selftest full`` 相当。Bearer 必須）。
+
+    ``?full=true`` を付けると LLM 疎通確認も実行する（**LLM API の課金が 1 往復分
+    発生する**）。値を書かない ``?full`` も同じ扱いで、``full=false`` のような
+    ``_FULL_TRUE_VALUES`` に無い値は通常モードになる。
+
+    チェックの組み合わせは ``services/system_checks.py`` の ``run_selftest_checks()``
+    に持たせて ``!selftest`` と共有するため、Discord と HTTP で結果が食い違わない。
+    このエンドポイントはコンテナやプロセスに対して何も作用せず、結果を報告するだけ。
+
+    公開の生存確認（``GET /``）とは役割が別で、チェックの詳細（``detail``）を返すのは
+    認証の内側であるこちらだけ。
+
+    Args:
+        request: aiohttp のリクエスト。``full`` クエリパラメータだけを読む。
+
+    Returns:
+        全チェックが成功なら 200、1 件でも失敗していれば 503 の JSON。本文は
+        ``!selftest`` の Discord 本文（要約）と添付ファイル（詳細）に相当する
+        ``{"ok", "mode", "summary", "checks"}``。
+    """
+    full_mode = request.query.get("full", "false").strip().lower() in _FULL_TRUE_VALUES
+
+    tools = request.app[TOOLS_KEY]
+    results = await run_selftest_checks(tools, full_mode)
+
+    ok_count = sum(1 for r in results if r.ok)
+    all_ok = ok_count == len(results)
+    return web.json_response(
+        {
+            "ok": all_ok,
+            "mode": "full" if full_mode else "normal",
+            "summary": {"ok": ok_count, "total": len(results)},
+            "checks": [
+                {
+                    "name": r.name,
+                    "ok": r.ok,
+                    "detail": r.detail,
+                    "elapsed_ms": r.elapsed_ms,
+                }
+                for r in results
+            ],
+        },
+        status=200 if all_ok else 503,
+    )
+
+
 async def handle_api_tools_call(request: web.Request) -> web.Response:
     """POST /api/tools/call - 指定された LLM ツールを直接呼び出す。
 
@@ -257,6 +310,7 @@ async def handle_api_runtask(request: web.Request) -> web.Response:
 #: （拡張の申告との重なりはそちらで検査する）。
 _CORE_ROUTES: tuple[HttpRoute, ...] = (
     HttpRoute("GET", "/", handle_root, auth="public"),
+    HttpRoute("GET", "/api/selftest", handle_api_selftest),
     HttpRoute("POST", "/api/tools/call", handle_api_tools_call),
     HttpRoute("POST", "/api/runtask", handle_api_runtask),
 )
