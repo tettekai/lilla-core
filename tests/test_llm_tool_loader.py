@@ -782,12 +782,9 @@ class TestExecuteToolCall:
         assert callable(called_context["call_tool"])
         assert called_context[llm_tool_loader._TOOL_CALL_DEPTH_KEY] == 1
 
-    def test_returns_error_dict_when_tool_not_found(self, llm_tool_loader) -> None:
+    async def test_returns_error_dict_when_tool_not_found(self, llm_tool_loader) -> None:
         """ツールが見つからないとき例外を上げずエラー情報を含む dict を返す。"""
-        import asyncio
-        result = asyncio.get_event_loop().run_until_complete(
-            llm_tool_loader.execute_tool_call("unknown_tool", {}, {}, {})
-        )
+        result = await llm_tool_loader.execute_tool_call("unknown_tool", {}, {}, {})
         assert result["success"] is False
         assert result["error"] is not None
         assert "unknown_tool" in result["error"]
