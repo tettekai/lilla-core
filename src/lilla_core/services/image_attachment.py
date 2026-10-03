@@ -112,7 +112,7 @@ async def build_image_content_parts(
         `{"type": "image_url", ...}` のリスト。1 件でも失敗した場合は None。
     """
     max_bytes = resolve_max_image_bytes(config)
-    proxy, proxy_auth = resolve_proxy_settings(config)
+    proxy, proxy_headers = resolve_proxy_settings(config)
 
     parts: list[dict] = []
     for attachment in attachments:
@@ -128,7 +128,7 @@ async def build_image_content_parts(
             return None
 
         try:
-            image_bytes = await download_attachment_bytes(attachment.url, proxy, proxy_auth)
+            image_bytes = await download_attachment_bytes(attachment.url, proxy, proxy_headers)
         except Exception as e:
             await notify_error(bot, t("image_attachment.download_error_title"), e)
             return None

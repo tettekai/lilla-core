@@ -110,9 +110,9 @@ async def _read_attachment_text(attachment: object, bot: object, error_title: st
         )
         return None
 
-    proxy, proxy_auth = resolve_proxy_settings()
+    proxy, proxy_headers = resolve_proxy_settings()
     try:
-        raw = await download_attachment_bytes(attachment.url, proxy, proxy_auth)
+        raw = await download_attachment_bytes(attachment.url, proxy, proxy_headers)
     except Exception as e:
         await notify_error(bot, t("attachment.download_error_title", command=error_title), e)
         return None
