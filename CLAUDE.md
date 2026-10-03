@@ -502,6 +502,15 @@ import パス（`lilla_core.builtin_tools.task_scheduled_llm`。`is_import_path`
 | `google_calendar/tools/llm_calendar_get.py` | （LLM ツール）予定の取得。`attendees` を除去し、登録済みカレンダーの ID を `friendly_name` に置き換える。カレンダー一覧は `get_section("google-calendar", GoogleCalendarConfig)` から読む |
 | `google_calendar/tools/llm_calendar_create.py` | （LLM ツール）予定の作成。書き込み先は `calendars` に登録済みの `friendly_name` に限る。`build_schema` で `friendly_name` 一覧を `calendar` パラメータの enum へ注入する |
 
+### scripts/ — 運用者向け CLI (`src/lilla_core/scripts/`)
+運用者が手動で実行する CLI をパッケージ内に置く。wheel に含まれるため `pip install` しただけの
+環境（本番イメージ）でも `python -m lilla_core.scripts.<モジュール名>` で動く。設定は bot と
+同じ経路（`CONFIG_ROOT` / `.env`）で読む。
+
+| ファイル | 役割 |
+|----------|------|
+| `issue_client_token.py` | 共有 HTTP サーバーの Bearer 認証（と拡張が `deferred` で載せたルートの接続後認証）用トークンの発行 CLI。`python -m lilla_core.scripts.issue_client_token [--label NAME] [-y]`。`secrets.token_urlsafe(32)` を生成して SHA-256 ハッシュだけを `client_tokens` に保存する（保存は `client_token_repository` の `replace`）。`--label` の既定は `DEFAULT_LABEL`（`default`）。同じ label のトークンが既にあれば上書き確認（`y/N`。`-y` で省略）を出し、承諾されたら置き換える（1 label = 1 token）。平文は実行時に一度だけ表示。標準入力が使えない場合（`docker exec` の `-it` 付け忘れ）は誤って上書きしないよう中止する（終了コード 1） |
+
 ### testing/ — 拡張リポジトリ向けのテストヘルパー (`src/lilla_core/testing/`)
 拡張を別リポジトリで開発するときに、どのリポジトリも書くことになる「自分の `Extension` を
 登録し、設定を合成し、テストが終わったらプロセスの状態を元へ戻す」セットアップを肩代わりする

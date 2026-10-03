@@ -98,22 +98,24 @@ Tokens are stored in the MongoDB `client_tokens` collection as **SHA-256 hashes 
 the plaintext is never stored. They do not expire. Reissuing with the same `label`
 replaces (and so revokes) the old token. The indexes are created when this server starts.
 
-The core does not ship an issuing CLI. The host builds one with the functions in
-`lilla_core.repository.client_token_repository`:
+Issue tokens with the bundled CLI. Run it with the same environment variables as the bot
+(`CONFIG_ROOT` and so on).
 
-```python
-import secrets
-from lilla_core.repository.client_token_repository import (
-    get_client_token_repo,
-    hash_client_token,
-)
-
-token = secrets.token_urlsafe(32)
-repo = get_client_token_repo()
-await repo.ensure_indexes()
-await repo.replace(hash_client_token(token), "my-client")  # drops the old token of the same label
-print(token)  # the plaintext is only visible here
+```bash
+python -m lilla_core.scripts.issue_client_token
+# inside a container (-it is required: the overwrite prompt reads stdin)
+docker exec -it <container> python -m lilla_core.scripts.issue_client_token
 ```
+
+- The default issue target name (`--label`) is `default`. Use `--label my-client` for another name
+- If a token with the same `label` already exists, you are asked to confirm (`y/N`). On
+  yes the old token is replaced (1 label = 1 token); `-y` / `--yes` skips the prompt
+- The plaintext token is shown **only once**, at issue time (only the hash is stored)
+- If you already issued a token under a different `label` (a host-specific name, say), pass the
+  same name with `--label`, or reissue as `default` and update the client's settings
+
+To issue from code, use `get_client_token_repo()`, `hash_client_token()` and `replace()` in
+`lilla_core.repository.client_token_repository` directly.
 
 Verification is `verify_client_token(token)`. Routes an extension mounts as `deferred`
 (WebSockets and the like) can check tokens with the same function.
