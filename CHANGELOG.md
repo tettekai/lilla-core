@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-03
+
 ### Added
 
 - 共有 HTTP サーバー向け Bearer トークンの発行 CLI `python -m lilla_core.scripts.issue_client_token`
