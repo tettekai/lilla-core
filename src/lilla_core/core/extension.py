@@ -4,7 +4,9 @@
 `LILLA_EXTENSIONS`（カンマ区切りの import パス）が指すモジュールを
 `load_extensions()` で読み込む。各モジュールは `Extension` のインスタンスを
 `extension` 属性として 1 つだけ export する。未設定・空なら 0 個で、
-コア単体起動になる。
+コア単体起動になる。`.` を含まない項目（例: `google_oauth`）はそのまま
+import できなければ公式拡張パック（`lilla_core.extensions.google_oauth`）を
+補ってもう一度だけ試す短縮名記法にも対応する（`_import_extension_module()`）。
 
 `Extension` は Adapter 型で、全メソッドに「何もしない」デフォルトがある。
 拡張は使うものだけをオーバーライドする。
@@ -41,6 +43,11 @@ YAML セクションを読む依存は `requires` で表す）。汎用の `vali
 （`RESERVED_EXTENSION_NAMES`）をロード時に検査する。ダッシュボードの HTTP
 サーバー本体はコアにはまだ無く、申告を集めて配るところまでがコアの役目。
 
+共有 HTTP サーバー（`handlers/http_server.py`。機械向けクライアントの入口）への
+ルート追加は `http_routes()` で申告する。ダッシュボードとは別ポート・別認証
+（Bearer）で、パスに接頭辞の制約は無い。コアのルートや他の拡張と同じメソッド・
+パスを申告したらロード時に落とす。
+
 `LILLA_EXTENSIONS` に並べたモジュールは同一プロセスで動く **信頼コード**
 であり、サンドボックスではない。
 """
@@ -52,6 +59,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 
 if TYPE_CHECKING:
@@ -64,6 +72,10 @@ EXTENSIONS_ENV_VAR = "LILLA_EXTENSIONS"
 
 #: 各拡張モジュールが `Extension` インスタンスを export する属性名。
 EXTENSION_ATTR = "extension"
+
+#: `LILLA_EXTENSIONS` の短縮名（`.` を含まないモジュール名）を解決するときに補う接頭辞。
+#: 公式拡張パック（`src/lilla_core/extensions/`）だけが対象で、第三者パックには適用しない。
+_OFFICIAL_EXTENSION_PACKAGE_PREFIX = "lilla_core.extensions."
 
 #: このコアが提供する `Extension` 契約のバージョン。契約を破壊的に変えたとき
 #: （メソッドのシグネチャ・戻り値の形・context のフィールドの削除や改名）に上げる。
@@ -96,6 +108,24 @@ DASHBOARD_PAGE_MODULE = "page.js"
 
 #: `DashboardPage.group` に指定できる値。常用ナビか、管理メニューか。
 DASHBOARD_GROUPS = frozenset({"main", "admin"})
+
+#: `HttpRoute.auth` に指定できる値。
+#: - `bearer`: `Authorization: Bearer <token>` 必須（既定）
+#: - `public`: 認証なしで誰でも叩ける
+#: - `deferred`: 認証ミドルウェアは素通しし、ハンドラ側が別方式で保護する
+#:   （WebSocket の接続後認証など。「認証不要」ではない）
+HTTP_ROUTE_AUTH_MODES = frozenset({"bearer", "public", "deferred"})
+
+#: 共有 HTTP サーバーでコア自身が持つルート（`handlers/http_server.py`）。
+#: 拡張の `http_routes()` は同じメソッド・パスを申告できない。
+CORE_HTTP_ROUTES = frozenset(
+    {
+        ("GET", "/"),
+        ("GET", "/api/selftest"),
+        ("POST", "/api/tools/call"),
+        ("POST", "/api/runtask"),
+    }
+)
 
 #: `Extension.name` に使える形（先頭は英小文字か数字、以降は英小文字・数字・ハイフン）。
 #: `name` はダッシュボードの URL パス・ハッシュ・静的ディレクトリ名へそのまま埋まるため、
@@ -248,6 +278,43 @@ class DashboardRoute:
             )
         if not callable(self.handler):
             raise ValueError("DashboardRoute.handler must be callable")
+        object.__setattr__(self, "method", self.method.strip().upper())
+
+
+@dataclass(frozen=True)
+class HttpRoute:
+    """拡張が共有 HTTP サーバー（`handlers/http_server.py`）へ足すルート 1 本分の申告。
+
+    ハンドラは aiohttp のハンドラ（`request` 1 つを受け取る非同期関数）。コアの
+    ツールレジストリや Discord クライアントは渡さないので、必要なものは拡張が
+    自分で解決する。
+    """
+
+    #: HTTP メソッド。小文字で書いても大文字へ正規化される。`*` は全メソッド。
+    method: str
+    #: 完全なパス。aiohttp のパステンプレート（`/media/files/{filename}` など）を書ける。
+    path: str
+    #: リクエストを処理する非同期ハンドラー。
+    handler: Callable[..., Any]
+    #: 認証方式。`HTTP_ROUTE_AUTH_MODES` のいずれか（既定は `bearer`）。
+    auth: str = "bearer"
+
+    def __post_init__(self) -> None:
+        """メソッド・パス・ハンドラー・認証方式の形を検証し、メソッドを大文字へ正規化する。
+
+        Raises:
+            ValueError: `method` が空、`path` が `/` 始まりでない、`handler` が
+                callable でない、または `auth` が `HTTP_ROUTE_AUTH_MODES` にない場合。
+        """
+        if not isinstance(self.method, str) or not self.method.strip():
+            raise ValueError("HttpRoute.method must be a non-empty string")
+        if not isinstance(self.path, str) or not self.path.startswith("/"):
+            raise ValueError(f"HttpRoute.path must start with '/', got {self.path!r}")
+        if not callable(self.handler):
+            raise ValueError("HttpRoute.handler must be callable")
+        if self.auth not in HTTP_ROUTE_AUTH_MODES:
+            modes = ", ".join(sorted(HTTP_ROUTE_AUTH_MODES))
+            raise ValueError(f"HttpRoute.auth must be one of {modes}, got {self.auth!r}")
         object.__setattr__(self, "method", self.method.strip().upper())
 
 
@@ -477,6 +544,16 @@ class Extension:
         """
         return []
 
+    def http_routes(self) -> list[HttpRoute]:
+        """共有 HTTP サーバー（`handlers/http_server.py`）へ足すルートを返す。
+
+        パスの接頭辞に制約は無いが、コアのルート（`CORE_HTTP_ROUTES`）や他の拡張と
+        同じメソッド・パスを申告するとロード時に落ちる。認証は `HttpRoute.auth` で
+        ルートごとに決める（既定は Bearer 必須）。`public` にしたルートは誰でも
+        叩けるため、公開してよいかは申告する拡張の責任とする。
+        """
+        return []
+
     def startup_repos(self) -> list[StartupRepoFactory]:
         """`on_ready` で `init_collection()` を呼ぶリポジトリファクトリを返す。"""
         return []
@@ -532,6 +609,7 @@ _dashboard_pages: list[DashboardPageEntry] = []
 _dashboard_static_mounts: list[DashboardStaticMount] = []
 _dashboard_routes: list[DashboardRoute] = []
 _dashboard_public_routes: list[DashboardRoute] = []
+_http_routes: list[HttpRoute] = []
 
 
 def _merge_unique(
@@ -904,6 +982,63 @@ def _collect_dashboard(
     return pages, mounts, routes, public_routes
 
 
+def _http_routes_overlap(a: tuple[str, str], b: tuple[str, str]) -> bool:
+    """2 つの `(メソッド, パス)` が同じ経路を取り合うかを返す。
+
+    パスはテンプレートの文字列として完全一致で比べる。メソッドは一致するか、
+    どちらかが `*`（全メソッド）なら重なるとみなす。サーバーは GET のルートに
+    HEAD も自動で載せるため、HEAD は GET と同じものとして比べる。
+    """
+    if a[1] != b[1]:
+        return False
+    method_a = "GET" if a[0] == "HEAD" else a[0]
+    method_b = "GET" if b[0] == "HEAD" else b[0]
+    return method_a == method_b or "*" in (method_a, method_b)
+
+
+def _collect_http_routes(extensions: list[Extension]) -> list[HttpRoute]:
+    """全拡張の共有 HTTP サーバー向けルート申告を集めて検証する。
+
+    Args:
+        extensions: ロード順に並んだ拡張のリスト。
+
+    Returns:
+        検証済みの `HttpRoute` のリスト（ロード順・申告順）。
+
+    Raises:
+        ValueError: 戻り値がリストでない、要素が `HttpRoute` でない、または
+            コアのルート・他の（あるいは自分の）申告とメソッド・パスが重なる場合。
+    """
+    claimed: list[tuple[tuple[str, str], str]] = [
+        (key, "the core") for key in sorted(CORE_HTTP_ROUTES)
+    ]
+    collected: list[HttpRoute] = []
+    for ext in extensions:
+        routes = ext.http_routes()
+        if not isinstance(routes, (list, tuple)):
+            raise ValueError(
+                f"Extension '{ext.name}' must return a list from http_routes(), "
+                f"got {type(routes).__name__}"
+            )
+        for route in routes:
+            if not isinstance(route, HttpRoute):
+                raise ValueError(
+                    f"Extension '{ext.name}' must return HttpRoute instances from "
+                    f"http_routes(), got {type(route).__name__}"
+                )
+            key = (route.method, route.path)
+            for other_key, owner in claimed:
+                if _http_routes_overlap(key, other_key):
+                    raise ValueError(
+                        f"HTTP route {route.method} {route.path} of extension "
+                        f"'{ext.name}' conflicts with {other_key[0]} {other_key[1]} "
+                        f"of {owner}"
+                    )
+            claimed.append((key, f"extension '{ext.name}'"))
+            collected.append(route)
+    return collected
+
+
 def _core_tool_context_keys() -> frozenset[str]:
     """コアが実行時にツール context へ必ず注入するキーの集合を返す。
 
@@ -942,7 +1077,8 @@ def set_extensions(extensions: list[Extension]) -> None:
             `required_env_fields()` / `required_tool_context_keys()` が要求している場合、
             `locale_dirs()` のカタログが名前空間の規約に違反している場合、または
             ダッシュボードの申告（`name` の形・予約名・ルートのパス接頭辞・
-            ページを出すのに静的ディレクトリが無い）が規約に違反している場合。
+            ページを出すのに静的ディレクトリが無い）が規約に違反している場合、
+            または共有 HTTP サーバーのルート申告がコアや他の拡張と重なる場合。
     """
     from lilla_core.core.config import core_env_field_names
 
@@ -993,6 +1129,7 @@ def set_extensions(extensions: list[Extension]) -> None:
     dashboard_pages, static_mounts, dash_routes, public_routes = _collect_dashboard(
         extensions
     )
+    http_routes = _collect_http_routes(extensions)
     _validate_message_catalogs(extensions)
 
     global _extensions
@@ -1017,6 +1154,8 @@ def set_extensions(extensions: list[Extension]) -> None:
     _dashboard_routes.extend(dash_routes)
     _dashboard_public_routes.clear()
     _dashboard_public_routes.extend(public_routes)
+    _http_routes.clear()
+    _http_routes.extend(http_routes)
 
     _clear_message_catalog_cache()
 
@@ -1059,6 +1198,41 @@ def reset_extensions() -> None:
     set_extensions([])
 
 
+def _import_extension_module(module_path: str) -> ModuleType:
+    """`LILLA_EXTENSIONS` の 1 項目を、公式拡張パックの短縮名にも対応して import する。
+
+    次の順で解決する。
+
+    1. `module_path` をそのまま import する
+    2. `.` を含まず、かつ 1. が `module_path` 自身の不在による `ModuleNotFoundError`
+       のときだけ、`lilla_core.extensions.` を補ってもう一度 import する
+    3. どちらも無ければ 1. の `ModuleNotFoundError` をそのまま送出する
+
+    `.` を含むパス（第三者パックや、すでにフルパスで書いた公式拡張）は 2. を行わない。
+    また、`module_path` は見つかったがその内部の import が別の名前で失敗した場合
+    （初期化失敗）は 1. の例外の `name` が `module_path` と一致しないため 2. へは
+    進まず、その場で失敗する（公式パックへのフォールバックは「短縮名そのものが
+    見つからない」場合に限る）。
+
+    Args:
+        module_path: `LILLA_EXTENSIONS` に書かれた import パス 1 件。
+
+    Returns:
+        import できたモジュール。
+
+    Raises:
+        ModuleNotFoundError: 短縮名の解決も含めて import できなかった場合。
+    """
+    try:
+        return importlib.import_module(module_path)
+    except ModuleNotFoundError as exc:
+        if "." in module_path or exc.name != module_path:
+            raise
+        return importlib.import_module(
+            f"{_OFFICIAL_EXTENSION_PACKAGE_PREFIX}{module_path}"
+        )
+
+
 def load_extensions(spec: str | None = None) -> list[Extension]:
     """`LILLA_EXTENSIONS` が指すモジュールを import して拡張を登録する。
 
@@ -1069,6 +1243,11 @@ def load_extensions(spec: str | None = None) -> list[Extension]:
     コアの他の初期化（`get_config()` / コマンド・ツールのロード）より前に
     呼ぶこと。ここで組んだ設定インスタンスを以降の `get_config()` が返すため。
 
+    `.` を含まない短縮名（例: `google_oauth`）は、そのまま import できなければ
+    `lilla_core.extensions.` を補ってもう一度だけ import を試みる
+    （`_import_extension_module`）。公式拡張パック向けの短縮記法で、`.` を含む
+    パス（第三者パックや、すでにフルパスで書いた公式拡張）には適用しない。
+
     Args:
         spec: カンマ区切りの import パス。`None` なら `LILLA_EXTENSIONS` を読む。
 
@@ -1076,7 +1255,7 @@ def load_extensions(spec: str | None = None) -> list[Extension]:
         ロード順に並んだ `Extension` インスタンスのリスト。
 
     Raises:
-        ImportError: モジュールを import できない場合。
+        ImportError: モジュールを import できない場合（短縮名の解決も失敗した場合を含む）。
         AttributeError: モジュールが `extension` 属性を持たない場合。
         TypeError: `extension` が `Extension` インスタンスでない場合。
         ValueError: 名前または貢献キーが衝突している場合、`requires` の依存が
@@ -1089,7 +1268,7 @@ def load_extensions(spec: str | None = None) -> list[Extension]:
     module_paths = [part.strip() for part in spec.split(",") if part.strip()]
     extensions: list[Extension] = []
     for module_path in module_paths:
-        module = importlib.import_module(module_path)
+        module = _import_extension_module(module_path)
         if not hasattr(module, EXTENSION_ATTR):
             raise AttributeError(
                 f"Extension module '{module_path}' must export "
@@ -1237,6 +1416,11 @@ def get_dashboard_public_routes() -> list[DashboardRoute]:
     ホストはこれらを認証ミドルウェアの対象外として載せる。
     """
     return list(_dashboard_public_routes)
+
+
+def get_http_routes() -> list[HttpRoute]:
+    """全拡張の共有 HTTP サーバー向けルートをロード順に返す。"""
+    return list(_http_routes)
 
 
 def get_result_delivery(client_type: str) -> DeliveryFn | None:

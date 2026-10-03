@@ -96,6 +96,7 @@ class TestExtensionDefaults:
         assert ext.api_version == ext_module.EXTENSION_API_VERSION
         assert ext.required_env_fields() == []
         assert ext.required_tool_context_keys() == []
+        assert ext.http_routes() == []
 
     async def test_on_message_default_is_false(self) -> None:
         """デフォルトの `on_message` は「処理しなかった」を返す。"""
@@ -167,6 +168,77 @@ class TestLoadExtensions:
 
         with pytest.raises(ValueError, match="Duplicate extension name"):
             ext_module.load_extensions("pack_a,pack_a")
+
+    def test_short_name_resolves_to_official_extension_pack(
+        self, register_module, make_extension
+    ) -> None:
+        """`.` を含まない短縮名は公式拡張パック配下として読み込める。"""
+        register_module(
+            "lilla_core.extensions.short_demo", extension=make_extension("short-demo")
+        )
+
+        loaded = ext_module.load_extensions("short_demo")
+
+        assert [e.name for e in loaded] == ["short-demo"]
+
+    def test_full_official_path_still_works(
+        self, register_module, make_extension
+    ) -> None:
+        """フルパス指定は従来どおり動く（短縮名は追加の記法であって必須ではない）。"""
+        register_module(
+            "lilla_core.extensions.short_demo", extension=make_extension("short-demo")
+        )
+
+        loaded = ext_module.load_extensions("lilla_core.extensions.short_demo")
+
+        assert [e.name for e in loaded] == ["short-demo"]
+
+    def test_dotted_third_party_path_does_not_fall_back(
+        self, register_module, make_extension
+    ) -> None:
+        """`.` を含むパスは公式拡張パックへフォールバックしない。"""
+        register_module(
+            "lilla_core.extensions.not_used", extension=make_extension("not-used")
+        )
+
+        with pytest.raises(ModuleNotFoundError):
+            ext_module.load_extensions("third_party.not_used")
+
+    def test_missing_short_name_raises(self) -> None:
+        """公式拡張パックにも該当が無い短縮名は fail-fast。"""
+        with pytest.raises(ModuleNotFoundError):
+            ext_module.load_extensions("no_such_official_extension_at_all")
+
+
+# ---------------------------------------------------------------------------
+# TestImportExtensionModule
+# ---------------------------------------------------------------------------
+
+
+class TestImportExtensionModule:
+    """`_import_extension_module()` の短縮名解決ロジック単体のテスト。"""
+
+    def test_internal_import_failure_does_not_fall_back(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """モジュール自体は存在するが内部の import が別名で失敗した場合はフォールバックしない。
+
+        フォールバックの対象は「短縮名そのものが見つからない」ときに限る。同名の
+        モジュールが見つかったうえで初期化に失敗した場合は、公式拡張パックへ
+        逃げずその場で失敗する。
+        """
+
+        def _fake_import(name: str):
+            if name == "flaky_pack":
+                raise ModuleNotFoundError(
+                    "missing dependency", name="some_missing_dependency"
+                )
+            raise AssertionError(f"unexpected import attempt: {name}")
+
+        monkeypatch.setattr(ext_module.importlib, "import_module", _fake_import)
+
+        with pytest.raises(ModuleNotFoundError, match="missing dependency"):
+            ext_module._import_extension_module("flaky_pack")
 
 
 # ---------------------------------------------------------------------------
@@ -1273,3 +1345,134 @@ class TestDashboardContributions:
         版は #110（`config_models()` の廃止）で 2 へ上がった。
         """
         assert ext_module.EXTENSION_API_VERSION == 2
+
+
+# ---------------------------------------------------------------------------
+# TestHttpRoute
+# ---------------------------------------------------------------------------
+
+
+class TestHttpRoute:
+    """`HttpRoute` の値の検査と正規化。"""
+
+    def test_defaults_to_bearer_and_normalizes_method(self) -> None:
+        """認証の既定は Bearer で、メソッドは大文字へ揃える。"""
+        route = ext_module.HttpRoute("get", "/media/current", AsyncMock())
+        assert route.method == "GET"
+        assert route.auth == "bearer"
+
+    @pytest.mark.parametrize("auth", ["bearer", "public", "deferred"])
+    def test_accepts_known_auth_modes(self, auth: str) -> None:
+        """`HTTP_ROUTE_AUTH_MODES` の値はそのまま受け付ける。"""
+        assert ext_module.HttpRoute("GET", "/x", AsyncMock(), auth=auth).auth == auth
+
+    def test_unknown_auth_raises(self) -> None:
+        """未知の認証方式は落とす（綴り違いで黙って Bearer にも公開にもならないように）。"""
+        with pytest.raises(ValueError, match="auth must be one of"):
+            ext_module.HttpRoute("GET", "/x", AsyncMock(), auth="none")
+
+    def test_relative_path_raises(self) -> None:
+        """`/` 始まりでないパスは落とす。"""
+        with pytest.raises(ValueError, match="must start with"):
+            ext_module.HttpRoute("GET", "media", AsyncMock())
+
+    def test_blank_method_raises(self) -> None:
+        """空のメソッドは落とす。"""
+        with pytest.raises(ValueError, match="method must be a non-empty string"):
+            ext_module.HttpRoute(" ", "/x", AsyncMock())
+
+    def test_non_callable_handler_raises(self) -> None:
+        """ハンドラーが callable でなければ落とす。"""
+        with pytest.raises(ValueError, match="handler must be callable"):
+            ext_module.HttpRoute("GET", "/x", "not-a-handler")
+
+
+# ---------------------------------------------------------------------------
+# TestHttpRouteContributions
+# ---------------------------------------------------------------------------
+
+
+class TestHttpRouteContributions:
+    """共有 HTTP サーバー向けルート申告の集約と衝突検査。"""
+
+    def test_collects_routes_in_load_order(self, make_extension) -> None:
+        """パスの接頭辞に制約は無く、ロード順・申告順に集まる。"""
+        media = ext_module.HttpRoute("GET", "/media/current", AsyncMock(), auth="public")
+        ws = ext_module.HttpRoute("GET", "/ws", AsyncMock(), auth="deferred")
+        conv = ext_module.HttpRoute("GET", "/api/conversations", AsyncMock())
+        ext_module.set_extensions([
+            make_extension("first", http_routes=[media, ws]),
+            make_extension("second", http_routes=[conv]),
+        ])
+
+        assert ext_module.get_http_routes() == [media, ws, conv]
+
+    def test_same_path_with_different_methods_is_allowed(self, make_extension) -> None:
+        """同じパスでもメソッドが違えば衝突しない。"""
+        ext_module.set_extensions([
+            make_extension("a", http_routes=[ext_module.HttpRoute("GET", "/items", AsyncMock())]),
+            make_extension("b", http_routes=[ext_module.HttpRoute("POST", "/items", AsyncMock())]),
+        ])
+
+        assert len(ext_module.get_http_routes()) == 2
+
+    def test_conflict_between_extensions_raises(self, make_extension) -> None:
+        """拡張どうしで同じメソッド・パスを申告したらロード時に落ちる。"""
+        with pytest.raises(ValueError, match="conflicts with GET /items of extension 'a'"):
+            ext_module.set_extensions([
+                make_extension("a", http_routes=[ext_module.HttpRoute("GET", "/items", AsyncMock())]),
+                make_extension("b", http_routes=[ext_module.HttpRoute("GET", "/items", AsyncMock())]),
+            ])
+
+    def test_duplicate_within_one_extension_raises(self, make_extension) -> None:
+        """1 つの拡張の中で同じルートを 2 回申告しても落ちる。"""
+        route = ext_module.HttpRoute("GET", "/items", AsyncMock())
+        with pytest.raises(ValueError, match="conflicts with"):
+            ext_module.set_extensions([make_extension("a", http_routes=[route, route])])
+
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [
+            ("GET", "/"),
+            ("HEAD", "/"),
+            ("GET", "/api/selftest"),
+            ("POST", "/api/tools/call"),
+            ("*", "/api/runtask"),
+        ],
+    )
+    def test_conflict_with_core_route_raises(self, make_extension, method: str, path: str) -> None:
+        """コアのルートと重なる申告は落ちる（HEAD は GET、`*` は全メソッドと重なる）。"""
+        route = ext_module.HttpRoute(method, path, AsyncMock())
+        with pytest.raises(ValueError, match="of the core"):
+            ext_module.set_extensions([make_extension("a", http_routes=[route])])
+
+    def test_non_list_raises(self, make_extension) -> None:
+        """リスト以外を返したら落ちる。"""
+        route = ext_module.HttpRoute("GET", "/x", AsyncMock())
+        with pytest.raises(ValueError, match="must return a list from http_routes"):
+            ext_module.set_extensions([make_extension("a", http_routes=lambda: route)])
+
+    def test_non_route_element_raises(self, make_extension) -> None:
+        """`HttpRoute` 以外の要素は落ちる（ダッシュボード用の型を取り違えた場合など）。"""
+        wrong = ext_module.DashboardRoute("GET", "/api/a", AsyncMock())
+        with pytest.raises(ValueError, match="must return HttpRoute instances"):
+            ext_module.set_extensions([make_extension("a", http_routes=[wrong])])
+
+    def test_failed_registration_keeps_previous_routes(self, make_extension) -> None:
+        """検証に失敗したら前の登録内容を壊さない。"""
+        kept = ext_module.HttpRoute("GET", "/kept", AsyncMock())
+        ext_module.set_extensions([make_extension("a", http_routes=[kept])])
+        clash = ext_module.HttpRoute("GET", "/", AsyncMock())
+
+        with pytest.raises(ValueError):
+            ext_module.set_extensions([make_extension("b", http_routes=[clash])])
+
+        assert ext_module.get_http_routes() == [kept]
+
+    def test_core_route_table_matches_server(self) -> None:
+        """衝突検査に使うコアのルート表が、サーバーが実際に載せるルートと一致する。"""
+        from lilla_core.handlers import http_server
+
+        served = {(route.method, route.path) for route in http_server._CORE_ROUTES}
+        assert served == set(ext_module.CORE_HTTP_ROUTES)
+

@@ -297,3 +297,80 @@ class TestCheckLlm:
         assert result.ok is False
         assert "llm down" in result.detail
         assert "system_prompt_tokens=42" in result.detail
+
+
+@pytest.fixture
+def patched_checks(monkeypatch: pytest.MonkeyPatch) -> dict[str, AsyncMock]:
+    """個別チェック関数を成功固定のモックへ差し替える。"""
+    mocks: dict[str, AsyncMock] = {}
+    for name in (
+        "check_process_alive",
+        "check_mongodb",
+        "check_command_registry",
+        "check_task_tools",
+        "check_llm",
+    ):
+        short = name.removeprefix("check_")
+        mock = AsyncMock(
+            return_value=system_checks.CheckResult(
+                name=short, ok=True, detail="詳細", elapsed_ms=1.5
+            )
+        )
+        monkeypatch.setattr(system_checks, name, mock)
+        mocks[name] = mock
+    return mocks
+
+
+class TestRunSelftestChecks:
+    async def test_runs_four_checks_without_llm(
+        self, patched_checks: dict[str, AsyncMock]
+    ) -> None:
+        """通常モードでは 4 項目を実行し、LLM 疎通確認は行わない。"""
+        results = await system_checks.run_selftest_checks({"task_a": object()})
+
+        assert [r.name for r in results] == [
+            "process_alive",
+            "mongodb",
+            "command_registry",
+            "task_tools",
+        ]
+        patched_checks["check_llm"].assert_not_awaited()
+
+    async def test_full_mode_adds_llm_check(self, patched_checks: dict[str, AsyncMock]) -> None:
+        """`full_mode=True` では LLM 疎通確認を最後に足す。"""
+        results = await system_checks.run_selftest_checks({}, full_mode=True)
+
+        assert [r.name for r in results][-1] == "llm"
+        patched_checks["check_llm"].assert_awaited_once()
+
+    async def test_passes_tools_to_task_tools_check(
+        self, patched_checks: dict[str, AsyncMock]
+    ) -> None:
+        """task ツール件数チェックには受け取ったレジストリをそのまま渡す。"""
+        tools = {"task_a": object()}
+
+        await system_checks.run_selftest_checks(tools)
+
+        patched_checks["check_task_tools"].assert_awaited_once_with(tools)
+
+    async def test_none_tools_becomes_empty_dict(
+        self, patched_checks: dict[str, AsyncMock]
+    ) -> None:
+        """レジストリ未指定（None）でも例外にせず 0 件として扱う。"""
+        await system_checks.run_selftest_checks(None)
+
+        patched_checks["check_task_tools"].assert_awaited_once_with({})
+
+    async def test_failure_does_not_stop_other_checks(
+        self, patched_checks: dict[str, AsyncMock]
+    ) -> None:
+        """1 件の失敗が他のチェックの実行を妨げない。"""
+        patched_checks["check_mongodb"].return_value = system_checks.CheckResult(
+            name="mongodb", ok=False, detail="NG", elapsed_ms=1.0
+        )
+
+        results = await system_checks.run_selftest_checks({}, full_mode=True)
+
+        for mock in patched_checks.values():
+            mock.assert_awaited_once()
+        assert [r.ok for r in results] == [True, False, True, True, True]

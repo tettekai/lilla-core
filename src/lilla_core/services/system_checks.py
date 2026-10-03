@@ -7,9 +7,12 @@
   プロセスが応答しているかどうかだけを見る。Docker / systemd などが
   「再起動すべきか」を判断する材料になるため、再起動で直らない問題は混ぜない
   （＝ MongoDB 疎通のみを見る）
-- 自己診断（`!selftest` = `commands/selftest.py`）:
+- 自己診断（`!selftest` = `commands/selftest.py`、`GET /api/selftest` =
+  `handlers/http_server.py`）:
   起動後やパッケージ構成の変更後に手動で走らせ、リラの機能が壊れていないかを
-  人間が確認するための検査。失敗してもコンテナを落とす必要はない
+  人間が確認するための検査。失敗してもコンテナを落とす必要はない。
+  実行するチェックの組み合わせは `run_selftest_checks()` に 1 か所だけ持ち、
+  Discord と HTTP のどちらから呼んでも同じ結果になるようにする
 
 `health` を名乗らない中立な名前にしているのは、拡張側が持つ他の
 ヘルスチェック関連モジュールと紛らわしくなるのを避けるため。
@@ -299,3 +302,45 @@ async def check_llm() -> CheckResult:
         detail=t("selftest.check.llm_ok", info=prompt_info),
         elapsed_ms=_elapsed_ms(start),
     )
+
+
+async def run_selftest_checks(
+    tools: dict | None = None, full_mode: bool = False
+) -> list[CheckResult]:
+    """自己診断で実行するチェック一式を順に走らせ、結果をログへ出して返す。
+
+    `!selftest`（`commands/selftest.py`）と診断 API（`GET /api/selftest`）が
+    同じ結果を返すよう、チェックの組み合わせはここ 1 か所だけに持つ。
+    各チェック関数は内部で例外を捕捉するため、1 件の失敗が他のチェックの実行を
+    妨げることはない（この関数も例外を投げない）。
+
+    生存確認（`GET /`）はここを通さず `check_mongodb()` だけを呼ぶ
+    （再起動で直らない問題を混ぜないため）。
+
+    Args:
+        tools: task ツールのレジストリ。件数チェックに使う（None なら 0 件扱い）。
+        full_mode: True なら LLM 疎通確認（`check_llm`。LLM API の課金が
+            1 往復分発生する）も追加する。
+
+    Returns:
+        実行順に並んだ `CheckResult` のリスト。
+    """
+    results = [
+        await check_process_alive(),
+        await check_mongodb(),
+        await check_command_registry(),
+        await check_task_tools(tools or {}),
+    ]
+    if full_mode:
+        results.append(await check_llm())
+
+    for result in results:
+        logger.info(
+            "[SELFTEST] %s: %s (%sms) %s",
+            result.name,
+            "OK" if result.ok else "NG",
+            result.elapsed_ms,
+            result.detail,
+        )
+
+    return results

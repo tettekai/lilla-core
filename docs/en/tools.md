@@ -8,6 +8,23 @@ Tools are loaded dynamically from `${TOOL_ROOT}/**/*.py` based on YAML config fi
 `type` field is used to locate the matching `.py` file (`loaders/llm_tool_loader.py` /
 `loaders/task_tool_loader.py` implement the details below).
 
+## Tool search roots
+
+When `type` is written as a file name, the roots are searched in this order:
+
+1. `paths.tool_root` (the host)
+2. each extension's `tool_roots()` (extension load order)
+3. `lilla_core/builtin_tools` ([built-in tools](#built-in-tools); always last)
+
+If the same `.py` name exists in more than one root, startup fails, because which one
+wins would otherwise be implicit. The built-in tools are the one exception: they always
+lose, so a file with the same name in the host or in an extension is used instead and
+startup is not stopped (that is how you shadow a built-in tool). Duplicates inside a
+single root keep using the first match.
+
+Being on a search root is not the same as being enabled: a tool without a YAML is never
+loaded, no matter which root it lives in.
+
 ## Tool YAML shipped by extensions
 
 An extension can ship default YAML files through `tool_config_roots()`. The loader
@@ -71,26 +88,52 @@ them fails at load instead of being silently overwritten.
 
 ## Built-in tools
 
-`lilla_core` ships built-in tools as concrete examples of the import-path form. None is
-enabled by default; each one is opt-in, enabled only when you put its YAML under
+`lilla_core` ships built-in tools (`lilla_core/builtin_tools`). They sit on a search root
+just like an extension's tools, so `type` is written as a file name. None is enabled by
+default; each one is opt-in, enabled only when you put its YAML under
 `${CONFIG_ROOT}/tools/`.
 
-| Module | Kind | What it does |
+| `type` | Kind | What it does |
 |--------|------|--------------|
-| `lilla_core.builtin_tools.llm_current_datetime` | LLM | A sample that just returns the current date and time |
-| `lilla_core.builtin_tools.llm_conversation_get` | LLM | [Searching history by room name](history-search.md) |
-| `lilla_core.builtin_tools.task_channel_summary` | task | [Channel notes (nightly summary)](channel-notes.md) |
+| `llm_current_datetime` | LLM | A sample that just returns the current date and time |
+| `llm_conversation_get` | LLM | [Searching history by room name](history-search.md) |
+| `task_channel_summary` | task | [Channel notes (nightly summary)](channel-notes.md) |
+| `task_scheduled_llm` | task | [Scheduled notifications delegated to the LLM](scheduled-llm.md) |
+| `llm_expert` | LLM | Delegation to an expert sub-agent (see below) |
+
+### `llm_expert` (expert agent)
+
+A tool that delegates work to a sub-agent with its own system prompt and toolset. The
+implementation lives in the core; the prompt, the tools it may use and the LLM are written
+in YAML (`${CONFIG_ROOT}/tools/llm_*.yaml`). You can add more YAML files to get several
+experts from one implementation. Write the file name `llm_expert` as the `type`.
+
+```yaml
+type: llm_expert
+description: Health data expert. Delegate questions about condition and exercise
+prompt: dir:${config_root}/prompt/experts/health
+llm_provider: grok            # optional
+available_tools: [llm_health_get]   # `$main` expands to tools.main_available_tools
+```
+
+Combining `api: responses` with `grok_tools` makes a single call that uses the Responses
+API's built-in tools (`api: responses` together with `available_tools` is not supported).
+If the expert needs re-authentication, it aborts and passes that request up as it is.
 
 Enabling the sample (`${CONFIG_ROOT}/tools/llm_current_datetime.yaml`):
 
 ```yaml
-type: lilla_core.builtin_tools.llm_current_datetime
+type: llm_current_datetime
 ```
+
+The import-path form (`type: lilla_core.builtin_tools.llm_current_datetime`) still works,
+so existing YAML keeps loading as before.
 
 ## Trusting tool directories
 
 Anyone who can write to a directory tools are loaded from (`paths.tool_root`, each
-extension's `tool_roots()`, and `${CONFIG_ROOT}/tools`) can run code inside the bot
+extension's `tool_roots()`, `lilla_core/builtin_tools`, and `${CONFIG_ROOT}/tools`) can
+run code inside the bot
 process, so there is no separate allow-list for tool paths. The loaders only verify that
 a resolved tool file still lies under one of those directories (a `type` containing
 `..` or a symlink pointing outside is refused).

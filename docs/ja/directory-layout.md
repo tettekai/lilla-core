@@ -6,7 +6,7 @@ src/lilla_core/
 ├── bot_client.py         # commands.Bot インスタンスの共有モジュール
 ├── core/                 # 設定管理・Extension 基底クラス・共通ユーティリティ
 ├── commands/             # `!コマンド名` の実装（1 コマンド 1 ファイル）
-├── handlers/             # Discord イベント/コマンドのディスパッチ、定期タスク管理、ダッシュボードサーバー
+├── handlers/             # Discord イベント/コマンドのディスパッチ、定期タスク管理、ダッシュボード・共有 HTTP サーバー
 ├── services/             # tool_call ループ・会話履歴・システムプロンプト構築など
 ├── dashboard/            # 観測用ダッシュボードの SPA（静的ファイル）
 ├── ui/ locales/          # Discord に見せる文言のカタログ（ja / en）

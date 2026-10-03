@@ -3,8 +3,9 @@
 会話履歴そのものはチャンネルで分離せず全チャンネル横断のまま保存し、この
 ツールが「あの部屋で何を話したか」を思い出すための絞り込みを提供する。
 
-`${CONFIG_ROOT}/tools/` に `type: lilla_core.builtin_tools.llm_conversation_get` の
-YAML を置くと opt-in で有効化できる（コアは自動では読み込まない）。
+`${CONFIG_ROOT}/tools/` に `type: llm_conversation_get` の YAML を置くと opt-in で
+有効化できる（コアは自動では読み込まない。import パス形式の
+`type: lilla_core.builtin_tools.llm_conversation_get` も使える）。
 """
 from __future__ import annotations
 

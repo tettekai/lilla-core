@@ -21,7 +21,7 @@ class TestResolveToolRoots:
     def test_core_tool_root_comes_first(
         self, mock_cfg: MagicMock, make_extension, use_extensions
     ) -> None:
-        """`paths.tool_root` が先頭で、拡張の追加ルートがロード順で続く。"""
+        """`paths.tool_root` が先頭で、拡張の追加ルート → 組み込みツールが続く。"""
         mock_cfg.paths.tool_root = Path("/core/tools")
         use_extensions(
             make_extension("a", tool_roots=[Path("/pack_a/tools")]),
@@ -32,16 +32,20 @@ class TestResolveToolRoots:
             Path("/core/tools"),
             Path("/pack_a/tools"),
             Path("/pack_b/tools"),
+            tool_paths.BUILTIN_TOOLS_ROOT,
         ]
 
     def test_returns_only_core_root_without_extensions(
         self, mock_cfg: MagicMock, use_extensions
     ) -> None:
-        """拡張が 0 個なら `paths.tool_root` だけを返す。"""
+        """拡張が 0 個なら `paths.tool_root` と組み込みツールだけを返す。"""
         mock_cfg.paths.tool_root = Path("/core/tools")
         use_extensions()
 
-        assert tool_paths.resolve_tool_roots() == [Path("/core/tools")]
+        assert tool_paths.resolve_tool_roots() == [
+            Path("/core/tools"),
+            tool_paths.BUILTIN_TOOLS_ROOT,
+        ]
 
     def test_duplicate_roots_are_removed(
         self, mock_cfg: MagicMock, make_extension, use_extensions
@@ -50,7 +54,21 @@ class TestResolveToolRoots:
         mock_cfg.paths.tool_root = Path("/core/tools")
         use_extensions(make_extension("a", tool_roots=[Path("/core/tools/../tools")]))
 
-        assert tool_paths.resolve_tool_roots() == [Path("/core/tools")]
+        assert tool_paths.resolve_tool_roots() == [
+            Path("/core/tools"),
+            tool_paths.BUILTIN_TOOLS_ROOT,
+        ]
+
+    def test_builtin_tools_root_exists_and_is_last(
+        self, mock_cfg: MagicMock, use_extensions
+    ) -> None:
+        """組み込みツールのルートは実在するディレクトリで、常に末尾に来る。"""
+        mock_cfg.paths.tool_root = Path("/core/tools")
+        use_extensions()
+
+        assert tool_paths.BUILTIN_TOOLS_ROOT.is_dir()
+        assert (tool_paths.BUILTIN_TOOLS_ROOT / "task_scheduled_llm.py").is_file()
+        assert tool_paths.resolve_tool_roots()[-1] == tool_paths.BUILTIN_TOOLS_ROOT
 
 
 class TestFindToolFile:
@@ -108,6 +126,51 @@ class TestFindToolFile:
         assert found is not None
         assert found.name == "llm_dup.py"
 
+    def test_finds_builtin_tool_by_file_name(self) -> None:
+        """組み込みツールはファイル名 stem で引ける（`type: task_scheduled_llm`）。"""
+        found = tool_paths.find_tool_file(
+            "task_scheduled_llm", tool_paths.resolve_tool_roots()
+        )
+
+        assert found == tool_paths.BUILTIN_TOOLS_ROOT / "task_scheduled_llm.py"
+
+    def test_host_file_wins_over_builtin(self, tmp_path: Path, caplog) -> None:
+        """ホスト（または拡張）に同名があれば勝ち、fail-fast しない。"""
+        target = tmp_path / "task_scheduled_llm.py"
+        target.touch()
+
+        with caplog.at_level("INFO"):
+            found = tool_paths.find_tool_file(
+                "task_scheduled_llm", [tmp_path, tool_paths.BUILTIN_TOOLS_ROOT]
+            )
+
+        assert found == target
+        assert "overrides the built-in one" in caplog.text
+
+    def test_host_wins_even_when_builtin_root_comes_first(self, tmp_path: Path) -> None:
+        """探索順で組み込みが先に来ていても、組み込み以外のマッチを優先する。"""
+        target = tmp_path / "task_scheduled_llm.py"
+        target.touch()
+
+        found = tool_paths.find_tool_file(
+            "task_scheduled_llm", [tool_paths.BUILTIN_TOOLS_ROOT, tmp_path]
+        )
+
+        assert found == target
+
+    def test_two_extensions_shadowing_builtin_still_raise(self, tmp_path: Path) -> None:
+        """組み込みと同名でも、組み込み以外どうしの重複は従来どおり fail-fast。"""
+        first = tmp_path / "a"
+        second = tmp_path / "b"
+        for root in (first, second):
+            root.mkdir()
+            (root / "task_scheduled_llm.py").touch()
+
+        with pytest.raises(ValueError, match="multiple tool roots"):
+            tool_paths.find_tool_file(
+                "task_scheduled_llm", [first, second, tool_paths.BUILTIN_TOOLS_ROOT]
+            )
+
 
 class TestResolveToolDirs:
     def test_appends_config_tools_dir_to_given_roots(self, tmp_path: Path) -> None:
@@ -137,6 +200,7 @@ class TestResolveToolDirs:
         assert tool_paths.resolve_tool_dirs() == [
             (tmp_path / "core").resolve(),
             (tmp_path / "pack").resolve(),
+            tool_paths.BUILTIN_TOOLS_ROOT.resolve(),
             (tmp_path / "pack_configs").resolve(),
             (tmp_path / "config" / "tools").resolve(),
         ]

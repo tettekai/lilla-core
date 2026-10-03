@@ -45,6 +45,7 @@ from lilla_core.repository.admin_session_repository import get_admin_session_rep
 from lilla_core.repository.channel_summary_repository import get_channel_summary_repo
 from lilla_core.handlers import message_handler, interaction_handler, task_handler
 from lilla_core.handlers.dashboard_server import start_dashboard_server
+from lilla_core.handlers.http_server import start_http_server, stop_http_server
 from lilla_core.services.llm_resolver import validate_llm_resolvers
 
 setup_logging()
@@ -123,14 +124,15 @@ async def on_interaction(interaction: discord.Interaction):
 
 # 起動
 async def main():
-    """拡張の `setup()` と観測用ダッシュボードを起動し、Discord へ接続する。
+    """拡張の `setup()`・観測用ダッシュボード・共有 HTTP サーバーを起動し、Discord へ接続する。
 
     `setup()` はロード順に await する。例外はそのまま伝播させ、Discord への
     接続に進まない（起動 fail-fast）。
 
-    ダッシュボードは `setup()` のあとに起こす。拡張の起動処理が失敗したときに
-    観測窓だけ開いたままにしないためと、拡張が申告したページ・ルートの集約が
-    `load_extensions()` で済んでいる必要があるため。
+    ダッシュボードと共有 HTTP サーバーは `setup()` のあとに起こす。拡張の起動処理が
+    失敗したときに窓口だけ開いたままにしないためと、拡張が申告したページ・ルートの
+    集約が `load_extensions()` で済んでいる必要があるため。共有 HTTP サーバーは
+    Discord から切断して `bot.start()` を抜けるとき（例外を含む）に止める。
 
     `bot.start()` が `PrivilegedIntentsRequired`（Developer Portal で
     MESSAGE CONTENT INTENT が未有効化）を送出した場合は、原因と対処法を
@@ -139,6 +141,7 @@ async def main():
     """
     await run_setup_hooks(tools, llm_tools, bot)
     await start_dashboard_server()
+    await start_http_server(tools, llm_tools, bot)
     try:
         await bot.start(_config.env.discord_token)
     except discord.errors.PrivilegedIntentsRequired:
@@ -149,6 +152,8 @@ async def main():
             exc_info=True,
         )
         sys.exit(1)
+    finally:
+        await stop_http_server()
 
 
 if __name__ == "__main__":

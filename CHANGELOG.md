@@ -7,6 +7,106 @@
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-03
+
+### Added
+
+- 共有 HTTP サーバー向け Bearer トークンの発行 CLI `python -m lilla_core.scripts.issue_client_token`
+  を追加した（#176）。パッケージに同梱されるため `pip install` だけで使える。発行対象名
+  （`--label`）の既定は `client_token_repository.DEFAULT_LABEL`（`default`）で、同じ label の
+  既存トークンは上書き確認（`-y` で省略）のうえ置き換える（1 label = 1 token）。平文は実行時に
+  一度だけ表示し、DB にはハッシュだけを保存する。詳細は `docs/ja/http-server.md`
+  - ホストが別の label（例: `lilla-client`）で発行済みの環境は、`--label` で同じ名前を指定するか
+    `default` で再発行して利用側の設定を揃える
+
+- 共有 HTTP サーバーに `!selftest` 相当の診断 API `GET /api/selftest` を追加した（#168）。
+  Bearer 必須で、`?full=true`（値なしの `?full` も同じ）を付けると LLM 疎通確認も行う
+  （LLM API の課金が 1 往復分発生する）。本文は `{"ok", "mode", "summary", "checks"}` の
+  JSON で、`summary` が Discord 本文の要約・`checks`（`name` / `ok` / `detail` /
+  `elapsed_ms`）が添付ファイルの詳細に相当する。全チェック成功で 200、1 件でも失敗すれば 503
+  - 実行するチェックの組み合わせは `services/system_checks.py` の新しい
+    `run_selftest_checks(tools, full_mode)` に 1 か所だけ持ち、`!selftest` と共有する
+    （Discord と HTTP で結果が食い違わない）
+  - 公開の `GET /` は生存確認のまま変えていない（MongoDB 疎通だけを見て `{"status": ...}`
+    のみ返す）。診断の詳細を返すのは認証の内側のこのエンドポイントだけ
+  - 詳細は `docs/ja/http-server.md`
+
+- 機械向けクライアントの共有 HTTP サーバー（`handlers/http_server.py`）を追加した（#172）。
+  `bot.py` の `main()` が拡張の `setup()`・ダッシュボードのあとに起こし、Discord から
+  抜けるときに止める。ダッシュボードとは別ポート・別認証で、設定は新しいコア確定の
+  `http:` 節（`host` 既定 `0.0.0.0` / `port` 既定 `8080` / `cors_allowed_origins` 既定は空）。
+  節を省略しても起動するため、**既存の構成でも 8080 番ポートを新たに listen する**
+  （使っているポートと重なる場合は `http.port` を変える）
+  - コアのエンドポイントは `GET /`（生存確認。公開）・`POST /api/tools/call`（LLM ツールの
+    直接呼び出し）・`POST /api/runtask`（task ツールの手動実行）の 3 本。後ろ 2 本は Bearer 必須
+  - 認証は既定拒否の Bearer トークン。トークンは新しい `repository/client_token_repository.py`
+    が `client_tokens` コレクションに SHA-256 ハッシュだけを保持し（期限なし・同じ label の
+    再発行で置き換え）、照合は `verify_client_token()`。発行の CLI はホスト側で用意する
+  - 拡張は新しいメソッド `Extension.http_routes()` で `HttpRoute(method, path, handler, auth)`
+    を申告してルートを足せる。パスの接頭辞に制約は無く、`auth` は `bearer`（既定）/
+    `public` / `deferred`（ハンドラ側で別方式の認証）。コアのルートや他の拡張とメソッド・
+    パスが重なるとロード時に失敗する。メソッドの追加なので `EXTENSION_API_VERSION` は据え置き
+  - 詳細は `docs/ja/http-server.md`
+
+- 専門家サブエージェントへ委譲する LLM ツール `llm_expert` をコア組み込みツール
+  （`lilla_core/builtin_tools/llm_expert.py`）として追加した（#163）。lilla-agent の
+  `tools/experts/llm_expert.py` から移したもので、`SCHEMA` / `execute` の契約は変えていない。
+  YAML（`prompt` / `llm_provider` / `available_tools` / `api` / `grok_tools`）は従来どおり
+  `${CONFIG_ROOT}/tools` に置き、`type: llm_expert`（ファイル名）と書く。ホストや拡張に同名の
+  `llm_expert.py` があればそちらが優先される。詳細は `docs/ja/tools.md`
+
+### Changed
+
+- コア組み込みツール（`lilla_core/builtin_tools`）を**常に最後のツール探索ルート**として
+  足した（#161）。ツール YAML の `type` にファイル名（`type: task_scheduled_llm` など）を
+  書けるようになり、文書もそちらを正の書き方にした。従来の import パス形式
+  （`type: lilla_core.builtin_tools.task_scheduled_llm`）も引き続き使えるため、既存の YAML は
+  そのまま動く。探索ルートに入るだけでは有効にならず、`${CONFIG_ROOT}/tools/` に YAML を
+  置いたときだけロードする opt-in は変わらない。同名ファイルの扱いは、ホストや拡張に同名が
+  あればそちらが勝ち（組み込みは常に負ける側で、起動は止まらない）、組み込み以外どうしの
+  同名は従来どおり起動時に失敗する
+- 依存の版上げ（第1弾・パッチ／小幅）。pyyaml 6.0.3、python-dotenv 1.2.3、apscheduler 3.11.3、
+  開発依存の pytest 9.1.1、pytest-asyncio 1.4.0 へ更新した（`==` 固定は維持）（#167）
+
+### Fixed
+
+- `type: task_scheduled_llm` で `available_tools` キーが無いときに起動が落ちていたのを修正し、
+  省略時はツールなしとしてロードするようにした（#170）。`available_tools: []` は従来どおり
+  ツールなしで、キーがあり値が不正なときは引き続き起動時に失敗する
+
+### Added
+
+- スケジュール実行で LLM に処理を委譲する組み込みタスクツール
+  `lilla_core.builtin_tools.task_scheduled_llm` を足した（#157）。既定では読み込まれず、
+  `${CONFIG_ROOT}/tools/task_*.yaml` に `type` を書いたときだけ opt-in で有効になる。
+  YAML から `schedule`（cron）・`target`（通知先。`{DISCORD_MY_USER_ID}` は
+  `discord.my_user_id` に置換）・`llm_provider`（必須）・`prompt`（必須。`file:` / `dir:` の
+  source spec）・`available_tools`（必須。この実行で LLM に見せるツールの許可リスト。#159）を
+  読み、`client_type="task"` で 1 往復させたうえで、返答が
+  `NO_NOTIFICATION`（`*` で囲んだ形も含む）または空なら会話履歴にも残さず Discord へも
+  送らない。それ以外の返答はアシスタント発言として会話履歴へ追記して `target` へ送る。
+  プロンプト中の `{{now}}` は `ui.timezone` で解決した実行時刻に置き換わる。
+  詳細は `docs/ja/scheduled-llm.md`（英訳 `docs/en/scheduled-llm.md`）
+  - `available_tools` はキーが無ければ起動時に失敗し、`main_available_tools` を継承しない。
+    空リストはツールなし、`$main` はその位置で `tools.main_available_tools` の中身（未設定なら
+    ロード済みの LLM ツールすべて）に展開され、並べた stem と合わせて許可リストになる。
+    ロード済みでない stem・`$main` 以外のトークンは起動時に失敗する。実際に渡すのはそのうち
+    `supported_client_type` が `task` / `all` のツールだけで、`supported_client_type: task` の
+    ツールをこのリストにだけ書けば、それを並べたタスクにだけ見せられる
+- ツールの許可リストを展開する `lilla_core.loaders.llm_tool_loader.resolve_available_tools()`
+  を足した（#159）。YAML stem と `$main` の並びを受け取り、`build_tools_param` の
+  `allowed_names` に渡せる stem のリストを返す（`supported_client_type` ではここで絞らない）
+- `run_conversation()` に `allowed_tool_names` 引数を足した（#159）。その回だけ LLM に見せる
+  ツールの許可リストで、省略（`None`）時は従来どおり `tools.main_available_tools`、空リストなら
+  ツールを渡さない
+- `LILLA_EXTENSIONS` で公式拡張パックをモジュール名だけの短縮記法で指定できるようにした
+  （#153）。例えば `google_oauth` は `lilla_core.extensions.google_oauth` と同じ意味になる。
+  `.` を含まない項目がそのまま import できないときだけ `lilla_core.extensions.` を補って
+  もう一度だけ import を試み、フォールバック対象は「その名前自体が見つからない」
+  `ModuleNotFoundError` に限る（同名モジュールが見つかったうえで初期化に失敗した場合は
+  公式へ逃げずその場で失敗する）。`.` を含むパス（第三者パックや、すでにフルパスで書いた
+  公式拡張）はそのままのパスとして扱われ、フォールバックの対象にならない
+
 ## [0.5.1] - 2026-09-27
 
 ### Added

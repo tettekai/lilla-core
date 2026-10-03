@@ -5,6 +5,22 @@
 フィールドから対応する `.py` ファイルを探します（詳細は
 `loaders/llm_tool_loader.py` / `loaders/task_tool_loader.py` の実装を参照）。
 
+## ツールの探索ルート
+
+`type` をファイル名で書いたときの探索順は次のとおりです。
+
+1. `paths.tool_root`（ホスト）
+2. 各拡張の `tool_roots()`（拡張のロード順）
+3. `lilla_core/builtin_tools`（[組み込みツール](#組み込みツール)。常に最後）
+
+同名の `.py` が複数のルートにあるときは、どちらが使われるかが暗黙になるため起動時に
+失敗します。ただし組み込みツールは常に負ける側で、ホストまたは拡張に同名ファイルが
+あればそちらが使われ、起動は止まりません（同名で差し替えられます）。1 つのルートの
+中に同名ファイルが複数ある場合は先頭マッチを使います。
+
+探索ルートに入っていることと、ツールが有効になることは別です。YAML の無いツールは
+どのルートにあってもロードされません。
+
 ## 拡張が同梱するツール YAML
 
 拡張は `tool_config_roots()` で既定の YAML を同梱できます。ローダーはまずそれらの
@@ -68,26 +84,52 @@
 
 ## 組み込みツール
 
-`lilla_core` は import パス形式の具体例として、組み込みツールを同梱しています。
-いずれも既定では有効化されておらず、`${CONFIG_ROOT}/tools/` に YAML を置いた場合だけ
-opt-in で有効になります。
+`lilla_core` は組み込みツール（`lilla_core/builtin_tools`）を同梱しています。拡張の
+ツールと同じように探索ルートの一員なので、`type` にはファイル名を書きます。いずれも
+既定では有効化されておらず、`${CONFIG_ROOT}/tools/` に YAML を置いた場合だけ opt-in で
+有効になります。
 
-| モジュール | 種別 | 内容 |
-|------------|------|------|
-| `lilla_core.builtin_tools.llm_current_datetime` | LLM | 現在日時を返すだけのサンプル |
-| `lilla_core.builtin_tools.llm_conversation_get` | LLM | [会話履歴の部屋名検索](history-search.md) |
-| `lilla_core.builtin_tools.task_channel_summary` | task | [部屋のノート（深夜要約）](channel-notes.md) |
+| `type` | 種別 | 内容 |
+|--------|------|------|
+| `llm_current_datetime` | LLM | 現在日時を返すだけのサンプル |
+| `llm_conversation_get` | LLM | [会話履歴の部屋名検索](history-search.md) |
+| `task_channel_summary` | task | [部屋のノート（深夜要約）](channel-notes.md) |
+| `task_scheduled_llm` | task | [スケジュール実行で LLM に委譲する通知](scheduled-llm.md) |
+| `llm_expert` | LLM | 専門家サブエージェントへの委譲（後述） |
+
+### `llm_expert`（専門家エージェント）
+
+独自のシステムプロンプトとツールセットを持つサブエージェントへ処理を委譲するツールです。
+実装はコアが持ち、プロンプト・使えるツール・LLM は YAML（`${CONFIG_ROOT}/tools/llm_*.yaml`）
+に書きます。1 つの実装から YAML を増やして複数の専門家を作れます。`type` にはファイル名
+`llm_expert` を書きます。
+
+```yaml
+type: llm_expert
+description: 健康データの専門家。体調や運動についての質問を委譲する
+prompt: dir:${config_root}/prompt/experts/health
+llm_provider: grok            # 省略可
+available_tools: [llm_health_get]   # `$main` は tools.main_available_tools に展開される
+```
+
+`api: responses` と `grok_tools` を組み合わせると、Responses API の組み込みツールを使った
+単発呼び出しになります（`api: responses` と `available_tools` の併用は未対応です）。
+専門家の中で再認証が必要になった場合は、処理を中断してその要求をそのまま伝えます。
 
 サンプルを有効化する例（`${CONFIG_ROOT}/tools/llm_current_datetime.yaml`）:
 
 ```yaml
-type: lilla_core.builtin_tools.llm_current_datetime
+type: llm_current_datetime
 ```
+
+import パス形式（`type: lilla_core.builtin_tools.llm_current_datetime`）も引き続き
+使えます。既存の YAML はそのまま動きます。
 
 ## ツールを読み込むディレクトリの信頼
 
 ツールを読み込むディレクトリ（`paths.tool_root`・各拡張の `tool_roots()`・
-`${CONFIG_ROOT}/tools`）へ書き込める者は、Bot のプロセス内でコードを実行できます。
+`lilla_core/builtin_tools`・`${CONFIG_ROOT}/tools`）へ書き込める者は、Bot のプロセス内で
+コードを実行できます。
 そのためツールパスの許可リストは別途持ちません。ローダーは、解決後のツールファイルが
 これらのディレクトリの配下にあることだけを確認します（`..` を含む `type` や、外を指す
 シンボリックリンクは読み込みません）。

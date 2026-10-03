@@ -56,6 +56,39 @@ class TestLlmCurrentDatetime:
             "llm_current_datetime"
         )
 
+    def test_loads_via_file_name(
+        self, llm_tool_loader, mock_cfg: MagicMock, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`type: llm_current_datetime`（ファイル名）でも探索ルート末尾の builtin_tools から引ける。"""
+        from lilla_core.loaders import tool_paths
+
+        monkeypatch.setattr(tool_paths, "get_config", lambda: mock_cfg)
+        config_root = tmp_path / "config_root"
+        tools_dir = config_root / "tools"
+        tools_dir.mkdir(parents=True)
+        (tools_dir / "llm_current_datetime.yaml").write_text(
+            "type: llm_current_datetime\n", encoding="utf-8"
+        )
+
+        result = llm_tool_loader.load_llm_tools(config_root=config_root)
+
+        assert "llm_current_datetime" in result
+        assert callable(result["llm_current_datetime"]["execute"])
+
+    def test_not_loaded_without_yaml(
+        self, llm_tool_loader, mock_cfg: MagicMock, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """探索ルートに入っていても、YAML が無ければロードしない（opt-in は変わらない）。"""
+        from lilla_core.loaders import tool_paths
+
+        monkeypatch.setattr(tool_paths, "get_config", lambda: mock_cfg)
+        config_root = tmp_path / "config_root"
+        (config_root / "tools").mkdir(parents=True)
+
+        assert llm_tool_loader.load_llm_tools(config_root=config_root) == {}
+
     async def test_execute_returns_local_now(self) -> None:
         """execute() が local_now() 由来の現在日時を返す。"""
         from lilla_core.builtin_tools.llm_current_datetime import execute

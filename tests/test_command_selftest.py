@@ -9,6 +9,7 @@ import pytest
 from lilla_core.services.system_checks import CheckResult
 
 selftest_command = importlib.import_module("lilla_core.commands.selftest")
+system_checks = importlib.import_module("lilla_core.services.system_checks")
 
 
 def _make_message() -> MagicMock:
@@ -25,7 +26,11 @@ def _result(name: str, ok: bool = True, detail: str = "詳細") -> CheckResult:
 
 @pytest.fixture
 def patched_checks(monkeypatch: pytest.MonkeyPatch) -> dict[str, AsyncMock]:
-    """各チェック関数を成功固定のモックへ差し替える。"""
+    """各チェック関数を成功固定のモックへ差し替える。
+
+    チェックの組み合わせは `run_selftest_checks()` が持つため、差し替え先は
+    `services/system_checks.py` のモジュール属性。
+    """
     mocks: dict[str, AsyncMock] = {}
     for name in (
         "check_process_alive",
@@ -35,7 +40,7 @@ def patched_checks(monkeypatch: pytest.MonkeyPatch) -> dict[str, AsyncMock]:
         "check_llm",
     ):
         mock = AsyncMock(return_value=_result(name.removeprefix("check_")))
-        monkeypatch.setattr(selftest_command, name, mock)
+        monkeypatch.setattr(system_checks, name, mock)
         mocks[name] = mock
     return mocks
 

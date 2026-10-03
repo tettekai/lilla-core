@@ -14,9 +14,11 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [登録チャンネル](channels.md) — `discord.channels`
 - [部屋のノート（深夜要約）](channel-notes.md)
 - [会話履歴の部屋名検索](history-search.md)
+- [スケジュール実行で LLM に委譲する通知](scheduled-llm.md)
 - [タイムゾーン](timezone.md) — `ui.timezone`
 - [LLM プロバイダーの回しごと選択](llm-resolver.md) — `llm.providers` の `type: resolver`
 - [観測用ダッシュボード](dashboard.md) — 公開面への注意を含む
+- [共有 HTTP サーバー](http-server.md) — `http:`、Bearer トークン、拡張からのルート追加
 - [ツール契約](tools.md) — LLM ツール・task ツール・組み込みツール
 - [判定ヘルパー（Jev）](jev.md) — 任意の `lilla_core.tool_support.jev`
 - [Google OAuth / Google Calendar（公式拡張パック）](google.md) — `lilla_core.extensions` の同梱拡張
