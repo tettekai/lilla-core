@@ -79,22 +79,27 @@ def _sanitize_request_data_for_log(data: Any) -> Any:
     return sanitized
 
 
-def _resolve_proxy(url: str) -> tuple[str | None, aiohttp.BasicAuth | None]:
-    """リクエスト先 URL に応じたプロキシと認証情報を解決する。
+def _resolve_proxy(url: str) -> tuple[str | None, dict[str, str] | None]:
+    """リクエスト先 URL に応じたプロキシと認証ヘッダーを解決する。
 
     config からプロキシ URL とプロキシ認証情報を読み取り、
-    認証情報が両方そろっていれば aiohttp.BasicAuth を生成する。
+    認証情報が両方そろっていれば Proxy-Authorization ヘッダーを生成する
+    （aiohttp 3.14 で非推奨になった proxy_auth / BasicAuth は使わない）。
     URL が NO_PROXY にマッチする場合は (None, None) を返す。
 
     Returns
     -------
-    tuple[str | None, aiohttp.BasicAuth | None]
-        (proxy, proxy_auth) のタプル。
+    tuple[str | None, dict[str, str] | None]
+        (proxy, proxy_headers) のタプル。
     """
     _config = get_config()
     proxy = _config.proxy.resolve_url()
     auth = (
-        aiohttp.BasicAuth(_config.env.http_proxy_user, _config.env.http_proxy_pass)
+        {
+            "Proxy-Authorization": aiohttp.encode_basic_auth(
+                _config.env.http_proxy_user, _config.env.http_proxy_pass, encoding="latin-1"
+            )
+        }
         if _config.env.http_proxy_user and _config.env.http_proxy_pass
         else None
     )
@@ -144,7 +149,7 @@ async def send_http_request(
             headers=headers,
             params=params,
             proxy=proxy,
-            proxy_auth=auth,
+            proxy_headers=auth,
             timeout=aiohttp.ClientTimeout(total=timeout),
         ) as resp:
             logger.info("Status: %s", resp.status)
@@ -195,7 +200,7 @@ async def stream_http_request(
             json=data if is_body_method else None,
             headers=headers,
             proxy=proxy,
-            proxy_auth=auth,
+            proxy_headers=auth,
             timeout=aiohttp.ClientTimeout(total=timeout),
         ) as resp:
             resp.raise_for_status()

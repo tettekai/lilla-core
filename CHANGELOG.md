@@ -7,6 +7,19 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 依存を更新した（`==` 固定は維持。Motor は据え置き）: aiohttp 3.11.14 → 3.14.3、
+  discord.py 2.4.0 → 2.7.1、pydantic 2.11.1 → 2.13.5、pydantic-settings 2.8.1 → 2.15.0、
+  tiktoken 0.9.0 → 0.14.0。利用側アプリケーションも同じ版に揃えること
+- プロキシ認証を aiohttp 3.14 で非推奨になった `proxy_auth` / `BasicAuth` から、
+  `Proxy-Authorization` ヘッダー（`aiohttp.encode_basic_auth(..., encoding="latin-1")`）を
+  `proxy_headers` へ渡す形に変えた（`core/http_util.py`・`services/attachment_download.py`）。
+  `services/attachment_download.py` の `resolve_proxy_settings()` の 2 番目の戻り値と
+  `download_attachment_bytes()` の 3 番目の引数が `aiohttp.BasicAuth | None` から
+  `dict[str, str] | None`（`proxy_headers`）に変わった。なお `bot.http.proxy_auth` は
+  discord.py 2.7.1 が `BasicAuth` を要求するためそのまま
+
 ## [0.5.2] - 2026-10-03
 
 ### Added

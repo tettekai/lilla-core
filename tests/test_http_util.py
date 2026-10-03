@@ -79,7 +79,6 @@ def session_mock(http_util, monkeypatch: pytest.MonkeyPatch) -> tuple[MagicMock,
 
     mock_cs = MagicMock(return_value=session_cm)
     monkeypatch.setattr(http_util.aiohttp, "ClientSession", mock_cs)
-    monkeypatch.setattr(http_util.aiohttp, "BasicAuth", MagicMock())
     monkeypatch.setattr(http_util.aiohttp, "ClientTimeout", MagicMock())
 
     return mock_session, mock_resp
@@ -174,24 +173,30 @@ class TestResolveProxy:
     ) -> None:
         """プロキシのみ設定されていれば proxy を返し auth は None。"""
         default_config.proxy.resolve_url.return_value = "http://proxy:8080"
-        monkeypatch.setattr(http_util.aiohttp, "BasicAuth", MagicMock())
         proxy, auth = http_util._resolve_proxy("http://example.com")
         assert proxy == "http://proxy:8080"
         assert auth is None
 
-    def test_proxy_with_credentials_returns_basic_auth(
-        self, http_util, default_config: MagicMock, monkeypatch: pytest.MonkeyPatch
+    def test_proxy_with_credentials_returns_proxy_authorization_header(
+        self, http_util, default_config: MagicMock
     ) -> None:
-        """認証情報がそろっていれば BasicAuth を生成して返す。"""
+        """認証情報がそろっていれば Proxy-Authorization ヘッダーを生成して返す。"""
         default_config.proxy.resolve_url.return_value = "http://proxy:8080"
         default_config.env.http_proxy_user = "user"
         default_config.env.http_proxy_pass = "pass"
-        basic_auth = MagicMock()
-        monkeypatch.setattr(http_util.aiohttp, "BasicAuth", basic_auth)
         proxy, auth = http_util._resolve_proxy("http://example.com")
         assert proxy == "http://proxy:8080"
-        basic_auth.assert_called_once_with("user", "pass")
-        assert auth is basic_auth.return_value
+        assert auth == {"Proxy-Authorization": "Basic dXNlcjpwYXNz"}
+
+    def test_proxy_credentials_encoded_as_latin1(
+        self, http_util, default_config: MagicMock
+    ) -> None:
+        """非 ASCII の認証情報は従来の BasicAuth と同じ latin-1 でエンコードされる。"""
+        default_config.proxy.resolve_url.return_value = "http://proxy:8080"
+        default_config.env.http_proxy_user = "usér"
+        default_config.env.http_proxy_pass = "pass"
+        _, auth = http_util._resolve_proxy("http://example.com")
+        assert auth == {"Proxy-Authorization": "Basic dXPpcjpwYXNz"}
 
     def test_no_proxy_match_returns_none(
         self, http_util, default_config: MagicMock, monkeypatch: pytest.MonkeyPatch
@@ -201,7 +206,6 @@ class TestResolveProxy:
         default_config.env.http_proxy_user = "user"
         default_config.env.http_proxy_pass = "pass"
         default_config.proxy.no_proxy = "example.com"
-        monkeypatch.setattr(http_util.aiohttp, "BasicAuth", MagicMock())
         proxy, auth = http_util._resolve_proxy("http://example.com/api")
         assert proxy is None
         assert auth is None
@@ -352,15 +356,16 @@ class TestSendHttpRequest:
         await http_util.send_http_request("http://example.com/api")
 
         assert mock_session.request.call_args.kwargs["proxy"] is None
-        assert mock_session.request.call_args.kwargs["proxy_auth"] is None
+        assert mock_session.request.call_args.kwargs["proxy_headers"] is None
+        assert "proxy_auth" not in mock_session.request.call_args.kwargs
 
-    async def test_proxy_auth_set_when_credentials_given(
+    async def test_proxy_headers_set_when_credentials_given(
         self,
         http_util,
         session_mock: tuple[MagicMock, MagicMock],
         default_config: MagicMock,
     ) -> None:
-        """プロキシ認証情報が設定されていれば BasicAuth が作られる"""
+        """プロキシ認証情報が設定されていれば Proxy-Authorization が proxy_headers で渡る"""
         mock_session, _ = session_mock
         default_config.proxy.resolve_url.return_value = "http://proxy:8080"
         default_config.env.http_proxy_user = "user"
@@ -368,9 +373,9 @@ class TestSendHttpRequest:
 
         await http_util.send_http_request("http://example.com")
 
-        http_util.aiohttp.BasicAuth.assert_called_once_with("user", "pass")
-        # proxy_auth には BasicAuth の戻り値が渡される
-        assert mock_session.request.call_args.kwargs["proxy_auth"] is not None
+        kwargs = mock_session.request.call_args.kwargs
+        assert kwargs["proxy_headers"] == {"Proxy-Authorization": "Basic dXNlcjpwYXNz"}
+        assert "proxy_auth" not in kwargs
 
     async def test_timeout_passed_to_client_timeout(
         self,
@@ -441,7 +446,6 @@ def stream_mock(http_util, monkeypatch: pytest.MonkeyPatch) -> tuple[MagicMock, 
 
     mock_cs = MagicMock(return_value=session_cm)
     monkeypatch.setattr(http_util.aiohttp, "ClientSession", mock_cs)
-    monkeypatch.setattr(http_util.aiohttp, "BasicAuth", MagicMock())
     monkeypatch.setattr(http_util.aiohttp, "ClientTimeout", MagicMock())
 
     return mock_session, mock_resp
