@@ -85,7 +85,7 @@ def mock_attachment_download(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     _ATTACHMENT_CONTENTS.clear()
 
-    async def fake_download(url: str, proxy, proxy_auth) -> bytes:
+    async def fake_download(url: str, proxy, proxy_headers) -> bytes:
         return _ATTACHMENT_CONTENTS[url]
 
     monkeypatch.setattr(attachment_body, "download_attachment_bytes", fake_download)

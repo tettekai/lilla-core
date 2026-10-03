@@ -71,6 +71,7 @@ _CORE_STARTUP_REPOS = [
 
 bot.http.proxy = _config.proxy.resolve_url()
 if _config.env.http_proxy_user and _config.env.http_proxy_pass:
+    # discord.py 2.7.1 の HTTPClient.proxy_auth は BasicAuth 型を要求する（aiohttp の非推奨警告は残る）
     bot.http.proxy_auth = aiohttp.BasicAuth(_config.env.http_proxy_user, _config.env.http_proxy_pass)
 
 # `llm.providers` の resolver 型エントリのスクリプトを読み込み、`resolve` 関数が

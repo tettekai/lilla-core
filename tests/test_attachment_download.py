@@ -73,21 +73,21 @@ class TestDownloadAttachmentBytes:
 
         assert result == b"image-data"
         session.get.assert_called_once_with(
-            "http://example.com/img.png", proxy=None, proxy_auth=None
+            "http://example.com/img.png", proxy=None, proxy_headers=None
         )
 
     async def test_passes_proxy_settings(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """プロキシとプロキシ認証情報がそのまま aiohttp へ渡る。"""
+        """プロキシとプロキシ認証ヘッダーがそのまま aiohttp へ渡る。"""
         client_session, session = _make_session_mock()
         monkeypatch.setattr(attachment_download.aiohttp, "ClientSession", client_session)
 
-        auth = attachment_download.aiohttp.BasicAuth("user", "pass")
+        headers = {"Proxy-Authorization": "Basic dXNlcjpwYXNz"}
         await attachment_download.download_attachment_bytes(
-            "http://example.com/img.png", "http://proxy:3128", auth
+            "http://example.com/img.png", "http://proxy:3128", headers
         )
 
         session.get.assert_called_once_with(
-            "http://example.com/img.png", proxy="http://proxy:3128", proxy_auth=auth
+            "http://example.com/img.png", proxy="http://proxy:3128", proxy_headers=headers
         )
 
 
@@ -101,7 +101,7 @@ class TestResolveProxySettings:
         monkeypatch.setattr(attachment_download, "get_config", lambda: config)
 
     def test_returns_proxy_with_auth(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """ユーザーとパスワードが揃っていれば BasicAuth を組み立てる。"""
+        """ユーザーとパスワードが揃っていれば Proxy-Authorization ヘッダーを組み立てる。"""
         self._patch_config(
             monkeypatch,
             proxy="http://proxy:3128",
@@ -109,10 +109,14 @@ class TestResolveProxySettings:
             http_proxy_pass=_DUMMY_PROXY_PASS,
         )
 
-        proxy, auth = attachment_download.resolve_proxy_settings()
+        proxy, headers = attachment_download.resolve_proxy_settings()
 
         assert proxy == "http://proxy:3128"
-        assert auth == attachment_download.aiohttp.BasicAuth("user", _DUMMY_PROXY_PASS)
+        assert headers == {
+            "Proxy-Authorization": attachment_download.aiohttp.encode_basic_auth(
+                "user", _DUMMY_PROXY_PASS, encoding="latin-1"
+            )
+        }
 
     def test_returns_none_auth_without_credentials(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """認証情報が無い場合は proxy のみを返す。"""
