@@ -9,6 +9,14 @@
 
 ### Added
 
+- 共有 HTTP サーバー向け Bearer トークンの発行 CLI `python -m lilla_core.scripts.issue_client_token`
+  を追加した（#176）。パッケージに同梱されるため `pip install` だけで使える。発行対象名
+  （`--label`）の既定は `client_token_repository.DEFAULT_LABEL`（`default`）で、同じ label の
+  既存トークンは上書き確認（`-y` で省略）のうえ置き換える（1 label = 1 token）。平文は実行時に
+  一度だけ表示し、DB にはハッシュだけを保存する。詳細は `docs/ja/http-server.md`
+  - ホストが別の label（例: `lilla-client`）で発行済みの環境は、`--label` で同じ名前を指定するか
+    `default` で再発行して利用側の設定を揃える
+
 - 共有 HTTP サーバーに `!selftest` 相当の診断 API `GET /api/selftest` を追加した（#168）。
   Bearer 必須で、`?full=true`（値なしの `?full` も同じ）を付けると LLM 疎通確認も行う
   （LLM API の課金が 1 往復分発生する）。本文は `{"ok", "mode", "summary", "checks"}` の

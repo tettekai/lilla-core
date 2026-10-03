@@ -90,22 +90,24 @@ CORS のミドルウェアは認証の **外側** にあり、`cors_allowed_orig
 平文は保存しません。有効期限はなく、同じ `label` で再発行すると古いトークンは置き換わります
 （＝失効）。インデックスはこのサーバーの起動時に作ります。
 
-発行の CLI はコアには含めません。ホストが `lilla_core.repository.client_token_repository` の
-関数で用意します。
+トークンは同梱の CLI で発行します。bot と同じ環境変数（`CONFIG_ROOT` など）のもとで
+実行してください。
 
-```python
-import secrets
-from lilla_core.repository.client_token_repository import (
-    get_client_token_repo,
-    hash_client_token,
-)
-
-token = secrets.token_urlsafe(32)
-repo = get_client_token_repo()
-await repo.ensure_indexes()
-await repo.replace(hash_client_token(token), "my-client")  # 同じ label の古いトークンは消える
-print(token)  # 平文はこの場でしか見えない
+```bash
+python -m lilla_core.scripts.issue_client_token
+# コンテナ内なら（-it が必要。上書き確認の入力を受けるため）
+docker exec -it <コンテナ名> python -m lilla_core.scripts.issue_client_token
 ```
+
+- 発行対象名（`--label`）の既定は `default` です。別名で発行するなら `--label my-client`
+- 同じ `label` のトークンが既にあると上書き確認（`y/N`）が出ます。承諾すると古いトークンは
+  置き換わり（1 label = 1 token）、`-y` / `--yes` で確認を省略できます
+- 平文のトークンは **実行時に 1 度だけ** 表示されます（DB にはハッシュしか残りません）
+- 以前に別の `label`（ホストが独自に決めた名前など）で発行済みの場合は、`--label` で同じ名前を
+  指定するか、`default` で再発行して利用側の設定を差し替えてください
+
+コードから発行したい場合は `lilla_core.repository.client_token_repository` の
+`get_client_token_repo()` / `hash_client_token()` / `replace()` を直接使えます。
 
 照合は `verify_client_token(token)` です。拡張が `deferred` で載せたルート
 （WebSocket など）も、同じ関数でトークンを照合できます。
