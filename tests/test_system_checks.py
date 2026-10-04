@@ -12,7 +12,7 @@ system_checks = importlib.import_module("lilla_core.services.system_checks")
 
 
 def _make_mongo_client(command: AsyncMock) -> MagicMock:
-    """admin.command が指定モックになる Motor クライアントのモックを返す。"""
+    """admin.command が指定モックになる MongoDB クライアントのモックを返す。"""
     client = MagicMock()
     client.admin.command = command
     return client
@@ -26,7 +26,7 @@ def mongo_command() -> AsyncMock:
 
 @pytest.fixture
 def with_mocked_mongo(mongo_command: AsyncMock):
-    """check_mongodb が使う lilla_core.core.config / repository.motor_client を差し替える。"""
+    """check_mongodb が使う lilla_core.core.config / repository.mongo_client を差し替える。"""
     cfg = MagicMock()
     cfg.env.mongodb_uri = "mongodb://localhost:27017"
     client = _make_mongo_client(mongo_command)
@@ -34,8 +34,8 @@ def with_mocked_mongo(mongo_command: AsyncMock):
         sys.modules,
         {
             "lilla_core.core.config": MagicMock(get_config=lambda: cfg),
-            "lilla_core.repository.motor_client": MagicMock(
-                create_motor_client=MagicMock(return_value=client)
+            "lilla_core.repository.mongo_client": MagicMock(
+                create_mongo_client=MagicMock(return_value=client)
             ),
         },
     ):
@@ -89,7 +89,7 @@ class TestCheckMongodb:
 
     async def test_uses_configured_uri(self, with_mocked_mongo) -> None:
         """設定の mongodb_uri でクライアントを生成する。"""
-        create = sys.modules["lilla_core.repository.motor_client"].create_motor_client
+        create = sys.modules["lilla_core.repository.mongo_client"].create_mongo_client
 
         await system_checks.check_mongodb()
 

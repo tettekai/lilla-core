@@ -19,7 +19,7 @@ class MongoDBHandler(logging.Handler):
     `core/logging_setup.py` が組み立てる `QueueListener` の宛先としてだけ使う
     （イベントループ上の呼び出し元は Queue へ積むだけで戻る）。
 
-    ログ用の `MongoClient` はアプリの Motor クライアントとは共有しない別インスタンス。
+    ログ用の `MongoClient` はアプリの非同期クライアント（`AsyncMongoClient`）とは共有しない別インスタンス。
 
     ドキュメントの構造:
         asctime    : フォーマット済みの日時文字列
@@ -75,13 +75,13 @@ class MongoDBHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         """ログレコードを MongoDB に書き込む。
 
-        pymongo / motor の内部ログによる再帰呼び出しを防ぐため、
-        これらのロガーからのレコードは無視する。
+        pymongo の内部ログによる再帰呼び出しを防ぐため、
+        そのロガーからのレコードは無視する。
         TTL はレベル別に設定し、該当レベルが存在しない場合は warning の値にフォールバックする。
         書き込みの失敗は `handleError` に任せ、プロセスは落とさない。
         """
-        # pymongo / motor の内部ログによる再帰呼び出しを防ぐ
-        if record.name.startswith(("pymongo", "motor")):
+        # pymongo の内部ログによる再帰呼び出しを防ぐ
+        if record.name.startswith("pymongo"):
             return
         try:
             level_key = record.levelname.lower()

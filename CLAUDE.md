@@ -284,7 +284,7 @@ lilla-core 自体は起動スクリプトを持たない（ライブラリとし
 |----------|------|
 | `bot.py` | Discord ボット本体。設定・コマンド・ツール・コア確定リポジトリの初期化と、Discord イベントの各 handler への委譲を統括する。起動直後（他の import より前）に `load_extensions()` で環境変数 `LILLA_EXTENSIONS`（カンマ区切り）が指すモジュールを import し、各モジュールの `extension` を集めて検証する（未設定ならコア単体で起動する）。`on_ready` / `on_message` / `on_interaction` は `handlers/` の各ハンドラへ委譲するだけの薄いラッパー。`main()` は拡張の `setup()` をロード順に await したあと `handlers/dashboard_server.py` の `start_dashboard_server()` で観測用ダッシュボードを、`handlers/http_server.py` の `start_http_server(tools, llm_tools, bot)` で共有 HTTP サーバーを起こし、最後に Discord へ接続する（`bot.start()` を抜けるときは例外でも `stop_http_server()` で止める） |
 | `bot_client.py` | Discord `commands.Bot` インスタンスの生成のみを担う共有モジュール。`bot.py` をスクリプト実行した際の多重ロード（Discord 未接続の幽霊インスタンス生成）を防ぐため、`bot` インスタンスを参照する側は必ずこのモジュールから import する |
-| `log_handler.py` | MongoDB へのログ書き込みハンドラー（`MongoDBHandler`。レベル別 TTL 付き）。同期 `pymongo` の `MongoClient`（アプリの Motor クライアントとは別インスタンス）を `serverSelectionTimeoutMS=5000` で作り、TTL インデックス作成を起動時の接続確認に兼ねる。届かなければ英語メッセージの `RuntimeError` で起動を落とす（URI は認証情報を含みうるため載せない）。ロガーへ直接は付けず、`core/logging_setup.py` の `QueueListener` の宛先としてだけ使う |
+| `log_handler.py` | MongoDB へのログ書き込みハンドラー（`MongoDBHandler`。レベル別 TTL 付き）。同期 `pymongo` の `MongoClient`（アプリの非同期クライアント `AsyncMongoClient` とは別インスタンス）を `serverSelectionTimeoutMS=5000` で作り、TTL インデックス作成を起動時の接続確認に兼ねる。届かなければ英語メッセージの `RuntimeError` で起動を落とす（URI は認証情報を含みうるため載せない）。ロガーへ直接は付けず、`core/logging_setup.py` の `QueueListener` の宛先としてだけ使う |
 
 ### コア基盤 (`src/lilla_core/core/`)
 | ファイル | 役割 |
@@ -438,7 +438,7 @@ Discord に見せる短い文言のカタログ。表示言語は `lilla.yaml` �
 
 | ファイル | 役割 |
 |----------|------|
-| `motor_client.py` | Motor クライアントの共通ファクトリ（`create_motor_client`）。`tz_aware=True` を指定し、読み出す datetime を timezone-aware な UTC に統一する。`lru_cache(maxsize=1)` によりプロセス内で 1 インスタンスのみを共有する。全 Mongo アクセスはこのファクトリ経由でクライアントを生成する |
+| `mongo_client.py` | 非同期 MongoDB クライアント（PyMongo Async の `AsyncMongoClient`）の共通ファクトリ（`create_mongo_client`）。`tz_aware=True` を指定し、読み出す datetime を timezone-aware な UTC に統一する。`lru_cache(maxsize=1)` によりプロセス内で 1 インスタンスのみを共有する。全 Mongo アクセスはこのファクトリ経由でクライアントを生成する。`AsyncMongoClient` はスレッドセーフでなく最初に使ったイベントループに結び付くため、bot のイベントループ上でだけ使い、別スレッドへ渡さない。Motor と違い `aggregate()` はコルーチンなので `await collection.aggregate(...)` でカーソルを得る（ログ用の同期 `MongoClient` は `log_handler.py` が別に持つ） |
 | `conversation_repository.py` | MongoDB に会話履歴を保存・取得（有効期限付き）。任意で分類タグ（`tags`）と、対応する Discord メッセージ情報（`discord_channel_id` / `discord_message_ids`）を保存でき、タグ指定の最新 1 件取得（`find_latest_by_tag`）と `_id` 指定の削除（`delete`）、チャンネル・期間指定の取得（`load_by_channel_between`。`discord_channel_id` の無い既存ドキュメントは対象外）、期間・キーワード・発言者・チャンネルを任意に重ねた検索（`search`。キーワードはエスケープしたうえで `message.content` への部分一致で AND 検索する）を提供する。インデックスは `time`（TTL）に加えて `(discord_channel_id, time)` の複合を張る |
 | `channel_summary_repository.py` | 登録 Discord チャンネルごとの「部屋のノート」を `channel_summaries` コレクションに保持する。`discord_channel_id` がユニークで 1 チャンネル 1 ドキュメント、`upsert()` で上書きする（TTL は持たない）。`summary_date` は要約対象日（解決済みタイムゾーンの暦日、ISO 日付文字列）、`updated_at` は書き込み時刻 |
 | `credentials_repository.py` | MongoDB に API 認証情報を `type` ごとに保存・更新する汎用リポジトリ（複数の OAuth クライアントが同一形状で利用する想定） |
@@ -526,7 +526,7 @@ conftest と黙って干渉しうるため）。利用側は自分のルート `
 | `pytest_plugin.py` | 上記を包む function scope の fixture 2 つ。`lilla_config_root` は `tmp_path` に最小構成の `lilla.yaml` を書いて `CONFIG_ROOT` を向け、`DISCORD_TOKEN` が無ければダミー値を入れてそのディレクトリを返す。`lilla_extensions` は `register(*extensions) -> AppConfig` を返し、内部で `use_extensions()` に入って teardown でまとめて抜ける（複数回呼んだら後入れ先出しで戻す） |
 
 ## tests/ — テスト
-`tests/` 配下に各モジュールの単体テストを配置（pytest で実行）。`tests/repository/test_motor_client.py`
+`tests/` 配下に各モジュールの単体テストを配置（pytest で実行）。`tests/repository/test_mongo_client.py`
 のようにサブディレクトリを切ることもある。`tests/conftest.py` が `sys.path` に `src/` とリポジトリ
 ルートを追加し、`AppConfig.env` の必須フィールド用にダミーの環境変数（`DISCORD_TOKEN`）と、
 YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fixtures/config_root/lilla.yaml` を

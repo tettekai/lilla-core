@@ -177,7 +177,7 @@ class TestMongoDBHandlerEmit:
 
 
 class TestMongoDBHandlerLoopGuard:
-    """pymongo / motor ログによる再帰呼び出し防止のテスト。"""
+    """pymongo ログによる再帰呼び出し防止のテスト。"""
 
     def test_pymongo_log_is_ignored(self):
         """pymongo から始まるロガーのレコードは無視されること。"""
@@ -195,24 +195,8 @@ class TestMongoDBHandlerLoopGuard:
         handler.emit(record)
         _mock_collection.insert_one.assert_not_called()
 
-    def test_motor_log_is_ignored(self):
-        """motor から始まるロガーのレコードは無視されること。"""
-        handler = _make_handler()
-        _mock_collection.reset_mock()
-        record = logging.LogRecord(
-            name="motor.core",
-            level=logging.DEBUG,
-            pathname="",
-            lineno=0,
-            msg="motor internal",
-            args=(),
-            exc_info=None,
-        )
-        handler.emit(record)
-        _mock_collection.insert_one.assert_not_called()
-
     def test_other_logger_is_not_ignored(self):
-        """pymongo / motor 以外のロガーは無視されないこと。"""
+        """pymongo 以外のロガーは無視されないこと。"""
         handler = _make_handler()
         _mock_collection.reset_mock()
         record = logging.LogRecord(

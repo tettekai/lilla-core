@@ -9,6 +9,20 @@
 
 ### Changed
 
+- MongoDB の非同期ドライバーを deprecated になった Motor から PyMongo Async
+  （`pymongo.AsyncMongoClient`）へ移行した（#3）。依存は `motor==3.7.0` を外して
+  `pymongo==4.18.2` に固定した。利用側アプリケーションも `motor` を外し、同じ `pymongo` の版に揃えること
+  - クライアントの共通ファクトリ `lilla_core.repository.motor_client.create_motor_client` を
+    `lilla_core.repository.mongo_client.create_mongo_client` に改名した。旧名の別名は残さないため、
+    旧名を import している拡張・ホストは新名へ書き換えること。戻り値は `AsyncMongoClient`
+    （`tz_aware=True`・プロセス内で 1 インスタンス共有は従来どおり）
+  - 戻り値のコレクションを直接使う側は、`aggregate()` が Motor と違ってコルーチンになった点に
+    注意すること（`cursor = await collection.aggregate(pipeline)`）。それ以外の
+    `find` / `to_list` / `insert_one` / `update_one` / `find_one_and_update` などは書き方を変えずに使える
+  - クライアントはスレッドセーフではなく、最初に使ったイベントループに結び付く。
+    別スレッドへ渡さないこと
+  - `config.example/logging.yaml` から `motor` ロガーの設定を外した（手元の `logging.yaml` に
+    残っていても害は無い）
 - 依存を更新した（`==` 固定は維持。Motor は据え置き）: aiohttp 3.11.14 → 3.14.3、
   discord.py 2.4.0 → 2.7.1、pydantic 2.11.1 → 2.13.5、pydantic-settings 2.8.1 → 2.15.0、
   tiktoken 0.9.0 → 0.14.0。利用側アプリケーションも同じ版に揃えること

@@ -39,7 +39,7 @@ def _make_config(allowed=None) -> MagicMock:
 
 
 def _patch_mongo(monkeypatch: pytest.MonkeyPatch, config: MagicMock):
-    """get_config と create_motor_client をパッチし、collection モックを返す。"""
+    """get_config と create_mongo_client をパッチし、collection モックを返す。"""
     from lilla_core.core import config as core_config
 
     monkeypatch.setattr(core_config, "get_config", lambda: config)
@@ -51,9 +51,9 @@ def _patch_mongo(monkeypatch: pytest.MonkeyPatch, config: MagicMock):
     client = MagicMock()
     client.__getitem__.return_value.__getitem__.return_value = col
 
-    from lilla_core.repository import motor_client as motor_client_module
+    from lilla_core.repository import mongo_client as mongo_client_module
 
-    monkeypatch.setattr(motor_client_module, "create_motor_client", lambda *a, **kw: client)
+    monkeypatch.setattr(mongo_client_module, "create_mongo_client", lambda *a, **kw: client)
     return col
 
 

@@ -41,7 +41,7 @@ import bcrypt
 from aiohttp import web
 from bson import ObjectId
 
-from lilla_core.repository.motor_client import create_motor_client
+from lilla_core.repository.mongo_client import create_mongo_client
 from lilla_core.utils.datetime_utils import parse_iso_utc, utc_now
 
 from lilla_core.handlers.request_params import parse_int_param, parse_json_body, parse_object_id
@@ -130,7 +130,7 @@ def _get_collection(collection_name: str):
     合成前のインスタンスを掴みうる。
     """
     config = get_config()
-    client = create_motor_client(config.env.mongodb_uri)
+    client = create_mongo_client(config.env.mongodb_uri)
     return client[config.mongodb.db_name][collection_name]
 
 
@@ -225,7 +225,7 @@ async def handle_api_logs_stats(request: web.Request) -> web.Response:
         {"$group": {"_id": "$levelname", "count": {"$sum": 1}}},
         {"$sort": {"_id": 1}},
     ]
-    cursor = collection.aggregate(pipeline)
+    cursor = await collection.aggregate(pipeline)
     docs = await cursor.to_list(length=None)
     stats = {doc["_id"]: doc["count"] for doc in docs}
     return web.json_response({"stats": stats})

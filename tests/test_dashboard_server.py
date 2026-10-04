@@ -31,13 +31,11 @@ def mock_web() -> MagicMock:
 @pytest.fixture
 def with_mocked_modules(mock_cfg: MagicMock):
     """依存モジュールを patch.dict で差し替える。"""
-    mock_motor = MagicMock()
     with patch.dict(
         sys.modules,
         {
             "lilla_core.core.config": MagicMock(get_config=lambda: mock_cfg),
-            "motor": MagicMock(),
-            "motor.motor_asyncio": mock_motor,
+            "lilla_core.repository.mongo_client": MagicMock(),
         },
     ):
         yield
@@ -86,7 +84,8 @@ def _make_collection(
 
     agg_cursor = MagicMock()
     agg_cursor.to_list = AsyncMock(return_value=pipeline_result or [])
-    col.aggregate.return_value = agg_cursor
+    # PyMongo Async の aggregate はコルーチンで、await するとカーソルが返る
+    col.aggregate = AsyncMock(return_value=agg_cursor)
 
     return col
 

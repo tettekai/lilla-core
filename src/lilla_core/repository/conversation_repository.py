@@ -5,7 +5,7 @@ from datetime import datetime
 from functools import lru_cache
 
 from bson import ObjectId
-from lilla_core.repository.motor_client import create_motor_client
+from lilla_core.repository.mongo_client import create_mongo_client
 from pymongo import ASCENDING, DESCENDING
 
 from lilla_core.utils.datetime_utils import utc_now
@@ -31,7 +31,7 @@ def get_conversation_repo() -> "ConversationRepository":
 
 class ConversationRepository:
     def __init__(self, mongo_uri: str, db_name: str, ttl_hours: int = 72) -> None:
-        client = create_motor_client(mongo_uri)
+        client = create_mongo_client(mongo_uri)
         self._collection = client[db_name]["conversations"]
         self._ttl_hours = ttl_hours
 

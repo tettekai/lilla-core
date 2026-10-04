@@ -39,7 +39,7 @@ async def handle_mongodata(message, arg: str, tools: dict, bot) -> None:
         bot: Discord クライアント。エラー通知に使用する。
     """
     from lilla_core.core.config import get_config
-    from lilla_core.repository.motor_client import create_motor_client
+    from lilla_core.repository.mongo_client import create_mongo_client
 
     config = get_config()
 
@@ -85,7 +85,7 @@ async def handle_mongodata(message, arg: str, tools: dict, bot) -> None:
     key_field = body.get("key")
 
     try:
-        client = create_motor_client(config.env.mongodb_uri)
+        client = create_mongo_client(config.env.mongodb_uri)
         col = client[config.mongodb.db_name][collection_name]
 
         if key_field:
