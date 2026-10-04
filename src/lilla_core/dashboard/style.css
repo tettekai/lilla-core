@@ -138,6 +138,18 @@ header h1 {
   margin-bottom: 12px;
 }
 
+/* ---- Home status ---- */
+
+.home-status {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 16px;
+  margin: 0;
+}
+
+.home-status dt { color: var(--text-muted); }
+.home-status dd { margin: 0; }
+
 /* ---- Sections ---- */
 
 section { padding: 14px 16px; }
