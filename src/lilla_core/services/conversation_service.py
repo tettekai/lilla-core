@@ -19,7 +19,12 @@ from lilla_core.core.extension import (
 )
 from lilla_core.core.runtime_state import is_tools_disabled
 from lilla_core.api.llm_client import chat_to_llm, chat_to_llm_with_tools
-from lilla_core.loaders.llm_tool_loader import build_tools_param, execute_tool_call
+from lilla_core.loaders.llm_tool_loader import (
+    MAIN_TOOLSET_TOKEN,
+    build_tools_param,
+    execute_tool_call,
+    resolve_available_tools,
+)
 from lilla_core.services.llm_resolver import content_has_image, resolve_llm_name
 from lilla_core.services.memory_manager import get_memory_manager
 from lilla_core.services.message_util import extract_meta_block, prepend_timestamp_prefix
@@ -174,7 +179,8 @@ async def run_conversation(
     allowed_tool_names : list[str] | None, optional
         この回だけ LLM に見せるツールの許可リスト（展開済みの YAML stem。
         `llm_tool_loader.resolve_available_tools` の戻り値を想定）。None なら
-        `tools.main_available_tools` を使う。空リストならツールを渡さない。
+        `tools.sets` の `main` セットを展開して使う（未設定ならツールなし）。
+        空リストならツールを渡さない。
         いずれの場合も、続けて `supported_client_type` で絞る。
 
     Returns
@@ -238,6 +244,11 @@ async def run_conversation(
         or content_has_image(inject_user_content),
     )
 
+    # 省略（None）は「`main` セットを使う」。展開結果が空（`main` 未設定を含む）なら
+    # ツールを渡さない。
+    if allowed_tool_names is None and llm_tools:
+        allowed_tool_names = resolve_available_tools([MAIN_TOOLSET_TOKEN], llm_tools)
+
     if not llm_tools or allowed_tool_names == []:
         reply = await chat_to_llm(history, system_prompt=system_prompt, llm_name=llm_name)
         return _apply_meta_actions(reply)
@@ -245,11 +256,7 @@ async def run_conversation(
     tools_param = build_tools_param(
         llm_tools,
         client_type=client_type,
-        allowed_names=(
-            _config.tools.main_available_tools
-            if allowed_tool_names is None
-            else allowed_tool_names
-        ),
+        allowed_names=allowed_tool_names,
     )
     messages = list(history)
     max_iterations = _config.llm.max_tool_call_iterations

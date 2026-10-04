@@ -119,6 +119,9 @@ type: llm_calendar_get
 type: llm_calendar_create
 ```
 
+To use them in normal conversations, also add these stems to `tools.sets.main` in
+`lilla.yaml` ([Tool sets](tools.md#tool-sets-toolssets)).
+
 | Tool | Function name | What it does |
 |------|---------------|--------------|
 | `llm_calendar_get` | `get_calendar_events` | Reads events by `date_range` (`today` / `last_7_days` / `2026-04-20/2026-04-26` and so on), `query`, and `max_results`. Attendees are never passed to the LLM, and IDs of registered calendars are replaced with their `friendly_name` |

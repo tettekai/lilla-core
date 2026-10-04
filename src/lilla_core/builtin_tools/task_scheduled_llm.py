@@ -19,8 +19,8 @@ YAML の項目:
 - `prompt` … 必須。`utils/resource_loader.py` の `load_text_resources` にそのまま
   渡す source spec（`file:` / `dir:`。リストでもよい）
 - `available_tools` … 任意。この実行で LLM に見せるツールの許可リスト（YAML stem と
-  `$main` の並び）。`llm_tool_loader.resolve_available_tools` で展開する。空リスト、
-  またはキーが無い場合はどちらもツールなし（`main_available_tools` は継承しない）。
+  `$` + セット名（`$main` など）の並び）。`llm_tool_loader.resolve_available_tools` で
+  展開する。空リスト、またはキーが無い場合はどちらもツールなし（`main` セットは継承しない）。
   値はあるが不正（リストでない・未知のトークンや stem など）なときだけ初期化で落とす
 """
 from __future__ import annotations
@@ -66,7 +66,7 @@ class ScheduledLlmTask:
 
         `llm_provider` / `prompt` はこのタスクの前提なので、欠けていれば起動時
         （ツールのロード時）に落とす。`available_tools` は任意で、キーが無い
-        場合は空リスト（ツールなし。`main_available_tools` は継承しない）として
+        場合は空リスト（ツールなし。`main` セットは継承しない）として
         扱い、キーがあるのに展開できない（不正な）場合だけ落とす。
 
         Args:

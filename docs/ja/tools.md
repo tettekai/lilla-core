@@ -56,6 +56,45 @@
   キーを設定できます。ツール固有のキーは、下記の実行時コンテキストキーと衝突
   してはいけません（起動時に検証され、衝突時は fail-fast します）。
 
+## ツールセット（`tools.sets`）
+
+ツールは YAML を置いてロードしただけでは、通常会話の LLM には見えません。通常会話で
+LLM に見せるツールは、`lilla.yaml` の `tools.sets` に書く名前付きツールセットのうち
+`main` で決まります。
+
+```yaml
+tools:
+  sets:
+    main:            # 通常会話で LLM に見せるツール
+      - llm_weather
+      - $health
+    health:          # main 以外のセット名は自由
+      - llm_health_get
+```
+
+- セットの要素はツール YAML の stem か、別セットへの `$` + セット名の参照です。
+  `main` が `$health` のように他のセットを含んでもかまいません
+- セット名に使えるのは半角英数字と `-` `_` だけで、大文字小文字は区別します。予約名は
+  `main` だけです。空文字や `$` などを含む名前は起動時に失敗します
+- `main` が未設定ならツールなしです。`tools.sets` が無い、`sets.main` が無い、
+  `main: []` はどれも同じ意味です（書き忘れで全ツールが開放されることはありません）
+- 展開は出現順で、重複は最初の出現を残して除きます。LLM に渡す並びはこの順ではなく
+  ツールのロード順です
+- 参照が循環している（同じ展開の途中で同じセットに戻る）と起動時に失敗します。
+  複数のセットが同じセットを参照する共有は循環ではありません
+- どこからも参照されていないセットも起動時に展開して検証します。未知のセット名や
+  ロード済みでないツール名があれば起動時に失敗します
+- `supported_client_type` による絞り込みは展開のあとで行います。セットに種別の違う
+  ツールが混ざっていても起動は失敗せず、実行時にそのクライアント種別で使えるものだけが
+  渡ります
+
+スケジュール LLM（[`available_tools`](scheduled-llm.md#ツールの許可リストavailable_tools)）や
+[`llm_expert`](#llm_expert専門家エージェント) の `available_tools` からは、`$main` や
+`$health` のように `$` + セット名でセットを参照できます。
+
+以前の `tools.main_available_tools` は廃止しました。残っていると起動時に失敗するので、
+中身を `tools.sets.main` へ移してください。
+
 ## task ツール
 
 `${CONFIG_ROOT}/tools/task_*.yaml`、実装は `${TOOL_ROOT}/**/<type>.py` です。
@@ -109,7 +148,7 @@ type: llm_expert
 description: 健康データの専門家。体調や運動についての質問を委譲する
 prompt: dir:${config_root}/prompt/experts/health
 llm_provider: grok            # 省略可
-available_tools: [llm_health_get]   # `$main` は tools.main_available_tools に展開される
+available_tools: [llm_health_get]   # `$main` などのツールセット参照も書ける
 ```
 
 `api: responses` と `grok_tools` を組み合わせると、Responses API の組み込みツールを使った

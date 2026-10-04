@@ -664,6 +664,11 @@ def _tools(**supported: str) -> dict[str, dict]:
 
 
 class TestResolveAvailableTools:
+    @pytest.fixture(autouse=True)
+    def _no_sets(self, mock_cfg) -> None:
+        """既定では `tools.sets` を空にする（MagicMock のままだと展開できないため）。"""
+        mock_cfg.tools.sets = {}
+
     def test_keeps_stems_as_is(self, llm_tool_loader) -> None:
         """YAML stem は並べた順のまま残る。"""
         llm_tools = _tools(tool_a="all", tool_b="all")
@@ -672,30 +677,75 @@ class TestResolveAvailableTools:
         ) == ["tool_b", "tool_a"]
 
     def test_empty_list_is_no_tools(self, llm_tool_loader, mock_cfg) -> None:
-        """空リストは空のまま（main_available_tools は見ない）。"""
-        mock_cfg.tools.main_available_tools = ["tool_a"]
+        """空リストは空のまま（main セットは見ない）。"""
+        mock_cfg.tools.sets = {"main": ["tool_a"]}
         assert llm_tool_loader.resolve_available_tools([], _tools(tool_a="all")) == []
 
     def test_main_expands_in_place(self, llm_tool_loader, mock_cfg) -> None:
-        """`$main` は main_available_tools の中身にその位置で展開される。"""
-        mock_cfg.tools.main_available_tools = ["tool_a", "tool_b"]
+        """`$main` は main セットの中身にその位置で展開される。"""
+        mock_cfg.tools.sets = {"main": ["tool_a", "tool_b"]}
         llm_tools = _tools(tool_a="all", tool_b="all", tool_c="task")
         assert llm_tool_loader.resolve_available_tools(
             ["tool_c", "$main"], llm_tools
         ) == ["tool_c", "tool_a", "tool_b"]
 
-    def test_main_without_filter_means_all_loaded(self, llm_tool_loader, mock_cfg) -> None:
-        """main_available_tools が未設定なら `$main` はロード済みの全ツール。"""
-        mock_cfg.tools.main_available_tools = None
+    @pytest.mark.parametrize("sets", [{}, {"main": []}, {"other": ["tool_a"]}])
+    def test_unset_main_means_no_tools(self, llm_tool_loader, mock_cfg, sets) -> None:
+        """main セットが無い・空なら `$main` は空に展開される（全件開放にしない）。"""
+        mock_cfg.tools.sets = sets
         llm_tools = _tools(tool_a="all", tool_b="discord")
+        assert llm_tool_loader.resolve_available_tools(["$main"], llm_tools) == []
+
+    def test_named_set_expands(self, llm_tool_loader, mock_cfg) -> None:
+        """main 以外の名前付きセットも `$` + セット名で展開できる。"""
+        mock_cfg.tools.sets = {"health": ["tool_b"], "Health-2_x": ["tool_a"]}
+        llm_tools = _tools(tool_a="all", tool_b="all")
+        assert llm_tool_loader.resolve_available_tools(
+            ["$health", "$Health-2_x"], llm_tools
+        ) == ["tool_b", "tool_a"]
+
+    def test_nested_sets_expand_recursively(self, llm_tool_loader, mock_cfg) -> None:
+        """セットの中の `$` 参照も出現順に展開される。"""
+        mock_cfg.tools.sets = {
+            "main": ["tool_a", "$health", "tool_c"],
+            "health": ["tool_b", "$base"],
+            "base": ["tool_d"],
+        }
+        llm_tools = _tools(tool_a="all", tool_b="all", tool_c="all", tool_d="all")
         assert llm_tool_loader.resolve_available_tools(["$main"], llm_tools) == [
-            "tool_a",
-            "tool_b",
+            "tool_a", "tool_b", "tool_d", "tool_c",
         ]
+
+    def test_shared_reference_is_not_a_cycle(self, llm_tool_loader, mock_cfg) -> None:
+        """複数のセットが同じセットを参照する共有は循環ではない。"""
+        mock_cfg.tools.sets = {
+            "main": ["$a", "$b"],
+            "a": ["$common", "tool_a"],
+            "b": ["$common", "tool_b"],
+            "common": ["tool_c"],
+        }
+        llm_tools = _tools(tool_a="all", tool_b="all", tool_c="all")
+        assert llm_tool_loader.resolve_available_tools(["$main"], llm_tools) == [
+            "tool_c", "tool_a", "tool_b",
+        ]
+
+    @pytest.mark.parametrize(
+        "sets",
+        [
+            {"a": ["$b"], "b": ["$a"]},
+            {"a": ["$a"]},
+            {"a": ["$b"], "b": ["$c"], "c": ["$a"]},
+        ],
+    )
+    def test_cycle_fails(self, llm_tool_loader, mock_cfg, sets) -> None:
+        """セットの参照が循環していれば失敗する。"""
+        mock_cfg.tools.sets = sets
+        with pytest.raises(ValueError, match="cycle"):
+            llm_tool_loader.resolve_available_tools(["$a"], _tools(tool_a="all"))
 
     def test_removes_duplicates(self, llm_tool_loader, mock_cfg) -> None:
         """展開後の重複は最初の出現だけを残す。"""
-        mock_cfg.tools.main_available_tools = ["tool_a", "tool_b"]
+        mock_cfg.tools.sets = {"main": ["tool_a", "tool_b"]}
         llm_tools = _tools(tool_a="all", tool_b="all")
         assert llm_tool_loader.resolve_available_tools(
             ["tool_b", "$main", "$main"], llm_tools
@@ -713,16 +763,24 @@ class TestResolveAvailableTools:
         with pytest.raises(ValueError, match="tool_x"):
             llm_tool_loader.resolve_available_tools(["tool_x"], _tools(tool_a="all"))
 
-    def test_unknown_stem_from_main_fails(self, llm_tool_loader, mock_cfg) -> None:
-        """`$main` の展開で残った未ロードの stem も失敗させる。"""
-        mock_cfg.tools.main_available_tools = ["tool_gone"]
+    def test_unknown_stem_from_set_fails(self, llm_tool_loader, mock_cfg) -> None:
+        """セットの展開で残った未ロードの stem も失敗させる。"""
+        mock_cfg.tools.sets = {"main": ["tool_gone"]}
         with pytest.raises(ValueError, match="tool_gone"):
             llm_tool_loader.resolve_available_tools(["$main"], _tools(tool_a="all"))
 
-    def test_unknown_token_fails(self, llm_tool_loader) -> None:
-        """`$main` 以外のトークンは未実装なので失敗する。"""
-        with pytest.raises(ValueError, match=r"\$other"):
-            llm_tool_loader.resolve_available_tools(["$other"], _tools(tool_a="all"))
+    @pytest.mark.parametrize("token", ["$other", "$", "$Main"])
+    def test_unknown_set_fails(self, llm_tool_loader, mock_cfg, token) -> None:
+        """未定義のセット名は失敗する（大文字小文字は区別する）。"""
+        mock_cfg.tools.sets = {"main": ["tool_a"]}
+        with pytest.raises(ValueError, match="Unknown tool set"):
+            llm_tool_loader.resolve_available_tools([token], _tools(tool_a="all"))
+
+    def test_unknown_set_inside_set_fails(self, llm_tool_loader, mock_cfg) -> None:
+        """セットの中の未知のセット参照も失敗する。"""
+        mock_cfg.tools.sets = {"main": ["$missing"]}
+        with pytest.raises(ValueError, match=r"\$missing"):
+            llm_tool_loader.resolve_available_tools(["$main"], _tools(tool_a="all"))
 
     @pytest.mark.parametrize("entries", [None, "tool_a", [1], [""]])
     def test_rejects_malformed_input(self, llm_tool_loader, entries) -> None:
@@ -734,13 +792,13 @@ class TestResolveAvailableTools:
         self, llm_tool_loader, mock_cfg
     ) -> None:
         """task 専用ツールは、それを並べた task 実行にだけ渡り、他には出ない。"""
-        mock_cfg.tools.main_available_tools = ["tool_a"]
+        mock_cfg.tools.sets = {"main": ["tool_a"]}
         llm_tools = _tools(tool_a="all", tool_d="task", tool_ui="discord")
 
         listed = llm_tool_loader.resolve_available_tools(
             ["$main", "tool_d", "tool_ui"], llm_tools
         )
-        other_task = llm_tool_loader.resolve_available_tools(["$main"], llm_tools)
+        main = llm_tool_loader.resolve_available_tools(["$main"], llm_tools)
 
         def names(allowed, client_type):
             return [
@@ -752,8 +810,42 @@ class TestResolveAvailableTools:
 
         # 並べたタスク: task 専用ツールは出るが discord 専用ツールは交差で落ちる。
         assert names(listed, "task") == ["tool_a", "tool_d"]
-        assert names(other_task, "task") == ["tool_a"]
-        assert names(mock_cfg.tools.main_available_tools, "discord") == ["tool_a"]
+        assert names(main, "task") == ["tool_a"]
+        assert names(main, "discord") == ["tool_a"]
+
+    def test_mixed_client_types_in_set_do_not_fail(self, llm_tool_loader, mock_cfg) -> None:
+        """セット内に supported_client_type が混ざっていても展開は失敗しない。"""
+        mock_cfg.tools.sets = {"main": ["tool_d", "tool_ui"]}
+        llm_tools = _tools(tool_d="task", tool_ui="discord")
+        assert llm_tool_loader.resolve_available_tools(["$main"], llm_tools) == [
+            "tool_d", "tool_ui",
+        ]
+
+
+class TestValidateToolSets:
+    def test_valid_sets_pass(self, llm_tool_loader, mock_cfg) -> None:
+        """すべてのセットが展開できれば何も起きない。"""
+        mock_cfg.tools.sets = {"main": ["tool_a", "$health"], "health": ["tool_b"]}
+        llm_tool_loader.validate_tool_sets(_tools(tool_a="all", tool_b="all"))
+
+    def test_no_sets_pass(self, llm_tool_loader, mock_cfg) -> None:
+        """セットが 1 つも無くても失敗しない。"""
+        mock_cfg.tools.sets = {}
+        llm_tool_loader.validate_tool_sets(_tools(tool_a="all"))
+
+    @pytest.mark.parametrize(
+        ("sets", "match"),
+        [
+            ({"unused": ["tool_gone"]}, "tool_gone"),
+            ({"unused": ["$missing"]}, "missing"),
+            ({"x": ["$y"], "y": ["$x"]}, "cycle"),
+        ],
+    )
+    def test_unused_broken_set_fails(self, llm_tool_loader, mock_cfg, sets, match) -> None:
+        """どこからも参照されていないセットも展開して検証する。"""
+        mock_cfg.tools.sets = sets
+        with pytest.raises(ValueError, match=match):
+            llm_tool_loader.validate_tool_sets(_tools(tool_a="all"))
 
 
 # ---------------------------------------------------------------------------

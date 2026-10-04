@@ -148,7 +148,7 @@ class TestScheduledLlmTask:
     ) -> None:
         """`$main` を展開し、並べた stem と合わせた許可リストを渡す。"""
         cfg = MagicMock()
-        cfg.tools.main_available_tools = ["llm_weather"]
+        cfg.tools.sets = {"main": ["llm_weather"]}
         with patch("lilla_core.loaders.llm_tool_loader.get_config", return_value=cfg):
             task = _make_task(
                 prompt_file, available_tools=["$main", "llm_conversation_get", "llm_weather"]

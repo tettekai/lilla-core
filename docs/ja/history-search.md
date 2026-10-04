@@ -9,6 +9,9 @@
 type: llm_conversation_get
 ```
 
+通常会話で使うには、`lilla.yaml` の `tools.sets.main` にも stem を足します
+（[ツールセット](tools.md#ツールセットtoolssets)）。
+
 - `datetime_range`（`today` / `last_7_days` / `2026-04-20/2026-04-26` など）・`query`
   （スペース区切りの AND キーワード）・`role`（`user` / `assistant` / `all`）・`limit`
   （既定 30、上限 30）で絞り込めます
