@@ -481,6 +481,11 @@ class UiConfig(BaseModel):
         return value
 
 
+# `llm.providers` のキーに使えない名前。`!model reset` が上書きの解除に使うため、
+# 同名のプロバイダーがあると切り替えと解除の区別が付かなくなる。
+RESERVED_LLM_PROVIDER_NAMES: frozenset[str] = frozenset({"reset"})
+
+
 class LlmConfig(BaseModel):
     """lilla.yaml の `llm:` セクション。"""
 
@@ -496,7 +501,15 @@ class LlmConfig(BaseModel):
         `llm:` セクション自体を省略した場合もクラスデフォルト
         （`default="ollama-gemma3"`, `providers={}`）に対してこの検証が走り、
         意図どおり起動時に `ValidationError` となる。
+        `!model` のサブコマンドと衝突する予約名（`RESERVED_LLM_PROVIDER_NAMES`）を
+        `providers` のキーに使った場合も、コマンド実行時ではなく起動時に落とす。
         """
+        reserved = sorted(RESERVED_LLM_PROVIDER_NAMES.intersection(self.providers))
+        if reserved:
+            raise ValueError(
+                f"llm.providers must not use reserved name(s): {', '.join(reserved)} "
+                "(reserved by the !model command)"
+            )
         if self.default not in self.providers:
             available = ", ".join(sorted(self.providers)) or "(none)"
             raise ValueError(
