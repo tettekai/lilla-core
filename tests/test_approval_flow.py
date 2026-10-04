@@ -569,3 +569,254 @@ class TestApprovedMessage:
         await proxy.reply("結果", file=file_obj)
 
         original_channel.send.assert_awaited_once_with("結果", file=file_obj)
+
+
+_SPLIT_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+
+def _frontmatter(body: str = "", correlation_id: str = _SPLIT_UUID) -> str:
+    """外部エージェントからの FrontMatter 付きメッセージ本文を組み立てる。"""
+    return f"---\ncorrelation_id: {correlation_id}\n---\n{body}"
+
+
+class _History:
+    """`channel.history(limit=1, before=...)` の戻り値（非同期イテレータ）の代わり。"""
+
+    def __init__(self, messages: list) -> None:
+        """返すメッセージの一覧を受け取る。"""
+        self._messages = list(messages)
+
+    def __aiter__(self):
+        """非同期イテレータとして自身を返す。"""
+        return self
+
+    async def __anext__(self):
+        """次のメッセージを返す。尽きたら StopAsyncIteration を投げる。"""
+        if not self._messages:
+            raise StopAsyncIteration
+        return self._messages.pop(0)
+
+
+def _with_previous(message: MagicMock, previous: MagicMock | None) -> MagicMock:
+    """`message` のチャンネル履歴の直前 1 件を `previous` にする。"""
+    message.channel.history = MagicMock(
+        return_value=_History([previous] if previous is not None else [])
+    )
+    return message
+
+
+def _author(user_id: int) -> MagicMock:
+    """送信者のモックを返す。"""
+    author = MagicMock()
+    author.id = user_id
+    author.display_name = "外部エージェント"
+    return author
+
+
+@pytest.fixture
+def pending_repo(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """pending_tool_calls リポジトリをモックに差し替える（既定は pending あり）。"""
+    repo = MagicMock()
+    repo.exists_pending = AsyncMock(return_value=True)
+    monkeypatch.setattr(approval_flow, "get_pending_tool_calls_repo", lambda: repo)
+    return repo
+
+
+@pytest.fixture
+def split_messages() -> tuple[MagicMock, MagicMock]:
+    """FrontMatter だけの 1 通目と、本文なしのテキスト添付だけの 2 通目を返す。"""
+    previous = _make_external_message(_frontmatter())
+    previous.author = _author(12345)
+    attachment = _make_attachment("分割で届いた結果本文", "result.txt", "text/plain")
+    message = _make_external_message("", [attachment])
+    message.author = _author(12345)
+    _with_previous(message, previous)
+    return previous, message
+
+
+class TestExtractApprovableCommandFromMessage:
+    """FrontMatter と添付を 2 通に分けた結果メッセージの扱いの検証。"""
+
+    async def test_frontmatter_only_message_is_ignored_silently(
+        self, pending_repo: MagicMock, mock_notify_error: AsyncMock
+    ) -> None:
+        """FrontMatter だけのメッセージは何もしない（照会もエラー通知もしない）。"""
+        message = _make_external_message(_frontmatter())
+
+        result = await approval_flow.extract_approvable_command_from_message(message)
+
+        assert result is None
+        pending_repo.exists_pending.assert_not_called()
+        mock_notify_error.assert_not_called()
+
+    async def test_frontmatter_with_body_is_converted_as_before(
+        self, pending_repo: MagicMock
+    ) -> None:
+        """閉じ `---` のあとに本文がある場合は今どおり変換する。"""
+        message = _make_external_message(_frontmatter("検索結果です"))
+
+        result = await approval_flow.extract_approvable_command_from_message(message)
+
+        assert result == f"!toolresult {_SPLIT_UUID}\n検索結果です"
+
+    async def test_frontmatter_with_attachment_is_converted_as_before(
+        self, pending_repo: MagicMock
+    ) -> None:
+        """同じメッセージに FrontMatter と添付がある場合は今どおり（履歴は見ない）。"""
+        attachment = _make_attachment("結果", "result.txt", "text/plain")
+        message = _make_external_message(_frontmatter(), [attachment])
+        message.channel.history = MagicMock()
+
+        result = await approval_flow.extract_approvable_command_from_message(message)
+
+        assert result == f"!toolresult {_SPLIT_UUID}\n"
+        message.channel.history.assert_not_called()
+
+    async def test_known_command_with_attachment_is_unchanged(
+        self, pending_repo: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """既知コマンドと添付が同じメッセージにある場合は今どおり。"""
+        # このモジュールではコマンドのレジストリを読み込まないため、判定だけ差し替える
+        monkeypatch.setattr(
+            approval_flow.command_handler,
+            "extract_command_content",
+            lambda content: content if content.startswith("!toolresult") else None,
+        )
+        attachment = _make_attachment("結果", "result.txt", "text/plain")
+        message = _make_external_message(f"!toolresult {_SPLIT_UUID}", [attachment])
+        message.channel.history = MagicMock()
+
+        result = await approval_flow.extract_approvable_command_from_message(message)
+
+        assert result == f"!toolresult {_SPLIT_UUID}"
+        message.channel.history.assert_not_called()
+
+    async def test_attachment_only_message_combines_with_previous_frontmatter(
+        self, pending_repo: MagicMock, split_messages
+    ) -> None:
+        """直前の FrontMatter だけのメッセージと組み合わせて !toolresult にする。"""
+        _, message = split_messages
+
+        result = await approval_flow.extract_approvable_command_from_message(message)
+
+        assert result == f"!toolresult {_SPLIT_UUID}\n"
+        pending_repo.exists_pending.assert_awaited_once_with(_SPLIT_UUID)
+        message.channel.history.assert_called_once_with(limit=1, before=message)
+
+    async def test_combined_command_resolves_body_from_attachment(
+        self, pending_repo: MagicMock, split_messages, bot: MagicMock
+    ) -> None:
+        """組み合わせたコマンドは、今のメッセージの添付を BODY として全文になる。"""
+        _, message = split_messages
+
+        command = await approval_flow.extract_approvable_command_from_message(message)
+        full = await approval_flow.resolve_full_command(message, command, bot)
+
+        assert full == f"!toolresult {_SPLIT_UUID}\n分割で届いた結果本文"
+
+    async def test_ignored_when_previous_author_differs(
+        self, pending_repo: MagicMock, split_messages
+    ) -> None:
+        """直前が別の送信者なら無視する。"""
+        previous, message = split_messages
+        previous.author = _author(67890)
+
+        assert await approval_flow.extract_approvable_command_from_message(message) is None
+        pending_repo.exists_pending.assert_not_called()
+
+    async def test_ignored_when_previous_has_body(
+        self, pending_repo: MagicMock, split_messages
+    ) -> None:
+        """直前の FrontMatter に本文があれば（1 通で完結済みなので）無視する。"""
+        previous, message = split_messages
+        previous.content = _frontmatter("検索結果です")
+
+        assert await approval_flow.extract_approvable_command_from_message(message) is None
+        pending_repo.exists_pending.assert_not_called()
+
+    async def test_ignored_when_previous_has_attachment(
+        self, pending_repo: MagicMock, split_messages
+    ) -> None:
+        """直前が添付つき（その 1 通で処理済み）なら無視する。"""
+        previous, message = split_messages
+        previous.attachments = [_make_attachment("結果", "result.txt", "text/plain")]
+
+        assert await approval_flow.extract_approvable_command_from_message(message) is None
+        pending_repo.exists_pending.assert_not_called()
+
+    async def test_ignored_when_previous_has_no_frontmatter(
+        self, pending_repo: MagicMock, split_messages
+    ) -> None:
+        """直前が FrontMatter でなければ無視する。"""
+        previous, message = split_messages
+        previous.content = "こんにちは"
+
+        assert await approval_flow.extract_approvable_command_from_message(message) is None
+        pending_repo.exists_pending.assert_not_called()
+
+    async def test_ignored_when_correlation_id_not_pending(
+        self, pending_repo: MagicMock, split_messages
+    ) -> None:
+        """correlation_id が pending として実在しなければ無視する。"""
+        _, message = split_messages
+        pending_repo.exists_pending.return_value = False
+
+        assert await approval_flow.extract_approvable_command_from_message(message) is None
+
+    async def test_ignored_when_pending_query_fails(
+        self, pending_repo: MagicMock, split_messages
+    ) -> None:
+        """pending の照会に失敗したら無視する。"""
+        _, message = split_messages
+        pending_repo.exists_pending.side_effect = Exception("db down")
+
+        assert await approval_flow.extract_approvable_command_from_message(message) is None
+
+    async def test_ignored_when_no_previous_message(
+        self, pending_repo: MagicMock, split_messages
+    ) -> None:
+        """直前のメッセージが無ければ無視する。"""
+        _, message = split_messages
+        _with_previous(message, None)
+
+        assert await approval_flow.extract_approvable_command_from_message(message) is None
+
+    async def test_ignored_when_history_fetch_fails(
+        self, pending_repo: MagicMock, split_messages
+    ) -> None:
+        """履歴の取得に失敗したら無視する（例外は外へ出さない）。"""
+        _, message = split_messages
+        message.channel.history = MagicMock(side_effect=Exception("forbidden"))
+
+        assert await approval_flow.extract_approvable_command_from_message(message) is None
+
+    async def test_ignored_when_attachment_is_not_text(
+        self, pending_repo: MagicMock, split_messages, mock_notify_error: AsyncMock
+    ) -> None:
+        """先頭の添付がテキストでなければ履歴も見ずに無視する（エラー通知もしない）。"""
+        _, message = split_messages
+        message.attachments = [_make_attachment("binary", "image.png", "image/png")]
+
+        assert await approval_flow.extract_approvable_command_from_message(message) is None
+        message.channel.history.assert_not_called()
+        mock_notify_error.assert_not_called()
+
+    async def test_ignored_when_message_has_text(
+        self, pending_repo: MagicMock, split_messages
+    ) -> None:
+        """本文のある添付つきメッセージは直前を見ない。"""
+        _, message = split_messages
+        message.content = "ファイルを送ります"
+
+        assert await approval_flow.extract_approvable_command_from_message(message) is None
+        message.channel.history.assert_not_called()
+
+    async def test_message_without_attachment_does_not_read_history(
+        self, pending_repo: MagicMock
+    ) -> None:
+        """本文も添付も無いメッセージは直前を見ない。"""
+        message = _make_external_message("")
+        message.channel.history = MagicMock()
+
+        assert await approval_flow.extract_approvable_command_from_message(message) is None
+        message.channel.history.assert_not_called()

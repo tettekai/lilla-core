@@ -33,11 +33,12 @@ _TEXT_EXTENSIONS = (".json", ".txt")
 _TEXT_CONTENT_TYPES = ("text/", "application/json")
 
 
-def _is_textual_attachment(attachment: object) -> bool:
+def is_textual_attachment(attachment: object) -> bool:
     """添付ファイルをテキストとして読み取ってよいかを判定する。
 
     拡張子（`.json` / `.txt`）と Content-Type（`text/*` / `application/json`）の
-    どちらか一方が一致すればテキストとして扱う。
+    どちらか一方が一致すればテキストとして扱う。BODY を読む前に同じ規則で
+    受け付けるかを判断したい呼び出し側（`handlers/approval_flow.py`）からも使う。
 
     Args:
         attachment: Discord の添付ファイル。
@@ -53,7 +54,7 @@ def _is_textual_attachment(attachment: object) -> bool:
     return content_type.startswith(_TEXT_CONTENT_TYPES)
 
 
-def _get_attachments(message: object) -> list:
+def get_attachments(message: object) -> list:
     """メッセージから添付ファイルのリストを取り出す。
 
     添付を持たないメッセージオブジェクトが渡されても落ちないよう、
@@ -81,7 +82,7 @@ async def _read_attachment_text(attachment: object, bot: object, error_title: st
     """
     filename = getattr(attachment, "filename", "") or ""
 
-    if not _is_textual_attachment(attachment):
+    if not is_textual_attachment(attachment):
         await notify_error(
             bot,
             t("attachment.error_title", command=error_title),
@@ -161,7 +162,7 @@ async def resolve_command_body(
     Returns:
         解決した BODY 文字列。解決できなかった場合は None。
     """
-    attachments = _get_attachments(message)
+    attachments = get_attachments(message)
     if attachments:
         if len(attachments) > 1:
             logger.info(
