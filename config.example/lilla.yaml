@@ -1,3 +1,14 @@
+# プロンプトの読み込み元（`file:` / `dir:` の source spec。`${config_root}` は CONFIG_ROOT に
+# 展開される）。`dir:` はディレクトリ内の .md / .txt をファイル名昇順で連結する。
+# 下はすべて既定値（未設定なら `{config_root}/prompt/<種類>` を読む）。ディレクトリや
+# ファイルが無ければ空のプロンプトとして扱い、起動は落ちない。
+prompt:
+  system: dir:${config_root}/prompt/system
+  conversation: dir:${config_root}/prompt/conversation
+  # Discord の会話にだけ足すプロンプト（拡張が client_type "discord" のプロンプトを
+  # 出していないときだけ使う）
+  discord: dir:${config_root}/prompt/discord
+
 discord:
   my_user_id: "XXXXXXXXX"
   # エラー通知・承認依頼の送信先チャンネル ID（Discord のチャンネル snowflake）。
@@ -30,6 +41,8 @@ ui:
 
 llm:
   default: grok
+  # 1 回の会話で tool_calls を繰り返す上限回数（既定: 10）
+  max_tool_call_iterations: 10
   providers:
     grok:
       type: openai_compat
@@ -39,6 +52,86 @@ llm:
 
 paths:
   tool_root: /tmp/lilla-tools
+
+mongodb:
+  # 使う DB 名（既定: lilla）。接続 URI は秘匿情報なので .env / OS 環境変数の MONGODB_URI に書く
+  db_name: lilla
+
+# HTTP リクエストに使うプロキシ（既定: 未設定＝プロキシなし）。https があれば https を、
+# 無ければ http を使う。no_proxy はカンマ区切りで、ホスト名・`*` のワイルドカード・
+# CIDR（192.168.0.0/16 など）を書ける。プロキシの認証情報は秘匿情報なので
+# .env / OS 環境変数の HTTP_PROXY_USER / HTTP_PROXY_PASS に書く。
+# proxy:
+#   http: http://proxy.example.com:3128
+#   https: http://proxy.example.com:3128
+#   no_proxy: localhost,127.0.0.1
+
+bot:
+  # MongoDB に書くログのレベル別の保持時間（時間）。logging.yaml に mongodb ハンドラが
+  # あるときだけ使う
+  log_ttl_hours:
+    debug: 72
+    info: 240
+    warning: 720
+    error: 720
+  # Discord の画像添付として受け付ける最大サイズ（MB、既定: 8）。
+  # 超えた画像はダウンロードせずに弾き、エラー通知チャンネルへ通知する
+  max_image_attachment_size_mb: 8
+
+memory:
+  # LLM へ渡す会話履歴の最大件数（既定: 30）
+  max_history_turns: 30
+  # 会話履歴を MongoDB に残す時間（既定: 72）。0 なら期限なしで残す
+  conversation_ttl_hours: 72
+  # 会話履歴を遡る日数（既定: 2）。ui.timezone の「今日」を 1 日目として数える
+  history_days: 2
+  # セッションメモリ（作業の途中状態）を保持する時間（既定: 3）
+  session_memory_ttl_hours: 3
+
+tools:
+  # 名前付きツールセット（セット名 → ツール YAML の stem か `$セット名` の並び）。
+  # 通常会話で LLM に見せるのは `main` セットだけで、`main` が未設定・空ならツールなし
+  # （`tools.sets` が無いのも同じ。書き忘れで全ツールが開放されることはない）。
+  # 以前の `tools.main_available_tools` は廃止した。残っていると起動時に失敗するので、
+  # 中身を `sets.main` へ移すこと。
+  sets:
+    main: []
+    # 例:
+    # main:
+    #   - llm_current_datetime
+    #   - $search
+    # search:          # main 以外のセット名は自由（半角英数字と - _ のみ）
+    #   - llm_conversation_get
+
+commands:
+  mongodata:
+    # !mongodata で insert / upsert を許すコレクション名のホワイトリスト（既定: 空＝すべて拒否）
+    allowed_collections: []
+
+# 観測用ダッシュボード（コアが起動する）。全項目に既定があり、この節ごと省略しても
+# 既定値（0.0.0.0:8765）で立ち上がる。
+dashboard:
+  # listen するアドレス（既定: 0.0.0.0）。
+  # このポートは管理画面で、パスワード未登録の間は起動ログに出るセットアップトークンを
+  # 持つ人が管理者パスワードを決められる。公開ネットワークへ直接晒さないこと。
+  # 同一ホストからしか使わないなら 127.0.0.1 に絞れる。
+  host: 0.0.0.0
+  port: 8765
+  # ログインセッション Cookie に Secure 属性を付けるか（既定: true）。
+  # true は HTTPS / 前段のアクセス制御を前提とした安全側の設定。
+  # LAN 内で http://<host>:8765 へ直接アクセスする運用では false にしないと、
+  # ログインはできても Cookie がブラウザから送信されずログイン状態を維持できない。
+  cookie_secure: true
+
+# 機械向けクライアントの共有 HTTP サーバー（コアが起動する。ダッシュボードとは別ポート・
+# Bearer 認証）。全項目に既定があり、この節ごと省略しても既定値（0.0.0.0:8080・CORS なし）
+# で立ち上がる。トークンは `python -m lilla_core.scripts.issue_client_token` で発行する。
+http:
+  # listen するアドレス（既定: 0.0.0.0）。同一ホストからしか使わないなら 127.0.0.1 に絞れる
+  host: 0.0.0.0
+  port: 8080
+  # CORS を許可するオリジン。空（既定）なら CORS ヘッダーを付けない。"*" で全許可
+  cors_allowed_origins: []
 
 # 拡張が申告した節は、トップレベルではなく `extensions:` の下に置く。
 # 下は公式拡張パック（LILLA_EXTENSIONS に lilla_core.extensions.google_oauth /
