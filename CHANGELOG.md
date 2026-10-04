@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- `task_scheduled_llm` の YAML に任意キー `max_tool_call_iterations` を追加した（#184）。
+  そのタスクだけツール呼び出しの往復上限を上書きできる（正の整数。省略時は従来どおり
+  `llm.max_tool_call_iterations`）。整数以外・bool・1 未満は起動時に失敗する
+- `run_conversation` に任意引数 `max_tool_call_iterations` を追加した。`None`（既定）なら
+  従来どおり `llm.max_tool_call_iterations` を使う
+
 ### Changed
 
 - **BREAKING**: 通常会話で LLM に見せるツールの許可リストを、名前付きツールセット

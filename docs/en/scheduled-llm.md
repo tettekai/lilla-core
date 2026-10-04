@@ -37,6 +37,11 @@ like with the same `type` but different `schedule` / `target` / `prompt`.
 - `available_tools` … optional. The allow-list of tools the LLM sees on this run (see
   below). If the key is missing, the task starts up with no tools. Startup fails if the
   key is present but its value is invalid
+- `max_tool_call_iterations` … optional. The tool-call round-trip limit for this task
+  only (a positive integer). If omitted, `llm.max_tool_call_iterations` (default 10) is
+  used. Startup fails for non-integers, `true` / `false`, or values below 1. Hitting the
+  limit does not raise; the task returns the abort message, which is sent to `target`
+  like any other reply (it is not `NO_NOTIFICATION`)
 
 ## The tool allow-list (`available_tools`)
 

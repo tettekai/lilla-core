@@ -547,6 +547,38 @@ class TestRunConversation:
         assert result == "ツール呼び出しの上限に達しました。処理を中断しました。"
         assert mock_chat.call_count == 3
 
+    @pytest.mark.parametrize("limit", [1, 5])
+    async def test_max_tool_call_iterations_argument_overrides_global(
+        self, conversation_service, mock_memory_manager_instance, monkeypatch: pytest.MonkeyPatch,
+        limit: int,
+    ) -> None:
+        """`max_tool_call_iterations` を渡したときはグローバル（3）ではなくその回数で止まる。"""
+        tool_response = {
+            "content": None,
+            "finish_reason": "tool_calls",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "test_tool", "arguments": "{}"},
+                }
+            ],
+            "raw_message": {"role": "assistant", "content": None, "tool_calls": []},
+        }
+        mock_chat = AsyncMock(return_value=tool_response)
+        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(conversation_service, "execute_tool_call", AsyncMock(return_value={
+            "success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None
+        }))
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(
+            fake_tools, client_type="task", max_tool_call_iterations=limit
+        )
+
+        assert result == "ツール呼び出しの上限に達しました。処理を中断しました。"
+        assert mock_chat.call_count == limit
+
     async def test_tool_data_with_datetime_is_serialized(
         self, conversation_service, mock_memory_manager_instance, monkeypatch: pytest.MonkeyPatch
     ) -> None:
