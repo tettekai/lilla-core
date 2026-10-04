@@ -35,10 +35,12 @@ _TOOL_CALL_DEPTH_KEY = "_tool_call_depth"
 _TOOL_CALL_NOTIFIER_KEY = "_tool_call_notifier"
 MAX_TOOL_CALL_DEPTH = 5  # 将来的に core.config 側で設定可能にしてもよい（今回は固定値でOK）
 
-# ツール許可リストで「名前付きのまとまり」を指すトークンの接頭辞と、
-# `tools.main_available_tools` を指すトークン（`resolve_available_tools` が展開する）。
+# ツール許可リストで名前付きツールセット（`tools.sets`）を指すトークンの接頭辞と、
+# 通常会話が使う `main` セットを指すトークン（`resolve_available_tools` が展開する）。
 _TOOLSET_TOKEN_PREFIX = "$"
-_MAIN_TOOLSET_TOKEN = "$main"
+#: 通常会話が使う予約済みのツールセット名（`tools.sets.main`）。
+MAIN_TOOL_SET_NAME = "main"
+MAIN_TOOLSET_TOKEN = _TOOLSET_TOKEN_PREFIX + MAIN_TOOL_SET_NAME
 
 # コア自身が実行時にツールコンテキストへ注入する共通キー（フレームワーク側の枠）。
 # 拡張が注入するキーはここに列挙せず、`get_tool_context_providers()` が返す
@@ -353,13 +355,12 @@ def resolve_available_tools(
 ) -> list[str]:
     """ツール許可リストを展開し、`build_tools_param` の `allowed_names` に渡せる形にする。
 
-    各要素は YAML stem か、`$` + 名前のトークンのどちらか。YAML stem はそのまま残し、
-    トークンはその位置で中身へ展開する。現在使えるトークンは `$main` だけで、
-    `tools.main_available_tools` の中身に展開する（未設定＝絞り込みなしなら、ロード済みの
-    LLM ツールすべて）。展開後は最初の出現を残して重複を除く。
+    各要素は YAML stem か、`$` + セット名のトークンのどちらか。YAML stem はそのまま残し、
+    トークンはその位置で `tools.sets` の同名セットの中身へ展開する（セットの中の `$` 参照も
+    再帰的に展開する）。`main` セットが未設定なら `$main` は空に展開する。展開は出現順で、
+    最初の出現を残して重複を除く（LLM に渡す並びは `build_tools_param` が決めるロード順）。
 
     `supported_client_type` による絞り込みはここでは行わない（`build_tools_param` の役目）。
-    名前付きツールセットを将来足すときは、トークンの解決をこの関数の中に足す。
 
     Parameters
     ----------
@@ -376,8 +377,65 @@ def resolve_available_tools(
     Raises
     ------
     ValueError
-        リストでない・文字列でない要素がある・未知のトークンがある・
-        展開後にロード済みでない stem が残っている場合
+        リストでない・文字列でない要素がある・未知のセットを参照している・
+        セットの参照が循環している・展開後にロード済みでない stem が残っている場合
+    """
+    sets = get_config().tools.sets
+    resolved = list(dict.fromkeys(_expand_entries(entries, sets, ())))
+    unknown = [name for name in resolved if name not in llm_tools]
+    if unknown:
+        raise ValueError(f"Tool allow-list contains unknown tools: {unknown}")
+    return resolved
+
+
+def validate_tool_sets(llm_tools: dict[str, dict]) -> None:
+    """`tools.sets` のすべてのセットを展開して検証する（起動時に呼ぶ）。
+
+    どこからも参照されていないセットも展開し、未知のセット名の参照・循環・
+    ロード済みでないツール名をここで起動時に検出する。
+
+    Parameters
+    ----------
+    llm_tools : dict
+        load_llm_tools() の戻り値（ロード済みの LLM ツール）
+
+    Raises
+    ------
+    ValueError
+        いずれかのセットの展開に失敗した場合
+    """
+    for name in get_config().tools.sets:
+        try:
+            resolve_available_tools([_TOOLSET_TOKEN_PREFIX + name], llm_tools)
+        except ValueError as e:
+            raise ValueError(f"Invalid tool set {name!r}: {e}") from e
+
+
+def _expand_entries(
+    entries: list[str],
+    sets: dict[str, list[str]],
+    stack: tuple[str, ...],
+) -> list[str]:
+    """許可リストの `$` 参照を再帰的に展開し、YAML stem の並び（重複あり）を返す。
+
+    Parameters
+    ----------
+    entries : list[str]
+        YAML stem と `$` トークンの並び
+    sets : dict[str, list[str]]
+        `tools.sets`
+    stack : tuple[str, ...]
+        展開中のセット名（外側から順）。同じ展開の途中で同じセットに戻ったら循環とみなす
+
+    Returns
+    -------
+    list[str]
+        展開した YAML stem の並び（重複除去前）
+
+    Raises
+    ------
+    ValueError
+        リストでない・不正な要素がある・未知のセット参照・循環がある場合
     """
     if not isinstance(entries, list):
         raise ValueError(
@@ -388,44 +446,19 @@ def resolve_available_tools(
     for entry in entries:
         if not isinstance(entry, str) or not entry:
             raise ValueError(f"Tool allow-list entry must be a non-empty string: {entry!r}")
-        if entry.startswith(_TOOLSET_TOKEN_PREFIX):
-            expanded.extend(_expand_toolset_token(entry, llm_tools))
-        else:
+        if not entry.startswith(_TOOLSET_TOKEN_PREFIX):
             expanded.append(entry)
-
-    resolved = list(dict.fromkeys(expanded))
-    unknown = [name for name in resolved if name not in llm_tools]
-    if unknown:
-        raise ValueError(f"Tool allow-list contains unknown tools: {unknown}")
-    return resolved
-
-
-def _expand_toolset_token(token: str, llm_tools: dict[str, dict]) -> list[str]:
-    """`$` + 名前のトークンを YAML stem のリストへ展開する。
-
-    Parameters
-    ----------
-    token : str
-        `$main` のようなトークン
-    llm_tools : dict
-        load_llm_tools() の戻り値
-
-    Returns
-    -------
-    list[str]
-        展開した YAML stem のリスト
-
-    Raises
-    ------
-    ValueError
-        未知のトークンの場合
-    """
-    if token == _MAIN_TOOLSET_TOKEN:
-        main_tools = get_config().tools.main_available_tools
-        if main_tools is None:
-            return list(llm_tools.keys())
-        return list(main_tools)
-    raise ValueError(f"Unknown tool set token: {token}")
+            continue
+        set_name = entry[len(_TOOLSET_TOKEN_PREFIX):]
+        if set_name in stack:
+            chain = " -> ".join(_TOOLSET_TOKEN_PREFIX + n for n in (*stack, set_name))
+            raise ValueError(f"Tool set reference cycle: {chain}")
+        if set_name not in sets:
+            if set_name == MAIN_TOOL_SET_NAME:
+                continue
+            raise ValueError(f"Unknown tool set: {entry}")
+        expanded.extend(_expand_entries(sets[set_name], sets, (*stack, set_name)))
+    return expanded
 
 
 async def _save_tool_cache(

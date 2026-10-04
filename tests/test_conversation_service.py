@@ -64,6 +64,9 @@ def mock_llm_tool_loader() -> MagicMock:
     """lilla_core.loaders.llm_tool_loader モック。"""
     mock = MagicMock()
     mock.build_tools_param = lambda x, client_type="discord", allowed_names=None: list(x.values())
+    mock.MAIN_TOOLSET_TOKEN = "$main"
+    # 既定では main セットにロード済みの全ツールが並んでいるものとして展開する。
+    mock.resolve_available_tools = MagicMock(side_effect=lambda entries, tools: list(tools))
     mock.execute_tool_call = AsyncMock(return_value={
         "success": True, "tool_name": "test_tool", "memory_entry": "tool result", "data": None, "error": None
     })
@@ -226,12 +229,13 @@ class TestRunConversation:
         ("allowed_tool_names", "expected"),
         [(None, ["main_tool"]), (["task_tool"], ["task_tool"])],
     )
-    async def test_allowed_tool_names_overrides_main_available_tools(
-        self, conversation_service, mock_cfg, monkeypatch: pytest.MonkeyPatch,
+    async def test_allowed_tool_names_overrides_main_tool_set(
+        self, conversation_service, monkeypatch: pytest.MonkeyPatch,
         allowed_tool_names, expected,
     ) -> None:
-        """allowed_tool_names を渡せばそれを、None なら main_available_tools を使う。"""
-        mock_cfg.tools.main_available_tools = ["main_tool"]
+        """allowed_tool_names を渡せばそれを、None なら展開した main セットを使う。"""
+        resolve = MagicMock(return_value=["main_tool"])
+        monkeypatch.setattr(conversation_service, "resolve_available_tools", resolve)
         build = MagicMock(return_value=[{"name": "x"}])
         monkeypatch.setattr(conversation_service, "build_tools_param", build)
 
@@ -243,6 +247,27 @@ class TestRunConversation:
 
         assert build.call_args.kwargs["allowed_names"] == expected
         assert build.call_args.kwargs["client_type"] == "task"
+        if allowed_tool_names is None:
+            assert resolve.call_args.args[0] == ["$main"]
+        else:
+            resolve.assert_not_called()
+
+    async def test_empty_main_tool_set_means_no_tools(
+        self, conversation_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """main セットの展開結果が空（未設定を含む）なら、ツールを渡さずに LLM を呼ぶ。"""
+        monkeypatch.setattr(
+            conversation_service, "resolve_available_tools", MagicMock(return_value=[])
+        )
+        mock_chat = AsyncMock(return_value="no tools reply")
+        mock_with_tools = AsyncMock()
+        monkeypatch.setattr(conversation_service, "chat_to_llm", mock_chat)
+        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_with_tools)
+
+        result = await conversation_service.run_conversation({"main_tool": {}})
+
+        assert result == "no tools reply"
+        mock_with_tools.assert_not_called()
 
     async def test_does_not_save_or_duplicate_user_message(
         self, conversation_service, mock_memory_manager_instance, monkeypatch: pytest.MonkeyPatch

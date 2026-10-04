@@ -8,7 +8,7 @@ YAML 側で以下を指定する:
 - `prompt`: システムプロンプトの source spec（`dir:` / `file:` プレフィックス、`${config_root}` 展開対応）
 - `llm_provider`: 使用する LLM プロバイダー名（省略可）
 - `available_tools`: Expert が利用可能な LLM ツール名（YAML stem）のリスト。
-  `$main` と書くと `tools.main_available_tools` に展開される。展開と存在確認は
+  `$` + セット名（`$main` など）と書くと `tools.sets` の同名セットに展開される。展開と存在確認は
   コアの `resolve_available_tools` が行い、Expert 側では解釈しない
 - `description`: メインの LLM に提示するツール説明（ローダで上書きされる）
 - `api`: 使用する API（`chat_completions`（デフォルト） | `responses`）

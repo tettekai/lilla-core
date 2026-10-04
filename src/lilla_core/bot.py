@@ -34,7 +34,7 @@ from lilla_core.core.config import get_config
 from lilla_core.core.logging_setup import setup_logging
 from lilla_core.commands import load_all_commands
 from lilla_core.loaders.task_tool_loader import load_all_tools
-from lilla_core.loaders.llm_tool_loader import get_llm_tools
+from lilla_core.loaders.llm_tool_loader import get_llm_tools, validate_tool_sets
 from lilla_core.repository.conversation_repository import get_conversation_repo
 from lilla_core.repository.user_memo_repository import get_user_memo_repo
 from lilla_core.repository.tool_cache_repository import get_tool_cache_repo
@@ -82,6 +82,9 @@ validate_llm_resolvers(_config)
 load_all_commands()
 tools = load_all_tools()
 llm_tools = get_llm_tools()
+# `tools.sets` のすべてのセット（未使用のものも）を展開し、未知のセット参照・循環・
+# 未ロードのツール名をここで起動時に検出する（fail-fast）。
+validate_tool_sets(llm_tools)
 
 
 @bot.event

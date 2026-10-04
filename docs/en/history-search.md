@@ -12,6 +12,9 @@ sees is the YAML's file name):
 type: llm_conversation_get
 ```
 
+To use it in normal conversations, also add the stem to `tools.sets.main` in `lilla.yaml`
+([Tool sets](tools.md#tool-sets-toolssets)).
+
 - It narrows by `datetime_range` (`today`, `last_7_days`, `2026-04-20/2026-04-26`, ...),
   `query` (space-separated AND keywords), `role` (`user` / `assistant` / `all`) and
   `limit` (default 30, capped at 30)

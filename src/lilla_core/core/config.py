@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal, TypeVar
@@ -274,10 +275,96 @@ class MemoryConfig(BaseModel):
     session_memory_ttl_hours: int = 3
 
 
-class ToolsConfig(BaseModel):
-    """lilla.yaml の `tools:` セクション。"""
+#: 名前付きツールセットの名前に使える文字（半角英数字と `-` `_`。大文字小文字は区別する）。
+TOOL_SET_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
-    main_available_tools: list[str] | None = None
+
+class ToolsConfig(BaseModel):
+    """lilla.yaml の `tools:` セクション。
+
+    `sets` は名前付きツールセット（セット名 → 要素の並び）。要素はツール YAML の stem か、
+    別セットへの `$` + セット名の参照。予約名は `main` だけで、通常会話はこのセットを使う
+    （未設定・空リストならツールなし）。セット名の形式だけをここで検証し、参照の展開・
+    循環や未知のセット名・未ロードのツール名の検出は `loaders/llm_tool_loader.py` の
+    `resolve_available_tools()` / `validate_tool_sets()` が行う。
+    """
+
+    sets: dict[str, list[str]] = {}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_keys(cls, data: Any) -> Any:
+        """廃止した `main_available_tools` が残っていたら起動時に落とす。
+
+        Parameters
+        ----------
+        data : Any
+            `tools:` セクションの生の値
+
+        Returns
+        -------
+        Any
+            そのままの値
+
+        Raises
+        ------
+        ValueError
+            `main_available_tools` が書かれている場合
+        """
+        if isinstance(data, dict) and "main_available_tools" in data:
+            raise ValueError(
+                "tools.main_available_tools has been removed; "
+                "move its entries to tools.sets.main"
+            )
+        return data
+
+    @field_validator("sets", mode="before")
+    @classmethod
+    def _normalize_sets(cls, value: Any) -> Any:
+        """`sets:` や各セットの値が空（None）のときを空として扱う。
+
+        Parameters
+        ----------
+        value : Any
+            `tools.sets` の生の値
+
+        Returns
+        -------
+        Any
+            None を空の dict / list に置き換えた値
+        """
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return {name: ([] if items is None else items) for name, items in value.items()}
+        return value
+
+    @field_validator("sets")
+    @classmethod
+    def _validate_set_names(cls, value: dict[str, list[str]]) -> dict[str, list[str]]:
+        """セット名が半角英数字と `-` `_` だけでできていることを確かめる。
+
+        Parameters
+        ----------
+        value : dict[str, list[str]]
+            `tools.sets`
+
+        Returns
+        -------
+        dict[str, list[str]]
+            そのままの値
+
+        Raises
+        ------
+        ValueError
+            空文字や使えない文字（`$` など）を含むセット名がある場合
+        """
+        for name in value:
+            if not TOOL_SET_NAME_PATTERN.fullmatch(name):
+                raise ValueError(
+                    f"Invalid tool set name {name!r}: use only ASCII letters, digits, '-' and '_'"
+                )
+        return value
 
 
 class MongodataCommandConfig(BaseModel):

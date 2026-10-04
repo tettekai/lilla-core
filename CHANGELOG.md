@@ -9,6 +9,21 @@
 
 ### Changed
 
+- **BREAKING**: 通常会話で LLM に見せるツールの許可リストを、名前付きツールセット
+  `tools.sets` の `main` セットに置き換えた（#189）。`tools.main_available_tools` は廃止し、
+  残っていると起動時に失敗する。中身を `tools.sets.main` へ移すこと
+  - `main` が未設定（`tools.sets` が無い・`sets.main` が無い・`main: []`）なら、通常会話は
+    **ツールなし** になった（以前の `main_available_tools` 未設定はロード済みの全ツールだった）。
+    `$main` の展開結果も空になる。通常会話でツールを使うには `tools.sets.main` に stem を並べること
+  - `main` 以外のセット名は自由（半角英数字と `-` `_` のみ。大文字小文字は区別）。
+    空文字や `$` などを含む名前は起動時に失敗する
+  - セットの要素はツール YAML の stem か、別セットへの `$` + セット名の参照。スケジュール LLM や
+    `llm_expert` の `available_tools` からも `$main` と同じ形で `$health` のように参照できる
+  - 展開は出現順・重複は先勝ち（LLM に渡す並びは従来どおりロード順）。参照の循環・未知のセット名・
+    ロード済みでないツール名は、どこからも参照されていないセットも含めて起動時に失敗する
+    （`lilla_core.loaders.llm_tool_loader.validate_tool_sets()`）
+  - 利用側アプリケーションは `config.example/lilla.yaml` の `tools:` 節も更新すること
+
 - MongoDB の非同期ドライバーを deprecated になった Motor から PyMongo Async
   （`pymongo.AsyncMongoClient`）へ移行した（#3）。依存は `motor==3.7.0` を外して
   `pymongo==4.18.2` に固定した。利用側アプリケーションも `motor` を外し、同じ `pymongo` の版に揃えること
