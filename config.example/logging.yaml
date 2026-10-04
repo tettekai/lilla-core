@@ -8,8 +8,6 @@ formatters:
 loggers:
   pymongo:
     level: WARNING
-  motor:
-    level: WARNING
 
 handlers:
   console:

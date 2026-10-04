@@ -91,8 +91,6 @@ def with_mocked_modules(
                 # 解決するよう、ui.timezone だけ実値（未指定）にしておく
                 get_config=MagicMock(return_value=MagicMock(ui=MagicMock(timezone=None))),
             ),
-            "motor": MagicMock(),
-            "motor.motor_asyncio": MagicMock(),
             "pymongo": MagicMock(),
             "lilla_core.repository.conversation_repository": MagicMock(
                 get_conversation_repo=MagicMock(return_value=mock_conv_repo)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from lilla_core.repository.motor_client import create_motor_client
+from lilla_core.repository.mongo_client import create_mongo_client
 from pymongo import ASCENDING
 
 from lilla_core.utils.datetime_utils import utc_now
@@ -38,7 +38,7 @@ class ChannelSummaryRepository:
             mongo_uri: MongoDB の接続 URI。
             db_name: 使用するデータベース名。
         """
-        client = create_motor_client(mongo_uri)
+        client = create_mongo_client(mongo_uri)
         self._collection = client[db_name]["channel_summaries"]
 
     async def init_collection(self) -> None:
