@@ -133,6 +133,7 @@ async def run_conversation(
     override_last_user_content=None,
     tool_call_notifier: Callable[[str], Awaitable[None]] | None = None,
     allowed_tool_names: list[str] | None = None,
+    max_tool_call_iterations: int | None = None,
 ) -> str:
     """会話履歴を読み込み、tool_call ループを回して返答を返す。
 
@@ -182,6 +183,10 @@ async def run_conversation(
         `tools.sets` の `main` セットを展開して使う（未設定ならツールなし）。
         空リストならツールを渡さない。
         いずれの場合も、続けて `supported_client_type` で絞る。
+    max_tool_call_iterations : int | None, optional
+        この回だけ使うツール呼び出しの往復上限。None なら
+        `llm.max_tool_call_iterations` を使う。上限に達したときの扱い
+        （例外にせず中断文言を返す）はどちらでも同じ。
 
     Returns
     -------
@@ -259,7 +264,11 @@ async def run_conversation(
         allowed_names=allowed_tool_names,
     )
     messages = list(history)
-    max_iterations = _config.llm.max_tool_call_iterations
+    max_iterations = (
+        max_tool_call_iterations
+        if max_tool_call_iterations is not None
+        else _config.llm.max_tool_call_iterations
+    )
     context = build_tool_context()
     context["client_type"] = client_type
     context["llm_tools"] = llm_tools

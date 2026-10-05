@@ -13,6 +13,11 @@
   LLM は呼ばない）と直近 24 時間の `ERROR` / `WARNING` 件数を表示するようにした（#185）。
   取得元はログイン必須の `GET /api/dashboard/status` で、ログの本文は返さない。
   MongoDB に届かなくても Home は落ちず、該当の項目だけが失敗表示になる
+- `task_scheduled_llm` の YAML に任意キー `max_tool_call_iterations` を追加した（#184）。
+  そのタスクだけツール呼び出しの往復上限を上書きできる（正の整数。省略時は従来どおり
+  `llm.max_tool_call_iterations`）。整数以外・bool・1 未満は起動時に失敗する
+- `run_conversation` に任意引数 `max_tool_call_iterations` を追加した。`None`（既定）なら
+  従来どおり `llm.max_tool_call_iterations` を使う
 
 ### Changed
 
