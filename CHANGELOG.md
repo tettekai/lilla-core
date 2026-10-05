@@ -9,6 +9,10 @@
 
 ### Added
 
+- 観測用ダッシュボードの Home に、生存確認（ダッシュボードの応答と MongoDB への ping。
+  LLM は呼ばない）と直近 24 時間の `ERROR` / `WARNING` 件数を表示するようにした（#185）。
+  取得元はログイン必須の `GET /api/dashboard/status` で、ログの本文は返さない。
+  MongoDB に届かなくても Home は落ちず、該当の項目だけが失敗表示になる
 - `task_scheduled_llm` の YAML に任意キー `max_tool_call_iterations` を追加した（#184）。
   そのタスクだけツール呼び出しの往復上限を上書きできる（正の整数。省略時は従来どおり
   `llm.max_tool_call_iterations`）。整数以外・bool・1 未満は起動時に失敗する
@@ -17,6 +21,12 @@
 
 ### Changed
 
+- **BREAKING**: 引数なしの `!model` は上書きを解除しなくなった（#186）。状態を変えずに、
+  `llm.providers` に定義済みのプロバイダー一覧と今有効なモデル（上書きが無ければ
+  `llm.default`）を返す。上書きの解除は `!model reset` で行い、解除後は従来どおり
+  `llm.default` に戻る
+  - `reset` は予約語になり、`llm.providers` のキーに使うと起動時に失敗する
+  - 未定義の名前を指定したときに状態を変えず一覧を返す挙動・切り替えが効く範囲は変わらない
 - **BREAKING**: 通常会話で LLM に見せるツールの許可リストを、名前付きツールセット
   `tools.sets` の `main` セットに置き換えた（#189）。`tools.main_available_tools` は廃止し、
   残っていると起動時に失敗する。中身を `tools.sets.main` へ移すこと
@@ -56,6 +66,15 @@
   `download_attachment_bytes()` の 3 番目の引数が `aiohttp.BasicAuth | None` から
   `dict[str, str] | None`（`proxy_headers`）に変わった。なお `bot.http.proxy_auth` は
   discord.py 2.7.1 が `BasicAuth` を要求するためそのまま
+- 外部エージェントが結果を「FrontMatter だけ」と「本文なしのテキスト添付だけ」の 2 通に
+  分けて送ってきた場合も `!toolresult` の承認フローへ載せるようにした（#187）。添付だけの
+  メッセージを受けたときだけ同じチャンネルの直前 1 件を見て、同じ送信者の FrontMatter だけの
+  メッセージ（UUID の `correlation_id`・本文も添付も無い）で、その ID が pending として実在する
+  ときに限り添付の中身を BODY にする。待ち状態は持たず、条件を満たさない添付つきメッセージは無視する
+  - FrontMatter だけ（本文も添付も無い）のメッセージは、`BODY未検出` のエラー通知を出さず何もしなくなった
+  - 1 通の中に FrontMatter（または `!toolresult`）と添付がある場合、本文がある場合は従来どおり
+  - `commands/attachment_body.py` の `_is_textual_attachment` / `_get_attachments` を
+    `is_textual_attachment` / `get_attachments` として公開した
 
 ## [0.5.2] - 2026-10-03
 

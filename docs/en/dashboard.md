@@ -36,6 +36,20 @@ dashboard:
 >   `http://<host>:8765` directly over a LAN needs `false`, otherwise login succeeds but
 >   the browser never sends the cookie back.
 
+## Home
+
+Home (`#/`) does not repeat the other lists; it only shows the current state. Each time it
+opens it calls `GET /api/dashboard/status` (login required) and shows two things:
+
+- Liveness: that the dashboard itself responds, and whether a ping to MongoDB succeeds.
+  It does not run the full self-test that includes the LLM check (`!selftest full`).
+- The number of `ERROR` and `WARNING` entries in the last 24 hours (counted from the
+  `logs` collection). Zero is shown as "none". No message text, logger names or stack
+  traces are returned. If logs are not stored in MongoDB, the counts are always "none".
+
+When MongoDB cannot be reached the page still loads; the affected items show as
+"no response" / "unavailable".
+
 Only `/oauth/{extension name}` sits outside the auth middleware, for public GETs a
 browser makes without a session (OAuth redirect targets and the like). An upstream access
 control would bypass just that prefix.

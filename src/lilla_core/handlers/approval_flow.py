@@ -18,7 +18,11 @@ import logging
 
 import discord
 
-from lilla_core.commands.attachment_body import resolve_command_body
+from lilla_core.commands.attachment_body import (
+    get_attachments,
+    is_textual_attachment,
+    resolve_command_body,
+)
 from lilla_core.core.config import get_config
 from lilla_core.repository.pending_tool_calls_repository import get_pending_tool_calls_repo
 from lilla_core.services.message_util import parse_correlation_frontmatter
@@ -64,17 +68,34 @@ async def build_toolresult_command(content: str) -> str | None:
     correlation_id, body = parse_correlation_frontmatter(content)
     if correlation_id is None:
         return None
+    if not await _exists_pending(correlation_id):
+        return None
+    return f"!toolresult {correlation_id}\n{body}"
+
+
+async def _exists_pending(correlation_id: str) -> bool:
+    """correlation_id に対応する有効な pending レコードが実在するかを返す。
+
+    照会に失敗した場合も False を返す（見知らぬ相手のメッセージを承認フローに
+    載せないため、判断できないときは載せない側へ倒す）。
+
+    Args:
+        correlation_id: FrontMatter から取り出した UUID 形式の correlation_id。
+
+    Returns:
+        pending レコードが実在すれば True。
+    """
     try:
         exists = await get_pending_tool_calls_repo().exists_pending(correlation_id)
     except Exception as e:
         logger.error("Failed to query pending request: %s", e, exc_info=True)
-        return None
+        return False
     if not exists:
         logger.info(
             "Ignored because no pending request exists for this correlation_id: %s", correlation_id
         )
-        return None
-    return f"!toolresult {correlation_id}\n{body}"
+        return False
+    return True
 
 
 async def extract_approvable_command(content: str) -> str | None:
@@ -88,6 +109,120 @@ async def extract_approvable_command(content: str) -> str | None:
     if command_content is not None:
         return command_content
     return await build_toolresult_command(content)
+
+
+def _is_frontmatter_only(message) -> bool:
+    """FrontMatter だけ（閉じ `---` のあとの本文も添付も無い）のメッセージかを返す。
+
+    外部エージェントが結果を「FrontMatter だけの 1 通目」と「添付だけの 2 通目」に
+    分けて送るときの 1 通目にあたる。correlation_id が UUID として解釈できることまでは
+    見るが、pending の実在は照会しない（どちらにしてもこのメッセージ単体では何もしない）。
+
+    Args:
+        message: 判定する Discord メッセージ。
+
+    Returns:
+        FrontMatter だけのメッセージなら True。
+    """
+    correlation_id, body = parse_correlation_frontmatter(message.content or "")
+    return correlation_id is not None and not body and not get_attachments(message)
+
+
+async def _fetch_previous_message(message):
+    """同じチャンネルで `message` の直前にある 1 件を返す。
+
+    取得に失敗した場合（権限不足・通信エラーなど）は WARNING ログを出して None を返す。
+
+    Args:
+        message: 基準となる Discord メッセージ。
+
+    Returns:
+        直前のメッセージ。無い・取得できない場合は None。
+    """
+    try:
+        async for previous in message.channel.history(limit=1, before=message):
+            return previous
+    except Exception as e:
+        logger.warning("Failed to fetch previous message: %s", e, exc_info=True)
+    return None
+
+
+async def build_split_toolresult_command(message) -> str | None:
+    """添付だけのメッセージを、直前の FrontMatter だけのメッセージと組み合わせて変換する。
+
+    外部エージェントが結果を「FrontMatter だけ」と「本文なしのテキスト添付だけ」の
+    2 通に分けて送るケースに対応する。待ち状態は持たず、添付が届いたメッセージを
+    受けたときだけ同じチャンネルの直前 1 件を見る。次の条件をすべて満たすときだけ
+    `!toolresult {correlation_id}` を返し、BODY は `resolve_full_command` が今の
+    メッセージの添付から解決する。
+
+    - 今のメッセージは本文が空で、先頭の添付がテキストとして読める
+    - 直前のメッセージが同じ送信者で、添付を持たない
+    - 直前のメッセージが UUID の correlation_id と空の本文の FrontMatter だけである
+    - その correlation_id が `pending_tool_calls` に pending として実在する
+
+    条件を満たさない場合はエラー通知も出さずに None を返す（添付があるだけでは
+    反応しない）。
+
+    Args:
+        message: 添付つきで届いた Discord メッセージ。
+
+    Returns:
+        承認フローに載せるコマンド文字列（BODY 解決前）。対象外なら None。
+    """
+    if (message.content or "").strip():
+        return None
+    attachments = get_attachments(message)
+    if not attachments or not is_textual_attachment(attachments[0]):
+        return None
+
+    previous = await _fetch_previous_message(message)
+    if previous is None:
+        return None
+    if getattr(previous.author, "id", None) != getattr(message.author, "id", None):
+        return None
+    if get_attachments(previous):
+        return None
+
+    correlation_id, body = parse_correlation_frontmatter(previous.content or "")
+    if correlation_id is None or body:
+        return None
+    if not await _exists_pending(correlation_id):
+        return None
+    logger.info(
+        "Combined attachment-only message with preceding FrontMatter: correlation_id=%s",
+        correlation_id,
+    )
+    return f"!toolresult {correlation_id}\n"
+
+
+async def extract_approvable_command_from_message(message) -> str | None:
+    """オーナー以外から届いたメッセージから、承認フローに載せるコマンド文字列を組み立てる。
+
+    `extract_approvable_command` に、メッセージの添付を見る次の 2 つの規則を足したもの。
+
+    - FrontMatter だけ（本文も添付も無い）のメッセージは何もしない（後続の添付を
+      待つ 1 通目の可能性があるため、BODY 未検出のエラー通知も承認依頼も出さない）
+    - 本文が空でテキスト添付だけのメッセージは、直前の FrontMatter だけのメッセージと
+      組み合わせて `!toolresult` にする（`build_split_toolresult_command`）
+
+    Args:
+        message: オーナー以外から届いた Discord メッセージ。
+
+    Returns:
+        承認フローに載せるコマンド文字列（BODY 解決前）。対象外なら None。
+    """
+    content = message.content or ""
+    command_content = command_handler.extract_command_content(content)
+    if command_content is not None:
+        return command_content
+    if _is_frontmatter_only(message):
+        logger.info("Ignored FrontMatter-only message without body or attachment")
+        return None
+    command_content = await build_toolresult_command(content)
+    if command_content is not None:
+        return command_content
+    return await build_split_toolresult_command(message)
 
 
 async def resolve_full_command(message, content: str, bot) -> str | None:

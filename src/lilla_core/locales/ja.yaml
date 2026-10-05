@@ -24,6 +24,7 @@ command:
   model:
     switched: "モデルを {model} に切り替えました"
     reset: "モデルを {model} に戻しました"
+    status: "現在のモデル: {current}\n利用可能なモデル: {available}\n`!model <名前>` で切り替え、`!model reset` で既定に戻します"
     not_found: "モデル '{name}' は見つかりません。利用可能なモデル: {available}"
     none: "（なし）"
 

@@ -78,9 +78,9 @@ async def handle_message(message, bot, tools, llm_tools, message_hook) -> None:
         approval_channel_id = _config.discord.approval_channel_id
         if approval_channel_id and str(message.channel.id) == str(approval_channel_id):
             return
-        # 既知コマンド、または外部エージェントからの結果メッセージなら承認フローへ。
-        # それ以外は無視する。
-        command_content = await approval_flow.extract_approvable_command(message.content)
+        # 既知コマンド、または外部エージェントからの結果メッセージ（FrontMatter と添付を
+        # 2 通に分けて送ってきたものを含む）なら承認フローへ。それ以外は無視する。
+        command_content = await approval_flow.extract_approvable_command_from_message(message)
         if command_content is not None:
             await approval_flow.send_approval_request(bot, message, command_content)
         return

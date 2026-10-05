@@ -503,6 +503,22 @@ class TestLlmConfigValidation:
         cfg = AppConfig(env={"discord_token": "dummy"}, _env_file=None)
         assert cfg.llm.default == "dummy"
 
+    def test_reserved_provider_name_fails(self, isolated_config_root: Path) -> None:
+        """`!model reset` と衝突する `reset` をプロバイダー名に使うと起動時に落ちる。"""
+        _write_yaml(
+            isolated_config_root,
+            'discord:\n  my_user_id: "1"\n'
+            "llm:\n"
+            "  default: reset\n"
+            "  providers:\n"
+            "    reset:\n"
+            "      type: ollama\n"
+            "      url: http://localhost:11434\n"
+            "      model: dummy\n",
+        )
+        with pytest.raises(ValidationError, match="reserved name"):
+            AppConfig(env={"discord_token": "dummy"}, _env_file=None)
+
     def test_provider_type_typo_fails(self, isolated_config_root: Path) -> None:
         _write_yaml(
             isolated_config_root,

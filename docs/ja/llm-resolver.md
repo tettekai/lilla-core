@@ -41,7 +41,9 @@ llm:
 そのキーが `type: resolver` ならスクリプトを呼び、返った名前で台帳を引き直します。
 具体プロバイダーならそのまま LLM を呼びます。`!model router` は回しごとの自動選択、
 `!model deepseek-flash-high` は固定です。task が `llm_name: router` と書けば回し、
-具体名なら回しません。
+具体名なら回しません。上書きを解除して `llm.default` に戻すのは `!model reset` で、
+引数なしの `!model` は状態を変えずに定義済みのキーの一覧と今有効なキーを返すだけです。
+`reset` は予約語のため `llm.providers` のキーには使えません（使うと起動時に失敗します）。
 
 展開は `run_conversation` の中（履歴を組み立てたあと、LLM を呼ぶ前）で 1 回だけ
 行います。Discord・拡張のクライアント・task のどれから呼んでも同じです。
