@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- 観測用ダッシュボードの Home に、生存確認（ダッシュボードの応答と MongoDB への ping。
+  LLM は呼ばない）と直近 24 時間の `ERROR` / `WARNING` 件数を表示するようにした（#185）。
+  取得元はログイン必須の `GET /api/dashboard/status` で、ログの本文は返さない。
+  MongoDB に届かなくても Home は落ちず、該当の項目だけが失敗表示になる
+
 ### Changed
 
 - **BREAKING**: 通常会話で LLM に見せるツールの許可リストを、名前付きツールセット

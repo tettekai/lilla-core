@@ -72,6 +72,13 @@ function dashboardApp() {
       filters: { date_from: '', date_to: '' },
     },
 
+    // Home の状態。status は /api/dashboard/status の応答、error は取得自体の失敗。
+    home: {
+      status: null,
+      loading: false,
+      error: false,
+    },
+
     memos: {
       items: [],
       loading: false,
@@ -200,8 +207,9 @@ function dashboardApp() {
         this.fetchConversations(this.conversations.page);
       } else if (tab === 'memos') {
         this.fetchMemos();
+      } else if (tab === 'home') {
+        this.fetchHomeStatus();
       }
-      // home は取得するものを持たない
     },
 
     // ---- 拡張ページのスロット ----
@@ -371,6 +379,34 @@ function dashboardApp() {
       // ハッシュが #/admin/logs のままだと再ログインでそのまま Logs へ
       // 戻ってしまうため、明示的なログアウトのときだけ Home に戻す。
       history.replaceState(null, '', this.basePath() + DEFAULT_HASH);
+    },
+
+    // ---- Home ----
+
+    // 生存確認（MongoDB の ping のみ）と直近 24 時間のエラー・警告件数だけを取る。
+    // 取得に失敗しても Home の表示に留め、画面全体は止めない。
+    async fetchHomeStatus() {
+      this.home.loading = true;
+      this.home.error = false;
+      try {
+        const res = await this.authedFetch('/api/dashboard/status');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        this.home.status = await res.json();
+      } catch (e) {
+        console.error('Failed to fetch dashboard status', e);
+        this.home.status = null;
+        this.home.error = true;
+      } finally {
+        this.home.loading = false;
+      }
+    },
+
+    // 件数の表示。0 件は「なし」、数えられなかったときは「取得できません」にする。
+    homeLogCount(level) {
+      const logs = this.home.status && this.home.status.logs;
+      if (!logs || !logs.ok || !logs.counts) return '取得できません';
+      const count = logs.counts[level] || 0;
+      return count === 0 ? 'なし' : `${count} 件`;
     },
 
     // ---- Logs ----

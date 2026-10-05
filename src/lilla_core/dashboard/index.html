@@ -82,6 +82,25 @@
     <!-- Home Tab -->
     <section x-show="activeTab === 'home'">
       <h2 class="page-title">Home</h2>
+      <div x-show="home.loading && !home.status" class="loading">読み込み中...</div>
+      <div x-show="home.error" class="empty">状態を取得できませんでした</div>
+      <template x-if="home.status">
+        <dl class="home-status">
+          <dt>ダッシュボード</dt>
+          <dd><span class="badge level-info">応答あり</span></dd>
+          <dt>MongoDB</dt>
+          <dd>
+            <span :class="'badge ' + (home.status.mongodb.ok ? 'level-info' : 'level-error')"
+              x-text="home.status.mongodb.ok ? '応答あり' : '応答なし'"></span>
+          </dd>
+          <dt>エラー（直近 24 時間）</dt>
+          <dd x-text="homeLogCount('error')"></dd>
+          <dt>警告（直近 24 時間）</dt>
+          <dd x-text="homeLogCount('warning')"></dd>
+          <dt>確認時刻</dt>
+          <dd x-text="formatDate(home.status.checked_at)"></dd>
+        </dl>
+      </template>
     </section>
 
     <!-- Logs Tab (Admin) -->

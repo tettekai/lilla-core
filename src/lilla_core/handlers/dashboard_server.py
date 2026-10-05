@@ -114,6 +114,13 @@ _BUILTIN_PAGES: tuple[dict, ...] = (
     },
 )
 
+#: Home に件数を出すログレベル（``levelname`` の値）
+HOME_LOG_LEVELS = ("ERROR", "WARNING")
+#: Home に件数を出す時間窓（時間）
+HOME_LOG_WINDOW_HOURS = 24
+#: Home のログ件数 1 レベル分の集計を待つ上限（秒）。届かなければその項目だけ失敗にする
+HOME_LOG_COUNT_TIMEOUT_SECONDS = 3
+
 #: 失敗記録の一括掃除を始めるエントリ数（メモリの上限を設けるためのしきい値）
 _LOGIN_FAILURES_MAX_ENTRIES = 1000
 
@@ -229,6 +236,64 @@ async def handle_api_logs_stats(request: web.Request) -> web.Response:
     docs = await cursor.to_list(length=None)
     stats = {doc["_id"]: doc["count"] for doc in docs}
     return web.json_response({"stats": stats})
+
+
+async def _check_mongodb():
+    """MongoDB への ping だけを行う（`services/system_checks.py` の `check_mongodb`）。
+
+    `system_checks` は LLM 疎通確認も抱えるモジュールのため、import はここで遅延させる。
+    呼ぶのは ping だけで、LLM には触れない。
+    """
+    from lilla_core.services.system_checks import check_mongodb
+
+    return await check_mongodb()
+
+
+async def _count_recent_log_levels(since: datetime) -> dict[str, int]:
+    """``since`` 以降のログを ``HOME_LOG_LEVELS`` のレベルごとに数える。
+
+    件数だけを返し、本文・ロガー名・スタックは読まない。
+    """
+    collection = _get_collection("logs")
+    counts: dict[str, int] = {}
+    for level in HOME_LOG_LEVELS:
+        counts[level.lower()] = await asyncio.wait_for(
+            collection.count_documents(
+                {"levelname": level, "created_at": {"$gte": since}}
+            ),
+            timeout=HOME_LOG_COUNT_TIMEOUT_SECONDS,
+        )
+    return counts
+
+
+async def handle_api_dashboard_status(request: web.Request) -> web.Response:
+    """GET /api/dashboard/status - Home に出す今の状態を返す。
+
+    中身は生存確認（MongoDB への ping のみ。LLM を含む full の自己診断は呼ばない）と、
+    直近 ``HOME_LOG_WINDOW_HOURS`` 時間の ``ERROR`` / ``WARNING`` の件数だけで、
+    ログの本文は含めない。MongoDB に届かない・数えられないときも 200 で返し、
+    該当の項目を失敗として表す（Home 画面ごと落とさないため）。
+    失敗の詳細（例外文字列）は接続先を含みうるため応答へは載せず、ログにだけ出す。
+    """
+    mongo = await _check_mongodb()
+    since = utc_now() - timedelta(hours=HOME_LOG_WINDOW_HOURS)
+
+    logs: dict = {"ok": False, "window_hours": HOME_LOG_WINDOW_HOURS, "counts": None}
+    if mongo.ok:
+        try:
+            logs["counts"] = await _count_recent_log_levels(since)
+            logs["ok"] = True
+        except Exception:
+            logger.warning("Failed to count recent logs for dashboard home", exc_info=True)
+    else:
+        logger.warning("Dashboard home: MongoDB ping failed: %s", mongo.detail)
+
+    return web.json_response({
+        "alive": True,
+        "mongodb": {"ok": mongo.ok, "elapsed_ms": mongo.elapsed_ms},
+        "logs": logs,
+        "checked_at": utc_now().isoformat(),
+    })
 
 
 async def handle_api_conversations(request: web.Request) -> web.Response:
@@ -846,6 +911,7 @@ async def start_dashboard_server() -> None:
     app.router.add_patch("/api/user-memos/{id}", handle_api_user_memo_detail)
     app.router.add_delete("/api/user-memos/{id}", handle_api_user_memo_detail)
     app.router.add_get("/api/dashboard/nav", handle_api_dashboard_nav)
+    app.router.add_get("/api/dashboard/status", handle_api_dashboard_status)
     _add_extension_routes(app)
     app.router.add_static("/static", DASHBOARD_DIR)
 
