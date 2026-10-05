@@ -148,8 +148,11 @@ class MyExtension(Extension):
 extension = MyExtension()
 ```
 
-- ハンドラは aiohttp のハンドラ（`request` 1 つを受け取る非同期関数）です。コアのツール
-  レジストリや Discord クライアントは渡しません
+- ハンドラは aiohttp のハンドラ（`request` 1 つを受け取る非同期関数）です。コアの
+  task ツールレジストリや Discord クライアントは渡しません。LLM ツールのレジストリ
+  だけは例外で、`lilla_core.handlers.http_server` から `LLM_TOOLS_KEY` を import し、
+  `request.app[LLM_TOOLS_KEY]` で読めます（文字列 `"llm_tools"` では読めません。
+  aiohttp の `AppKey` は同名の文字列キーとは別物として扱われるため）
 - パスには aiohttp のパステンプレート（`{name}` など）を書けます
 - GET のルートには HEAD も同じ認証方式で自動的に載ります
 - コアのルートや他の拡張と同じメソッド・パスを申告すると、ロード時に失敗します

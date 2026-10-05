@@ -158,7 +158,10 @@ extension = MyExtension()
 ```
 
 - Handlers are aiohttp handlers (async functions taking one `request`). The core does not
-  pass its tool registries or the Discord client
+  pass its task tool registry or the Discord client. The LLM tool registry is the one
+  exception: import `LLM_TOOLS_KEY` from `lilla_core.handlers.http_server` and read it
+  with `request.app[LLM_TOOLS_KEY]` (the plain string `"llm_tools"` will not work, since
+  aiohttp treats an `AppKey` as distinct from a same-named string key)
 - Paths may use aiohttp path templates (`{name}` and so on)
 - A GET route automatically gets a HEAD route with the same auth mode
 - Declaring the same method and path as a core route or another extension fails at load
