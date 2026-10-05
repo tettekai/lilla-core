@@ -9,6 +9,10 @@
 
 ### Added
 
+- `lilla_core.handlers.http_server` の `LLM_TOOLS_KEY` を、拡張が `http_routes()` で
+  載せたハンドラから LLM ツールレジストリを読むための公開名にした（#197）。
+  `request.app[LLM_TOOLS_KEY]` で読める（文字列 `"llm_tools"` では読めない）。
+  `TOOLS_KEY` / `BOT_KEY` / `ROUTE_AUTH_KEY` は従来どおり非公開
 - 観測用ダッシュボードの Home に、生存確認（ダッシュボードの応答と MongoDB への ping。
   LLM は呼ばない）と直近 24 時間の `ERROR` / `WARNING` 件数を表示するようにした（#185）。
   取得元はログイン必須の `GET /api/dashboard/status` で、ログの本文は返さない。

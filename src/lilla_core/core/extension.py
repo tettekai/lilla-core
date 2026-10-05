@@ -286,8 +286,9 @@ class HttpRoute:
     """拡張が共有 HTTP サーバー（`handlers/http_server.py`）へ足すルート 1 本分の申告。
 
     ハンドラは aiohttp のハンドラ（`request` 1 つを受け取る非同期関数）。コアの
-    ツールレジストリや Discord クライアントは渡さないので、必要なものは拡張が
-    自分で解決する。
+    task ツールレジストリや Discord クライアントは渡さないので、必要なものは拡張が
+    自分で解決する。LLM ツールのレジストリだけは例外で、`handlers/http_server.py` の
+    `LLM_TOOLS_KEY` を import すれば `request.app[LLM_TOOLS_KEY]` で読める。
     """
 
     #: HTTP メソッド。小文字で書いても大文字へ正規化される。`*` は全メソッド。
