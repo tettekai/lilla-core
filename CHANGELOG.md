@@ -61,6 +61,15 @@
   `download_attachment_bytes()` の 3 番目の引数が `aiohttp.BasicAuth | None` から
   `dict[str, str] | None`（`proxy_headers`）に変わった。なお `bot.http.proxy_auth` は
   discord.py 2.7.1 が `BasicAuth` を要求するためそのまま
+- 外部エージェントが結果を「FrontMatter だけ」と「本文なしのテキスト添付だけ」の 2 通に
+  分けて送ってきた場合も `!toolresult` の承認フローへ載せるようにした（#187）。添付だけの
+  メッセージを受けたときだけ同じチャンネルの直前 1 件を見て、同じ送信者の FrontMatter だけの
+  メッセージ（UUID の `correlation_id`・本文も添付も無い）で、その ID が pending として実在する
+  ときに限り添付の中身を BODY にする。待ち状態は持たず、条件を満たさない添付つきメッセージは無視する
+  - FrontMatter だけ（本文も添付も無い）のメッセージは、`BODY未検出` のエラー通知を出さず何もしなくなった
+  - 1 通の中に FrontMatter（または `!toolresult`）と添付がある場合、本文がある場合は従来どおり
+  - `commands/attachment_body.py` の `_is_textual_attachment` / `_get_attachments` を
+    `is_textual_attachment` / `get_attachments` として公開した
 
 ## [0.5.2] - 2026-10-03
 

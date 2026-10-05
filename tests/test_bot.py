@@ -1003,6 +1003,47 @@ class TestAgentResultApproval:
 
         mock_send.assert_not_called()
 
+    async def test_frontmatter_only_message_is_ignored(
+        self, discord_bot, mock_pending_tool_calls_repo_instance, external_message: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """FrontMatter だけ（本文も添付も無い）のメッセージは承認依頼を出さない。"""
+        external_message.content = _frontmatter_message(body="")
+        mock_send = AsyncMock()
+        monkeypatch.setattr(discord_bot.message_handler.approval_flow, "send_approval_request", mock_send)
+
+        await discord_bot.on_message(external_message)
+
+        mock_pending_tool_calls_repo_instance.exists_pending.assert_not_called()
+        mock_send.assert_not_called()
+
+    async def test_attachment_only_message_combines_with_previous_frontmatter(
+        self, discord_bot, mock_pending_tool_calls_repo_instance, external_message: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """添付だけのメッセージは直前の FrontMatter と組み合わせて承認依頼を出す。"""
+        previous = MagicMock()
+        previous.author.id = 12345
+        previous.content = _frontmatter_message(body="")
+        previous.attachments = []
+
+        async def _history(limit, before):
+            yield previous
+
+        attachment = MagicMock()
+        attachment.filename = "result.txt"
+        attachment.content_type = "text/plain"
+        external_message.content = ""
+        external_message.attachments = [attachment]
+        external_message.channel.history = MagicMock(side_effect=_history)
+        mock_send = AsyncMock()
+        monkeypatch.setattr(discord_bot.message_handler.approval_flow, "send_approval_request", mock_send)
+
+        await discord_bot.on_message(external_message)
+
+        mock_pending_tool_calls_repo_instance.exists_pending.assert_called_once_with(_UUID)
+        mock_send.assert_called_once_with(
+            discord_bot.bot, external_message, f"!toolresult {_UUID}\n"
+        )
+
     async def test_ignores_message_without_frontmatter(
         self, discord_bot, mock_pending_tool_calls_repo_instance, external_message: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
