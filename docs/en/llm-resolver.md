@@ -43,6 +43,10 @@ If that key has `type: resolver`, the script is called and the returned name is
 looked up again. A concrete provider is called directly. `!model router` means
 per-turn selection; `!model deepseek-flash-high` pins a provider. A task that
 writes `llm_name: router` goes through the resolver; a concrete name does not.
+`!model reset` clears the override and returns to `llm.default`; `!model` with no
+argument changes nothing and only lists the defined keys and the key in effect.
+`reset` is reserved and cannot be used as a key in `llm.providers` (startup fails
+if it is).
 
 The expansion happens once inside `run_conversation` (after the history is built,
 before the LLM is called), so Discord, extension clients and tasks all follow the

@@ -24,6 +24,7 @@ command:
   model:
     switched: "Switched the model to {model}"
     reset: "Reverted the model to {model}"
+    status: "Current model: {current}\nAvailable models: {available}\nUse `!model <name>` to switch, `!model reset` to revert to the default"
     not_found: "Model '{name}' was not found. Available models: {available}"
     none: "(none)"
 

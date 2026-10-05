@@ -16,6 +16,12 @@
 
 ### Changed
 
+- **BREAKING**: 引数なしの `!model` は上書きを解除しなくなった（#186）。状態を変えずに、
+  `llm.providers` に定義済みのプロバイダー一覧と今有効なモデル（上書きが無ければ
+  `llm.default`）を返す。上書きの解除は `!model reset` で行い、解除後は従来どおり
+  `llm.default` に戻る
+  - `reset` は予約語になり、`llm.providers` のキーに使うと起動時に失敗する
+  - 未定義の名前を指定したときに状態を変えず一覧を返す挙動・切り替えが効く範囲は変わらない
 - **BREAKING**: 通常会話で LLM に見せるツールの許可リストを、名前付きツールセット
   `tools.sets` の `main` セットに置き換えた（#189）。`tools.main_available_tools` は廃止し、
   残っていると起動時に失敗する。中身を `tools.sets.main` へ移すこと
