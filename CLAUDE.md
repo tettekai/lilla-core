@@ -284,7 +284,7 @@ lilla-core 自体は起動スクリプトを持たない（ライブラリとし
 |----------|------|
 | `bot.py` | Discord ボット本体。設定・コマンド・ツール・コア確定リポジトリの初期化と、Discord イベントの各 handler への委譲を統括する。起動直後（他の import より前）に `load_extensions()` で環境変数 `LILLA_EXTENSIONS`（カンマ区切り）が指すモジュールを import し、各モジュールの `extension` を集めて検証する（未設定ならコア単体で起動する）。`on_ready` / `on_message` / `on_interaction` は `handlers/` の各ハンドラへ委譲するだけの薄いラッパー。`main()` は拡張の `setup()` をロード順に await したあと `handlers/dashboard_server.py` の `start_dashboard_server()` で観測用ダッシュボードを、`handlers/http_server.py` の `start_http_server(tools, llm_tools, bot)` で共有 HTTP サーバーを起こし、最後に Discord へ接続する（`bot.start()` を抜けるときは例外でも `stop_http_server()` で止める） |
 | `bot_client.py` | Discord `commands.Bot` インスタンスの生成のみを担う共有モジュール。`bot.py` をスクリプト実行した際の多重ロード（Discord 未接続の幽霊インスタンス生成）を防ぐため、`bot` インスタンスを参照する側は必ずこのモジュールから import する |
-| `log_handler.py` | MongoDB へのログ書き込みハンドラー（`MongoDBHandler`。レベル別 TTL 付き）。同期 `pymongo` の `MongoClient`（アプリの非同期クライアント `AsyncMongoClient` とは別インスタンス）を `serverSelectionTimeoutMS=5000` で作り、TTL インデックス作成を起動時の接続確認に兼ねる。届かなければ英語メッセージの `RuntimeError` で起動を落とす（URI は認証情報を含みうるため載せない）。ロガーへ直接は付けず、`core/logging_setup.py` の `QueueListener` の宛先としてだけ使う |
+| `log_handler.py` | MongoDB へのログ書き込みハンドラー（`MongoDBHandler`。レベル別 TTL 付き）。同期 `pymongo` の `MongoClient`（アプリの非同期クライアント `AsyncMongoClient` とは別インスタンス）を `serverSelectionTimeoutMS=5000` で作り、TTL インデックス作成を起動時の接続確認に兼ねる。届かなければ英語メッセージの `RuntimeError` で起動を落とす（URI は認証情報を含みうるため載せない）。ロガーへ直接は付けず、`core/logging_setup.py` の `QueueListener` の宛先としてだけ使う。例外付きのレコードは `message` を変えず、traceback を `exception` フィールドへ保存する（`format_exception_text`。`MAX_EXCEPTION_TEXT_CHARS` を超えたら末尾を残して切り詰める。例外なしなら `exception` は付けない） |
 
 ### コア基盤 (`src/lilla_core/core/`)
 | ファイル | 役割 |
@@ -294,7 +294,7 @@ lilla-core 自体は起動スクリプトを持たない（ライブラリとし
 | `exceptions.py` | `ReauthenticationRequiredError`（外部 API 再認証要求時）・`LLMError`（LLM 呼び出し失敗時）の例外定義 |
 | `error_notify.py` | コマンド実行系・定期タスク実行系のエラー出力を一元化する（`notify_error`）。ERROR ログと Discord のエラー通知チャンネル（`discord.error_channel_id`。チャンネル ID で指定し、`bot.get_channel()` による ID 解決のみを行う。名前によるギルド横断検索は行わない）の 2 箇所にのみ出力し、元チャンネルへの `message.reply()` は行わない（bot 間チャンネルで相手 bot が reply に反応するのを防ぐため）。チャンネル未設定・ID 不正・未発見・送信失敗時は WARNING ログのみで、例外は投げない |
 | `http_util.py` | 全 HTTP リクエストの共通ユーティリティ（`send_http_request` / `stream_http_request`）。プロキシ自動適用、リクエスト/レスポンスの秘匿情報（`client_secret` 等）・base64 画像のログマスキングつき |
-| `logging_setup.py` | `${CONFIG_ROOT}/logging.yaml` からのログ初期化。YAML が無ければ `basicConfig` にフォールバックする。`mongodb` ハンドラがあれば接続情報を注入して `dictConfig` したあと、各ロガーに付いた `mongodb` ハンドラを 1 つの `QueueHandler` に付け替え、実際の `MongoDBHandler` は `QueueListener`（別スレッド）の宛先にする（イベントループ上の `logger.*()` は Queue へ積むだけで戻る）。`QueueHandler.prepare()` は `getMessage()` の結果だけを載せ、ログ文書の `message` を従来と同じに保つ。listener は `stop_logging_listener()`（atexit にも登録）で残りを書き切って止める。`mongodb` ハンドラが無ければ MongoDB に接続しない |
+| `logging_setup.py` | `${CONFIG_ROOT}/logging.yaml` からのログ初期化。YAML が無ければ `basicConfig` にフォールバックする。`mongodb` ハンドラがあれば接続情報を注入して `dictConfig` したあと、各ロガーに付いた `mongodb` ハンドラを 1 つの `QueueHandler` に付け替え、実際の `MongoDBHandler` は `QueueListener`（別スレッド）の宛先にする（イベントループ上の `logger.*()` は Queue へ積むだけで戻る）。`QueueHandler.prepare()` は `getMessage()` の結果だけを載せ、ログ文書の `message` を従来と同じに保つ（例外の traceback は捨てずに `exc_text` へ整形して持ち越す）。listener は `stop_logging_listener()`（atexit にも登録）で残りを書き切って止める。`mongodb` ハンドラが無ければ MongoDB に接続しない |
 | `runtime_state.py` | 実行時に一時的に上書きされるグローバル状態をプロセス内メモリで保持する（`!model` で切り替える LLM プロバイダー名と、`!disable_tools` / `!enable_tools` で切り替える通常会話のツール無効化フラグ。いずれも永続化なしで、再起動するとデフォルトに戻る） |
 
 ### Discord コマンド (`src/lilla_core/commands/`)

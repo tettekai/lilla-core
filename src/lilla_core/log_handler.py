@@ -11,6 +11,35 @@ from lilla_core.utils.datetime_utils import utc_now
 # 起動時の接続確認で待つ上限（ミリ秒）。pymongo 既定の約 30 秒は待たない
 SERVER_SELECTION_TIMEOUT_MS = 5000
 
+# ログ文書の `exception` に残す例外テキストの上限（文字数）。
+# 例外メッセージに機微情報が混ざりうるため、長い traceback を丸ごとは残さない
+MAX_EXCEPTION_TEXT_CHARS = 8000
+
+
+def format_exception_text(
+    record: logging.LogRecord, formatter: logging.Formatter | None = None
+) -> str | None:
+    """レコードに付いた例外を、ログ文書へ保存する文字列にする。
+
+    `exc_text`（整形済み）があればそれを、無ければ `exc_info` を `formatException()` で
+    整形して使う。どちらも無ければ None を返す（例外なしのログ）。
+    `MAX_EXCEPTION_TEXT_CHARS` を超える場合は、例外の種類とメッセージが載る末尾側を残し、
+    先頭を切り詰めて省略した文字数を書き添える。
+
+    :param record: 対象のログレコード
+    :param formatter: traceback の整形に使う Formatter。None なら既定の Formatter
+    :return: 保存する例外テキスト。例外なしなら None
+    """
+    text = record.exc_text
+    if not text and record.exc_info and record.exc_info[0] is not None:
+        text = (formatter or logging.Formatter()).formatException(record.exc_info)
+    if not text:
+        return None
+    if len(text) > MAX_EXCEPTION_TEXT_CHARS:
+        omitted = len(text) - MAX_EXCEPTION_TEXT_CHARS
+        text = f"...[truncated {omitted} chars]\n" + text[-MAX_EXCEPTION_TEXT_CHARS:]
+    return text
+
 
 class MongoDBHandler(logging.Handler):
     """logging.Handler の実装。ログレコードを MongoDB に書き込む。
@@ -27,6 +56,7 @@ class MongoDBHandler(logging.Handler):
         message    : ログ本文
         created_at : UTC datetime（作成日時）
         expires_at : UTC datetime（TTL インデックス用。レベル別 TTL から計算）
+        exception  : 例外の traceback（例外付きのログだけ。`MAX_EXCEPTION_TEXT_CHARS` で切り詰める）
     """
 
     def __init__(
@@ -78,6 +108,7 @@ class MongoDBHandler(logging.Handler):
         pymongo の内部ログによる再帰呼び出しを防ぐため、
         そのロガーからのレコードは無視する。
         TTL はレベル別に設定し、該当レベルが存在しない場合は warning の値にフォールバックする。
+        例外付きのレコードは `message` を変えず、traceback を `exception` フィールドに足す。
         書き込みの失敗は `handleError` に任せ、プロセスは落とさない。
         """
         # pymongo の内部ログによる再帰呼び出しを防ぐ
@@ -89,15 +120,17 @@ class MongoDBHandler(logging.Handler):
             hours = self._ttl_hours.get(level_key, fallback)
             now = utc_now()
             formatter = self.formatter or logging.Formatter()
-            self._collection.insert_one(
-                {
-                    "asctime": formatter.formatTime(record),
-                    "levelname": record.levelname,
-                    "message": record.getMessage(),
-                    "created_at": now,
-                    "expires_at": now + timedelta(hours=hours),
-                }
-            )
+            doc = {
+                "asctime": formatter.formatTime(record),
+                "levelname": record.levelname,
+                "message": record.getMessage(),
+                "created_at": now,
+                "expires_at": now + timedelta(hours=hours),
+            }
+            exception_text = format_exception_text(record, formatter)
+            if exception_text is not None:
+                doc["exception"] = exception_text
+            self._collection.insert_one(doc)
         except Exception:
             self.handleError(record)
 
