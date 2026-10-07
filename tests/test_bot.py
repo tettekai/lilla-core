@@ -1261,18 +1261,25 @@ class TestToolCallLoop:
     async def test_tool_call_notifier_sends_to_message_channel(
         self, discord_bot, mock_message: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """tool_call_notifier を呼ぶと、そのメッセージのチャンネルに送信される。"""
+        """tool_call_notifier にツール名と深さを渡すと、Discord 用の `-#` 行に整形して
+        そのメッセージのチャンネルに送信される。"""
         discord_bot.bot.user.mentioned_in.return_value = True
         mock_run = AsyncMock(return_value="完了しました")
         monkeypatch.setattr(discord_bot.message_handler, "run_conversation", mock_run)
+        # このテストでは llm_tool_loader がモックに差し替わっているため、インデントの上限を固定する
+        monkeypatch.setattr(discord_bot.message_handler, "MAX_TOOL_CALL_DEPTH", 5)
 
         await discord_bot.on_message(mock_message)
         await _flush_discord_tasks(discord_bot)
 
         notifier = mock_run.call_args.kwargs["tool_call_notifier"]
-        await notifier("-# 🔧 llm_health_get")
+        await notifier("llm_health_expert", 0)
+        await notifier("llm_health_get", 1)
 
-        mock_message.channel.send.assert_called_once_with("-# 🔧 llm_health_get")
+        assert [c.args for c in mock_message.channel.send.call_args_list] == [
+            ("-# 🔧 llm_health_expert",),
+            ("-#   └ llm_health_get",),
+        ]
 
 
 # ---------------------------------------------------------------------------

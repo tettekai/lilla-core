@@ -535,34 +535,19 @@ async def _save_tool_cache(
     logger.warning("Unknown cache.mode (%s): %s", tool_name, mode)
 
 
-def _format_tool_call_log_line(tool_name: str, depth: int) -> str:
-    """Discord 表示用のツール呼び出しログ行を、`-#` サブテキスト記法で組み立てる。
-
-    depth == 0 はメインの tool_call ループからの直接呼び出し、depth >= 1 は
-    expert 内部などからのネスト呼び出しを表す。インデントは depth に応じて
-    増やすが、MAX_TOOL_CALL_DEPTH を超える分は表示上それ以上インデントさせない。
-    """
-    indent_depth = min(depth, MAX_TOOL_CALL_DEPTH)
-    if indent_depth <= 0:
-        return f"-# 🔧 {tool_name}"
-    indent = "  " * indent_depth
-    return f"-# {indent}└ {tool_name}"
-
-
 async def _notify_tool_call(context: dict, tool_name: str, depth: int) -> None:
-    """client_type が discord のときのみ、Discord にツール呼び出しログを送信する。
+    """ツール実行前に、注入された notifier へツール名と深さを通知する。
 
-    context["_tool_call_notifier"] が注入されている場合のみ送信する（Discord の
-    通常会話フロー以外では注入されないため、二重のガードになる）。通知失敗は
+    context["_tool_call_notifier"] が注入されている場合のみ通知し、`client_type` は
+    見ない（注入するのは `run_conversation` の呼び出し元の対話クライアントだけ）。
+    表示の書式は呼び出し元に任せ、引数や実行結果は渡さない。通知失敗は
     ツール実行自体を止めないよう例外を握りつぶし、警告ログのみ出す。
     """
-    if context.get("client_type") != "discord":
-        return
     notifier = context.get(_TOOL_CALL_NOTIFIER_KEY)
     if notifier is None:
         return
     try:
-        await notifier(_format_tool_call_log_line(tool_name, depth))
+        await notifier(tool_name, depth)
     except Exception as e:
         logger.warning("Failed to send tool call log (%s): %s", tool_name, e)
 
@@ -608,10 +593,11 @@ async def execute_tool_call(
     トークン浪費の防止）。同名ツールの再帰呼び出し自体は、パラメータを変えた
     正当な利用ケースを妨げないよう禁止せず、深さ上限のみで制御する。
 
-    ``context["client_type"] == "discord"`` かつ ``context["_tool_call_notifier"]``
-    が注入されている場合、ツール実行前に `` -# 🔧 <tool_name>`` 形式のログ行を
-    通知する。llm_expert 内部から本関数が再入された場合も同じ context 経由で
-    notifier が伝播するため、ネストしたツール呼び出しも同じ仕組みで記録される。
+    ``context["_tool_call_notifier"]`` が注入されている場合、ツール実行前に
+    ``notifier(tool_name, depth)`` で通知する（``client_type`` は問わない。depth は
+    直接呼び出しが 0、ネストするたびに 1 増える）。llm_expert 内部から本関数が
+    再入された場合も同じ context 経由で notifier が伝播するため、ネストした
+    ツール呼び出しも同じ仕組みで通知される。
 
     Parameters
     ----------

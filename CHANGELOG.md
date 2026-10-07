@@ -25,6 +25,13 @@
 
 ### Changed
 
+- **BREAKING**: `run_conversation` の `tool_call_notifier` は、整形済みの文字列ではなく
+  `(tool_name, depth)` を受け取るコールバック（`Callable[[str, int], Awaitable[None]]`）に
+  なった（#200）。depth は直接呼び出しが 0 で、ネストするたびに 1 増える。あわせて
+  `client_type` が `discord` 以外でも、notifier を渡せばツール呼び出しが通知されるように
+  した（渡さなければ従来どおり通知しない）。Discord の `-# 🔧 {tool_name}` 行とネスト時の
+  インデントは Discord 側（`handlers/message_handler.py` の `format_tool_call_line`）で
+  組み立てるため、Discord の表示は変わらない
 - **BREAKING**: 引数なしの `!model` は上書きを解除しなくなった（#186）。状態を変えずに、
   `llm.providers` に定義済みのプロバイダー一覧と今有効なモデル（上書きが無ければ
   `llm.default`）を返す。上書きの解除は `!model reset` で行い、解除後は従来どおり

@@ -1589,47 +1589,15 @@ class TestNestedToolConfigOverride:
         assert captured["prompt"] == "子のプロンプト"
 
 
-class TestFormatToolCallLogLine:
-    """_format_tool_call_log_line() の表示フォーマットテスト。"""
-
-    def test_depth_zero_is_flat_wrench_line(self, llm_tool_loader) -> None:
-        """depth==0 は "-# 🔧 <tool_name>" 形式になる。"""
-        line = llm_tool_loader._format_tool_call_log_line("llm_health_expert", 0)
-        assert line == "-# 🔧 llm_health_expert"
-
-    def test_depth_one_is_indented_with_corner(self, llm_tool_loader) -> None:
-        """depth==1 はインデント付きの "└" 形式になる。"""
-        line = llm_tool_loader._format_tool_call_log_line("llm_health_get", 1)
-        assert line == "-#   └ llm_health_get"
-
-    def test_deeper_depth_increases_indent(self, llm_tool_loader) -> None:
-        """depth が増えるほどインデントも増える。"""
-        line1 = llm_tool_loader._format_tool_call_log_line("tool", 1)
-        line2 = llm_tool_loader._format_tool_call_log_line("tool", 2)
-        indent1 = line1.split("└")[0]
-        indent2 = line2.split("└")[0]
-        assert len(indent2) > len(indent1)
-
-    def test_depth_beyond_max_does_not_grow_indent_further(self, llm_tool_loader) -> None:
-        """MAX_TOOL_CALL_DEPTH を超える depth はそれ以上インデントが増えない。"""
-        at_max = llm_tool_loader._format_tool_call_log_line(
-            "tool", llm_tool_loader.MAX_TOOL_CALL_DEPTH
-        )
-        beyond_max = llm_tool_loader._format_tool_call_log_line(
-            "tool", llm_tool_loader.MAX_TOOL_CALL_DEPTH + 10
-        )
-        assert at_max == beyond_max
-
-
 class TestNotifyToolCall:
-    """execute_tool_call からの Discord 通知フックのテスト。"""
+    """execute_tool_call からのツール呼び出し通知フックのテスト。"""
 
     async def test_sends_notification_when_discord_and_notifier_present(self, llm_tool_loader) -> None:
-        """client_type==discord かつ notifier 注入時、実行前に通知される。"""
-        sent_lines: list[str] = []
+        """client_type==discord かつ notifier 注入時、実行前にツール名と深さが通知される。"""
+        sent: list[tuple[str, int]] = []
 
-        async def notifier(line: str) -> None:
-            sent_lines.append(line)
+        async def notifier(tool_name: str, depth: int) -> None:
+            sent.append((tool_name, depth))
 
         mock_execute = AsyncMock(return_value={"success": True, "data": "ok"})
         llm_tools = {
@@ -1644,14 +1612,14 @@ class TestNotifyToolCall:
             llm_tool_loader._TOOL_CALL_NOTIFIER_KEY: notifier,
         }
         await llm_tool_loader.execute_tool_call("llm_foo", {}, llm_tools, context)
-        assert sent_lines == ["-# 🔧 llm_foo"]
+        assert sent == [("llm_foo", 0)]
 
-    async def test_no_notification_when_not_discord(self, llm_tool_loader) -> None:
-        """client_type が discord 以外なら notifier があっても呼ばれない（lilla-client / task）。"""
-        sent_lines: list[str] = []
+    async def test_sends_notification_for_non_discord_client(self, llm_tool_loader) -> None:
+        """client_type が discord 以外でも、notifier が注入されていれば通知される。"""
+        sent: list[tuple[str, int]] = []
 
-        async def notifier(line: str) -> None:
-            sent_lines.append(line)
+        async def notifier(tool_name: str, depth: int) -> None:
+            sent.append((tool_name, depth))
 
         mock_execute = AsyncMock(return_value={"success": True, "data": "ok"})
         llm_tools = {
@@ -1661,16 +1629,19 @@ class TestNotifyToolCall:
                 "tool_config": {},
             }
         }
-        for client_type in ("lilla-client", "task"):
-            context = {
-                "client_type": client_type,
-                llm_tool_loader._TOOL_CALL_NOTIFIER_KEY: notifier,
-            }
-            await llm_tool_loader.execute_tool_call("llm_foo", {}, llm_tools, context)
-        assert sent_lines == []
+        context = {
+            "client_type": "lilla-client",
+            llm_tool_loader._TOOL_CALL_NOTIFIER_KEY: notifier,
+        }
+        result = await llm_tool_loader.execute_tool_call("llm_foo", {}, llm_tools, context)
+        assert result["success"] is True
+        assert sent == [("llm_foo", 0)]
 
-    async def test_no_notification_when_notifier_absent(self, llm_tool_loader) -> None:
-        """notifier が context に注入されていなければ discord でも何もしない（例外も出さない）。"""
+    @pytest.mark.parametrize("client_type", ["discord", "lilla-client"])
+    async def test_no_notification_when_notifier_absent(
+        self, llm_tool_loader, client_type: str
+    ) -> None:
+        """notifier が context に注入されていなければ、client_type によらず何もしない（例外も出さない）。"""
         mock_execute = AsyncMock(return_value={"success": True, "data": "ok"})
         llm_tools = {
             "llm_foo": {
@@ -1680,9 +1651,10 @@ class TestNotifyToolCall:
             }
         }
         result = await llm_tool_loader.execute_tool_call(
-            "llm_foo", {}, llm_tools, {"client_type": "discord"}
+            "llm_foo", {}, llm_tools, {"client_type": client_type}
         )
         assert result["success"] is True
+        mock_execute.assert_awaited_once()
 
     async def test_notifier_propagates_to_nested_call_with_incremented_depth(self, llm_tool_loader) -> None:
         """親ツールが call_tool 経由で子ツールを呼ぶと、子の通知は depth+1 で送られる。
@@ -1691,8 +1663,8 @@ class TestNotifyToolCall:
         """
         sent: list[tuple[str, int]] = []
 
-        async def notifier(line: str) -> None:
-            sent.append((line, len(sent)))
+        async def notifier(tool_name: str, depth: int) -> None:
+            sent.append((tool_name, depth))
 
         async def execute_child(input, context):
             return {"success": True, "data": "child", "summary": ""}
@@ -1713,19 +1685,18 @@ class TestNotifyToolCall:
             },
         }
         context = {
-            "client_type": "discord",
+            "client_type": "lilla-client",
             llm_tool_loader._TOOL_CALL_NOTIFIER_KEY: notifier,
         }
         result = await llm_tool_loader.execute_tool_call(
             "parent_tool", {}, llm_tools, context
         )
         assert result["success"] is True
-        lines = [line for line, _ in sent]
-        assert lines == ["-# 🔧 parent_tool", "-#   └ child_tool"]
+        assert sent == [("parent_tool", 0), ("child_tool", 1)]
 
     async def test_notification_failure_does_not_break_tool_execution(self, llm_tool_loader) -> None:
         """notifier が例外を送出しても、ツール自体の実行結果は正常に返る。"""
-        async def failing_notifier(line: str) -> None:
+        async def failing_notifier(tool_name: str, depth: int) -> None:
             raise RuntimeError("discord send failed")
 
         mock_execute = AsyncMock(return_value={"success": True, "data": "ok"})
