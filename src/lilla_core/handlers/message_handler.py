@@ -13,6 +13,7 @@ from lilla_core.core.config import get_config
 from lilla_core.core.error_notify import notify_error
 from lilla_core.ui.messages import t
 from lilla_core.core.runtime_state import get_active_llm_name
+from lilla_core.loaders.llm_tool_loader import MAX_TOOL_CALL_DEPTH
 from lilla_core.services.conversation_service import run_conversation
 from lilla_core.services.memory_manager import get_memory_manager
 from lilla_core.services.message_splitter import split_response
@@ -27,6 +28,20 @@ _memory_manager = get_memory_manager()
 
 # チャンネルごとの送信中タスクを管理する辞書
 _discord_active_tasks: dict[int, asyncio.Task] = {}
+
+
+def format_tool_call_line(tool_name: str, depth: int) -> str:
+    """Discord 表示用のツール呼び出しログ行を、`-#` サブテキスト記法で組み立てる。
+
+    depth == 0 はメインの tool_call ループからの直接呼び出し、depth >= 1 は
+    expert 内部などからのネスト呼び出しを表す。インデントは depth に応じて
+    増やすが、MAX_TOOL_CALL_DEPTH を超える分は表示上それ以上インデントさせない。
+    """
+    indent_depth = min(depth, MAX_TOOL_CALL_DEPTH)
+    if indent_depth <= 0:
+        return f"-# 🔧 {tool_name}"
+    indent = "  " * indent_depth
+    return f"-# {indent}└ {tool_name}"
 
 
 async def _save_assistant_block(message, block: str, sent_msg) -> None:
@@ -125,7 +140,9 @@ async def handle_message(message, bot, tools, llm_tools, message_hook) -> None:
                         discord_channel_id=channel_id,
                         llm_name=get_active_llm_name(),
                         override_last_user_content=override,
-                        tool_call_notifier=lambda line: message.channel.send(line),
+                        tool_call_notifier=lambda tool_name, depth: message.channel.send(
+                            format_tool_call_line(tool_name, depth)
+                        ),
                     )
                     blocks = split_response(reply)
                     # 送信済みブロックを (本文, Discord メッセージ) のタプルで保持する。

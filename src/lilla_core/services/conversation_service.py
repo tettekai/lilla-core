@@ -131,7 +131,7 @@ async def run_conversation(
     llm_name: str | None = None,
     inject_user_content=None,
     override_last_user_content=None,
-    tool_call_notifier: Callable[[str], Awaitable[None]] | None = None,
+    tool_call_notifier: Callable[[str, int], Awaitable[None]] | None = None,
     allowed_tool_names: list[str] | None = None,
     max_tool_call_iterations: int | None = None,
 ) -> str:
@@ -172,11 +172,12 @@ async def run_conversation(
         履歴末尾の user メッセージ content を LLM 送信時のみ差し替える。
         画像添付など、MongoDB にはテキスト placeholder を保存しつつ、
         LLM には rich content（base64 画像など）を送りたい場合に使う。
-    tool_call_notifier : Callable[[str], Awaitable[None]], optional
-        tool_call 発生時（llm_expert 経由のネスト呼び出しを含む）にログ行文字列を
-        渡して呼び出されるコールバック。client_type == "discord" のときのみ実際に
-        使われる（`execute_tool_call` 側でガードされる）。Discord 以外の呼び出し元
-        （拡張が増やす対話クライアント種別, task）は渡さない想定。
+    tool_call_notifier : Callable[[str, int], Awaitable[None]], optional
+        ツール実行前（llm_expert 経由のネスト呼び出しを含む）に
+        ``(tool_name, depth)`` を渡して呼び出されるコールバック。depth は直接
+        呼び出しが 0、ネストするたびに 1 増える。client_type に関係なく、渡せば
+        通知される。表示の書式（Discord の ``-#`` 行など）は呼び出し元が組み立てる。
+        引数や実行結果は渡さない。通知の失敗は警告ログのみでツール実行は止めない。
     allowed_tool_names : list[str] | None, optional
         この回だけ LLM に見せるツールの許可リスト（展開済みの YAML stem。
         `llm_tool_loader.resolve_available_tools` の戻り値を想定）。None なら

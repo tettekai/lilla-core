@@ -174,3 +174,33 @@ class TestUserMessagePersistence:
         user_call = mock_memory_manager.add_conversation.await_args_list[0]
         assert user_call.args[0]["role"] == "user"
         assert user_call.kwargs["discord_channel_id"] == 100
+
+
+class TestFormatToolCallLine:
+    """format_tool_call_line() の Discord 表示フォーマットテスト。"""
+
+    def test_depth_zero_is_flat_wrench_line(self) -> None:
+        """depth==0 は "-# 🔧 <tool_name>" 形式になる。"""
+        line = message_handler.format_tool_call_line("llm_health_expert", 0)
+        assert line == "-# 🔧 llm_health_expert"
+
+    def test_depth_one_is_indented_with_corner(self) -> None:
+        """depth==1 はインデント付きの "└" 形式になる。"""
+        line = message_handler.format_tool_call_line("llm_health_get", 1)
+        assert line == "-#   └ llm_health_get"
+
+    def test_deeper_depth_increases_indent(self) -> None:
+        """depth が増えるほどインデントも増える。"""
+        line1 = message_handler.format_tool_call_line("tool", 1)
+        line2 = message_handler.format_tool_call_line("tool", 2)
+        assert len(line2.split("└")[0]) > len(line1.split("└")[0])
+
+    def test_depth_beyond_max_does_not_grow_indent_further(self) -> None:
+        """MAX_TOOL_CALL_DEPTH を超える depth はそれ以上インデントが増えない。"""
+        at_max = message_handler.format_tool_call_line(
+            "tool", message_handler.MAX_TOOL_CALL_DEPTH
+        )
+        beyond_max = message_handler.format_tool_call_line(
+            "tool", message_handler.MAX_TOOL_CALL_DEPTH + 10
+        )
+        assert at_max == beyond_max
