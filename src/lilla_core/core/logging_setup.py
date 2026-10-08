@@ -26,16 +26,23 @@ class _MongoDBQueueHandler(logging.handlers.QueueHandler):
     標準の `prepare()` は `format()` の結果（例外のトレースバックを含む）で
     `msg` を置き換えるため、ログ文書の `message` が従来の `getMessage()` と
     変わってしまう。ここでは `getMessage()` の結果だけを載せ、ドキュメント形を保つ。
+    例外の traceback は捨てずに `exc_text` へ整形して残し、`MongoDBHandler` が
+    `message` とは別の `exception` フィールドへ保存する。
     """
 
     def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
-        """Queue へ積むためにレコードを複製し、メッセージを確定させる。"""
+        """Queue へ積むためにレコードを複製し、メッセージと例外テキストを確定させる。
+
+        traceback オブジェクトは別スレッドへ持ち越さず、ここで文字列（`exc_text`）にする。
+        """
         record = copy.copy(record)
         record.msg = record.getMessage()
         record.message = record.msg
         record.args = None
+        if not record.exc_text and record.exc_info and record.exc_info[0] is not None:
+            formatter = self.formatter or logging.Formatter()
+            record.exc_text = formatter.formatException(record.exc_info)
         record.exc_info = None
-        record.exc_text = None
         record.stack_info = None
         return record
 

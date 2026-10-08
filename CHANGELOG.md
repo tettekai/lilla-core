@@ -9,6 +9,11 @@
 
 ### Added
 
+- MongoDB に書くログで、例外付きのレコード（`logger.exception` / `exc_info=True`）は
+  traceback を新しい `exception` フィールドに保存するようにした（#202）。`message` は従来と
+  同じで、例外なしのログの文書は変わらない。長い traceback は末尾（例外の種類とメッセージ）を
+  残して `MAX_EXCEPTION_TEXT_CHARS`（8000 文字）に切り詰める
+
 - `lilla_core.handlers.http_server` の `LLM_TOOLS_KEY` を、拡張が `http_routes()` で
   載せたハンドラから LLM ツールレジストリを読むための公開名にした（#197）。
   `request.app[LLM_TOOLS_KEY]` で読める（文字列 `"llm_tools"` では読めない）。
