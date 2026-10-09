@@ -215,8 +215,10 @@ class TestLlmSendBlocked:
         cfg.discord = _discord_config([])
         monkeypatch.setattr(message_handler, "_config", cfg)
         manager = MagicMock()
-        manager.add_conversation = AsyncMock()
+        manager.add_conversation = AsyncMock(return_value="65f0000000000000000000aa")
+        manager.delete_conversation = AsyncMock(return_value=True)
         monkeypatch.setattr(message_handler, "_memory_manager", manager)
+        self.manager = manager
 
     async def test_blocked_send_notifies_fixed_message_without_reply(
         self, monkeypatch: pytest.MonkeyPatch
@@ -242,3 +244,64 @@ class TestLlmSendBlocked:
         notify.assert_awaited_once()
         assert notify.await_args.args[1] == t("message.llm_send_blocked")
         message.reply.assert_not_awaited()
+
+    async def test_blocked_user_message_is_removed_from_history(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """止めた回は、保存したばかりのユーザー発言を履歴から消す。"""
+        from lilla_core.core.exceptions import LlmSendBlockedError
+
+        monkeypatch.setattr(message_handler, "_discord_active_tasks", {})
+        monkeypatch.setattr(
+            message_handler, "run_conversation", AsyncMock(side_effect=LlmSendBlockedError("fixed"))
+        )
+        monkeypatch.setattr(message_handler, "notify_error", AsyncMock())
+
+        await _handle(_make_message(100), _make_bot(mentioned=True))
+        await message_handler._discord_active_tasks[100]
+
+        self.manager.delete_conversation.assert_awaited_once_with("65f0000000000000000000aa")
+
+    async def test_next_conversation_is_sent_after_block(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """止めた次の会話は、禁止語を含まなければ送れる（止めた発言が履歴に残らない）。"""
+        from lilla_core.core.exceptions import LlmSendBlockedError
+
+        dummy = "Qvxdummyterm"
+        history: dict[str, dict] = {}
+
+        async def add_conversation(entry, **kwargs):
+            entry_id = f"id{len(history)}"
+            history[entry_id] = entry
+            return entry_id
+
+        async def delete_conversation(entry_id):
+            return history.pop(entry_id, None) is not None
+
+        async def fake_run_conversation(*args, **kwargs):
+            # 本物と同じく、履歴の全件が送信ボディに入る前提で検査する
+            if any(dummy in str(entry["content"]) for entry in history.values()):
+                raise LlmSendBlockedError("fixed")
+            return "返事"
+
+        self.manager.add_conversation = AsyncMock(side_effect=add_conversation)
+        self.manager.delete_conversation = AsyncMock(side_effect=delete_conversation)
+        monkeypatch.setattr(message_handler, "_discord_active_tasks", {})
+        monkeypatch.setattr(message_handler, "run_conversation", fake_run_conversation)
+        monkeypatch.setattr(message_handler, "split_response", lambda reply: [reply])
+        monkeypatch.setattr(message_handler, "notify_error", AsyncMock())
+
+        blocked = _make_message(100)
+        blocked.content = f"名前は {dummy}"
+        blocked.reply = AsyncMock()
+        await _handle(blocked, _make_bot(mentioned=True))
+        await message_handler._discord_active_tasks[100]
+        blocked.reply.assert_not_awaited()
+
+        following = _make_message(200)
+        following.reply = AsyncMock(return_value=MagicMock(id=556))
+        await _handle(following, _make_bot(mentioned=True))
+        await message_handler._discord_active_tasks[200]
+        following.reply.assert_awaited_once_with("返事")
+        assert all(dummy not in str(entry["content"]) for entry in history.values())

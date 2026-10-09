@@ -45,6 +45,19 @@ def format_tool_call_line(tool_name: str, depth: int) -> str:
     return f"-# {indent}└ {tool_name}"
 
 
+async def _discard_blocked_user_entry(entry_id: str | None) -> None:
+    """送信前検査で止めた回のユーザー発言を会話履歴から取り除く。
+
+    失敗しても通知は続けたいので、例外は WARNING ログに留める（発言の中身は出さない）。
+    """
+    if entry_id is None:
+        return
+    try:
+        await _memory_manager.delete_conversation(entry_id)
+    except Exception as e:
+        logger.warning("Failed to remove blocked user message from history: %s", type(e).__name__)
+
+
 async def _save_assistant_block(message, block: str, sent_msg) -> None:
     """送信済みの返信ブロックを、対応する Discord メッセージ情報つきで会話履歴に保存する。
 
@@ -127,10 +140,11 @@ async def handle_message(message, bot, tools, llm_tools, message_hook) -> None:
             existing_task.cancel()
 
         async def send_split_messages(message, content: str | list, memory_content: str | None = None):
+            user_entry_id: str | None = None
             try:
                 async with message.channel.typing():
                     save_content = memory_content if memory_content is not None else content
-                    await _memory_manager.add_conversation(
+                    user_entry_id = await _memory_manager.add_conversation(
                         {"role": "user", "content": save_content},
                         discord_channel_id=channel_id,
                     )
@@ -168,6 +182,9 @@ async def handle_message(message, bot, tools, llm_tools, message_hook) -> None:
             except asyncio.CancelledError:
                 pass
             except LlmSendBlockedError as e:
+                # 止めた発言を履歴に残すと、以後の会話（別チャンネルや task も含む）の
+                # 送信ボディにも同じ語が入り続けるため、保存したばかりのこの発言を消す
+                await _discard_blocked_user_entry(user_entry_id)
                 # 一致した語は例外にも文言にも載らない（固定文言だけを通知する）
                 await notify_error(bot, t("message.llm_send_blocked"), e)
             except Exception as e:

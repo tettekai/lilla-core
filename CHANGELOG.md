@@ -13,7 +13,8 @@
   書くと、`chat_to_llm` / `chat_to_llm_with_tools` / `chat_to_llm_responses` が送る直前に
   リクエストボディ内の文字列（ヘッダーと画像の data URL は除く）を NFKC 正規化・大文字小文字を
   無視して調べ、リストの語（部分一致）を含む回は送信せず `LlmSendBlockedError`
-  （`LLMError` の派生）を送出する。一致した語・本文はログにも例外にも出さない。リストは
+  （`LLMError` の派生）を送出する。一致した語・本文はログにも例外にも出さない。Discord の
+  通常会話では止めた回のユーザー発言を会話履歴から取り除き、次の会話まで止め続けないようにする。リストは
   起動時に一度だけ読み、読めない・形式が不正な場合は起動を止める
   （`LlmSendGuardUnavailableError`）。相対パス・`file:` / `dir:`・`${config_root}` は
   起動時に拒否する。未設定なら従来どおり送る

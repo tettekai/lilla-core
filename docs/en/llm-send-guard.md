@@ -49,7 +49,8 @@ The list file is a JSON array of strings (no comments).
 - The request is not sent. It is not resent with the match masked.
 - In regular Discord conversations, only "the message was not sent to the LLM because it may
   contain personal information" is posted to the error channel (`discord.error_channel_id`).
-  The matched term is not included.
+  The matched term is not included. The blocked user message is removed from the
+  conversation history, so the next conversation is sent as usual (unless it also matches).
 - Logs record only that a request was stopped. Matched terms, request bodies and headers
   are never logged or put in exception messages.
 - The list is read once at startup and kept in memory. Restart after editing the file.
