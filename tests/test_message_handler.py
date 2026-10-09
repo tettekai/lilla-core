@@ -204,3 +204,41 @@ class TestFormatToolCallLine:
             "tool", message_handler.MAX_TOOL_CALL_DEPTH + 10
         )
         assert at_max == beyond_max
+
+
+class TestLlmSendBlocked:
+    """LLM 送信前の検査で止まったときの通知を検証する。"""
+
+    @pytest.fixture(autouse=True)
+    def mock_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        cfg = MagicMock()
+        cfg.discord = _discord_config([])
+        monkeypatch.setattr(message_handler, "_config", cfg)
+        manager = MagicMock()
+        manager.add_conversation = AsyncMock()
+        monkeypatch.setattr(message_handler, "_memory_manager", manager)
+
+    async def test_blocked_send_notifies_fixed_message_without_reply(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """送信を止めた回は固定文言だけを通知し、元チャンネルへは返信しない。"""
+        from lilla_core.core.exceptions import LlmSendBlockedError
+        from lilla_core.ui.messages import t
+
+        monkeypatch.setattr(message_handler, "_discord_active_tasks", {})
+        monkeypatch.setattr(
+            message_handler,
+            "run_conversation",
+            AsyncMock(side_effect=LlmSendBlockedError("fixed")),
+        )
+        notify = AsyncMock()
+        monkeypatch.setattr(message_handler, "notify_error", notify)
+
+        message = _make_message(100)
+        message.reply = AsyncMock()
+        await _handle(message, _make_bot(mentioned=True))
+        await message_handler._discord_active_tasks[100]
+
+        notify.assert_awaited_once()
+        assert notify.await_args.args[1] == t("message.llm_send_blocked")
+        message.reply.assert_not_awaited()

@@ -102,6 +102,7 @@ interaction:
 
 message:
   error: "メッセージ処理中にエラーが発生しました"
+  llm_send_blocked: "個人情報が含まれている可能性があるため、LLM へ送信しませんでした"
 
 extension:
   on_message_error: "拡張 {name} のメッセージ処理中にエラーが発生しました"

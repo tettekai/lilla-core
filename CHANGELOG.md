@@ -9,6 +9,15 @@
 
 ### Added
 
+- `llm.send_blocklist_path`（任意）を追加した（#204）。JSON の文字列配列ファイルの絶対パスを
+  書くと、`chat_to_llm` / `chat_to_llm_with_tools` / `chat_to_llm_responses` が送る直前に
+  リクエストボディ内の文字列（ヘッダーと画像の data URL は除く）を NFKC 正規化・大文字小文字を
+  無視して調べ、リストの語（部分一致）かメールアドレスの形を含む回は送信せず
+  `LlmSendBlockedError`（`LLMError` の派生）を送出する。一致した語・本文はログにも例外にも
+  出さない。リストは起動時に一度だけ読み、読めない・形式が不正な場合は以後の送信をすべて
+  止める（`LlmSendGuardUnavailableError`）。相対パス・`file:` / `dir:`・`${config_root}` は
+  起動時に拒否する。未設定なら従来どおり送る
+
 - MongoDB に書くログで、例外付きのレコード（`logger.exception` / `exc_info=True`）は
   traceback を新しい `exception` フィールドに保存するようにした（#202）。`message` は従来と
   同じで、例外なしのログの文書は変わらない。長い traceback は末尾（例外の種類とメッセージ）を

@@ -691,3 +691,31 @@ class TestDiscordChannels:
     ) -> None:
         cfg = self._lookup_config(isolated_config_root)
         assert cfg.discord.find_channel_by_name("nope") is None
+
+
+class TestLlmSendBlocklistPath:
+    """`llm.send_blocklist_path` の検証。"""
+
+    def _llm(self, path):
+        from lilla_core.core.config import LlmConfig
+        return LlmConfig(
+            default="d",
+            providers={"d": {"type": "ollama", "url": "http://x", "model": "m"}},
+            send_blocklist_path=path,
+        )
+
+    def test_default_is_none(self) -> None:
+        assert self._llm(None).send_blocklist_path is None
+
+    def test_accepts_absolute_path(self, tmp_path: Path) -> None:
+        path = str(tmp_path / "list.json")
+        assert self._llm(path).send_blocklist_path == path
+
+    @pytest.mark.parametrize(
+        "path",
+        ["list.json", "./list.json", "", "file:/abs/list.json", "dir:/abs", "${config_root}/list.json"],
+    )
+    def test_rejects_non_absolute_specs(self, path: str) -> None:
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            self._llm(path)
