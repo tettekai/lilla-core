@@ -3,17 +3,15 @@
 `llm.send_blocklist_path` に JSON の文字列配列ファイルの絶対パスを書いたときだけ有効になる。
 有効なあいだは、`api/llm_client.py` が `send_http_request` へ渡す `data`（JSON 化される
 ボディ）に含まれる文字列を役割によらずすべて集め、NFKC 正規化 + 大文字小文字の無視で
-次のどちらかに一致したらその回の送信を止める。
-
-- 拒否リストの語（部分一致）
-- メールアドレスの形（リストとは別に、有効なあいだは常に検査する）
+拒否リストの語に部分一致したらその回の送信を止める（メールアドレスなども、止めたいものは
+リストに書く。形での推測はしない）。
 
 ヘッダー（`Authorization` など）は対象外で、data URL の base64 本体（画像など、文字列に
 ならない部分）も対象外。言い換えや画像内の文字は扱わない。
 
 リストは起動時（`bot.py`）に一度だけ読んでプロセスのメモリに持つ。読めない・JSON でない・
-文字列配列でない場合はその失敗を覚えておき、以後の送信はすべて止める（検査できない状態で
-送らない）。リストの中身・一致した語・リクエスト本文は、ログにも例外メッセージにも出さない。
+文字列配列でない場合は、設定の不備と同じく起動を止める。`bot.py` を通らずに LLM を呼ぶ
+プロセス（運用スクリプトなど）では最初の送信時に読み、失敗したら送らない。リストの中身・一致した語・リクエスト本文は、ログにも例外メッセージにも出さない。
 """
 from __future__ import annotations
 
@@ -32,12 +30,7 @@ logger = logging.getLogger(__name__)
 
 # 送信を止めたときの例外メッセージ（固定文言。一致した語や本文を載せない）
 BLOCKED_MESSAGE = "LLM request was not sent because it may contain personal information"
-UNAVAILABLE_MESSAGE = "LLM request was not sent because the send blocklist is unavailable"
-
-# NFKC + casefold 後の文字列に対して使うメールアドレスの形
-_EMAIL_PATTERN = re.compile(
-    r"[a-z0-9._%+\-]+@[a-z0-9](?:[a-z0-9\-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9\-]*[a-z0-9])?)*\.[a-z]{2,}"
-)
+UNAVAILABLE_MESSAGE = "LLM send blocklist could not be loaded"
 
 # 画像などを埋め込んだ data URL（base64）。文字列にならない部分として検査から外す
 _DATA_URL_PATTERN = re.compile(r"^data:[^,]*;base64,", re.IGNORECASE)
@@ -50,13 +43,8 @@ class _LoadedBlocklist:
     terms: tuple[str, ...]
 
 
-@dataclass(frozen=True)
-class _LoadFailure:
-    """拒否リストの読み込みに失敗したことの記録。"""
-
-
-# パス → 読み込み結果。起動時に一度だけ埋め、以後は読み直さない
-_cache: dict[str, _LoadedBlocklist | _LoadFailure] = {}
+# パス → 読み込み済みの拒否リスト。起動時に一度だけ埋め、以後は読み直さない
+_cache: dict[str, _LoadedBlocklist] = {}
 
 
 def normalize_text(text: str) -> str:
@@ -80,21 +68,23 @@ def _read_blocklist(path: str) -> _LoadedBlocklist:
     return _LoadedBlocklist(terms=terms)
 
 
-def _load(path: str) -> _LoadedBlocklist | _LoadFailure:
-    """パスごとの読み込み結果を返す。未読み込みならここで一度だけ読む。"""
+def _load(path: str) -> _LoadedBlocklist:
+    """パスごとの拒否リストを返す。未読み込みならここで一度だけ読む。
+
+    失敗時は `LlmSendGuardUnavailableError` を送出する（失敗は覚えないため、次の呼び出しで
+    読み直す）。元の例外メッセージは JSON の該当箇所などを含みうるため、種類だけを出す。
+    """
     cached = _cache.get(path)
     if cached is not None:
         return cached
     try:
-        result: _LoadedBlocklist | _LoadFailure = _read_blocklist(path)
-        logger.info("Loaded LLM send blocklist (%d terms)", len(result.terms))
+        result = _read_blocklist(path)
     except Exception as e:
-        # 例外メッセージは JSON の該当箇所などを含みうるため、種類だけを出す
-        logger.error(
-            "Failed to load LLM send blocklist at %s (%s); LLM requests will not be sent",
-            path, type(e).__name__,
-        )
-        result = _LoadFailure()
+        logger.error("Failed to load LLM send blocklist at %s (%s)", path, type(e).__name__)
+        raise LlmSendGuardUnavailableError(
+            f"{UNAVAILABLE_MESSAGE} (path: {path}, error: {type(e).__name__})"
+        ) from None
+    logger.info("Loaded LLM send blocklist (%d terms)", len(result.terms))
     _cache[path] = result
     return result
 
@@ -102,7 +92,8 @@ def _load(path: str) -> _LoadedBlocklist | _LoadFailure:
 def preload_llm_send_blocklist(config=None) -> None:
     """起動時に拒否リストを一度だけ読み込む（未指定なら何もしない）。
 
-    読み込みに失敗しても起動は止めず、その失敗を覚えて以後の送信をすべて止める。
+    読めない・形式が不正な場合は `LlmSendGuardUnavailableError` を送出し、
+    呼び出し元（`bot.py`）の起動を止める。
 
     Args:
         config: 参照する設定。省略時は `get_config()`。
@@ -131,17 +122,17 @@ def _iter_strings(value: Any) -> Iterator[str]:
             yield from _iter_strings(item)
 
 
-def _find_match_kind(data: Any, terms: tuple[str, ...]) -> str | None:
-    """ボディが拒否対象に当たるかを判定し、当たった種類（語は返さない）を返す。"""
+def _matches(data: Any, terms: tuple[str, ...]) -> bool:
+    """ボディ内の文字列のどれかが拒否リストの語を含むかを返す（どの語かは返さない）。"""
+    if not terms:
+        return False
     for text in _iter_strings(data):
         if _DATA_URL_PATTERN.match(text):
             continue
         normalized = normalize_text(text)
         if any(term in normalized for term in terms):
-            return "blocklist term"
-        if _EMAIL_PATTERN.search(normalized):
-            return "email address"
-    return None
+            return True
+    return False
 
 
 def ensure_llm_request_allowed(data: Any) -> None:
@@ -154,16 +145,12 @@ def ensure_llm_request_allowed(data: Any) -> None:
 
     Raises:
         LlmSendGuardUnavailableError: 拒否リストが指定されているのに使えない場合。
-        LlmSendBlockedError: 拒否リストの語かメールアドレスの形が含まれる場合。
+        LlmSendBlockedError: 拒否リストの語が含まれる場合。
     """
     path = get_config().llm.send_blocklist_path
     if path is None:
         return
     loaded = _load(path)
-    if isinstance(loaded, _LoadFailure):
-        logger.warning("LLM request was not sent: send blocklist is unavailable")
-        raise LlmSendGuardUnavailableError(UNAVAILABLE_MESSAGE)
-    kind = _find_match_kind(data, loaded.terms)
-    if kind is not None:
-        logger.warning("LLM request was not sent: request body matched %s", kind)
+    if _matches(data, loaded.terms):
+        logger.warning("LLM request was not sent: request body matched the send blocklist")
         raise LlmSendBlockedError(BLOCKED_MESSAGE)

@@ -41,22 +41,22 @@ The list file is a JSON array of strings (no comments).
 - Image data URLs (`data:...;base64,...`) are skipped.
 - Both sides are NFKC-normalized and compared case-insensitively. List entries match as
   substrings. Avoid short entries, which cause false positives.
-- While the check is enabled, email-address-shaped strings are always checked as well,
-  independently of the list (even if the array is empty).
+- Nothing is stopped by guessing shapes such as email addresses. To stop your email
+  address, add it to the list.
 
-## On a match, or when the list is unavailable
+## On a match, or when the list cannot be read
 
 - The request is not sent. It is not resent with the match masked.
 - In regular Discord conversations, only "the message was not sent to the LLM because it may
   contain personal information" is posted to the error channel (`discord.error_channel_id`).
   The matched term is not included.
-- Logs record only that a request was stopped and the kind of match (list entry or email
-  shape). Matched terms, request bodies and headers are never logged or put in exception
-  messages.
+- Logs record only that a request was stopped. Matched terms, request bodies and headers
+  are never logged or put in exception messages.
 - The list is read once at startup and kept in memory. Restart after editing the file.
 - If the path is set but the file cannot be read, is not JSON, is not an array of strings,
-  or contains an empty string, startup continues with an ERROR log, and every LLM request is
-  stopped from then on.
+  or contains an empty string, the bot does not start (it exits with an error at startup),
+  just like other configuration errors. An empty array is not an error; the bot starts with
+  nothing to match.
 
 ## Out of scope
 

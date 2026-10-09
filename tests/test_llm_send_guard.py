@@ -45,9 +45,9 @@ def _write_list(tmp_path: Path, content) -> str:
 
 class TestDisabled:
     def test_no_path_allows_anything(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """パス未設定なら、メールアドレスの形があっても止めない。"""
+        """パス未設定なら何も調べない。"""
         _use_path(monkeypatch, None)
-        llm_send_guard.ensure_llm_request_allowed({"messages": [{"content": "a@example.com"}]})
+        llm_send_guard.ensure_llm_request_allowed({"messages": [{"content": DUMMY_TERM}]})
 
 
 class TestMatching:
@@ -80,11 +80,22 @@ class TestMatching:
         with pytest.raises(LlmSendBlockedError):
             llm_send_guard.ensure_llm_request_allowed({"messages": [{"content": fullwidth}]})
 
-    def test_email_shape_is_always_checked(self, enabled, caplog) -> None:
-        """リストに無くてもメールアドレスの形なら止める。"""
+    def test_email_shape_alone_is_not_blocked(self, enabled) -> None:
+        """メールアドレスの形だけでは止めない（止めたいものはリストに書く）。"""
+        llm_send_guard.ensure_llm_request_allowed(
+            {"messages": [{"content": "to dummy.user@example.test ok"}]}
+        )
+
+    def test_email_in_list_is_blocked(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog
+    ) -> None:
+        """リストに書いたメールアドレスは止め、ログに出さない。"""
+        _use_path(monkeypatch, _write_list(tmp_path, ["dummy.user@example.test"]))
         with pytest.raises(LlmSendBlockedError):
-            llm_send_guard.ensure_llm_request_allowed({"messages": [{"content": "to dummy.user@example.test ok"}]})
-        assert "dummy.user" not in caplog.text
+            llm_send_guard.ensure_llm_request_allowed(
+                {"messages": [{"content": "to Dummy.User@Example.test ok"}]}
+            )
+        assert "dummy.user" not in caplog.text.casefold()
 
     def test_clean_body_is_allowed(self, enabled) -> None:
         llm_send_guard.ensure_llm_request_allowed(
@@ -93,19 +104,19 @@ class TestMatching:
 
     def test_data_url_base64_is_ignored(self, enabled) -> None:
         """画像の data URL は文字列にならない部分として対象外。"""
-        data_url = "data:image/png;base64," + DUMMY_TERM + "AAAA@example.com"
+        data_url = "data:image/png;base64," + DUMMY_TERM + "AAAA"
         llm_send_guard.ensure_llm_request_allowed(
             {"messages": [{"content": [{"type": "image_url", "image_url": {"url": data_url}}]}]}
         )
 
-    def test_empty_list_still_checks_email(
+    def test_empty_list_matches_nothing(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """空配列は検査を有効にしたまま一致なしとして扱う。"""
+        """空配列はエラーにせず、一致なしとして扱う。"""
         _use_path(monkeypatch, _write_list(tmp_path, []))
-        llm_send_guard.ensure_llm_request_allowed({"messages": [{"content": DUMMY_TERM}]})
-        with pytest.raises(LlmSendBlockedError):
-            llm_send_guard.ensure_llm_request_allowed({"messages": [{"content": "a@example.com"}]})
+        llm_send_guard.ensure_llm_request_allowed(
+            {"messages": [{"content": f"{DUMMY_TERM} a@example.com"}]}
+        )
 
 
 class TestUnavailable:
@@ -144,10 +155,16 @@ class TestPreload:
         with pytest.raises(LlmSendBlockedError):
             llm_send_guard.ensure_llm_request_allowed({"messages": [{"content": DUMMY_TERM}]})
 
-    def test_failure_does_not_raise_at_startup(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("content", [None, "not json", json.dumps([1])])
+    def test_failure_raises_at_startup(self, tmp_path: Path, content, caplog) -> None:
+        """読めない・形式が不正なリストは起動時に例外で止め、中身を出さない。"""
+        path = tmp_path / "missing.json" if content is None else Path(_write_list(tmp_path, content))
         cfg = MagicMock()
-        cfg.llm.send_blocklist_path = str(tmp_path / "missing.json")
-        llm_send_guard.preload_llm_send_blocklist(cfg)
+        cfg.llm.send_blocklist_path = str(path)
+        with pytest.raises(LlmSendGuardUnavailableError) as exc_info:
+            llm_send_guard.preload_llm_send_blocklist(cfg)
+        assert "not json" not in str(exc_info.value)
+        assert "not json" not in caplog.text
 
     def test_no_path_is_noop(self) -> None:
         cfg = MagicMock()

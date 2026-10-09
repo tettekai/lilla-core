@@ -79,8 +79,8 @@ if _config.env.http_proxy_user and _config.env.http_proxy_pass:
 # 無ければここで起動を止める（fail-fast）。
 validate_llm_resolvers(_config)
 
-# `llm.send_blocklist_path` の拒否リストを起動時に一度だけ読む。読めなくても起動は止めず、
-# 以後の LLM 送信をすべて止める（`core/llm_send_guard.py`）。
+# `llm.send_blocklist_path` の拒否リストを起動時に一度だけ読む。読めない・形式が不正なら
+# 設定の不備と同じくここで起動を止める（fail-fast。`core/llm_send_guard.py`）。
 preload_llm_send_blocklist(_config)
 
 # コマンド・ツールをロード（起動時に一度だけ）
