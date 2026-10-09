@@ -95,6 +95,7 @@ def mock_cfg() -> MagicMock:
     cfg.discord.error_channel_id = "555"
     cfg.discord.my_user_id = "12345"
     cfg.discord.approval_channel_id = "999"
+    cfg.llm.send_blocklist_path = None
     return cfg
 
 

@@ -8,6 +8,7 @@ from typing import Any, NoReturn
 from lilla_core.core.config import get_config
 from lilla_core.core.exceptions import LLMError
 from lilla_core.core.http_util import send_http_request
+from lilla_core.core.llm_send_guard import ensure_llm_request_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -137,19 +138,24 @@ async def chat_to_llm(
 
 
 async def _chat_ollama(messages: list[dict[str, Any]], provider) -> str:
-    """Ollama へチャットリクエストを送信し、応答を返す。WOL 処理も行う。"""
+    """Ollama へチャットリクエストを送信し、応答を返す。WOL 処理も行う。
+
+    送信前（WOL より前）に `ensure_llm_request_allowed` でボディを検査する。
+    """
+    request_data = {
+        "model": provider.model,
+        "messages": messages,
+        "stream": False,
+        "options": {"temperature": 0.7, **provider.extra_params},
+    }
+    ensure_llm_request_allowed(request_data)
     await _wake_ollama_if_needed(provider)
 
     try:
         reply = await send_http_request(
             f"{provider.url}/api/chat",
             method="POST",
-            data={
-                "model": provider.model,
-                "messages": messages,
-                "stream": False,
-                "options": {"temperature": 0.7, **provider.extra_params},
-            },
+            data=request_data,
             timeout=300,
         )
         return _resolve_content(json.loads(reply)["message"])
@@ -158,18 +164,23 @@ async def _chat_ollama(messages: list[dict[str, Any]], provider) -> str:
 
 
 async def _chat_openai_compat(messages: list[dict[str, Any]], provider) -> str:
-    """OpenAI 互換 API へチャットリクエストを送信し、応答を返す。"""
+    """OpenAI 互換 API へチャットリクエストを送信し、応答を返す。
+
+    送信前に `ensure_llm_request_allowed` でボディを検査する（ヘッダーは対象外）。
+    """
+    request_data = {
+        "model": provider.model,
+        "messages": messages,
+        "stream": False,
+        **provider.extra_params,
+    }
+    ensure_llm_request_allowed(request_data)
     api_key = _resolve_api_key(provider)
     try:
         reply = await send_http_request(
             f"{provider.url}/chat/completions",
             method="POST",
-            data={
-                "model": provider.model,
-                "messages": messages,
-                "stream": False,
-                **provider.extra_params,
-            },
+            data=request_data,
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=300,
         )
@@ -215,7 +226,6 @@ async def chat_to_llm_with_tools(
     provider = _get_provider(llm_name)
 
     if provider.type == "ollama":
-        await _wake_ollama_if_needed(provider)
         # Ollama は OpenAI 互換エンドポイントを使用
         url = f"{provider.url}/v1/chat/completions"
         api_key = ""
@@ -225,13 +235,35 @@ async def chat_to_llm_with_tools(
     else:
         raise ValueError(f"Unsupported LLM provider type: {provider.type}")
 
-    return await _chat_with_tools_openai_compat(messages, provider, tools, url, api_key)
+    request_data = _build_tools_request_data(messages, provider, tools)
+    # 送信を止める回は WOL も行わないよう、検査を先に済ませる
+    ensure_llm_request_allowed(request_data)
+    if provider.type == "ollama":
+        await _wake_ollama_if_needed(provider)
+
+    return await _chat_with_tools_openai_compat(request_data, url, api_key)
 
 
-async def _chat_with_tools_openai_compat(
+def _build_tools_request_data(
     messages: list[dict[str, Any]],
     provider,
     tools: list | None,
+) -> dict[str, Any]:
+    """tools パラメータ付きの Chat Completions リクエストボディを組み立てる。"""
+    request_data: dict[str, Any] = {
+        "model": provider.model,
+        "messages": messages,
+        "stream": False,
+        **provider.extra_params,
+    }
+    if tools:
+        request_data["tools"] = tools
+        request_data["tool_choice"] = "auto"
+    return request_data
+
+
+async def _chat_with_tools_openai_compat(
+    request_data: dict[str, Any],
     url: str,
     api_key: str,
 ) -> dict:
@@ -239,12 +271,8 @@ async def _chat_with_tools_openai_compat(
 
     Parameters
     ----------
-    messages : list[dict[str, Any]]
-        会話履歴（システムプロンプト含む）
-    provider : LlmProviderConfig
-        使用するプロバイダーの設定
-    tools : list | None
-        ツール定義リスト
+    request_data : dict[str, Any]
+        `_build_tools_request_data` が組み立て、検査を済ませたリクエストボディ
     url : str
         エンドポイント URL
     api_key : str
@@ -255,16 +283,6 @@ async def _chat_with_tools_openai_compat(
     dict
         {"content", "tool_calls", "finish_reason", "raw_message"} を含む辞書
     """
-    request_data: dict[str, Any] = {
-        "model": provider.model,
-        "messages": messages,
-        "stream": False,
-        **provider.extra_params,
-    }
-    if tools:
-        request_data["tools"] = tools
-        request_data["tool_choice"] = "auto"
-
     try:
         reply = await send_http_request(
             url,
@@ -351,6 +369,7 @@ async def chat_to_llm_responses(
         request_data["instructions"] = system_prompt
     if tools:
         request_data["tools"] = tools
+    ensure_llm_request_allowed(request_data)
 
     try:
         reply = await send_http_request(

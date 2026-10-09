@@ -102,6 +102,7 @@ interaction:
 
 message:
   error: "An error occurred while processing the message"
+  llm_send_blocked: "The message was not sent to the LLM because it may contain personal information"
 
 extension:
   on_message_error: "An error occurred while extension {name} handled the message"

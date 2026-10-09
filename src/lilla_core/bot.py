@@ -47,6 +47,7 @@ from lilla_core.handlers import message_handler, interaction_handler, task_handl
 from lilla_core.handlers.dashboard_server import start_dashboard_server
 from lilla_core.handlers.http_server import start_http_server, stop_http_server
 from lilla_core.services.llm_resolver import validate_llm_resolvers
+from lilla_core.core.llm_send_guard import preload_llm_send_blocklist
 
 setup_logging()
 
@@ -77,6 +78,10 @@ if _config.env.http_proxy_user and _config.env.http_proxy_pass:
 # `llm.providers` の resolver 型エントリのスクリプトを読み込み、`resolve` 関数が
 # 無ければここで起動を止める（fail-fast）。
 validate_llm_resolvers(_config)
+
+# `llm.send_blocklist_path` の拒否リストを起動時に一度だけ読む。読めない・形式が不正なら
+# 設定の不備と同じくここで起動を止める（fail-fast。`core/llm_send_guard.py`）。
+preload_llm_send_blocklist(_config)
 
 # コマンド・ツールをロード（起動時に一度だけ）
 load_all_commands()

@@ -492,6 +492,28 @@ class LlmConfig(BaseModel):
     default: str = "ollama-gemma3"
     providers: dict[str, LlmProviderConfig] = {}
     max_tool_call_iterations: int = 10
+    # LLM へ送る直前の拒否リスト（JSON の文字列配列）の絶対パス。未指定なら検査しない。
+    # 実体は `core/llm_send_guard.py` が読む。
+    send_blocklist_path: str | None = None
+
+    @field_validator("send_blocklist_path")
+    @classmethod
+    def _validate_send_blocklist_path(cls, value: str | None) -> str | None:
+        """`send_blocklist_path` が絶対パスであることを検証する。
+
+        リストは `CONFIG_ROOT` の外に置く前提のため、資源パスの書き方
+        （`file:` / `dir:` 接頭・`${config_root}` 展開・相対パス）は流用せず拒否する。
+        """
+        if value is None:
+            return None
+        if value.startswith(("file:", "dir:")) or "${" in value:
+            raise ValueError(
+                "llm.send_blocklist_path must be a plain absolute path "
+                "(file:, dir: and ${...} expansion are not supported)"
+            )
+        if not Path(value).is_absolute():
+            raise ValueError("llm.send_blocklist_path must be an absolute path")
+        return value
 
     @model_validator(mode="after")
     def _validate_default_provider_exists(self) -> "LlmConfig":

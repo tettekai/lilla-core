@@ -86,6 +86,17 @@ class MemoryManager:
             discord_message_ids=discord_message_ids,
         )
 
+    async def delete_conversation(self, conversation_id: str) -> bool:
+        """`add_conversation` が返した _id の会話メッセージを履歴から削除する。
+
+        Args:
+            conversation_id: 削除するドキュメントの _id（文字列）。
+
+        Returns:
+            削除できた場合は True、該当がなければ False。
+        """
+        return await self._conv_repo.delete(conversation_id)
+
     async def load_conversation_history_with_timestamps(self) -> list[dict]:
         """タイムスタンプ付きの会話履歴を LLM 送信用に返す。
 
