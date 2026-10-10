@@ -66,6 +66,9 @@ Discord・拡張のクライアント・task のどれから呼んでも同じ�
 resolver 型は HTTP を出さないため `url` / `model` / `api_key_env` / `wakeup_file` /
 `extra_params` は書けません。逆に具体プロバイダーは `url` / `model` が必須で、`script` /
 `fallback` は書けません。Ollama の起動待ち（WOL）も具体プロバイダー側だけに掛かります。
+モデルごとのシステムプロンプト追記（`prompt`）も具体プロバイダー側に書きます。resolver に
+書いても起動は失敗せず無視され、選ばれた具体プロバイダーの `prompt` が使われます
+（[プロバイダーごとのシステムプロンプト追記](llm-provider-prompt.md)）。
 
 次は起動時に失敗します（fail-fast）。
 

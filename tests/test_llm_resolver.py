@@ -206,6 +206,87 @@ class TestProviderConfigValidation:
         )
 
 
+class TestProviderPromptConfig:
+    """具体プロバイダーの `prompt`（モデルごとの追記）の設定検証と spec 解決。"""
+
+    @pytest.mark.parametrize(
+        "spec", ["file:prompts/mimo.md", "dir:${config_root}/prompts", ["file:a.md", "dir:b"]]
+    )
+    def test_concrete_provider_accepts_source_spec(self, modules, spec):
+        config_mod, _ = modules
+        provider = config_mod.LlmProviderConfig(type="openai_compat", url="u", model="m", prompt=spec)
+        assert provider.prompt == spec
+
+    @pytest.mark.parametrize(
+        "spec", ["prompts/mimo.md", "あなたは簡潔に答える。", "file:", "dir:  ", [], ["file:a.md", "b.md"]]
+    )
+    def test_concrete_provider_rejects_invalid_spec(self, modules, spec):
+        """接頭辞の無いパス・本文の直書き・空の指定は起動時に落ちる。"""
+        config_mod, _ = modules
+        with pytest.raises(ValidationError, match="prompt"):
+            config_mod.LlmProviderConfig(type="ollama", url="u", model="m", prompt=spec)
+
+    def test_resolver_prompt_is_ignored_without_failing(self, modules, config_root):
+        """resolver に `prompt` を書いても（形が不正でも）起動は落ちない。"""
+        config_mod, _ = modules
+        _write_yaml(config_root, more="      prompt: not a source spec\n")
+        _write_script(config_root, "def resolve(ctx):\n    return None\n")
+        cfg = config_mod.AppConfig()
+        assert cfg.llm.providers["router"].type == "resolver"
+
+    @pytest.mark.parametrize(
+        "prompt_yaml",
+        ["      prompt: 123\n", "      prompt:\n        a: b\n", "      prompt: [1, {x: y}]\n"],
+    )
+    def test_resolver_prompt_of_invalid_type_is_ignored(self, modules, config_root, prompt_yaml):
+        """resolver に文字列・文字列の列以外の `prompt` を書いても起動は落ちず、値は捨てる。"""
+        config_mod, _ = modules
+        _write_yaml(config_root, more=prompt_yaml)
+        _write_script(config_root, "def resolve(ctx):\n    return None\n")
+        cfg = config_mod.AppConfig()
+        assert cfg.llm.providers["router"].type == "resolver"
+        assert cfg.llm.providers["router"].prompt is None
+
+    def test_resolver_prompt_of_invalid_type_is_ignored_in_model(self, modules):
+        """モデルを直接組み立てた場合も、resolver の不正な型の `prompt` は無視される。"""
+        config_mod, _ = modules
+        provider = config_mod.LlmProviderConfig(
+            type="resolver", script="r.py", fallback="low", prompt={"a": 1}
+        )
+        assert provider.prompt is None
+
+    def test_concrete_provider_rejects_invalid_prompt_type(self, modules):
+        """具体プロバイダーでは文字列・文字列の列以外の `prompt` は従来どおり落ちる。"""
+        config_mod, _ = modules
+        with pytest.raises(ValidationError, match="prompt"):
+            config_mod.LlmProviderConfig(type="ollama", url="u", model="m", prompt=123)
+
+    def test_prompt_in_yaml_is_loaded(self, modules, config_root):
+        config_mod, _ = modules
+        (config_root / "lilla.yaml").write_text(
+            _BASE_YAML.format(
+                default="low",
+                extra="    mimo:\n      type: openai_compat\n      url: u\n      model: m\n"
+                "      prompt: file:prompts/mimo.md\n",
+            ),
+            encoding="utf-8",
+        )
+        cfg = config_mod.AppConfig()
+        assert cfg.llm.providers["mimo"].prompt == "file:prompts/mimo.md"
+        assert cfg.llm.providers["low"].prompt is None
+
+    def test_resolve_spec_uses_config_root_for_relative_paths(self, modules, tmp_path):
+        config_mod, _ = modules
+        resolved = config_mod.resolve_llm_provider_prompt_spec(
+            ["file:prompts/a.md", "dir:${config_root}/b", f"file:{tmp_path}/abs.md"], tmp_path
+        )
+        assert resolved == [
+            f"file:{tmp_path / 'prompts' / 'a.md'}",
+            f"dir:{tmp_path / 'b'}",
+            f"file:{tmp_path / 'abs.md'}",
+        ]
+
+
 class TestValidateLlmResolvers:
     """起動時の `validate_llm_resolvers()`。"""
 

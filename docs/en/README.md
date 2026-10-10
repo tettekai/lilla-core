@@ -19,6 +19,7 @@ The index of the lilla-core user documentation.
 - [Scheduled notifications delegated to the LLM](scheduled-llm.md)
 - [Timezone](timezone.md) — `ui.timezone`
 - [Choosing the LLM provider per turn](llm-resolver.md) — `type: resolver` in `llm.providers`
+- [Per-provider system prompt additions](llm-provider-prompt.md) — `llm.providers.<key>.prompt`
 - [LLM send blocklist](llm-send-guard.md) — `llm.send_blocklist_path`
 - [The observability dashboard](dashboard.md) — including the exposure warning
 - [The shared HTTP server](http-server.md) — `http:`, Bearer tokens, adding routes from extensions

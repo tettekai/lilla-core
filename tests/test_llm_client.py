@@ -267,3 +267,127 @@ class TestSendGuard:
         with pytest.raises(llm_client.LLMError):
             await llm_client.chat_to_llm("hi")
         send.assert_not_awaited()
+
+
+class TestProviderPrompt:
+    """具体プロバイダーの `prompt`（追記）がシステムプロンプトの末尾へ足されることを検証する。"""
+
+    @pytest.fixture
+    def env(self, tmp_path):
+        """`CONFIG_ROOT` を tmp_path に向け、追記ファイルと送信モックを用意する。"""
+        (tmp_path / "prompts").mkdir()
+        (tmp_path / "prompts" / "mimo.md").write_text("MIMO ADDITION\n", encoding="utf-8")
+        (tmp_path / "prompts" / "fb.md").write_text("FALLBACK ADDITION", encoding="utf-8")
+        response_body = json.dumps({
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "output": [],
+        })
+        send = AsyncMock(return_value=response_body)
+        with (
+            patch.object(llm_client, "get_config") as mock_get_config,
+            patch.object(llm_client, "send_http_request", new=send),
+        ):
+            cfg = mock_get_config.return_value
+            cfg.system_prompt = "DEFAULT SYSTEM"
+            cfg.env.config_root = tmp_path
+            cfg.llm.default = "plain"
+            yield cfg, send, tmp_path
+
+    @staticmethod
+    def _provider(prompt=None, **kw):
+        return MagicMock(
+            type=kw.get("type", "openai_compat"),
+            url="https://example.com/v1",
+            model="test-model",
+            api_key_env=None,
+            extra_params={},
+            prompt=prompt,
+            fallback=kw.get("fallback"),
+        )
+
+    @staticmethod
+    def _use(cfg, providers):
+        cfg.get_llm_provider.side_effect = lambda name=None: providers[name or "plain"]
+
+    @staticmethod
+    def _system(send):
+        return send.await_args.kwargs["data"]["messages"][0]["content"]
+
+    async def test_relative_file_prompt_is_appended(self, env) -> None:
+        cfg, send, _ = env
+        self._use(cfg, {"mimo": self._provider("file:prompts/mimo.md")})
+        await llm_client.chat_to_llm("hi", system_prompt="BASE", llm_name="mimo")
+        assert self._system(send) == "BASE\n\nMIMO ADDITION"
+
+    async def test_default_system_prompt_gets_addition(self, env) -> None:
+        cfg, send, _ = env
+        self._use(cfg, {"mimo": self._provider("file:${config_root}/prompts/mimo.md")})
+        await llm_client.chat_to_llm("hi", llm_name="mimo")
+        assert self._system(send) == "DEFAULT SYSTEM\n\nMIMO ADDITION"
+
+    async def test_provider_without_prompt_keeps_system_prompt(self, env) -> None:
+        cfg, send, _ = env
+        self._use(cfg, {"plain": self._provider()})
+        await llm_client.chat_to_llm_with_tools(
+            [{"role": "user", "content": "hi"}], system_prompt="BASE"
+        )
+        assert self._system(send) == "BASE"
+
+    async def test_with_tools_uses_addition(self, env) -> None:
+        cfg, send, _ = env
+        self._use(cfg, {"mimo": self._provider("dir:prompts")})
+        await llm_client.chat_to_llm_with_tools(
+            [{"role": "user", "content": "hi"}], system_prompt="BASE", llm_name="mimo"
+        )
+        # dir: はファイル名昇順（fb.md → mimo.md）で読む
+        assert self._system(send) == "BASE\n\nFALLBACK ADDITION\nMIMO ADDITION"
+
+    async def test_resolver_direct_call_uses_fallback_prompt(self, env) -> None:
+        """resolver 名の直呼びは fallback 先の追記を使い、resolver 自身の prompt は使わない。"""
+        cfg, send, _ = env
+        self._use(cfg, {
+            "router": self._provider("file:prompts/mimo.md", type="resolver", fallback="fb"),
+            "fb": self._provider("file:prompts/fb.md"),
+        })
+        await llm_client.chat_to_llm("hi", system_prompt="BASE", llm_name="router")
+        assert self._system(send) == "BASE\n\nFALLBACK ADDITION"
+
+    async def test_existing_system_message_gets_addition(self, env) -> None:
+        cfg, send, _ = env
+        self._use(cfg, {"mimo": self._provider("file:prompts/mimo.md")})
+        original = [{"role": "system", "content": "GIVEN"}, {"role": "user", "content": "hi"}]
+        await llm_client.chat_to_llm(original, llm_name="mimo")
+        assert self._system(send) == "GIVEN\n\nMIMO ADDITION"
+        assert original[0]["content"] == "GIVEN"
+
+    async def test_responses_instructions_get_addition(self, env) -> None:
+        cfg, send, _ = env
+        self._use(cfg, {"mimo": self._provider("file:prompts/mimo.md")})
+        await llm_client.chat_to_llm_responses(
+            [{"role": "user", "content": "hi"}], system_prompt="BASE", llm_name="mimo"
+        )
+        assert send.await_args.kwargs["data"]["instructions"] == "BASE\n\nMIMO ADDITION"
+
+    async def test_addition_follows_provider_of_each_call(self, env) -> None:
+        """ツールループで具体プロバイダーが変わると、その呼び出しの追記も変わる。"""
+        cfg, send, _ = env
+        self._use(cfg, {
+            "mimo": self._provider("file:prompts/mimo.md"),
+            "fb": self._provider("file:prompts/fb.md"),
+            "plain": self._provider(),
+        })
+        messages = [{"role": "user", "content": "hi"}]
+        seen = []
+        for name in ("mimo", "fb", "plain"):
+            await llm_client.chat_to_llm_with_tools(messages, system_prompt="BASE", llm_name=name)
+            seen.append(self._system(send))
+        assert seen == ["BASE\n\nMIMO ADDITION", "BASE\n\nFALLBACK ADDITION", "BASE"]
+        assert messages == [{"role": "user", "content": "hi"}]
+
+    async def test_prompt_is_read_on_every_call(self, env) -> None:
+        cfg, send, tmp_path = env
+        self._use(cfg, {"mimo": self._provider("file:prompts/mimo.md")})
+        await llm_client.chat_to_llm("hi", system_prompt="BASE", llm_name="mimo")
+        (tmp_path / "prompts" / "mimo.md").write_text("CHANGED", encoding="utf-8")
+        await llm_client.chat_to_llm("hi", system_prompt="BASE", llm_name="mimo")
+        assert self._system(send) == "BASE\n\nCHANGED"

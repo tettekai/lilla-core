@@ -9,6 +9,16 @@
 
 ### Added
 
+- `llm.providers` の具体プロバイダー（`ollama` / `openai_compat`）に任意の `prompt` を追加した
+  （#209）。値は `prompt.system` と同じ source spec（`file:` / `dir:`、`${config_root}` 展開、
+  相対パスは `CONFIG_ROOT` 基準）で、そのプロバイダーへ実際に送る回だけ、システムプロンプトの
+  末尾（`client_type` の追記のあと）へ空行区切りで足す。`chat_to_llm` / `chat_to_llm_with_tools` /
+  `chat_to_llm_responses` の中で、送る具体プロバイダーが決まってから呼び出しのたびにディスクから
+  読むため、`run_conversation` のツールループで resolver がプロバイダーを替えた呼び出しや、
+  resolver 名の直呼びで `fallback` に落ちた回も、実際に送るキーの追記になる。`file:` / `dir:` で
+  始まらない値と空の指定は起動時に落とす。`type: resolver` のエントリに書いた `prompt` は
+  起動を落とさずに無視する
+
 - `type: resolver` の展開を、`run_conversation` のツールループ内で LLM を呼ぶたびに
   （最初の呼び出しを含む）やり直すようにした（#207）。`LlmResolveContext` に、その回しで
   既に呼んだツール名（出現順・重複あり。引数や結果は載せない）の `called_tool_names` と、
