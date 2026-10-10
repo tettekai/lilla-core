@@ -60,6 +60,47 @@ tool YAML, bundled or not.
   tool-specific keys — the latter must not collide with the runtime context keys
   below (checked at startup; a collision raises at load time).
 
+## Tool sets (`tools.sets`)
+
+Loading a tool from its YAML does not, on its own, make it visible to the LLM in a
+normal conversation. Which tools the LLM sees in a normal conversation is decided by the
+`main` set among the named tool sets written under `tools.sets` in `lilla.yaml`.
+
+```yaml
+tools:
+  sets:
+    main:            # tools the LLM sees in a normal conversation
+      - llm_weather
+      - $health
+    health:          # set names other than main are up to you
+      - llm_health_get
+```
+
+- Each entry of a set is a tool YAML stem, or a reference to another set written as `$`
+  followed by the set name. `main` may include other sets, like `$health`
+- Set names may only use ASCII letters, digits, `-` and `_`, and are case sensitive. The
+  only reserved name is `main`. An empty name, or one containing `$` or other characters,
+  makes startup fail
+- When `main` is unset there are no tools. A missing `tools.sets`, a missing `sets.main`
+  and `main: []` all mean the same thing (forgetting to write it never opens up every tool)
+- Expansion follows the order of appearance, and duplicates are removed keeping the first
+  occurrence. The order passed to the LLM is not this order but the tool load order
+- A reference cycle (coming back to the same set while expanding it) makes startup fail.
+  Several sets referencing the same set is sharing, not a cycle
+- Every set is expanded and checked at startup, even one nothing references. An unknown
+  set name or a tool name that is not loaded makes startup fail
+- Filtering by `supported_client_type` happens after expansion. A set that mixes tools for
+  different client types does not fail at startup; at run time only the tools usable by
+  that client type are passed
+
+The `available_tools` of a scheduled LLM task
+([`available_tools`](scheduled-llm.md#the-tool-allow-list-available_tools)) and of
+[`llm_expert`](#llm_expert-expert-agent) can reference a set as `$` followed by its name,
+such as `$main` or `$health`.
+
+The former `tools.main_available_tools` has been removed. If it is still present, startup
+fails; move its entries to `tools.sets.main`.
+
 ## Task tools
 
 `${CONFIG_ROOT}/tools/task_*.yaml`, implemented in `${TOOL_ROOT}/**/<type>.py`.
@@ -113,7 +154,7 @@ type: llm_expert
 description: Health data expert. Delegate questions about condition and exercise
 prompt: dir:${config_root}/prompt/experts/health
 llm_provider: grok            # optional
-available_tools: [llm_health_get]   # `$main` expands to tools.main_available_tools
+available_tools: [llm_health_get]   # tool set references such as `$main` work too
 ```
 
 Combining `api: responses` with `grok_tools` makes a single call that uses the Responses

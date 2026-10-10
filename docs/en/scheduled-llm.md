@@ -37,19 +37,26 @@ like with the same `type` but different `schedule` / `target` / `prompt`.
 - `available_tools` … optional. The allow-list of tools the LLM sees on this run (see
   below). If the key is missing, the task starts up with no tools. Startup fails if the
   key is present but its value is invalid
+- `max_tool_call_iterations` … optional. The tool-call round-trip limit for this task
+  only (a positive integer). If omitted, `llm.max_tool_call_iterations` (default 10) is
+  used. Startup fails for non-integers, `true` / `false`, or values below 1. Hitting the
+  limit does not raise; the task returns the abort message, which is sent to `target`
+  like any other reply (it is not `NO_NOTIFICATION`)
 
 ## The tool allow-list (`available_tools`)
 
 Each scheduled LLM task has its own tool allow-list. It never silently inherits the
-normal conversation's `tools.main_available_tools`.
+normal conversation's `main` tool set.
 
-- Each entry is a tool YAML stem (such as `llm_weather`) or the token `$main`
-- `$main` expands in place to the contents of `tools.main_available_tools`. When
-  `main_available_tools` is unset (no filtering), it means every loaded LLM tool
+- Each entry is a tool YAML stem (such as `llm_weather`) or a
+  [tool set](tools.md#tool-sets-toolssets) reference written as `$` followed by the set
+  name (such as `$main`)
+- `$main` expands in place to the contents of `tools.sets.main`. When `main` is unset it
+  is empty (no tools). Other sets such as `$health` expand the same way
 - An empty list `[]`, or omitting the key entirely, both mean no tools
-  (`main_available_tools` is not consulted)
-- Duplicates are removed after expansion. A stem that is not loaded, or any token other
-  than `$main`, makes startup fail
+  (the `main` set is not consulted)
+- Duplicates are removed after expansion. A stem that is not loaded, or a set name that
+  is not defined, makes startup fail
 - Only the tools in the expanded list whose `supported_client_type` is `task` or `all`
   are actually passed to the LLM. Other tools do not appear on this run even if listed
 
@@ -69,7 +76,7 @@ available_tools:               # the conversation's set plus a tool just for thi
 
 To give a tool to one particular run only, set `supported_client_type: task` in that
 tool's YAML and list it only in the `available_tools` of the tasks that use it (do not
-put it in `main_available_tools`). A `supported_client_type: task` tool would otherwise
+put it in the `main` set). A `supported_client_type: task` tool would otherwise
 be usable by every task run; this setting is what limits it to the tasks that list it.
 
 ## What happens on each run

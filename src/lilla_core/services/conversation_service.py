@@ -19,7 +19,12 @@ from lilla_core.core.extension import (
 )
 from lilla_core.core.runtime_state import is_tools_disabled
 from lilla_core.api.llm_client import chat_to_llm, chat_to_llm_with_tools
-from lilla_core.loaders.llm_tool_loader import build_tools_param, execute_tool_call
+from lilla_core.loaders.llm_tool_loader import (
+    MAIN_TOOLSET_TOKEN,
+    build_tools_param,
+    execute_tool_call,
+    resolve_available_tools,
+)
 from lilla_core.services.llm_resolver import content_has_image, resolve_llm_name
 from lilla_core.services.memory_manager import get_memory_manager
 from lilla_core.services.message_util import extract_meta_block, prepend_timestamp_prefix
@@ -126,8 +131,9 @@ async def run_conversation(
     llm_name: str | None = None,
     inject_user_content=None,
     override_last_user_content=None,
-    tool_call_notifier: Callable[[str], Awaitable[None]] | None = None,
+    tool_call_notifier: Callable[[str, int], Awaitable[None]] | None = None,
     allowed_tool_names: list[str] | None = None,
+    max_tool_call_iterations: int | None = None,
 ) -> str:
     """会話履歴を読み込み、tool_call ループを回して返答を返す。
 
@@ -156,8 +162,10 @@ async def run_conversation(
         非同期依頼ツールなど、後から同じチャンネルへ結果を返すツールが参照する。
     llm_name : str, optional
         使用する LLM プロバイダー名。None の場合はデフォルトプロバイダーを使用する。
-        決まったキーが `type: resolver` なら、履歴を組み立てたあとにスクリプトの
-        `resolve(ctx)` で具体プロバイダーへ展開する（`services/llm_resolver.py`）。
+        決まったキーが `type: resolver` なら、ツールループ内の各 LLM 呼び出しの前
+        （最初の呼び出しを含む）にスクリプトの `resolve(ctx)` で具体プロバイダーへ
+        展開する（`services/llm_resolver.py`）。その回しで既に呼んだツール名と前回
+        選んだ具体プロバイダー名を文脈に載せる。
         会話開始フックの `ConversationContext.llm_name` は展開前のキーのまま。
     inject_user_content : str | list, optional
         履歴の末尾に user メッセージとして追加する一時プロンプト。
@@ -166,16 +174,22 @@ async def run_conversation(
         履歴末尾の user メッセージ content を LLM 送信時のみ差し替える。
         画像添付など、MongoDB にはテキスト placeholder を保存しつつ、
         LLM には rich content（base64 画像など）を送りたい場合に使う。
-    tool_call_notifier : Callable[[str], Awaitable[None]], optional
-        tool_call 発生時（llm_expert 経由のネスト呼び出しを含む）にログ行文字列を
-        渡して呼び出されるコールバック。client_type == "discord" のときのみ実際に
-        使われる（`execute_tool_call` 側でガードされる）。Discord 以外の呼び出し元
-        （拡張が増やす対話クライアント種別, task）は渡さない想定。
+    tool_call_notifier : Callable[[str, int], Awaitable[None]], optional
+        ツール実行前（llm_expert 経由のネスト呼び出しを含む）に
+        ``(tool_name, depth)`` を渡して呼び出されるコールバック。depth は直接
+        呼び出しが 0、ネストするたびに 1 増える。client_type に関係なく、渡せば
+        通知される。表示の書式（Discord の ``-#`` 行など）は呼び出し元が組み立てる。
+        引数や実行結果は渡さない。通知の失敗は警告ログのみでツール実行は止めない。
     allowed_tool_names : list[str] | None, optional
         この回だけ LLM に見せるツールの許可リスト（展開済みの YAML stem。
         `llm_tool_loader.resolve_available_tools` の戻り値を想定）。None なら
-        `tools.main_available_tools` を使う。空リストならツールを渡さない。
+        `tools.sets` の `main` セットを展開して使う（未設定ならツールなし）。
+        空リストならツールを渡さない。
         いずれの場合も、続けて `supported_client_type` で絞る。
+    max_tool_call_iterations : int | None, optional
+        この回だけ使うツール呼び出しの往復上限。None なら
+        `llm.max_tool_call_iterations` を使う。上限に達したときの扱い
+        （例外にせず中断文言を返す）はどちらでも同じ。
 
     Returns
     -------
@@ -225,34 +239,40 @@ async def run_conversation(
     if inject_user_content is not None:
         history.append({"role": "user", "content": _stamp_user_content(inject_user_content)})
 
-    # 決まったキーが resolver 型なら、ここで回しごとに具体プロバイダーへ展開する。
+    # 決まったキーが resolver 型なら、LLM を呼ぶたびに具体プロバイダーへ展開する。
     # 入口（Discord・拡張のクライアント・task）ごとに複製しないよう、ここに一本化する。
     # 画像の有無は今回 LLM へ実際に渡す入力（適用された差し替え・追加分）だけから
-    # 判断し、過去の履歴は見ない。
-    llm_name = await resolve_llm_name(
-        llm_name,
-        client_type=client_type,
-        discord_channel_id=discord_channel_id,
-        user_content=history[-1]["content"] if history and history[-1]["role"] == "user" else None,
-        has_image=(override_applied and content_has_image(override_last_user_content))
+    # 判断し、過去の履歴は見ない。具体プロバイダーのキーならスクリプトは呼ばれない。
+    llm_key = llm_name
+    resolve_kwargs = {
+        "client_type": client_type,
+        "discord_channel_id": discord_channel_id,
+        "user_content": history[-1]["content"] if history and history[-1]["role"] == "user" else None,
+        "has_image": (override_applied and content_has_image(override_last_user_content))
         or content_has_image(inject_user_content),
-    )
+    }
+
+    # 省略（None）は「`main` セットを使う」。展開結果が空（`main` 未設定を含む）なら
+    # ツールを渡さない。
+    if allowed_tool_names is None and llm_tools:
+        allowed_tool_names = resolve_available_tools([MAIN_TOOLSET_TOKEN], llm_tools)
 
     if not llm_tools or allowed_tool_names == []:
-        reply = await chat_to_llm(history, system_prompt=system_prompt, llm_name=llm_name)
+        resolved_name = await resolve_llm_name(llm_key, **resolve_kwargs)
+        reply = await chat_to_llm(history, system_prompt=system_prompt, llm_name=resolved_name)
         return _apply_meta_actions(reply)
 
     tools_param = build_tools_param(
         llm_tools,
         client_type=client_type,
-        allowed_names=(
-            _config.tools.main_available_tools
-            if allowed_tool_names is None
-            else allowed_tool_names
-        ),
+        allowed_names=allowed_tool_names,
     )
     messages = list(history)
-    max_iterations = _config.llm.max_tool_call_iterations
+    max_iterations = (
+        max_tool_call_iterations
+        if max_tool_call_iterations is not None
+        else _config.llm.max_tool_call_iterations
+    )
     context = build_tool_context()
     context["client_type"] = client_type
     context["llm_tools"] = llm_tools
@@ -264,10 +284,19 @@ async def run_conversation(
         context["_tool_call_notifier"] = tool_call_notifier
     iteration = 0
     pending_reauth_notices: list[str] = []
+    # resolver へ渡す、この回しで既に呼んだツール名（出現順・重複あり）と前回の選択
+    called_tool_names: list[str] = []
+    resolved_name: str | None = None
 
     while iteration < max_iterations:
+        resolved_name = await resolve_llm_name(
+            llm_key,
+            called_tool_names=tuple(called_tool_names),
+            previous_provider=resolved_name,
+            **resolve_kwargs,
+        )
         response = await chat_to_llm_with_tools(
-            messages, system_prompt=system_prompt, tools=tools_param, llm_name=llm_name
+            messages, system_prompt=system_prompt, tools=tools_param, llm_name=resolved_name
         )
 
         if response["tool_calls"]:
@@ -298,6 +327,7 @@ async def run_conversation(
                             "content": tool_content,
                         })
                         continue
+                called_tool_names.append(tc["function"]["name"])
                 result = await execute_tool_call(
                     tc["function"]["name"],
                     arguments,

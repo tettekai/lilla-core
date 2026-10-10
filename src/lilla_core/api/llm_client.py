@@ -5,9 +5,11 @@ import os
 from pathlib import Path
 from typing import Any, NoReturn
 
-from lilla_core.core.config import get_config
+from lilla_core.core.config import get_config, resolve_llm_provider_prompt_spec
 from lilla_core.core.exceptions import LLMError
 from lilla_core.core.http_util import send_http_request
+from lilla_core.core.llm_send_guard import ensure_llm_request_allowed
+from lilla_core.utils.resource_loader import load_text_resources
 
 logger = logging.getLogger(__name__)
 
@@ -46,19 +48,38 @@ def _has_system_message(messages: list[dict[str, Any]]) -> bool:
     )
 
 
+def _append_prompt(base: str | None, addition: str) -> str | None:
+    """base の末尾へ addition を空行区切りで足す（addition が空なら base のまま）。"""
+    if not addition:
+        return base
+    if not base:
+        return addition
+    return f"{base.rstrip()}\n\n{addition}"
+
+
 def _ensure_system_prompt(
     messages: list[dict[str, Any]],
     system_prompt: str | None,
+    provider_prompt: str = "",
 ) -> list[dict[str, Any]]:
-    """messages の先頭にシステムプロンプトを補う。
+    """messages の先頭にシステムプロンプトを補い、プロバイダーの追記を足す。
 
-    既に内容のある system メッセージが含まれていればそのまま返す。
-    含まれない場合は system_prompt（未指定ならデフォルト）を先頭に追加した
-    新しいリストを返す。
+    既に内容のある system メッセージが含まれていれば、最初のそれ（content が文字列の
+    もの）の末尾へ provider_prompt を足した新しいリストを返す。含まれない場合は
+    system_prompt（未指定ならデフォルト）に provider_prompt を足して先頭に追加した
+    新しいリストを返す。渡された messages 自体は書き換えない。
     """
     if _has_system_message(messages):
-        return messages
-    effective_prompt = system_prompt or get_config().system_prompt
+        if not provider_prompt:
+            return messages
+        result = list(messages)
+        for i, m in enumerate(result):
+            content = m.get("content")
+            if m.get("role") == "system" and isinstance(content, str) and content.strip():
+                result[i] = {**m, "content": _append_prompt(content, provider_prompt)}
+                break
+        return result
+    effective_prompt = _append_prompt(system_prompt or get_config().system_prompt, provider_prompt)
     return [{"role": "system", "content": effective_prompt}, *messages]
 
 
@@ -79,6 +100,23 @@ def _get_provider(llm_name: str | None):
         )
         return config.get_llm_provider(provider.fallback)
     return provider
+
+
+def _load_provider_prompt(provider) -> str:
+    """実際に送る具体プロバイダーの `prompt`（追記）を読み込んで返す。
+
+    `provider` は `_get_provider` が返した具体プロバイダー（resolver 名の直呼びなら
+    fallback 先）で、resolver エントリ自身の `prompt` はここへ届かない。
+    呼び出しのたびにディスクから解決する（既存のシステムプロンプトと同じ）。
+    未設定なら空文字列。相対パスは `CONFIG_ROOT` 基準で読む。
+    """
+    spec = getattr(provider, "prompt", None)
+    if not spec or not isinstance(spec, (str, list)):
+        return ""
+    config_root = get_config().env.config_root
+    return load_text_resources(
+        resolve_llm_provider_prompt_spec(spec, config_root), config_root
+    ).strip()
 
 
 def _resolve_api_key(provider) -> str:
@@ -121,12 +159,12 @@ async def chat_to_llm(
     messagesには list[dict[str, Any]] 形式か、文字列（ユーザーメッセージ）を渡せます。
     文字列の場合は {"role": "user", "content": messages} に変換します。
     system_prompt を指定した場合はそれを使用し、未指定の場合はデフォルトのシステムプロンプトを使用します。
+    実際に送る具体プロバイダーに `prompt` があれば、システムプロンプトの末尾へ空行区切りで足します。
     """
     if isinstance(messages, str):
         messages = [{"role": "user", "content": messages}]
-    messages = _ensure_system_prompt(messages, system_prompt)
-
     provider = _get_provider(llm_name)
+    messages = _ensure_system_prompt(messages, system_prompt, _load_provider_prompt(provider))
 
     if provider.type == "ollama":
         return await _chat_ollama(messages, provider)
@@ -137,19 +175,24 @@ async def chat_to_llm(
 
 
 async def _chat_ollama(messages: list[dict[str, Any]], provider) -> str:
-    """Ollama へチャットリクエストを送信し、応答を返す。WOL 処理も行う。"""
+    """Ollama へチャットリクエストを送信し、応答を返す。WOL 処理も行う。
+
+    送信前（WOL より前）に `ensure_llm_request_allowed` でボディを検査する。
+    """
+    request_data = {
+        "model": provider.model,
+        "messages": messages,
+        "stream": False,
+        "options": {"temperature": 0.7, **provider.extra_params},
+    }
+    ensure_llm_request_allowed(request_data)
     await _wake_ollama_if_needed(provider)
 
     try:
         reply = await send_http_request(
             f"{provider.url}/api/chat",
             method="POST",
-            data={
-                "model": provider.model,
-                "messages": messages,
-                "stream": False,
-                "options": {"temperature": 0.7, **provider.extra_params},
-            },
+            data=request_data,
             timeout=300,
         )
         return _resolve_content(json.loads(reply)["message"])
@@ -158,18 +201,23 @@ async def _chat_ollama(messages: list[dict[str, Any]], provider) -> str:
 
 
 async def _chat_openai_compat(messages: list[dict[str, Any]], provider) -> str:
-    """OpenAI 互換 API へチャットリクエストを送信し、応答を返す。"""
+    """OpenAI 互換 API へチャットリクエストを送信し、応答を返す。
+
+    送信前に `ensure_llm_request_allowed` でボディを検査する（ヘッダーは対象外）。
+    """
+    request_data = {
+        "model": provider.model,
+        "messages": messages,
+        "stream": False,
+        **provider.extra_params,
+    }
+    ensure_llm_request_allowed(request_data)
     api_key = _resolve_api_key(provider)
     try:
         reply = await send_http_request(
             f"{provider.url}/chat/completions",
             method="POST",
-            data={
-                "model": provider.model,
-                "messages": messages,
-                "stream": False,
-                **provider.extra_params,
-            },
+            data=request_data,
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=300,
         )
@@ -193,7 +241,8 @@ async def chat_to_llm_with_tools(
     messages : list[dict[str, Any]]
         会話履歴
     system_prompt : str | None
-        システムプロンプト。未指定の場合はデフォルトを使用。
+        システムプロンプト。未指定の場合はデフォルトを使用。実際に送る具体
+        プロバイダーに `prompt` があれば、その末尾へ空行区切りで足す。
     tools : list | None
         LLM に渡すツール定義リスト
     llm_name : str | None
@@ -210,12 +259,10 @@ async def chat_to_llm_with_tools(
             "raw_message": dict          # messages に追加するための assistant メッセージ
         }
     """
-    messages = _ensure_system_prompt(messages, system_prompt)
-
     provider = _get_provider(llm_name)
+    messages = _ensure_system_prompt(messages, system_prompt, _load_provider_prompt(provider))
 
     if provider.type == "ollama":
-        await _wake_ollama_if_needed(provider)
         # Ollama は OpenAI 互換エンドポイントを使用
         url = f"{provider.url}/v1/chat/completions"
         api_key = ""
@@ -225,13 +272,35 @@ async def chat_to_llm_with_tools(
     else:
         raise ValueError(f"Unsupported LLM provider type: {provider.type}")
 
-    return await _chat_with_tools_openai_compat(messages, provider, tools, url, api_key)
+    request_data = _build_tools_request_data(messages, provider, tools)
+    # 送信を止める回は WOL も行わないよう、検査を先に済ませる
+    ensure_llm_request_allowed(request_data)
+    if provider.type == "ollama":
+        await _wake_ollama_if_needed(provider)
+
+    return await _chat_with_tools_openai_compat(request_data, url, api_key)
 
 
-async def _chat_with_tools_openai_compat(
+def _build_tools_request_data(
     messages: list[dict[str, Any]],
     provider,
     tools: list | None,
+) -> dict[str, Any]:
+    """tools パラメータ付きの Chat Completions リクエストボディを組み立てる。"""
+    request_data: dict[str, Any] = {
+        "model": provider.model,
+        "messages": messages,
+        "stream": False,
+        **provider.extra_params,
+    }
+    if tools:
+        request_data["tools"] = tools
+        request_data["tool_choice"] = "auto"
+    return request_data
+
+
+async def _chat_with_tools_openai_compat(
+    request_data: dict[str, Any],
     url: str,
     api_key: str,
 ) -> dict:
@@ -239,12 +308,8 @@ async def _chat_with_tools_openai_compat(
 
     Parameters
     ----------
-    messages : list[dict[str, Any]]
-        会話履歴（システムプロンプト含む）
-    provider : LlmProviderConfig
-        使用するプロバイダーの設定
-    tools : list | None
-        ツール定義リスト
+    request_data : dict[str, Any]
+        `_build_tools_request_data` が組み立て、検査を済ませたリクエストボディ
     url : str
         エンドポイント URL
     api_key : str
@@ -255,16 +320,6 @@ async def _chat_with_tools_openai_compat(
     dict
         {"content", "tool_calls", "finish_reason", "raw_message"} を含む辞書
     """
-    request_data: dict[str, Any] = {
-        "model": provider.model,
-        "messages": messages,
-        "stream": False,
-        **provider.extra_params,
-    }
-    if tools:
-        request_data["tools"] = tools
-        request_data["tool_choice"] = "auto"
-
     try:
         reply = await send_http_request(
             url,
@@ -314,7 +369,8 @@ async def chat_to_llm_responses(
     messages : list[dict[str, Any]]
         会話履歴。Responses API の `input` にそのまま渡す。
     system_prompt : str | None
-        システムプロンプト。Responses API の `instructions` に渡す。
+        システムプロンプト。Responses API の `instructions` に渡す。実際に送る
+        具体プロバイダーに `prompt` があれば、その末尾へ空行区切りで足す。
     tools : list | None
         組み込みツール（または将来の function calling 用）のツール定義リスト。
     llm_name : str | None
@@ -347,10 +403,12 @@ async def chat_to_llm_responses(
         "stream": False,
         **provider.extra_params,
     }
-    if system_prompt:
-        request_data["instructions"] = system_prompt
+    instructions = _append_prompt(system_prompt, _load_provider_prompt(provider))
+    if instructions:
+        request_data["instructions"] = instructions
     if tools:
         request_data["tools"] = tools
+    ensure_llm_request_allowed(request_data)
 
     try:
         reply = await send_http_request(

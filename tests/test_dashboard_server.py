@@ -31,13 +31,11 @@ def mock_web() -> MagicMock:
 @pytest.fixture
 def with_mocked_modules(mock_cfg: MagicMock):
     """依存モジュールを patch.dict で差し替える。"""
-    mock_motor = MagicMock()
     with patch.dict(
         sys.modules,
         {
             "lilla_core.core.config": MagicMock(get_config=lambda: mock_cfg),
-            "motor": MagicMock(),
-            "motor.motor_asyncio": mock_motor,
+            "lilla_core.repository.mongo_client": MagicMock(),
         },
     ):
         yield
@@ -86,7 +84,8 @@ def _make_collection(
 
     agg_cursor = MagicMock()
     agg_cursor.to_list = AsyncMock(return_value=pipeline_result or [])
-    col.aggregate.return_value = agg_cursor
+    # PyMongo Async の aggregate はコルーチンで、await するとカーソルが返る
+    col.aggregate = AsyncMock(return_value=agg_cursor)
 
     return col
 
@@ -320,6 +319,148 @@ class TestHandleApiLogsStats:
 
         data = mock_web.json_response.call_args[0][0]
         assert data["stats"] == {}
+
+
+# ---------------------------------------------------------------------------
+# TestHandleApiDashboardStatus
+# ---------------------------------------------------------------------------
+
+
+def _mongo_result(ok: bool) -> MagicMock:
+    """`check_mongodb` の戻り値（CheckResult）に見立てたモック。"""
+    result = MagicMock()
+    result.ok = ok
+    result.elapsed_ms = 4
+    result.detail = "ok" if ok else "ServerSelectionTimeoutError: mongodb://secret@host"
+    return result
+
+
+class TestHandleApiDashboardStatus:
+    async def test_returns_mongodb_ok_and_counts(
+        self, dashboard_server, mock_web, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MongoDB が応答すれば ERROR / WARNING の件数を返す。"""
+        col = MagicMock()
+        counts = {"ERROR": 3, "WARNING": 7}
+        col.count_documents = AsyncMock(side_effect=lambda q: counts[q["levelname"]])
+        monkeypatch.setattr(dashboard_server, "_get_collection", lambda name: col)
+        monkeypatch.setattr(
+            dashboard_server, "_check_mongodb", AsyncMock(return_value=_mongo_result(True))
+        )
+        mock_web.json_response.reset_mock()
+
+        await dashboard_server.handle_api_dashboard_status(_make_request())
+
+        data = mock_web.json_response.call_args[0][0]
+        assert data["alive"] is True
+        assert data["mongodb"] == {"ok": True, "elapsed_ms": 4}
+        assert data["logs"]["ok"] is True
+        assert data["logs"]["window_hours"] == 24
+        assert data["logs"]["counts"] == {"error": 3, "warning": 7}
+
+    async def test_counts_only_last_24_hours_by_level(
+        self, dashboard_server, mock_web, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """件数は levelname と直近 24 時間の created_at で絞った count_documents で数える。"""
+        now = datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr(dashboard_server, "utc_now", lambda: now)
+        col = MagicMock()
+        col.count_documents = AsyncMock(return_value=0)
+        monkeypatch.setattr(dashboard_server, "_get_collection", lambda name: col)
+        monkeypatch.setattr(
+            dashboard_server, "_check_mongodb", AsyncMock(return_value=_mongo_result(True))
+        )
+
+        await dashboard_server.handle_api_dashboard_status(_make_request())
+
+        queries = [c.args[0] for c in col.count_documents.await_args_list]
+        assert [q["levelname"] for q in queries] == ["ERROR", "WARNING"]
+        for q in queries:
+            assert q["created_at"] == {"$gte": datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc)}
+        # 本文などを読み出す find / aggregate は呼ばない
+        col.find.assert_not_called()
+        col.aggregate.assert_not_called()
+
+    async def test_zero_counts_are_returned_as_zero(
+        self, dashboard_server, mock_web, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """0 件のときも数えられた扱い（ok=True）で 0 を返す。"""
+        col = MagicMock()
+        col.count_documents = AsyncMock(return_value=0)
+        monkeypatch.setattr(dashboard_server, "_get_collection", lambda name: col)
+        monkeypatch.setattr(
+            dashboard_server, "_check_mongodb", AsyncMock(return_value=_mongo_result(True))
+        )
+        mock_web.json_response.reset_mock()
+
+        await dashboard_server.handle_api_dashboard_status(_make_request())
+
+        data = mock_web.json_response.call_args[0][0]
+        assert data["logs"]["ok"] is True
+        assert data["logs"]["counts"] == {"error": 0, "warning": 0}
+
+    async def test_mongodb_failure_does_not_raise_and_skips_counting(
+        self, dashboard_server, mock_web, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MongoDB が応答しなくても例外にせず、件数は数えずに失敗として返す。"""
+        get_collection = MagicMock()
+        monkeypatch.setattr(dashboard_server, "_get_collection", get_collection)
+        monkeypatch.setattr(
+            dashboard_server, "_check_mongodb", AsyncMock(return_value=_mongo_result(False))
+        )
+        mock_web.json_response.reset_mock()
+
+        await dashboard_server.handle_api_dashboard_status(_make_request())
+
+        data = mock_web.json_response.call_args[0][0]
+        assert data["alive"] is True
+        assert data["mongodb"]["ok"] is False
+        assert data["logs"]["ok"] is False
+        assert data["logs"]["counts"] is None
+        get_collection.assert_not_called()
+        # 失敗の詳細（接続先を含みうる）は応答に載せない
+        assert "secret" not in repr(data)
+
+    async def test_count_failure_keeps_mongodb_result(
+        self, dashboard_server, mock_web, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """件数の集計だけが失敗しても、生存確認の結果は返す。"""
+        col = MagicMock()
+        col.count_documents = AsyncMock(side_effect=RuntimeError("boom"))
+        monkeypatch.setattr(dashboard_server, "_get_collection", lambda name: col)
+        monkeypatch.setattr(
+            dashboard_server, "_check_mongodb", AsyncMock(return_value=_mongo_result(True))
+        )
+        mock_web.json_response.reset_mock()
+
+        await dashboard_server.handle_api_dashboard_status(_make_request())
+
+        data = mock_web.json_response.call_args[0][0]
+        assert data["mongodb"]["ok"] is True
+        assert data["logs"]["ok"] is False
+        assert data["logs"]["counts"] is None
+
+    async def test_does_not_call_llm(
+        self, dashboard_server, mock_web, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """LLM 疎通確認（check_llm / run_selftest_checks）は呼ばず、MongoDB の ping だけを使う。"""
+        import lilla_core.services.system_checks as system_checks
+
+        check_mongodb = AsyncMock(return_value=_mongo_result(True))
+        check_llm = AsyncMock()
+        run_selftest = AsyncMock()
+        monkeypatch.setattr(system_checks, "check_mongodb", check_mongodb)
+        monkeypatch.setattr(system_checks, "check_llm", check_llm)
+        monkeypatch.setattr(system_checks, "run_selftest_checks", run_selftest)
+        col = MagicMock()
+        col.count_documents = AsyncMock(return_value=0)
+        monkeypatch.setattr(dashboard_server, "_get_collection", lambda name: col)
+
+        await dashboard_server.handle_api_dashboard_status(_make_request())
+
+        check_mongodb.assert_awaited_once()
+        check_llm.assert_not_called()
+        run_selftest.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1845,6 +1986,18 @@ class TestStartDashboardServer:
         paths = [call.args[0] for call in app.router.add_get.call_args_list]
         assert "/api/dashboard/nav" in paths
         assert not dashboard_server._is_auth_exempt("/api/dashboard/nav")
+
+    async def test_status_endpoint_is_registered_behind_auth(
+        self, dashboard_server, monkeypatch, started_app
+    ) -> None:
+        """Home の状態 API はセッション認証の内側（除外リストの外）に載る。"""
+        _patch_dashboard_contributions(monkeypatch, dashboard_server)
+
+        app = await started_app()
+
+        paths = [call.args[0] for call in app.router.add_get.call_args_list]
+        assert "/api/dashboard/status" in paths
+        assert not dashboard_server._is_auth_exempt("/api/dashboard/status")
 
     async def test_extension_static_is_registered_before_the_global_static(
         self, dashboard_server, monkeypatch, tmp_path, started_app

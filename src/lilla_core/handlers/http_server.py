@@ -45,8 +45,13 @@ logger = logging.getLogger(__name__)
 #: 値を書かない ``?full`` も真として扱う（aiohttp は値なしのクエリを空文字で渡すため）。
 _FULL_TRUE_VALUES = frozenset({"", "1", "true", "yes", "on"})
 
-#: 起動時に渡されたツールレジストリなど。拡張のハンドラには渡さない（コアのハンドラだけが読む）。
+#: 起動時に渡された LLM ツールのレジストリ。拡張が `http_routes()` で載せたハンドラが
+#: LLM にツールを渡したいときなど、`request.app[LLM_TOOLS_KEY]` で読んでよい公開名
+#: （文字列 `"llm_tools"` では別キーになるため読めない。`AppKey` の中身・格納の仕方は
+#: 変えないこと）。
 LLM_TOOLS_KEY = web.AppKey("llm_tools", dict)
+#: 起動時に渡された task ツールのレジストリと Discord クライアント。拡張のハンドラには
+#: 渡さない（コアのハンドラだけが読む）。
 TOOLS_KEY = web.AppKey("tools", dict)
 BOT_KEY = web.AppKey("bot", object)
 #: ルートオブジェクト → 認証方式（`HttpRoute.auth`）。載っていないルート（未登録パス）は Bearer。

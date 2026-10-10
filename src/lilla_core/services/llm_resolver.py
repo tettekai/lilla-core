@@ -1,10 +1,14 @@
-"""`llm.providers` の resolver 型エントリを、回しごとに具体プロバイダー名へ展開する。
+"""`llm.providers` の resolver 型エントリを、LLM 呼び出しごとに具体プロバイダー名へ展開する。
 
 使うキーの決め方（呼び出し側の `llm_name` → `!model` の上書き → `llm.default`）は
 変えず、決まったキーが `type: resolver` のときだけ、ホストが `CONFIG_ROOT` 配下に
 置いたスクリプトの `resolve(ctx)` を呼んで具体プロバイダー名を得る。展開は深さ 1 で、
 `None`・未知の名前・別の resolver 名・例外・タイムアウトはいずれも警告ログを出して
 そのエントリの `fallback` に落とし、会話は止めない。
+
+`run_conversation` はツールループ内の各 LLM 呼び出しの前（最初の呼び出しを含む）に
+展開をやり直し、その回しで既に呼んだツール名と前回選んだ具体プロバイダー名を
+文脈に載せる。スクリプトは状態を持たず、前回と同じを続けるならその名前を返す。
 """
 from __future__ import annotations
 
@@ -37,7 +41,7 @@ class LlmResolveContext:
 
     位置引数を並べず 1 つのオブジェクトで渡す。フィールドの追加は非破壊、既存
     フィールドの削除・改名は破壊的変更として扱う。システムプロンプトやツール結果の
-    全文、画像本体（data URL・バイト列）は載せない。
+    全文、画像本体（data URL・バイト列）、ツールの引数は載せない。
     """
 
     #: 会話の送信元クライアント種別（`"discord"` / `"task"` / 拡張が増やす種別）。
@@ -56,6 +60,11 @@ class LlmResolveContext:
     user_text: str = ""
     #: 今回のユーザー発言に画像添付があり、LLM へ画像パートを渡すときだけ `True`。
     has_image: bool = False
+    #: その回しで既に呼んだツール名（出現順・重複あり）。最初の LLM 呼び出しでは空。
+    #: 引数や結果本文は載せない。
+    called_tool_names: tuple[str, ...] = ()
+    #: その回しで前回選んだ具体プロバイダー名。最初の LLM 呼び出しでは `None`。
+    previous_provider: str | None = None
 
 
 def _script_path(provider, config: AppConfig) -> Path:
@@ -151,6 +160,8 @@ async def resolve_llm_name(
     discord_channel_id: int | None = None,
     user_content: Any = None,
     has_image: bool = False,
+    called_tool_names: tuple[str, ...] = (),
+    previous_provider: str | None = None,
     config: AppConfig | None = None,
 ) -> str:
     """使うキーを決め、それが resolver 型なら具体プロバイダー名へ展開して返す。
@@ -168,6 +179,8 @@ async def resolve_llm_name(
         user_content: 直近のユーザー発話の content（str / content_parts）。テキスト部分だけを
             切り詰めて渡す。
         has_image: 今回のユーザー発言に画像パートがあるか（過去の履歴は含めない）。
+        called_tool_names: その回しで既に呼んだツール名（出現順・重複あり）。
+        previous_provider: その回しで前回選んだ具体プロバイダー名（最初は `None`）。
         config: 使う設定。省略時は `get_config()`。
 
     Returns:
@@ -194,6 +207,8 @@ async def resolve_llm_name(
         channel_name=channel_name,
         user_text=summarize_user_text(user_content),
         has_image=has_image,
+        called_tool_names=tuple(called_tool_names),
+        previous_provider=previous_provider,
     )
 
     try:

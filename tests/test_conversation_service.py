@@ -64,6 +64,9 @@ def mock_llm_tool_loader() -> MagicMock:
     """lilla_core.loaders.llm_tool_loader モック。"""
     mock = MagicMock()
     mock.build_tools_param = lambda x, client_type="discord", allowed_names=None: list(x.values())
+    mock.MAIN_TOOLSET_TOKEN = "$main"
+    # 既定では main セットにロード済みの全ツールが並んでいるものとして展開する。
+    mock.resolve_available_tools = MagicMock(side_effect=lambda entries, tools: list(tools))
     mock.execute_tool_call = AsyncMock(return_value={
         "success": True, "tool_name": "test_tool", "memory_entry": "tool result", "data": None, "error": None
     })
@@ -188,6 +191,134 @@ class TestLlmResolverExpansion:
         assert mock_resolve.call_args.kwargs["has_image"] is False
 
 
+class TestLlmResolverPerToolCall:
+    """ツールループ内の各 LLM 呼び出しの前に resolver を再判定すること。"""
+
+    @staticmethod
+    def _tool_response(*names: str) -> dict:
+        """指定したツールを呼ぶ LLM 応答を作る。"""
+        calls = [
+            {"id": f"c{i}", "function": {"name": n, "arguments": {"secret_arg": "ARG-VALUE"}}}
+            for i, n in enumerate(names)
+        ]
+        return {
+            "content": None, "tool_calls": calls, "finish_reason": "tool_calls",
+            "raw_message": {"role": "assistant", "content": None, "tool_calls": calls},
+        }
+
+    @staticmethod
+    def _final_response() -> dict:
+        """ツールを呼ばない最終応答を作る。"""
+        return {
+            "content": "done", "tool_calls": None, "finish_reason": "stop",
+            "raw_message": {"role": "assistant", "content": "done"},
+        }
+
+    def _setup(self, conversation_service, monkeypatch, responses, choose):
+        """LLM 応答の列と、resolver キーのときだけ `choose(kwargs)` を呼ぶ偽の展開を仕込む。"""
+        mock_with_tools = AsyncMock(side_effect=responses)
+        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_with_tools)
+        script = MagicMock(side_effect=choose)
+
+        async def fake_resolve(name, **kwargs):
+            """`router` だけを resolver とみなし、それ以外はそのまま返す。"""
+            if name != "router":
+                return name
+            return script(kwargs)
+
+        monkeypatch.setattr(conversation_service, "resolve_llm_name", fake_resolve)
+        monkeypatch.setattr(
+            conversation_service,
+            "execute_tool_call",
+            AsyncMock(return_value={
+                "success": True, "tool_name": "x", "memory_entry": "RESULT-BODY", "data": None, "error": None,
+            }),
+        )
+        return mock_with_tools, script
+
+    async def test_resolve_called_before_each_llm_call(
+        self, conversation_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ツール 1 回ごとに再判定し、呼んだツール名と前回の選択が渡る。"""
+        mock_with_tools, script = self._setup(
+            conversation_service,
+            monkeypatch,
+            [self._tool_response("read_a"), self._tool_response("write_b", "read_a"), self._final_response()],
+            lambda kw: "thinking" if "write_b" in kw["called_tool_names"] else "plain",
+        )
+
+        reply = await conversation_service.run_conversation(
+            {"read_a": {}, "write_b": {}}, llm_name="router"
+        )
+
+        assert reply == "done"
+        assert script.call_count == 3
+        calls = [c.args[0] for c in script.call_args_list]
+        assert calls[0]["called_tool_names"] == ()
+        assert calls[0]["previous_provider"] is None
+        assert calls[1]["called_tool_names"] == ("read_a",)
+        assert calls[1]["previous_provider"] == "plain"
+        assert calls[2]["called_tool_names"] == ("read_a", "write_b", "read_a")
+        assert calls[2]["previous_provider"] == "plain"
+        used = [c.kwargs["llm_name"] for c in mock_with_tools.call_args_list]
+        assert used == ["plain", "plain", "thinking"]
+        # プロバイダーごとの追記は llm_client が呼び出しごとに足すため、ここで渡すのは
+        # 毎回同じ共通のシステムプロンプト（前の呼び出しの追記が持ち越されない）
+        prompts = [c.kwargs["system_prompt"] for c in mock_with_tools.call_args_list]
+        assert prompts == ["test system prompt"] * 3
+
+    async def test_returning_previous_keeps_provider(
+        self, conversation_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """スクリプトが前回の名前を返せば同じプロバイダーが使われ続ける。"""
+        mock_with_tools, _ = self._setup(
+            conversation_service,
+            monkeypatch,
+            [self._tool_response("t"), self._tool_response("t"), self._final_response()],
+            lambda kw: kw["previous_provider"] or "first",
+        )
+
+        await conversation_service.run_conversation({"t": {}}, llm_name="router")
+
+        used = [c.kwargs["llm_name"] for c in mock_with_tools.call_args_list]
+        assert used == ["first", "first", "first"]
+
+    async def test_concrete_provider_never_calls_script(
+        self, conversation_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """具体プロバイダーを直接指定した回は、ツールループ中もスクリプトが呼ばれない。"""
+        mock_with_tools, script = self._setup(
+            conversation_service,
+            monkeypatch,
+            [self._tool_response("t"), self._tool_response("t"), self._final_response()],
+            lambda kw: "other",
+        )
+
+        await conversation_service.run_conversation({"t": {}}, llm_name="low")
+
+        script.assert_not_called()
+        used = [c.kwargs["llm_name"] for c in mock_with_tools.call_args_list]
+        assert used == ["low", "low", "low"]
+
+    async def test_tool_arguments_and_results_not_in_context(
+        self, conversation_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ツールの引数や結果本文は resolver の文脈に載らない。"""
+        _, script = self._setup(
+            conversation_service,
+            monkeypatch,
+            [self._tool_response("t"), self._final_response()],
+            lambda kw: "plain",
+        )
+
+        await conversation_service.run_conversation({"t": {}}, llm_name="router")
+
+        dumped = repr([c.args[0] for c in script.call_args_list])
+        assert "ARG-VALUE" not in dumped
+        assert "secret_arg" not in dumped
+        assert "RESULT-BODY" not in dumped
+
+
 # ---------------------------------------------------------------------------
 # TestRunConversation
 # ---------------------------------------------------------------------------
@@ -226,12 +357,13 @@ class TestRunConversation:
         ("allowed_tool_names", "expected"),
         [(None, ["main_tool"]), (["task_tool"], ["task_tool"])],
     )
-    async def test_allowed_tool_names_overrides_main_available_tools(
-        self, conversation_service, mock_cfg, monkeypatch: pytest.MonkeyPatch,
+    async def test_allowed_tool_names_overrides_main_tool_set(
+        self, conversation_service, monkeypatch: pytest.MonkeyPatch,
         allowed_tool_names, expected,
     ) -> None:
-        """allowed_tool_names を渡せばそれを、None なら main_available_tools を使う。"""
-        mock_cfg.tools.main_available_tools = ["main_tool"]
+        """allowed_tool_names を渡せばそれを、None なら展開した main セットを使う。"""
+        resolve = MagicMock(return_value=["main_tool"])
+        monkeypatch.setattr(conversation_service, "resolve_available_tools", resolve)
         build = MagicMock(return_value=[{"name": "x"}])
         monkeypatch.setattr(conversation_service, "build_tools_param", build)
 
@@ -243,6 +375,27 @@ class TestRunConversation:
 
         assert build.call_args.kwargs["allowed_names"] == expected
         assert build.call_args.kwargs["client_type"] == "task"
+        if allowed_tool_names is None:
+            assert resolve.call_args.args[0] == ["$main"]
+        else:
+            resolve.assert_not_called()
+
+    async def test_empty_main_tool_set_means_no_tools(
+        self, conversation_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """main セットの展開結果が空（未設定を含む）なら、ツールを渡さずに LLM を呼ぶ。"""
+        monkeypatch.setattr(
+            conversation_service, "resolve_available_tools", MagicMock(return_value=[])
+        )
+        mock_chat = AsyncMock(return_value="no tools reply")
+        mock_with_tools = AsyncMock()
+        monkeypatch.setattr(conversation_service, "chat_to_llm", mock_chat)
+        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_with_tools)
+
+        result = await conversation_service.run_conversation({"main_tool": {}})
+
+        assert result == "no tools reply"
+        mock_with_tools.assert_not_called()
 
     async def test_does_not_save_or_duplicate_user_message(
         self, conversation_service, mock_memory_manager_instance, monkeypatch: pytest.MonkeyPatch
@@ -521,6 +674,38 @@ class TestRunConversation:
 
         assert result == "ツール呼び出しの上限に達しました。処理を中断しました。"
         assert mock_chat.call_count == 3
+
+    @pytest.mark.parametrize("limit", [1, 5])
+    async def test_max_tool_call_iterations_argument_overrides_global(
+        self, conversation_service, mock_memory_manager_instance, monkeypatch: pytest.MonkeyPatch,
+        limit: int,
+    ) -> None:
+        """`max_tool_call_iterations` を渡したときはグローバル（3）ではなくその回数で止まる。"""
+        tool_response = {
+            "content": None,
+            "finish_reason": "tool_calls",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "test_tool", "arguments": "{}"},
+                }
+            ],
+            "raw_message": {"role": "assistant", "content": None, "tool_calls": []},
+        }
+        mock_chat = AsyncMock(return_value=tool_response)
+        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(conversation_service, "execute_tool_call", AsyncMock(return_value={
+            "success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None
+        }))
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(
+            fake_tools, client_type="task", max_tool_call_iterations=limit
+        )
+
+        assert result == "ツール呼び出しの上限に達しました。処理を中断しました。"
+        assert mock_chat.call_count == limit
 
     async def test_tool_data_with_datetime_is_serialized(
         self, conversation_service, mock_memory_manager_instance, monkeypatch: pytest.MonkeyPatch

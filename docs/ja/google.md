@@ -110,6 +110,9 @@ type: llm_calendar_get
 type: llm_calendar_create
 ```
 
+通常会話で使うには、`lilla.yaml` の `tools.sets.main` にもこれらの stem を足します
+（[ツールセット](tools.md#ツールセットtoolssets)）。
+
 | ツール | 関数名 | 内容 |
 |--------|--------|------|
 | `llm_calendar_get` | `get_calendar_events` | `date_range`（`today` / `last_7_days` / `2026-04-20/2026-04-26` など）・`query`・`max_results` で予定を取得する。参加者（`attendees`）は LLM へ渡さず、登録済みカレンダーの ID は `friendly_name` に置き換える |

@@ -388,8 +388,8 @@ class TestLLMExpertToolsetResolution:
     async def test_main_token_uses_main_conversation_tools(
         self, llm_expert_with_real_loader, mock_cfg: MagicMock, mock_llm_client: MagicMock
     ) -> None:
-        """`$main` を書いた Expert は tools.main_available_tools のツールを使える。"""
-        mock_cfg.tools.main_available_tools = ["llm_calendar_get", "llm_health_get"]
+        """`$main` を書いた Expert は tools.sets の main セットのツールを使える。"""
+        mock_cfg.tools.sets = {"main": ["llm_calendar_get", "llm_health_get"]}
         mock_llm_client.chat_to_llm_with_tools.return_value = _stop_response()
         ctx = _base_context(
             available_tools=["$main"],

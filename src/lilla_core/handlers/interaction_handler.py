@@ -85,10 +85,19 @@ async def handle_interaction(interaction: discord.Interaction, bot, tools, llm_t
         await interaction.followup.send(msg)
     except Exception as e:
         logger.error("Error in handle_interaction: %s", e, exc_info=True)
-        try:
-            await interaction.followup.send(t("interaction.error"))
-        except Exception:
-            pass
+        await _send_error_followup(interaction)
+
+
+async def _send_error_followup(interaction: discord.Interaction) -> None:
+    """インタラクションの followup へ汎用エラー文言を送る（ベストエフォート）。
+
+    エラー通知自体の送信失敗で元の例外処理を巻き込まないよう、送信に失敗しても
+    例外は伝播させず DEBUG ログだけ残す。
+    """
+    try:
+        await interaction.followup.send(t("interaction.error"))
+    except Exception:
+        logger.debug("Failed to send error followup for interaction", exc_info=True)
 
 
 async def _handle_command_interaction(
@@ -118,10 +127,7 @@ async def _handle_command_interaction(
         await command_handler.handle_command(interaction.message, content, tools, bot)
     except Exception as e:
         logger.error("Error processing command: interaction: %s", e, exc_info=True)
-        try:
-            await interaction.followup.send(t("interaction.error"))
-        except Exception:
-            pass
+        await _send_error_followup(interaction)
 
 
 async def _execute_button_action(record: dict, llm_tools) -> dict:

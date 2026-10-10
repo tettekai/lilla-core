@@ -19,9 +19,12 @@ YAML の項目:
 - `prompt` … 必須。`utils/resource_loader.py` の `load_text_resources` にそのまま
   渡す source spec（`file:` / `dir:`。リストでもよい）
 - `available_tools` … 任意。この実行で LLM に見せるツールの許可リスト（YAML stem と
-  `$main` の並び）。`llm_tool_loader.resolve_available_tools` で展開する。空リスト、
-  またはキーが無い場合はどちらもツールなし（`main_available_tools` は継承しない）。
+  `$` + セット名（`$main` など）の並び）。`llm_tool_loader.resolve_available_tools` で
+  展開する。空リスト、またはキーが無い場合はどちらもツールなし（`main` セットは継承しない）。
   値はあるが不正（リストでない・未知のトークンや stem など）なときだけ初期化で落とす
+- `max_tool_call_iterations` … 任意。このタスクだけのツール呼び出しの往復上限（正の
+  int）。省略時は `llm.max_tool_call_iterations` を使う。int 以外・bool・1 未満は
+  初期化で落とす
 """
 from __future__ import annotations
 
@@ -66,16 +69,19 @@ class ScheduledLlmTask:
 
         `llm_provider` / `prompt` はこのタスクの前提なので、欠けていれば起動時
         （ツールのロード時）に落とす。`available_tools` は任意で、キーが無い
-        場合は空リスト（ツールなし。`main_available_tools` は継承しない）として
+        場合は空リスト（ツールなし。`main` セットは継承しない）として
         扱い、キーがあるのに展開できない（不正な）場合だけ落とす。
+        `max_tool_call_iterations` も任意で、キーが無ければ None（グローバル設定を
+        使う）とし、正の int でなければ落とす。
 
         Args:
             config: タスクツールの YAML 設定（`_yaml_path` 付き）。
             name: YAML のファイル名 stem（ツール名）。
 
         Raises:
-            ValueError: `llm_provider` / `prompt` が無い場合、または
-                `available_tools` が指定されているが展開できない場合。
+            ValueError: `llm_provider` / `prompt` が無い場合、
+                `available_tools` が指定されているが展開できない場合、または
+                `max_tool_call_iterations` が正の int でない場合。
         """
         self._config = config or {}
         self.name = name
@@ -94,6 +100,9 @@ class ScheduledLlmTask:
             raise ValueError(f"Task tool {name} requires prompt")
         self._allowed_tool_names = self._resolve_available_tools(
             self._config.get("available_tools", [])
+        )
+        self._max_tool_call_iterations = self._resolve_max_tool_call_iterations(
+            self._config.get("max_tool_call_iterations")
         )
 
     async def execute(self, context: dict) -> None:
@@ -144,6 +153,7 @@ class ScheduledLlmTask:
             llm_name=self._llm_provider,
             inject_user_content=prompt,
             allowed_tool_names=self._allowed_tool_names,
+            max_tool_call_iterations=self._max_tool_call_iterations,
         )
         if _is_no_notification(reply):
             logger.info(
@@ -180,6 +190,27 @@ class ScheduledLlmTask:
             raise ValueError(
                 f"Task tool {self.name} has invalid available_tools: {e}"
             ) from e
+
+    def _resolve_max_tool_call_iterations(self, value) -> int | None:
+        """`max_tool_call_iterations` を検証する。
+
+        Args:
+            value: YAML の `max_tool_call_iterations` の値（キーが無ければ None）。
+
+        Returns:
+            このタスクの往復上限。未指定なら None（グローバル設定を使う）。
+
+        Raises:
+            ValueError: 正の int でない場合（int 以外・bool・1 未満）。
+        """
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(
+                f"Task tool {self.name} has invalid max_tool_call_iterations: "
+                f"{value!r} (must be a positive integer)"
+            )
+        return value
 
     def _resolve_target(self) -> str | None:
         """通知先を解決する（`{DISCORD_MY_USER_ID}` を `discord.my_user_id` に置換）。

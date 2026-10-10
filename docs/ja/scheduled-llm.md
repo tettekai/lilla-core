@@ -32,18 +32,23 @@ YAML のファイル名（stem）がツール名になるので、同じ `type` 
   起動時に失敗します
 - `available_tools` … 任意。この実行で LLM に見せるツールの許可リストです（後述）。
   キーが無ければツールなしとして起動します。キーがあり値が不正なら起動時に失敗します
+- `max_tool_call_iterations` … 任意。このタスクだけのツール呼び出しの往復上限（正の整数）
+  です。省略すると `llm.max_tool_call_iterations`（既定 10）を使います。整数以外・
+  `true` / `false`・1 未満は起動時に失敗します。上限に達したときは例外にせず中断の文言を
+  返し、それが `NO_NOTIFICATION` でなければ通常の返答と同じく `target` へ送ります
 
 ## ツールの許可リスト（`available_tools`）
 
 スケジュール LLM は、実行ごとにツールの許可リストを持ちます。通常会話の
-`tools.main_available_tools` を黙って引き継ぐことはしません。
+`main` ツールセットを黙って引き継ぐことはしません。
 
-- 要素はツール YAML の stem（`llm_weather` など）か、トークン `$main` です
-- `$main` はその位置で `tools.main_available_tools` の中身に展開されます。
-  `main_available_tools` が未設定（絞り込みなし）なら、ロード済みの LLM ツールすべてです
+- 要素はツール YAML の stem（`llm_weather` など）か、`$` + セット名の
+  [ツールセット](tools.md#ツールセットtoolssets)参照（`$main` など）です
+- `$main` はその位置で `tools.sets.main` の中身に展開されます。`main` が未設定なら
+  空（ツールなし）です。`$health` のような他のセットも同じように展開されます
 - 空リスト `[]`、またはキーそのものの省略はどちらもツールなしです
-  （`main_available_tools` は見ません）
-- 展開後の重複は除かれます。ロード済みでない stem や、`$main` 以外のトークンが
+  （`main` セットは見ません）
+- 展開後の重複は除かれます。ロード済みでない stem や、定義されていないセット名が
   あれば起動時に失敗します
 - 実際に LLM へ渡すのは、展開したリストのうち `supported_client_type` が `task` か
   `all` のツールだけです。リストに書いても、それ以外のツールはこの実行には出ません
@@ -63,7 +68,7 @@ available_tools:               # 通常会話の一式に、この実行だけ�
 ```
 
 特定の実行だけに渡したいツールは、ツール YAML を `supported_client_type: task` にし、
-使うタスクの `available_tools` にだけ書きます（`main_available_tools` には載せません）。
+使うタスクの `available_tools` にだけ書きます（`main` セットには載せません）。
 `supported_client_type: task` のツールはすべての task 実行で使える扱いなので、
 許可リストに載せたタスクにだけ出るようにするのがこの項目の役目です。
 

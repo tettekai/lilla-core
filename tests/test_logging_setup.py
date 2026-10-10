@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import sys
 import threading
 import time
 from pathlib import Path
@@ -213,6 +214,44 @@ class TestMongodbHandlerViaQueue:
         assert doc["message"] == "hello world"
         assert doc["levelname"] == "INFO"
         assert set(doc) == {"asctime", "levelname", "message", "created_at", "expires_at"}
+
+    def test_logger_exception_keeps_traceback(self, tmp_path: Path, restore_logging) -> None:
+        """logger.exception の traceback が Queue 経由でも exception フィールドに残る。"""
+        _write_mongodb_yaml(tmp_path)
+        config = _make_config(tmp_path)
+        collection = MagicMock()
+
+        with patch("lilla_core.core.logging_setup.get_config", return_value=config), patch(
+            "lilla_core.log_handler.MongoClient", return_value=_mongo_client_mock(collection)
+        ):
+            setup_logging()
+
+        try:
+            raise ValueError("status=400 body=invalid due")
+        except ValueError:
+            logging.getLogger("lilla_test.queue").exception("Failed to create %s", "task")
+        stop_logging_listener()
+
+        doc = collection.insert_one.call_args[0][0]
+        assert doc["message"] == "Failed to create task"
+        assert doc["levelname"] == "ERROR"
+        assert "Traceback (most recent call last)" in doc["exception"]
+        assert "ValueError: status=400 body=invalid due" in doc["exception"]
+
+    def test_queue_handler_prepare_formats_exc_info(self) -> None:
+        """prepare は traceback を exc_text に整形し、exc_info は持ち越さない。"""
+        handler = logging_setup._MongoDBQueueHandler(MagicMock())
+        try:
+            raise RuntimeError("boom")
+        except RuntimeError:
+            record = logging.getLogger("lilla_test").makeRecord(
+                "lilla_test", logging.ERROR, "", 0, "oops %s", ("x",), sys.exc_info()
+            )
+        prepared = handler.prepare(record)
+        assert prepared.exc_info is None
+        assert prepared.message == "oops x"
+        assert "RuntimeError: boom" in prepared.exc_text
+        assert record.exc_info is not None  # 元レコードは書き換えない
 
     def test_level_below_handler_is_not_written(self, tmp_path: Path, restore_logging) -> None:
         """mongodb ハンドラのレベル未満のレコードは書き込まれない。"""

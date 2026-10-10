@@ -108,12 +108,12 @@ async def check_mongodb() -> CheckResult:
         疎通できたかどうかを表す CheckResult。失敗・タイムアウトでも例外は投げない。
     """
     from lilla_core.core.config import get_config
-    from lilla_core.repository.motor_client import create_motor_client
+    from lilla_core.repository.mongo_client import create_mongo_client
 
     start = time.perf_counter()
     try:
         config = get_config()
-        client = create_motor_client(config.env.mongodb_uri)
+        client = create_mongo_client(config.env.mongodb_uri)
         await asyncio.wait_for(
             client.admin.command("ping"), timeout=MONGO_TIMEOUT_SECONDS
         )

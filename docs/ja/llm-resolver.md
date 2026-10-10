@@ -41,10 +41,15 @@ llm:
 そのキーが `type: resolver` ならスクリプトを呼び、返った名前で台帳を引き直します。
 具体プロバイダーならそのまま LLM を呼びます。`!model router` は回しごとの自動選択、
 `!model deepseek-flash-high` は固定です。task が `llm_name: router` と書けば回し、
-具体名なら回しません。
+具体名なら回しません。上書きを解除して `llm.default` に戻すのは `!model reset` で、
+引数なしの `!model` は状態を変えずに定義済みのキーの一覧と今有効なキーを返すだけです。
+`reset` は予約語のため `llm.providers` のキーには使えません（使うと起動時に失敗します）。
 
-展開は `run_conversation` の中（履歴を組み立てたあと、LLM を呼ぶ前）で 1 回だけ
-行います。Discord・拡張のクライアント・task のどれから呼んでも同じです。
+展開は `run_conversation` の中で、LLM を呼ぶたびにその直前で行います（履歴を
+組み立てたあとの最初の呼び出しも、ツールを呼んだあとの続きの呼び出しも同じ）。
+Discord・拡張のクライアント・task のどれから呼んでも同じです。キーが具体
+プロバイダー（明示の `llm_name` や `!model` での固定）の回は、ツールループ中も
+スクリプトを呼びません。
 `run_conversation` を通らずに `chat_to_llm` を直接呼ぶ経路（`!selftest` や、
 `chat_to_llm` を直に呼ぶタスクなど）に resolver 名が渡った場合は、文脈が無いので
 スクリプトは呼ばずに `fallback` を使います。会話開始フックの
@@ -61,6 +66,9 @@ llm:
 resolver 型は HTTP を出さないため `url` / `model` / `api_key_env` / `wakeup_file` /
 `extra_params` は書けません。逆に具体プロバイダーは `url` / `model` が必須で、`script` /
 `fallback` は書けません。Ollama の起動待ち（WOL）も具体プロバイダー側だけに掛かります。
+モデルごとのシステムプロンプト追記（`prompt`）も具体プロバイダー側に書きます。resolver に
+書いても起動は失敗せず無視され、選ばれた具体プロバイダーの `prompt` が使われます
+（[プロバイダーごとのシステムプロンプト追記](llm-provider-prompt.md)）。
 
 次は起動時に失敗します（fail-fast）。
 
@@ -99,14 +107,36 @@ async def resolve(ctx) -> str | None: ...
 | `channel_name` | `discord.channels` に登録されたチャンネルならその `name` |
 | `user_text` | 直近のユーザー発話のテキスト（タイムスタンプを除き、500 文字で切り詰め） |
 | `has_image` | 今回のユーザー発言に画像添付があり、LLM へ画像パートを渡すときだけ `True` |
+| `called_tool_names` | その回しで既に呼んだツール名のタプル（出現順・重複あり）。最初の呼び出しでは空 |
+| `previous_provider` | その回しで前回選んだ具体プロバイダー名。最初の呼び出しでは `None` |
 
-システムプロンプト・ツール結果の全文や、画像本体（data URL・バイト列）は渡しません。
+システムプロンプト・ツールの引数や結果の全文、画像本体（data URL・バイト列）は渡しません。
 過去ターンの履歴に画像があっただけでは `has_image` は `True` になりません。画像ありの
 回しでどのキーを選ぶかはスクリプト側の方針で、プロバイダーごとの vision 対応表は
 コアにはありません。
 
 `user_text` はユーザーの発言そのものです。判定モデルに渡す場合は、指示ではなく
 データとして扱うプロンプトにしてください（プロンプトインジェクション対策）。
+
+## ツールループ中の切り替え
+
+ツールを呼んだあとの LLM 呼び出しでも `resolve` がもう一度呼ばれます。前回と同じ
+プロバイダーを続けるときは `ctx.previous_provider` をそのまま返し、切り替えるときだけ
+別のキーを返してください（`None` は前回の続きではなく `fallback` です）。前回の選択は
+コアが覚えるので、スクリプトに状態を持たせる必要はありません。
+
+```python
+def resolve(ctx):
+    # 書き込み系のツールを呼んだあとだけ思考モードのプロバイダーへ切り替える
+    if "calendar_create" in ctx.called_tool_names:
+        return "deepseek-flash-high"
+    return ctx.previous_provider or "deepseek-flash-low"
+```
+
+判定モデルの呼び出しのような重い処理は、`ctx.previous_provider` があれば省いて
+前回の名前を返すと、ツールのたびに判定が走るのを避けられます。途中でプロバイダーを
+変えたときにプロバイダー側が受け付けるか（思考モードの切り替えでエラーになるなど）は
+コアでは扱いません。スクリプトとプロバイダー設定の側で合わせてください。
 
 ## テンプレ
 

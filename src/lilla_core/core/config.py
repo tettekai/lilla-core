@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal, TypeVar
@@ -58,6 +59,10 @@ class LlmProviderConfig(BaseModel):
     api_key_env: str | None = None
     # プロバイダー固有の追加パラメータ（POSTボディのトップレベルに展開される）
     extra_params: dict[str, Any] = {}
+    # 具体プロバイダーのみ。このプロバイダーへ送る回だけシステムプロンプトの末尾へ
+    # 空行区切りで足す追記の source spec（`file:` / `dir:`、`${config_root}` 展開、
+    # 相対パスは `CONFIG_ROOT` 基準）。resolver 型に書かれていても使わない（起動も落とさない）
+    prompt: SourceSpec | None = None
     # resolver タイプのみ
     # `resolve(ctx)` を定義した Python ファイルのパス（`${config_root}` 展開・
     # `file:` 接頭は任意。相対パスは `CONFIG_ROOT` 基準。`CONFIG_ROOT` 配下のみ）
@@ -67,6 +72,19 @@ class LlmProviderConfig(BaseModel):
     # `async def resolve` の待ち時間の上限（秒）。超えたら `fallback` へ落とす
     timeout_seconds: float = 10.0
 
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_resolver_prompt(cls, data: Any) -> Any:
+        """resolver エントリの `prompt` を型の検証より前に捨てる。
+
+        resolver は送信しないため追記の持ち主にせず、書かれていても起動を落とさない。
+        `SourceSpec` の型検証より前に取り除くことで、文字列・文字列の列以外
+        （`prompt: 123` やマッピングなど）が書かれていても無視できるようにする。
+        """
+        if isinstance(data, dict) and data.get("type") == "resolver" and "prompt" in data:
+            data = {key: value for key, value in data.items() if key != "prompt"}
+        return data
+
     @model_validator(mode="after")
     def _validate_fields_for_type(self) -> "LlmProviderConfig":
         """`type` ごとに必須・不可の項目が揃っていることを検証する。
@@ -74,6 +92,8 @@ class LlmProviderConfig(BaseModel):
         具体プロバイダーは `url` / `model` が必須で `script` / `fallback` を持たない。
         resolver は `script` / `fallback` が必須で、HTTP を出さないため `url` /
         `model` / `api_key_env` / `wakeup_file` / `extra_params` を持たない。
+        `prompt` は具体プロバイダーでのみ source spec の形を検証し、resolver では
+        書かれていても検証せず無視する（resolver は送信しないため追記の持ち主にしない）。
         """
         if self.type == "resolver":
             missing = [name for name in ("script", "fallback") if not getattr(self, name)]
@@ -105,7 +125,57 @@ class LlmProviderConfig(BaseModel):
                 raise ValueError(
                     f"llm provider of type '{self.type}' must not set: {', '.join(unexpected)}"
                 )
+            if self.prompt is not None:
+                _validate_provider_prompt_spec(self.prompt)
         return self
+
+
+def _validate_provider_prompt_spec(spec: SourceSpec) -> None:
+    """具体プロバイダーの `prompt` が `file:` / `dir:` 付きの source spec か検証する。
+
+    本文の直書きや接頭辞の無いパスは、読み込み時ではなく起動時に落とす。
+
+    Raises:
+        ValueError: 空の指定、または `file:` / `dir:` で始まらない要素がある場合。
+    """
+    specs = [spec] if isinstance(spec, str) else list(spec)
+    if not specs:
+        raise ValueError("llm provider prompt must not be empty")
+    for item in specs:
+        stripped = item.strip()
+        for prefix in ("file:", "dir:"):
+            if stripped.startswith(prefix) and stripped[len(prefix):].strip():
+                break
+        else:
+            raise ValueError(
+                f"llm provider prompt must be a source spec starting with file: or dir: : {item!r}"
+            )
+
+
+def resolve_llm_provider_prompt_spec(spec: SourceSpec, config_root: str | Path) -> list[str]:
+    """具体プロバイダーの `prompt` を、相対パスを `config_root` 基準にした spec 列へ直す。
+
+    `${config_root}` を展開したうえで、`file:` / `dir:` の後ろが相対パスなら
+    `config_root` を前に付ける（`load_text_resources` は相対パスをカレントディレクトリ
+    基準で読むため、ここで揃えてから渡す）。
+
+    Args:
+        spec: `lilla.yaml` に書かれた `prompt` の値（文字列かその列）。
+        config_root: `${config_root}` 展開と相対パスの基準に使うディレクトリ。
+
+    Returns:
+        `load_text_resources` にそのまま渡せる spec のリスト。
+    """
+    specs = [spec] if isinstance(spec, str) else list(spec)
+    resolved: list[str] = []
+    for item in specs:
+        expanded = item.replace("${config_root}", str(config_root)).strip()
+        prefix = "file:" if expanded.startswith("file:") else "dir:"
+        path = Path(expanded[len(prefix):].strip())
+        if not path.is_absolute():
+            path = Path(config_root) / path
+        resolved.append(f"{prefix}{path}")
+    return resolved
 
 
 class DiscordChannelConfig(BaseModel):
@@ -274,10 +344,96 @@ class MemoryConfig(BaseModel):
     session_memory_ttl_hours: int = 3
 
 
-class ToolsConfig(BaseModel):
-    """lilla.yaml の `tools:` セクション。"""
+#: 名前付きツールセットの名前に使える文字（半角英数字と `-` `_`。大文字小文字は区別する）。
+TOOL_SET_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
-    main_available_tools: list[str] | None = None
+
+class ToolsConfig(BaseModel):
+    """lilla.yaml の `tools:` セクション。
+
+    `sets` は名前付きツールセット（セット名 → 要素の並び）。要素はツール YAML の stem か、
+    別セットへの `$` + セット名の参照。予約名は `main` だけで、通常会話はこのセットを使う
+    （未設定・空リストならツールなし）。セット名の形式だけをここで検証し、参照の展開・
+    循環や未知のセット名・未ロードのツール名の検出は `loaders/llm_tool_loader.py` の
+    `resolve_available_tools()` / `validate_tool_sets()` が行う。
+    """
+
+    sets: dict[str, list[str]] = {}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_keys(cls, data: Any) -> Any:
+        """廃止した `main_available_tools` が残っていたら起動時に落とす。
+
+        Parameters
+        ----------
+        data : Any
+            `tools:` セクションの生の値
+
+        Returns
+        -------
+        Any
+            そのままの値
+
+        Raises
+        ------
+        ValueError
+            `main_available_tools` が書かれている場合
+        """
+        if isinstance(data, dict) and "main_available_tools" in data:
+            raise ValueError(
+                "tools.main_available_tools has been removed; "
+                "move its entries to tools.sets.main"
+            )
+        return data
+
+    @field_validator("sets", mode="before")
+    @classmethod
+    def _normalize_sets(cls, value: Any) -> Any:
+        """`sets:` や各セットの値が空（None）のときを空として扱う。
+
+        Parameters
+        ----------
+        value : Any
+            `tools.sets` の生の値
+
+        Returns
+        -------
+        Any
+            None を空の dict / list に置き換えた値
+        """
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return {name: ([] if items is None else items) for name, items in value.items()}
+        return value
+
+    @field_validator("sets")
+    @classmethod
+    def _validate_set_names(cls, value: dict[str, list[str]]) -> dict[str, list[str]]:
+        """セット名が半角英数字と `-` `_` だけでできていることを確かめる。
+
+        Parameters
+        ----------
+        value : dict[str, list[str]]
+            `tools.sets`
+
+        Returns
+        -------
+        dict[str, list[str]]
+            そのままの値
+
+        Raises
+        ------
+        ValueError
+            空文字や使えない文字（`$` など）を含むセット名がある場合
+        """
+        for name in value:
+            if not TOOL_SET_NAME_PATTERN.fullmatch(name):
+                raise ValueError(
+                    f"Invalid tool set name {name!r}: use only ASCII letters, digits, '-' and '_'"
+                )
+        return value
 
 
 class MongodataCommandConfig(BaseModel):
@@ -394,12 +550,39 @@ class UiConfig(BaseModel):
         return value
 
 
+# `llm.providers` のキーに使えない名前。`!model reset` が上書きの解除に使うため、
+# 同名のプロバイダーがあると切り替えと解除の区別が付かなくなる。
+RESERVED_LLM_PROVIDER_NAMES: frozenset[str] = frozenset({"reset"})
+
+
 class LlmConfig(BaseModel):
     """lilla.yaml の `llm:` セクション。"""
 
     default: str = "ollama-gemma3"
     providers: dict[str, LlmProviderConfig] = {}
     max_tool_call_iterations: int = 10
+    # LLM へ送る直前の拒否リスト（JSON の文字列配列）の絶対パス。未指定なら検査しない。
+    # 実体は `core/llm_send_guard.py` が読む。
+    send_blocklist_path: str | None = None
+
+    @field_validator("send_blocklist_path")
+    @classmethod
+    def _validate_send_blocklist_path(cls, value: str | None) -> str | None:
+        """`send_blocklist_path` が絶対パスであることを検証する。
+
+        リストは `CONFIG_ROOT` の外に置く前提のため、資源パスの書き方
+        （`file:` / `dir:` 接頭・`${config_root}` 展開・相対パス）は流用せず拒否する。
+        """
+        if value is None:
+            return None
+        if value.startswith(("file:", "dir:")) or "${" in value:
+            raise ValueError(
+                "llm.send_blocklist_path must be a plain absolute path "
+                "(file:, dir: and ${...} expansion are not supported)"
+            )
+        if not Path(value).is_absolute():
+            raise ValueError("llm.send_blocklist_path must be an absolute path")
+        return value
 
     @model_validator(mode="after")
     def _validate_default_provider_exists(self) -> "LlmConfig":
@@ -409,7 +592,15 @@ class LlmConfig(BaseModel):
         `llm:` セクション自体を省略した場合もクラスデフォルト
         （`default="ollama-gemma3"`, `providers={}`）に対してこの検証が走り、
         意図どおり起動時に `ValidationError` となる。
+        `!model` のサブコマンドと衝突する予約名（`RESERVED_LLM_PROVIDER_NAMES`）を
+        `providers` のキーに使った場合も、コマンド実行時ではなく起動時に落とす。
         """
+        reserved = sorted(RESERVED_LLM_PROVIDER_NAMES.intersection(self.providers))
+        if reserved:
+            raise ValueError(
+                f"llm.providers must not use reserved name(s): {', '.join(reserved)} "
+                "(reserved by the !model command)"
+            )
         if self.default not in self.providers:
             available = ", ".join(sorted(self.providers)) or "(none)"
             raise ValueError(

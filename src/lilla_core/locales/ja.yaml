@@ -24,6 +24,7 @@ command:
   model:
     switched: "モデルを {model} に切り替えました"
     reset: "モデルを {model} に戻しました"
+    status: "現在のモデル: {current}\n利用可能なモデル: {available}\n`!model <名前>` で切り替え、`!model reset` で既定に戻します"
     not_found: "モデル '{name}' は見つかりません。利用可能なモデル: {available}"
     none: "（なし）"
 
@@ -101,6 +102,7 @@ interaction:
 
 message:
   error: "メッセージ処理中にエラーが発生しました"
+  llm_send_blocked: "個人情報が含まれている可能性があるため、LLM へ送信しませんでした"
 
 extension:
   on_message_error: "拡張 {name} のメッセージ処理中にエラーが発生しました"

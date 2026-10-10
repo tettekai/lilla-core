@@ -34,7 +34,7 @@ from lilla_core.core.config import get_config
 from lilla_core.core.logging_setup import setup_logging
 from lilla_core.commands import load_all_commands
 from lilla_core.loaders.task_tool_loader import load_all_tools
-from lilla_core.loaders.llm_tool_loader import get_llm_tools
+from lilla_core.loaders.llm_tool_loader import get_llm_tools, validate_tool_sets
 from lilla_core.repository.conversation_repository import get_conversation_repo
 from lilla_core.repository.user_memo_repository import get_user_memo_repo
 from lilla_core.repository.tool_cache_repository import get_tool_cache_repo
@@ -47,6 +47,7 @@ from lilla_core.handlers import message_handler, interaction_handler, task_handl
 from lilla_core.handlers.dashboard_server import start_dashboard_server
 from lilla_core.handlers.http_server import start_http_server, stop_http_server
 from lilla_core.services.llm_resolver import validate_llm_resolvers
+from lilla_core.core.llm_send_guard import preload_llm_send_blocklist
 
 setup_logging()
 
@@ -71,16 +72,24 @@ _CORE_STARTUP_REPOS = [
 
 bot.http.proxy = _config.proxy.resolve_url()
 if _config.env.http_proxy_user and _config.env.http_proxy_pass:
+    # discord.py 2.7.1 の HTTPClient.proxy_auth は BasicAuth 型を要求する（aiohttp の非推奨警告は残る）
     bot.http.proxy_auth = aiohttp.BasicAuth(_config.env.http_proxy_user, _config.env.http_proxy_pass)
 
 # `llm.providers` の resolver 型エントリのスクリプトを読み込み、`resolve` 関数が
 # 無ければここで起動を止める（fail-fast）。
 validate_llm_resolvers(_config)
 
+# `llm.send_blocklist_path` の拒否リストを起動時に一度だけ読む。読めない・形式が不正なら
+# 設定の不備と同じくここで起動を止める（fail-fast。`core/llm_send_guard.py`）。
+preload_llm_send_blocklist(_config)
+
 # コマンド・ツールをロード（起動時に一度だけ）
 load_all_commands()
 tools = load_all_tools()
 llm_tools = get_llm_tools()
+# `tools.sets` のすべてのセット（未使用のものも）を展開し、未知のセット参照・循環・
+# 未ロードのツール名をここで起動時に検出する（fail-fast）。
+validate_tool_sets(llm_tools)
 
 
 @bot.event

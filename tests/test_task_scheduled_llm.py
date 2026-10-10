@@ -148,7 +148,7 @@ class TestScheduledLlmTask:
     ) -> None:
         """`$main` を展開し、並べた stem と合わせた許可リストを渡す。"""
         cfg = MagicMock()
-        cfg.tools.main_available_tools = ["llm_weather"]
+        cfg.tools.sets = {"main": ["llm_weather"]}
         with patch("lilla_core.loaders.llm_tool_loader.get_config", return_value=cfg):
             task = _make_task(
                 prompt_file, available_tools=["$main", "llm_conversation_get", "llm_weather"]
@@ -160,6 +160,34 @@ class TestScheduledLlmTask:
             "llm_weather",
             "llm_conversation_get",
         ]
+
+    async def test_missing_max_tool_call_iterations_passes_none(
+        self, wired, prompt_file: Path, mock_run_conversation
+    ) -> None:
+        """`max_tool_call_iterations` が無ければ None（グローバル設定）を渡す。"""
+        await _make_task(prompt_file).execute(
+            {"discord_client": MagicMock(), "now": _NOW}
+        )
+
+        assert mock_run_conversation.await_args.kwargs["max_tool_call_iterations"] is None
+
+    async def test_passes_max_tool_call_iterations(
+        self, wired, prompt_file: Path, mock_run_conversation
+    ) -> None:
+        """正の int を書いたらその値を `run_conversation` へ渡す。"""
+        await _make_task(prompt_file, max_tool_call_iterations=25).execute(
+            {"discord_client": MagicMock(), "now": _NOW}
+        )
+
+        assert mock_run_conversation.await_args.kwargs["max_tool_call_iterations"] == 25
+
+    @pytest.mark.parametrize("value", [0, -1, True, False, 1.5, "10", [3]])
+    def test_invalid_max_tool_call_iterations_fail_on_init(
+        self, prompt_file: Path, value
+    ) -> None:
+        """正の int でない `max_tool_call_iterations` は初期化時に落ちる。"""
+        with pytest.raises(ValueError, match="max_tool_call_iterations"):
+            _make_task(prompt_file, max_tool_call_iterations=value)
 
     def test_exposes_schedule_from_yaml(self, prompt_file: Path) -> None:
         """`schedule` は YAML の値をそのまま公開する（未設定なら None）。"""

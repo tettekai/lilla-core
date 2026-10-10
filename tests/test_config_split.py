@@ -63,9 +63,12 @@ mongodb:
 memory:
   max_history_turns: 50
 tools:
-  main_available_tools:
-    - llm_a
-    - llm_b
+  sets:
+    main:
+      - llm_a
+      - $health
+    health:
+      - llm_b
 commands:
   mongodata:
     allowed_collections:
@@ -118,9 +121,9 @@ class TestCoreFieldsCharacterization:
         cfg = self._build(isolated_config_root)
         assert cfg.memory.max_history_turns == 50
 
-    def test_main_available_tools_from_yaml(self, isolated_config_root: Path) -> None:
+    def test_tool_sets_from_yaml(self, isolated_config_root: Path) -> None:
         cfg = self._build(isolated_config_root)
-        assert cfg.tools.main_available_tools == ["llm_a", "llm_b"]
+        assert cfg.tools.sets == {"main": ["llm_a", "$health"], "health": ["llm_b"]}
 
     def test_mongodata_allowed_collections_from_yaml(
         self, isolated_config_root: Path
@@ -183,6 +186,38 @@ class TestBotSectionLegacyKeysAreIgnored:
         )
         cfg = AppConfig(env={"discord_token": "dummy"}, _env_file=None)
         assert cfg.memory.max_history_turns == 30
+
+
+class TestToolsConfig:
+    """`tools` セクション（名前付きツールセット）。"""
+
+    def test_sets_default_to_empty(self) -> None:
+        """`tools:` を書かなければセットは空（main 未設定＝通常会話はツールなし）。"""
+        assert _config_module.ToolsConfig().sets == {}
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [({"sets": None}, {}), ({"sets": {"main": None}}, {"main": []})],
+    )
+    def test_null_values_mean_empty(self, raw, expected) -> None:
+        """`sets:` や `main:` を空で書いたら空として扱う。"""
+        assert _config_module.ToolsConfig(**raw).sets == expected
+
+    def test_removed_main_available_tools_fails(self) -> None:
+        """廃止した `main_available_tools` が残っていたら無視せず落とす。"""
+        with pytest.raises(ValidationError, match="main_available_tools"):
+            _config_module.ToolsConfig(main_available_tools=["llm_a"])
+
+    @pytest.mark.parametrize("name", ["main", "Health", "a-b_c", "123"])
+    def test_accepts_valid_set_names(self, name: str) -> None:
+        """半角英数字と `-` `_` だけの名前は使える。"""
+        assert name in _config_module.ToolsConfig(sets={name: []}).sets
+
+    @pytest.mark.parametrize("name", ["", "$main", "a b", "a.b", "日本語"])
+    def test_rejects_invalid_set_names(self, name: str) -> None:
+        """空文字や `$` などを含む名前は落とす。"""
+        with pytest.raises(ValidationError, match="Invalid tool set name"):
+            _config_module.ToolsConfig(sets={name: []})
 
 
 class TestProxyConfig:
@@ -468,6 +503,22 @@ class TestLlmConfigValidation:
         cfg = AppConfig(env={"discord_token": "dummy"}, _env_file=None)
         assert cfg.llm.default == "dummy"
 
+    def test_reserved_provider_name_fails(self, isolated_config_root: Path) -> None:
+        """`!model reset` と衝突する `reset` をプロバイダー名に使うと起動時に落ちる。"""
+        _write_yaml(
+            isolated_config_root,
+            'discord:\n  my_user_id: "1"\n'
+            "llm:\n"
+            "  default: reset\n"
+            "  providers:\n"
+            "    reset:\n"
+            "      type: ollama\n"
+            "      url: http://localhost:11434\n"
+            "      model: dummy\n",
+        )
+        with pytest.raises(ValidationError, match="reserved name"):
+            AppConfig(env={"discord_token": "dummy"}, _env_file=None)
+
     def test_provider_type_typo_fails(self, isolated_config_root: Path) -> None:
         _write_yaml(
             isolated_config_root,
@@ -640,3 +691,31 @@ class TestDiscordChannels:
     ) -> None:
         cfg = self._lookup_config(isolated_config_root)
         assert cfg.discord.find_channel_by_name("nope") is None
+
+
+class TestLlmSendBlocklistPath:
+    """`llm.send_blocklist_path` の検証。"""
+
+    def _llm(self, path):
+        from lilla_core.core.config import LlmConfig
+        return LlmConfig(
+            default="d",
+            providers={"d": {"type": "ollama", "url": "http://x", "model": "m"}},
+            send_blocklist_path=path,
+        )
+
+    def test_default_is_none(self) -> None:
+        assert self._llm(None).send_blocklist_path is None
+
+    def test_accepts_absolute_path(self, tmp_path: Path) -> None:
+        path = str(tmp_path / "list.json")
+        assert self._llm(path).send_blocklist_path == path
+
+    @pytest.mark.parametrize(
+        "path",
+        ["list.json", "./list.json", "", "file:/abs/list.json", "dir:/abs", "${config_root}/list.json"],
+    )
+    def test_rejects_non_absolute_specs(self, path: str) -> None:
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            self._llm(path)

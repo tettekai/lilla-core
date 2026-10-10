@@ -91,8 +91,6 @@ def with_mocked_modules(
                 # 解決するよう、ui.timezone だけ実値（未指定）にしておく
                 get_config=MagicMock(return_value=MagicMock(ui=MagicMock(timezone=None))),
             ),
-            "motor": MagicMock(),
-            "motor.motor_asyncio": MagicMock(),
             "pymongo": MagicMock(),
             "lilla_core.repository.conversation_repository": MagicMock(
                 get_conversation_repo=MagicMock(return_value=mock_conv_repo)
@@ -201,6 +199,14 @@ class TestAddConversation:
         assert await manager.add_conversation({"role": "user", "content": "hi"}) == (
             "65f0000000000000000000aa"
         )
+
+
+class TestDeleteConversation:
+    async def test_delegates_to_conv_repo(self, manager, mock_conv_repo, mock_memo_repo, mock_tool_cache_repo, mock_session_memory) -> None:
+        """delete_conversation が ConversationRepository.delete を呼び、結果を返す。"""
+        mock_conv_repo.delete = AsyncMock(return_value=True)
+        assert await manager.delete_conversation("65f0000000000000000000aa") is True
+        mock_conv_repo.delete.assert_awaited_once_with("65f0000000000000000000aa")
 
 
 class TestLoadConversationHistoryWithTimestamps:

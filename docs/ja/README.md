@@ -17,6 +17,8 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [スケジュール実行で LLM に委譲する通知](scheduled-llm.md)
 - [タイムゾーン](timezone.md) — `ui.timezone`
 - [LLM プロバイダーの回しごと選択](llm-resolver.md) — `llm.providers` の `type: resolver`
+- [プロバイダーごとのシステムプロンプト追記](llm-provider-prompt.md) — `llm.providers.<キー>.prompt`
+- [LLM 送信前の拒否リスト](llm-send-guard.md) — `llm.send_blocklist_path`
 - [観測用ダッシュボード](dashboard.md) — 公開面への注意を含む
 - [共有 HTTP サーバー](http-server.md) — `http:`、Bearer トークン、拡張からのルート追加
 - [ツール契約](tools.md) — LLM ツール・task ツール・組み込みツール

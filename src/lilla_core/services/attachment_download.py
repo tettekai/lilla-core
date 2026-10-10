@@ -35,36 +35,41 @@ def normalize_content_type(attachment: object) -> str:
     return content_type.split(";")[0].strip().lower()
 
 
-def resolve_proxy_settings(config: object | None = None) -> tuple[str | None, aiohttp.BasicAuth | None]:
-    """設定からプロキシ URL とプロキシ認証情報を解決する。
+def resolve_proxy_settings(config: object | None = None) -> tuple[str | None, dict[str, str] | None]:
+    """設定からプロキシ URL とプロキシ認証ヘッダーを解決する。
 
     Args:
         config: 使用する設定オブジェクト。省略した場合は `get_config()` で取得する
             （読み込み済みの設定を持っている呼び出し元は、それをそのまま渡せる）。
 
     Returns:
-        (プロキシ URL, プロキシ認証情報) のタプル。認証情報が揃っていない場合の
-        2 番目の要素は None。
+        (プロキシ URL, プロキシ認証ヘッダー) のタプル。認証情報が揃っていない場合の
+        2 番目の要素は None。ヘッダーは `Proxy-Authorization` 1 つで、aiohttp 3.14 で
+        非推奨になった `proxy_auth` / `BasicAuth` の代わりに `proxy_headers` へ渡す。
     """
     if config is None:
         config = get_config()
-    proxy_auth = (
-        aiohttp.BasicAuth(config.env.http_proxy_user, config.env.http_proxy_pass)
+    proxy_headers = (
+        {
+            "Proxy-Authorization": aiohttp.encode_basic_auth(
+                config.env.http_proxy_user, config.env.http_proxy_pass, encoding="latin-1"
+            )
+        }
         if config.env.http_proxy_user and config.env.http_proxy_pass
         else None
     )
-    return config.proxy.resolve_url(), proxy_auth
+    return config.proxy.resolve_url(), proxy_headers
 
 
 async def download_attachment_bytes(
-    url: str, proxy: str | None, proxy_auth: aiohttp.BasicAuth | None
+    url: str, proxy: str | None, proxy_headers: dict[str, str] | None
 ) -> bytes:
     """プロキシ経由で添付ファイルをダウンロードし、バイト列を返す。
 
     Args:
         url: 添付ファイルの URL（Discord CDN）。
         proxy: 経由するプロキシ URL。未設定の場合は None。
-        proxy_auth: プロキシ認証情報。不要な場合は None。
+        proxy_headers: プロキシへ送るヘッダー（`Proxy-Authorization`）。不要な場合は None。
 
     Returns:
         ダウンロードしたファイルの内容（バイト列）。
@@ -73,6 +78,6 @@ async def download_attachment_bytes(
         aiohttp.ClientError: 通信に失敗した場合、または 4xx / 5xx が返った場合。
     """
     async with aiohttp.ClientSession() as session:
-        async with session.get(url, proxy=proxy, proxy_auth=proxy_auth) as resp:
+        async with session.get(url, proxy=proxy, proxy_headers=proxy_headers) as resp:
             resp.raise_for_status()
             return await resp.read()

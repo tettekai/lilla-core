@@ -7,6 +7,124 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-10
+
+### Added
+
+- `llm.providers` の具体プロバイダー（`ollama` / `openai_compat`）に任意の `prompt` を追加した
+  （#209）。値は `prompt.system` と同じ source spec（`file:` / `dir:`、`${config_root}` 展開、
+  相対パスは `CONFIG_ROOT` 基準）で、そのプロバイダーへ実際に送る回だけ、システムプロンプトの
+  末尾（`client_type` の追記のあと）へ空行区切りで足す。`chat_to_llm` / `chat_to_llm_with_tools` /
+  `chat_to_llm_responses` の中で、送る具体プロバイダーが決まってから呼び出しのたびにディスクから
+  読むため、`run_conversation` のツールループで resolver がプロバイダーを替えた呼び出しや、
+  resolver 名の直呼びで `fallback` に落ちた回も、実際に送るキーの追記になる。`file:` / `dir:` で
+  始まらない値と空の指定は起動時に落とす。`type: resolver` のエントリに書いた `prompt` は
+  起動を落とさずに無視する
+
+- `type: resolver` の展開を、`run_conversation` のツールループ内で LLM を呼ぶたびに
+  （最初の呼び出しを含む）やり直すようにした（#207）。`LlmResolveContext` に、その回しで
+  既に呼んだツール名（出現順・重複あり。引数や結果は載せない）の `called_tool_names` と、
+  前回選んだ具体プロバイダー名の `previous_provider`（最初は `None`）を足した。同じ
+  プロバイダーを続けるにはスクリプトが `previous_provider` を返す（`None` は従来どおり
+  `fallback`）。これまで 1 回目の判定だけで足りていたスクリプトもそのまま動くが、ツールを
+  呼んだ回しでは複数回呼ばれるため、判定モデルを呼ぶような重いスクリプトは
+  `previous_provider` があれば前回の名前を返すようにするとよい。具体プロバイダーのキー
+  （明示の `llm_name` や `!model` での固定）と、`chat_to_llm` を直接呼ぶ経路は従来どおり
+  スクリプトを呼ばない
+
+- `llm.send_blocklist_path`（任意）を追加した（#204）。JSON の文字列配列ファイルの絶対パスを
+  書くと、`chat_to_llm` / `chat_to_llm_with_tools` / `chat_to_llm_responses` が送る直前に
+  リクエストボディ内の文字列（ヘッダーと画像の data URL は除く）を NFKC 正規化・大文字小文字を
+  無視して調べ、リストの語（部分一致）を含む回は送信せず `LlmSendBlockedError`
+  （`LLMError` の派生）を送出する。一致した語・本文はログにも例外にも出さない。Discord の
+  通常会話では止めた回のユーザー発言を会話履歴から取り除き、次の会話まで止め続けないようにする。リストは
+  起動時に一度だけ読み、読めない・形式が不正な場合は起動を止める
+  （`LlmSendGuardUnavailableError`）。相対パス・`file:` / `dir:`・`${config_root}` は
+  起動時に拒否する。未設定なら従来どおり送る
+
+- MongoDB に書くログで、例外付きのレコード（`logger.exception` / `exc_info=True`）は
+  traceback を新しい `exception` フィールドに保存するようにした（#202）。`message` は従来と
+  同じで、例外なしのログの文書は変わらない。長い traceback は末尾（例外の種類とメッセージ）を
+  残して `MAX_EXCEPTION_TEXT_CHARS`（8000 文字）に切り詰める
+
+- `lilla_core.handlers.http_server` の `LLM_TOOLS_KEY` を、拡張が `http_routes()` で
+  載せたハンドラから LLM ツールレジストリを読むための公開名にした（#197）。
+  `request.app[LLM_TOOLS_KEY]` で読める（文字列 `"llm_tools"` では読めない）。
+  `TOOLS_KEY` / `BOT_KEY` / `ROUTE_AUTH_KEY` は従来どおり非公開
+- 観測用ダッシュボードの Home に、生存確認（ダッシュボードの応答と MongoDB への ping。
+  LLM は呼ばない）と直近 24 時間の `ERROR` / `WARNING` 件数を表示するようにした（#185）。
+  取得元はログイン必須の `GET /api/dashboard/status` で、ログの本文は返さない。
+  MongoDB に届かなくても Home は落ちず、該当の項目だけが失敗表示になる
+- `task_scheduled_llm` の YAML に任意キー `max_tool_call_iterations` を追加した（#184）。
+  そのタスクだけツール呼び出しの往復上限を上書きできる（正の整数。省略時は従来どおり
+  `llm.max_tool_call_iterations`）。整数以外・bool・1 未満は起動時に失敗する
+- `run_conversation` に任意引数 `max_tool_call_iterations` を追加した。`None`（既定）なら
+  従来どおり `llm.max_tool_call_iterations` を使う
+
+### Changed
+
+- **BREAKING**: `run_conversation` の `tool_call_notifier` は、整形済みの文字列ではなく
+  `(tool_name, depth)` を受け取るコールバック（`Callable[[str, int], Awaitable[None]]`）に
+  なった（#200）。depth は直接呼び出しが 0 で、ネストするたびに 1 増える。あわせて
+  `client_type` が `discord` 以外でも、notifier を渡せばツール呼び出しが通知されるように
+  した（渡さなければ従来どおり通知しない）。Discord の `-# 🔧 {tool_name}` 行とネスト時の
+  インデントは Discord 側（`handlers/message_handler.py` の `format_tool_call_line`）で
+  組み立てるため、Discord の表示は変わらない
+- **BREAKING**: 引数なしの `!model` は上書きを解除しなくなった（#186）。状態を変えずに、
+  `llm.providers` に定義済みのプロバイダー一覧と今有効なモデル（上書きが無ければ
+  `llm.default`）を返す。上書きの解除は `!model reset` で行い、解除後は従来どおり
+  `llm.default` に戻る
+  - `reset` は予約語になり、`llm.providers` のキーに使うと起動時に失敗する
+  - 未定義の名前を指定したときに状態を変えず一覧を返す挙動・切り替えが効く範囲は変わらない
+- **BREAKING**: 通常会話で LLM に見せるツールの許可リストを、名前付きツールセット
+  `tools.sets` の `main` セットに置き換えた（#189）。`tools.main_available_tools` は廃止し、
+  残っていると起動時に失敗する。中身を `tools.sets.main` へ移すこと
+  - `main` が未設定（`tools.sets` が無い・`sets.main` が無い・`main: []`）なら、通常会話は
+    **ツールなし** になった（以前の `main_available_tools` 未設定はロード済みの全ツールだった）。
+    `$main` の展開結果も空になる。通常会話でツールを使うには `tools.sets.main` に stem を並べること
+  - `main` 以外のセット名は自由（半角英数字と `-` `_` のみ。大文字小文字は区別）。
+    空文字や `$` などを含む名前は起動時に失敗する
+  - セットの要素はツール YAML の stem か、別セットへの `$` + セット名の参照。スケジュール LLM や
+    `llm_expert` の `available_tools` からも `$main` と同じ形で `$health` のように参照できる
+  - 展開は出現順・重複は先勝ち（LLM に渡す並びは従来どおりロード順）。参照の循環・未知のセット名・
+    ロード済みでないツール名は、どこからも参照されていないセットも含めて起動時に失敗する
+    （`lilla_core.loaders.llm_tool_loader.validate_tool_sets()`）
+  - 利用側アプリケーションは `config.example/lilla.yaml` の `tools:` 節も更新すること
+
+- MongoDB の非同期ドライバーを deprecated になった Motor から PyMongo Async
+  （`pymongo.AsyncMongoClient`）へ移行した（#3）。依存は `motor==3.7.0` を外して
+  `pymongo==4.18.2` に固定した。利用側アプリケーションも `motor` を外し、同じ `pymongo` の版に揃えること
+  - クライアントの共通ファクトリ `lilla_core.repository.motor_client.create_motor_client` を
+    `lilla_core.repository.mongo_client.create_mongo_client` に改名した。旧名の別名は残さないため、
+    旧名を import している拡張・ホストは新名へ書き換えること。戻り値は `AsyncMongoClient`
+    （`tz_aware=True`・プロセス内で 1 インスタンス共有は従来どおり）
+  - 戻り値のコレクションを直接使う側は、`aggregate()` が Motor と違ってコルーチンになった点に
+    注意すること（`cursor = await collection.aggregate(pipeline)`）。それ以外の
+    `find` / `to_list` / `insert_one` / `update_one` / `find_one_and_update` などは書き方を変えずに使える
+  - クライアントはスレッドセーフではなく、最初に使ったイベントループに結び付く。
+    別スレッドへ渡さないこと
+  - `config.example/logging.yaml` から `motor` ロガーの設定を外した（手元の `logging.yaml` に
+    残っていても害は無い）
+- 依存を更新した（`==` 固定は維持。Motor は据え置き）: aiohttp 3.11.14 → 3.14.3、
+  discord.py 2.4.0 → 2.7.1、pydantic 2.11.1 → 2.13.5、pydantic-settings 2.8.1 → 2.15.0、
+  tiktoken 0.9.0 → 0.14.0。利用側アプリケーションも同じ版に揃えること
+- プロキシ認証を aiohttp 3.14 で非推奨になった `proxy_auth` / `BasicAuth` から、
+  `Proxy-Authorization` ヘッダー（`aiohttp.encode_basic_auth(..., encoding="latin-1")`）を
+  `proxy_headers` へ渡す形に変えた（`core/http_util.py`・`services/attachment_download.py`）。
+  `services/attachment_download.py` の `resolve_proxy_settings()` の 2 番目の戻り値と
+  `download_attachment_bytes()` の 3 番目の引数が `aiohttp.BasicAuth | None` から
+  `dict[str, str] | None`（`proxy_headers`）に変わった。なお `bot.http.proxy_auth` は
+  discord.py 2.7.1 が `BasicAuth` を要求するためそのまま
+- 外部エージェントが結果を「FrontMatter だけ」と「本文なしのテキスト添付だけ」の 2 通に
+  分けて送ってきた場合も `!toolresult` の承認フローへ載せるようにした（#187）。添付だけの
+  メッセージを受けたときだけ同じチャンネルの直前 1 件を見て、同じ送信者の FrontMatter だけの
+  メッセージ（UUID の `correlation_id`・本文も添付も無い）で、その ID が pending として実在する
+  ときに限り添付の中身を BODY にする。待ち状態は持たず、条件を満たさない添付つきメッセージは無視する
+  - FrontMatter だけ（本文も添付も無い）のメッセージは、`BODY未検出` のエラー通知を出さず何もしなくなった
+  - 1 通の中に FrontMatter（または `!toolresult`）と添付がある場合、本文がある場合は従来どおり
+  - `commands/attachment_body.py` の `_is_textual_attachment` / `_get_attachments` を
+    `is_textual_attachment` / `get_attachments` として公開した
+
 ## [0.5.2] - 2026-10-03
 
 ### Added

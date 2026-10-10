@@ -58,24 +58,52 @@ class TestHandleModel:
 
         assert runtime_state.get_active_llm_name() == "deepseek-pro"
 
-    async def test_resets_to_default_without_arg(self, mock_config: MagicMock) -> None:
-        """引数なしの場合はデフォルトモデルに戻す。"""
+    async def test_lists_models_without_arg_keeping_override(self, mock_config: MagicMock) -> None:
+        """引数なしは上書きを解除せず、一覧と上書き中のモデル名を返す。"""
         runtime_state.set_active_llm_name("deepseek-pro")
         msg = _make_message()
 
         await _run(msg, "")
 
-        assert runtime_state.get_active_llm_name() is None
-        msg.reply.assert_called_once_with("モデルを ollama-gemma3 に戻しました")
+        assert runtime_state.get_active_llm_name() == "deepseek-pro"
+        reply = msg.reply.call_args[0][0]
+        assert "現在のモデル: deepseek-pro" in reply
+        assert "利用可能なモデル: deepseek-pro, ollama-gemma3" in reply
 
-    async def test_resets_to_default_with_blank_arg(self, mock_config: MagicMock) -> None:
-        """空白のみの引数もリセット扱いにする。"""
+    async def test_lists_default_as_current_without_override(self, mock_config: MagicMock) -> None:
+        """上書きが無ければ現在のモデルとして `llm.default` を返し、状態は変えない。"""
+        msg = _make_message()
+
+        await _run(msg, "")
+
+        assert runtime_state.get_active_llm_name() is None
+        assert "現在のモデル: ollama-gemma3" in msg.reply.call_args[0][0]
+
+    async def test_blank_arg_lists_models(self, mock_config: MagicMock) -> None:
+        """空白のみの引数も引数なしと同じく一覧を返し、上書きは解除しない。"""
         runtime_state.set_active_llm_name("deepseek-pro")
         msg = _make_message()
 
         await _run(msg, "   ")
 
+        assert runtime_state.get_active_llm_name() == "deepseek-pro"
+        assert "利用可能なモデル" in msg.reply.call_args[0][0]
+
+    async def test_reset_reverts_to_default(self, mock_config: MagicMock) -> None:
+        """`reset` で上書きを解除し、戻した `llm.default` の名前を返す。"""
+        runtime_state.set_active_llm_name("deepseek-pro")
+        msg = _make_message()
+
+        await _run(msg, " reset ")
+
         assert runtime_state.get_active_llm_name() is None
+        msg.reply.assert_called_once_with("モデルを ollama-gemma3 に戻しました")
+
+    async def test_reset_keyword_is_reserved_in_config(self) -> None:
+        """解除に使う引数は設定側の予約名に含まれ、プロバイダー名と衝突しない。"""
+        from lilla_core.core.config import RESERVED_LLM_PROVIDER_NAMES
+
+        assert model_command.RESET_KEYWORD in RESERVED_LLM_PROVIDER_NAMES
 
     async def test_rejects_unknown_provider(self, mock_config: MagicMock) -> None:
         """未定義の名前を指定した場合は状態を変えずエラーを返す。"""
@@ -136,3 +164,24 @@ class TestHandleModelLocale:
         await _run(msg, "deepseek-pro")
 
         msg.reply.assert_called_once_with("Switched the model to deepseek-pro")
+
+    async def test_status_in_english_when_locale_is_en(
+        self, mock_config: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """引数なしの一覧も `ui.locale: en` なら英語のカタログで返す。"""
+        from lilla_core.core import config as config_module
+        from lilla_core.ui import messages
+
+        monkeypatch.setattr(
+            config_module,
+            "get_config",
+            lambda: SimpleNamespace(ui=SimpleNamespace(locale="en")),
+        )
+        messages.clear_cache()
+        msg = _make_message()
+
+        await _run(msg, "")
+
+        reply = msg.reply.call_args[0][0]
+        assert "Current model: ollama-gemma3" in reply
+        assert "Available models: deepseek-pro, ollama-gemma3" in reply

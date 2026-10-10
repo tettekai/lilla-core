@@ -13,7 +13,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from pymongo.errors import ServerSelectionTimeoutError
 
-from lilla_core.log_handler import SERVER_SELECTION_TIMEOUT_MS, MongoDBHandler
+from lilla_core.log_handler import (
+    MAX_EXCEPTION_TEXT_CHARS,
+    SERVER_SELECTION_TIMEOUT_MS,
+    MongoDBHandler,
+)
 
 # MongoClient は lilla_core.log_handler の名前空間で差し替える（実 Mongo へは接続しない）
 _mock_collection = MagicMock()
@@ -176,8 +180,72 @@ class TestMongoDBHandlerEmit:
         assert doc["message"] == "test message"
 
 
+class TestMongoDBHandlerException:
+    """例外付きレコードの `exception` フィールドのテスト。"""
+
+    @staticmethod
+    def _record_with_exception(msg: str, exc: Exception) -> logging.LogRecord:
+        """exc を送出・捕捉して exc_info 付きのレコードを作る。"""
+        try:
+            raise exc
+        except Exception:
+            exc_info = sys.exc_info()
+        return logging.LogRecord(
+            name="myapp", level=logging.ERROR, pathname="", lineno=0,
+            msg=msg, args=(), exc_info=exc_info,
+        )
+
+    def test_exc_info_is_saved_as_exception_field(self):
+        """exc_info 付きのレコードは message を変えず、traceback を exception に保存すること。"""
+        handler = _make_handler()
+        record = self._record_with_exception("タスク作成中にエラー", ValueError("status=400 body=bad"))
+        handler.emit(record)
+        doc = _mock_collection.insert_one.call_args[0][0]
+        assert doc["message"] == "タスク作成中にエラー"
+        assert "Traceback (most recent call last)" in doc["exception"]
+        assert "ValueError: status=400 body=bad" in doc["exception"]
+
+    def test_preformatted_exc_text_is_used(self):
+        """exc_info が無くても exc_text があればそれを保存すること（QueueHandler 経由の形）。"""
+        handler = _make_handler()
+        record = logging.LogRecord(
+            name="myapp", level=logging.ERROR, pathname="", lineno=0,
+            msg="failed", args=(), exc_info=None,
+        )
+        record.exc_text = "Traceback...\nRuntimeError: boom"
+        handler.emit(record)
+        doc = _mock_collection.insert_one.call_args[0][0]
+        assert doc["exception"] == "Traceback...\nRuntimeError: boom"
+
+    def test_long_exception_text_keeps_tail(self):
+        """上限を超える例外テキストは先頭を切り詰め、例外の種類とメッセージが載る末尾を残すこと。"""
+        handler = _make_handler()
+        record = logging.LogRecord(
+            name="myapp", level=logging.ERROR, pathname="", lineno=0,
+            msg="failed", args=(), exc_info=None,
+        )
+        record.exc_text = "x" * (MAX_EXCEPTION_TEXT_CHARS * 2) + "\nKeyError: 'id'"
+        handler.emit(record)
+        doc = _mock_collection.insert_one.call_args[0][0]
+        assert doc["exception"].startswith("...[truncated ")
+        assert doc["exception"].endswith("KeyError: 'id'")
+        assert len(doc["exception"]) < MAX_EXCEPTION_TEXT_CHARS + 50
+
+    def test_no_exception_keeps_document_shape(self):
+        """例外なしのレコードは従来どおり exception フィールドを持たないこと。"""
+        handler = _make_handler()
+        record = logging.LogRecord(
+            name="myapp", level=logging.ERROR, pathname="", lineno=0,
+            msg="HTTP error 500 POST https://example.com", args=(), exc_info=None,
+        )
+        handler.emit(record)
+        doc = _mock_collection.insert_one.call_args[0][0]
+        assert set(doc) == {"asctime", "levelname", "message", "created_at", "expires_at"}
+        assert doc["message"] == "HTTP error 500 POST https://example.com"
+
+
 class TestMongoDBHandlerLoopGuard:
-    """pymongo / motor ログによる再帰呼び出し防止のテスト。"""
+    """pymongo ログによる再帰呼び出し防止のテスト。"""
 
     def test_pymongo_log_is_ignored(self):
         """pymongo から始まるロガーのレコードは無視されること。"""
@@ -195,24 +263,8 @@ class TestMongoDBHandlerLoopGuard:
         handler.emit(record)
         _mock_collection.insert_one.assert_not_called()
 
-    def test_motor_log_is_ignored(self):
-        """motor から始まるロガーのレコードは無視されること。"""
-        handler = _make_handler()
-        _mock_collection.reset_mock()
-        record = logging.LogRecord(
-            name="motor.core",
-            level=logging.DEBUG,
-            pathname="",
-            lineno=0,
-            msg="motor internal",
-            args=(),
-            exc_info=None,
-        )
-        handler.emit(record)
-        _mock_collection.insert_one.assert_not_called()
-
     def test_other_logger_is_not_ignored(self):
-        """pymongo / motor 以外のロガーは無視されないこと。"""
+        """pymongo 以外のロガーは無視されないこと。"""
         handler = _make_handler()
         _mock_collection.reset_mock()
         record = logging.LogRecord(
