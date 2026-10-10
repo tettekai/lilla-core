@@ -72,6 +72,19 @@ class LlmProviderConfig(BaseModel):
     # `async def resolve` の待ち時間の上限（秒）。超えたら `fallback` へ落とす
     timeout_seconds: float = 10.0
 
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_resolver_prompt(cls, data: Any) -> Any:
+        """resolver エントリの `prompt` を型の検証より前に捨てる。
+
+        resolver は送信しないため追記の持ち主にせず、書かれていても起動を落とさない。
+        `SourceSpec` の型検証より前に取り除くことで、文字列・文字列の列以外
+        （`prompt: 123` やマッピングなど）が書かれていても無視できるようにする。
+        """
+        if isinstance(data, dict) and data.get("type") == "resolver" and "prompt" in data:
+            data = {key: value for key, value in data.items() if key != "prompt"}
+        return data
+
     @model_validator(mode="after")
     def _validate_fields_for_type(self) -> "LlmProviderConfig":
         """`type` ごとに必須・不可の項目が揃っていることを検証する。

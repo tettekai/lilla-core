@@ -74,6 +74,6 @@ appended to `instructions`.
 ## On a resolver entry
 
 Writing `prompt` on a `type: resolver` entry does not fail startup; it is **ignored**
-(its format is not checked either). A resolver never sends anything to an LLM, so it
+(neither its type nor its format is checked). A resolver never sends anything to an LLM, so it
 does not own an addition. To add a note on resolver-routed turns, set `prompt` on each
 concrete provider entry the resolver can pick.

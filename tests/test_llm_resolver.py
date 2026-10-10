@@ -234,6 +234,33 @@ class TestProviderPromptConfig:
         cfg = config_mod.AppConfig()
         assert cfg.llm.providers["router"].type == "resolver"
 
+    @pytest.mark.parametrize(
+        "prompt_yaml",
+        ["      prompt: 123\n", "      prompt:\n        a: b\n", "      prompt: [1, {x: y}]\n"],
+    )
+    def test_resolver_prompt_of_invalid_type_is_ignored(self, modules, config_root, prompt_yaml):
+        """resolver に文字列・文字列の列以外の `prompt` を書いても起動は落ちず、値は捨てる。"""
+        config_mod, _ = modules
+        _write_yaml(config_root, more=prompt_yaml)
+        _write_script(config_root, "def resolve(ctx):\n    return None\n")
+        cfg = config_mod.AppConfig()
+        assert cfg.llm.providers["router"].type == "resolver"
+        assert cfg.llm.providers["router"].prompt is None
+
+    def test_resolver_prompt_of_invalid_type_is_ignored_in_model(self, modules):
+        """モデルを直接組み立てた場合も、resolver の不正な型の `prompt` は無視される。"""
+        config_mod, _ = modules
+        provider = config_mod.LlmProviderConfig(
+            type="resolver", script="r.py", fallback="low", prompt={"a": 1}
+        )
+        assert provider.prompt is None
+
+    def test_concrete_provider_rejects_invalid_prompt_type(self, modules):
+        """具体プロバイダーでは文字列・文字列の列以外の `prompt` は従来どおり落ちる。"""
+        config_mod, _ = modules
+        with pytest.raises(ValidationError, match="prompt"):
+            config_mod.LlmProviderConfig(type="ollama", url="u", model="m", prompt=123)
+
     def test_prompt_in_yaml_is_loaded(self, modules, config_root):
         config_mod, _ = modules
         (config_root / "lilla.yaml").write_text(
