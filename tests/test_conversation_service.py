@@ -262,6 +262,10 @@ class TestLlmResolverPerToolCall:
         assert calls[2]["previous_provider"] == "plain"
         used = [c.kwargs["llm_name"] for c in mock_with_tools.call_args_list]
         assert used == ["plain", "plain", "thinking"]
+        # プロバイダーごとの追記は llm_client が呼び出しごとに足すため、ここで渡すのは
+        # 毎回同じ共通のシステムプロンプト（前の呼び出しの追記が持ち越されない）
+        prompts = [c.kwargs["system_prompt"] for c in mock_with_tools.call_args_list]
+        assert prompts == ["test system prompt"] * 3
 
     async def test_returning_previous_keeps_provider(
         self, conversation_service, monkeypatch: pytest.MonkeyPatch

@@ -431,7 +431,7 @@ Discord に見せる短い文言のカタログ。表示言語は `lilla.yaml` �
 
 | ファイル | 役割 |
 |----------|------|
-| `llm_client.py` | LLM 統合インターフェース。Ollama（WakeOnLAN 対応）と OpenAI 互換プロバイダをサポート。`chat_to_llm`（非ストリーム・tools 無し）、`chat_to_llm_with_tools`（tools 付き、OpenAI 互換の `/chat/completions` 系エンドポイントを使用）、`chat_to_llm_responses`（`/responses` エンドポイント経由。xAI/Grok の組み込みツールなど、Chat Completions API では使えない機能向け）を提供する。推論モデルが最終回答を `reasoning_content` にしか出力しない場合のフォールバック処理や、リクエスト/レスポンスの秘匿情報マスキング付きログ出力も担う。resolver 型の名前が直接渡った場合（`run_conversation` を通らない呼び出し）はスクリプトを呼ばずにその `fallback` を使う（`_get_provider`） |
+| `llm_client.py` | LLM 統合インターフェース。Ollama（WakeOnLAN 対応）と OpenAI 互換プロバイダをサポート。`chat_to_llm`（非ストリーム・tools 無し）、`chat_to_llm_with_tools`（tools 付き、OpenAI 互換の `/chat/completions` 系エンドポイントを使用）、`chat_to_llm_responses`（`/responses` エンドポイント経由。xAI/Grok の組み込みツールなど、Chat Completions API では使えない機能向け）を提供する。推論モデルが最終回答を `reasoning_content` にしか出力しない場合のフォールバック処理や、リクエスト/レスポンスの秘匿情報マスキング付きログ出力も担う。resolver 型の名前が直接渡った場合（`run_conversation` を通らない呼び出し）はスクリプトを呼ばずにその `fallback` を使う（`_get_provider`）。3 関数とも、実際に送る具体プロバイダーのエントリに `prompt`（source spec。検証は `LlmProviderConfig`、相対パスの解決は `core/config.py` の `resolve_llm_provider_prompt_spec`）があれば、呼び出しのたびにディスクから読んでシステムプロンプト（Responses API なら `instructions`、`messages` に system があればその最初のもの）の末尾へ空行区切りで足す（`_load_provider_prompt` / `_ensure_system_prompt`）。resolver エントリ自身の `prompt` は使わない |
 
 ### データ永続化（リポジトリ層） (`src/lilla_core/repository/`)
 特定ドメインのデータ（外部サービスから取得したデータなど）のリポジトリはここに置かず、

@@ -59,6 +59,10 @@ class LlmProviderConfig(BaseModel):
     api_key_env: str | None = None
     # プロバイダー固有の追加パラメータ（POSTボディのトップレベルに展開される）
     extra_params: dict[str, Any] = {}
+    # 具体プロバイダーのみ。このプロバイダーへ送る回だけシステムプロンプトの末尾へ
+    # 空行区切りで足す追記の source spec（`file:` / `dir:`、`${config_root}` 展開、
+    # 相対パスは `CONFIG_ROOT` 基準）。resolver 型に書かれていても使わない（起動も落とさない）
+    prompt: SourceSpec | None = None
     # resolver タイプのみ
     # `resolve(ctx)` を定義した Python ファイルのパス（`${config_root}` 展開・
     # `file:` 接頭は任意。相対パスは `CONFIG_ROOT` 基準。`CONFIG_ROOT` 配下のみ）
@@ -75,6 +79,8 @@ class LlmProviderConfig(BaseModel):
         具体プロバイダーは `url` / `model` が必須で `script` / `fallback` を持たない。
         resolver は `script` / `fallback` が必須で、HTTP を出さないため `url` /
         `model` / `api_key_env` / `wakeup_file` / `extra_params` を持たない。
+        `prompt` は具体プロバイダーでのみ source spec の形を検証し、resolver では
+        書かれていても検証せず無視する（resolver は送信しないため追記の持ち主にしない）。
         """
         if self.type == "resolver":
             missing = [name for name in ("script", "fallback") if not getattr(self, name)]
@@ -106,7 +112,57 @@ class LlmProviderConfig(BaseModel):
                 raise ValueError(
                     f"llm provider of type '{self.type}' must not set: {', '.join(unexpected)}"
                 )
+            if self.prompt is not None:
+                _validate_provider_prompt_spec(self.prompt)
         return self
+
+
+def _validate_provider_prompt_spec(spec: SourceSpec) -> None:
+    """具体プロバイダーの `prompt` が `file:` / `dir:` 付きの source spec か検証する。
+
+    本文の直書きや接頭辞の無いパスは、読み込み時ではなく起動時に落とす。
+
+    Raises:
+        ValueError: 空の指定、または `file:` / `dir:` で始まらない要素がある場合。
+    """
+    specs = [spec] if isinstance(spec, str) else list(spec)
+    if not specs:
+        raise ValueError("llm provider prompt must not be empty")
+    for item in specs:
+        stripped = item.strip()
+        for prefix in ("file:", "dir:"):
+            if stripped.startswith(prefix) and stripped[len(prefix):].strip():
+                break
+        else:
+            raise ValueError(
+                f"llm provider prompt must be a source spec starting with file: or dir: : {item!r}"
+            )
+
+
+def resolve_llm_provider_prompt_spec(spec: SourceSpec, config_root: str | Path) -> list[str]:
+    """具体プロバイダーの `prompt` を、相対パスを `config_root` 基準にした spec 列へ直す。
+
+    `${config_root}` を展開したうえで、`file:` / `dir:` の後ろが相対パスなら
+    `config_root` を前に付ける（`load_text_resources` は相対パスをカレントディレクトリ
+    基準で読むため、ここで揃えてから渡す）。
+
+    Args:
+        spec: `lilla.yaml` に書かれた `prompt` の値（文字列かその列）。
+        config_root: `${config_root}` 展開と相対パスの基準に使うディレクトリ。
+
+    Returns:
+        `load_text_resources` にそのまま渡せる spec のリスト。
+    """
+    specs = [spec] if isinstance(spec, str) else list(spec)
+    resolved: list[str] = []
+    for item in specs:
+        expanded = item.replace("${config_root}", str(config_root)).strip()
+        prefix = "file:" if expanded.startswith("file:") else "dir:"
+        path = Path(expanded[len(prefix):].strip())
+        if not path.is_absolute():
+            path = Path(config_root) / path
+        resolved.append(f"{prefix}{path}")
+    return resolved
 
 
 class DiscordChannelConfig(BaseModel):
