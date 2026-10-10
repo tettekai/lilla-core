@@ -719,3 +719,52 @@ class TestLlmSendBlocklistPath:
         from pydantic import ValidationError
         with pytest.raises(ValidationError):
             self._llm(path)
+
+
+class TestLlmResponsePrefixStripPatterns:
+    """`llm.response_prefix_strip_patterns` の検証。"""
+
+    def _llm(self, **kwargs):
+        from lilla_core.core.config import LlmConfig
+        return LlmConfig(
+            default="d",
+            providers={"d": {"type": "ollama", "url": "http://x", "model": "m"}},
+            **kwargs,
+        )
+
+    def test_default_when_omitted(self) -> None:
+        from lilla_core.core.config import DEFAULT_RESPONSE_PREFIX_STRIP_PATTERNS
+        patterns = self._llm().response_prefix_strip_patterns
+        assert patterns == list(DEFAULT_RESPONSE_PREFIX_STRIP_PATTERNS)
+
+    def test_null_means_default(self) -> None:
+        from lilla_core.core.config import DEFAULT_RESPONSE_PREFIX_STRIP_PATTERNS
+        patterns = self._llm(response_prefix_strip_patterns=None).response_prefix_strip_patterns
+        assert patterns == list(DEFAULT_RESPONSE_PREFIX_STRIP_PATTERNS)
+
+    def test_empty_list_is_kept(self) -> None:
+        assert self._llm(response_prefix_strip_patterns=[]).response_prefix_strip_patterns == []
+
+    def test_accepts_custom_patterns(self) -> None:
+        patterns = [r"\(\d+\)\s*"]
+        assert self._llm(response_prefix_strip_patterns=patterns).response_prefix_strip_patterns == patterns
+
+    def test_rejects_invalid_regex(self) -> None:
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match=r"response_prefix_strip_patterns\[1\]"):
+            self._llm(response_prefix_strip_patterns=[r"\[\d+\]", "[unclosed"])
+
+    def test_invalid_regex_in_yaml_fails_at_startup(self, isolated_config_root: Path) -> None:
+        """不正な正規表現を lilla.yaml に書くと設定の読み込み（起動時）で落ちる。"""
+        from pydantic import ValidationError
+        body = _YAML_WITH_ALL_SECTIONS + "  response_prefix_strip_patterns:\n    - '[unclosed'\n"
+        _write_yaml(isolated_config_root, body)
+        with pytest.raises(ValidationError):
+            AppConfig(env={"discord_token": "dummy"}, _env_file=None)
+
+    def test_loads_single_quoted_patterns_from_yaml(self, isolated_config_root: Path) -> None:
+        """YAML のシングルクォート内のバックスラッシュは 1 つのまま正規表現に届く。"""
+        body = _YAML_WITH_ALL_SECTIONS + "  response_prefix_strip_patterns:\n    - '\\[\\d{1,2}:\\d{2}\\]\\s*'\n"
+        _write_yaml(isolated_config_root, body)
+        cfg = AppConfig(env={"discord_token": "dummy"}, _env_file=None)
+        assert cfg.llm.response_prefix_strip_patterns == [r"\[\d{1,2}:\d{2}\]\s*"]

@@ -18,7 +18,8 @@ FLAG_NO_HISTORY = "no_history"
 
 _FLAG_PATTERN = re.compile(r"^\[FLAG:([^\]]+)\]")
 
-# === タイムスタンプ除去（conversation_service からも message_splitter からも使う） ===
+# === タイムスタンプ除去（llm_resolver が使う。分割後の応答ブロックの prefix 除去は
+# message_splitter が設定の `llm.response_prefix_strip_patterns` で行う） ===
 _TIMESTAMP_PREFIX_RE = re.compile(
     r"^\[(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2} \d{2}:\d{2}\]\s*"
 )

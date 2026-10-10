@@ -151,3 +151,54 @@ class TestSplitResponse:
         """複数の本文ブロックが正しい順序で返る。"""
         text = "first\n\n===\n\nsecond\n\n~~~\n\nthird"
         assert split_response(text) == ["first", "second", "third"]
+
+
+class TestSplitResponsePrefixStrip:
+    """分割後の各ブロック先頭からの prefix 除去（`llm.response_prefix_strip_patterns`）。"""
+
+    def test_default_strips_month_name_timestamp(self) -> None:
+        """設定が無ければ英語月名形式のタイムスタンプが除去される。"""
+        assert split_response("[Apr 28 11:22] そうなんだ") == ["そうなんだ"]
+
+    def test_default_strips_hh_mm(self) -> None:
+        """設定が無ければ `[HH:MM]` 形式も除去される。"""
+        assert split_response("[19:14] そうなんだ…") == ["そうなんだ…"]
+        assert split_response("[9:05]そうなんだ") == ["そうなんだ"]
+
+    def test_applies_to_each_block_independently(self) -> None:
+        """分割後の各ブロックに独立して適用される。"""
+        text = "[19:14] ひとつめ\n\n[19:15] ふたつめ\n\nみっつめ"
+        assert split_response(text) == ["ひとつめ", "ふたつめ", "みっつめ"]
+
+    def test_does_not_strip_in_middle_or_end(self) -> None:
+        """文中・末尾の一致は除去しない。"""
+        assert split_response("集合は [19:14] です") == ["集合は [19:14] です"]
+        assert split_response("集合は [19:14]") == ["集合は [19:14]"]
+
+    def test_patterns_are_applied_in_order(self) -> None:
+        """パターンは順番に適用され、前のパターンの除去後の先頭に次が効く。"""
+        text = "[Apr 28 11:22] [19:14] こんにちは"
+        assert split_response(text) == ["こんにちは"]
+
+    def test_custom_pattern(self) -> None:
+        """カスタムパターンもブロック先頭から除去される（`^` は不要）。"""
+        patterns = [r"\(\d+\)\s*"]
+        assert split_response("(1) A\n\n(2) B (3)", prefix_patterns=patterns) == ["A", "B (3)"]
+
+    def test_empty_patterns_disable_strip(self) -> None:
+        """空リストなら何も除去しない。"""
+        assert split_response("[19:14] そうなんだ", prefix_patterns=[]) == ["[19:14] そうなんだ"]
+
+    def test_block_that_becomes_empty_is_dropped(self) -> None:
+        """除去の結果が空になったブロックは捨てる。"""
+        assert split_response("[19:14]\n\nこんにちは") == ["こんにちは"]
+
+    def test_reads_patterns_from_config(self, monkeypatch) -> None:
+        """引数を省略すると `get_config().llm.response_prefix_strip_patterns` を使う。"""
+        from types import SimpleNamespace
+
+        from lilla_core.services import message_splitter
+
+        cfg = SimpleNamespace(llm=SimpleNamespace(response_prefix_strip_patterns=[r"<<\w+>>\s*"]))
+        monkeypatch.setattr(message_splitter, "get_config", lambda: cfg)
+        assert message_splitter.split_response("<<bot>> やあ\n\n[19:14] ね") == ["やあ", "[19:14] ね"]

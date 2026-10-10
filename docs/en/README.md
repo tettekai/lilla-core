@@ -21,6 +21,7 @@ The index of the lilla-core user documentation.
 - [Choosing the LLM provider per turn](llm-resolver.md) — `type: resolver` in `llm.providers`
 - [Per-provider system prompt additions](llm-provider-prompt.md) — `llm.providers.<key>.prompt`
 - [LLM send blocklist](llm-send-guard.md) — `llm.send_blocklist_path`
+- [Stripping prefixes from LLM responses](llm-response-prefix.md) — `llm.response_prefix_strip_patterns`
 - [The observability dashboard](dashboard.md) — including the exposure warning
 - [The shared HTTP server](http-server.md) — `http:`, Bearer tokens, adding routes from extensions
 - [Tool contracts](tools.md) — LLM tools, task tools, built-in tools

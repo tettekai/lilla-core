@@ -9,6 +9,12 @@
 
 ### Added
 
+- `llm.response_prefix_strip_patterns`（正規表現のリスト）を追加した（#217）。Discord の通常会話で
+  LLM 応答を分割した各ブロックの先頭から、書いた順にパターンを除去する（先頭にだけマッチさせるため
+  `^` は不要。文中・末尾の一致は残す。除去して空になったブロックは送らない）。省略時の既定は従来の
+  英語月名形式 `[Apr 28 11:22]` に加えて `[HH:MM]` 形式で、モデルが自発的に付けた `[19:14] ` のような
+  prefix も消えるようになった。空リストなら除去しない。不正な正規表現は起動時に失敗する
+
 - PR がマージされたとき、外部の Webhook へ要点を JSON で POST する GitHub Actions workflow
   `notify-grok-bot-merged.yml` を追加した（#213）。対象は `develop` 向け（主）と `main` 向けの
   マージで、マージされずに閉じた PR・fork からの PR・`release-prep` PR・`develop` ↔ `main` の
