@@ -7,6 +7,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- PR がマージされたとき、外部の Webhook へ要点を JSON で POST する GitHub Actions workflow
+  `notify-grok-bot-merged.yml` を追加した（#213）。対象は `develop` 向け（主）と `main` 向けの
+  マージで、マージされずに閉じた PR・fork からの PR・`release-prep` PR・`develop` ↔ `main` の
+  同期 / リリース PR（リリース通知は `release.yml` が担当）は通知しない。送り先と認証は
+  レビュー用・リリース用とは別の Secrets `GROK_BOT_CORE_MERGED_WEBHOOK_URL` /
+  `GROK_BOT_CORE_MERGED_WEBHOOK_AUTHORIZATION` で、どちらか一方でも未設定なら警告を出して
+  スキップする（ジョブは失敗しない）。送信の失敗はジョブを失敗させる。payload は
+  `action`（`"merged"` 固定）/ `owner` / `repo` / `repository` / `pr_number` / `title` / `url` /
+  `base` / `head` / `author` / `merged_by` / `merged_at` / `merge_commit_sha` / `labels`（ラベル名の
+  配列）/ `body`（無ければ空文字。4000 文字で切り詰め）/ `body_truncated`（切り詰めたら `true`）
+
 ## [0.6.0] - 2026-10-10
 
 ### Added
