@@ -1,0 +1,113 @@
+name: Notify Grok Bot merged
+
+# PR がマージされたら、外部の自動化（Grok Bot）へ Webhook でマージされた PR の要点を
+# JSON で通知する。GitHub 標準の Webhook は Authorization ヘッダーを付けられないため、
+# notify-grok-bot-review.yml / release.yml と同じく Actions から POST する。
+#
+# 対象: base が develop（主な対象）または main の PR が「マージされた」とき。
+# 次のものは通知しない。
+#   - マージされずに閉じた PR
+#   - fork からの PR（Secrets が渡されないため）
+#   - release-prep PR（release-prep ラベル、または head が release-prep/ で始まる。
+#     notify-grok-bot-review.yml と同じ除外）
+#   - develop -> main / main -> develop の同期・リリース PR（develop -> main の
+#     リリース PR は release.yml が専用の通知を送るため、二重通知にしない）
+# この workflow が動くのは、このファイルがその base ブランチに載ってから
+# （main 向けは次のリリースで main に入ってから効く）。
+#
+# Webhook の URL / Authorization（secrets.GROK_BOT_CORE_MERGED_WEBHOOK_URL /
+# secrets.GROK_BOT_CORE_MERGED_WEBHOOK_AUTHORIZATION）はレビュー用・リリース用とは
+# 別のシークレットに分ける。どちらか一方でも未設定なら WARNING ログを出して通知を
+# スキップし、ジョブは失敗させない。Dependabot 起点のイベントは Actions の Secrets を
+# 読めないため、Dependabot の PR のマージも通知するなら Dependabot の Secrets にも
+# 同名で登録する（未登録ならスキップになるだけ）。送信の失敗（4xx / 5xx・到達不能）は
+# ジョブを失敗させる（マージ自体には影響しない）。
+#
+# Webhook のペイロード契約（JSON、いずれも必須）:
+#   action            "merged" 固定
+#   owner             リポジトリオーナー（github.repository_owner）
+#   repo              リポジトリ名（github.event.repository.name）
+#   repository        "owner/repo" 形式（github.repository）
+#   pr_number         PR 番号（数値）
+#   title             PR タイトル
+#   url               PR の URL（html_url）
+#   base              マージ先ブランチ名（"develop" / "main"）
+#   head              マージ元ブランチ名
+#   author            PR 作成者のログイン
+#   merged_by         マージした人のログイン（取得できなければ空文字）
+#   merged_at         マージ時刻（ISO 8601）
+#   merge_commit_sha  マージコミットの SHA
+#   labels            PR のラベル名の配列
+#   body              PR 本文（無ければ空文字。4000 文字を超える分は切り詰める）
+#   body_truncated    body を切り詰めたとき true
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  notify:
+    if: >
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event.pull_request.base.ref == 'develop' ||
+       github.event.pull_request.base.ref == 'main') &&
+      !(github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.ref == 'develop') &&
+      !(github.event.pull_request.base.ref == 'develop' && github.event.pull_request.head.ref == 'main') &&
+      !contains(github.event.pull_request.labels.*.name, 'release-prep') &&
+      !startsWith(github.event.pull_request.head.ref, 'release-prep/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: POST merged payload to Grok Bot
+        env:
+          WEBHOOK_URL: ${{ secrets.GROK_BOT_CORE_MERGED_WEBHOOK_URL }}
+          WEBHOOK_AUTHORIZATION: ${{ secrets.GROK_BOT_CORE_MERGED_WEBHOOK_AUTHORIZATION }}
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_BASE: ${{ github.event.pull_request.base.ref }}
+          PR_HEAD: ${{ github.event.pull_request.head.ref }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
+          PR_MERGED_AT: ${{ github.event.pull_request.merged_at }}
+          PR_MERGE_COMMIT_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BODY_MAX_CHARS: "4000"
+        run: |
+          set -euo pipefail
+          if [ -z "${WEBHOOK_URL}" ] || [ -z "${WEBHOOK_AUTHORIZATION}" ]; then
+            echo "::warning::GROK_BOT_CORE_MERGED_WEBHOOK_URL or GROK_BOT_CORE_MERGED_WEBHOOK_AUTHORIZATION not set; skipping notification"
+            exit 0
+          fi
+
+          jq -n \
+            --arg owner "${OWNER}" \
+            --arg repo "${REPO_NAME}" \
+            --arg repository "${REPO}" \
+            --argjson pr_number "${PR_NUMBER}" \
+            --arg title "${PR_TITLE}" \
+            --arg url "${PR_URL}" \
+            --arg base "${PR_BASE}" \
+            --arg head "${PR_HEAD}" \
+            --arg author "${PR_AUTHOR}" \
+            --arg merged_by "${PR_MERGED_BY}" \
+            --arg merged_at "${PR_MERGED_AT}" \
+            --arg merge_commit_sha "${PR_MERGE_COMMIT_SHA}" \
+            --argjson labels "${PR_LABELS:-[]}" \
+            --arg body "${PR_BODY}" \
+            --argjson max "${BODY_MAX_CHARS}" \
+            '{action:"merged", owner:$owner, repo:$repo, repository:$repository, pr_number:$pr_number, title:$title, url:$url, base:$base, head:$head, author:$author, merged_by:$merged_by, merged_at:$merged_at, merge_commit_sha:$merge_commit_sha, labels:$labels, body:($body[0:$max]), body_truncated:(($body | length) > $max)}' \
+            > "${RUNNER_TEMP}/event.json"
+
+          curl -fsS -X POST "${WEBHOOK_URL}" \
+            --max-time 30 \
+            --retry 2 \
+            -H "Authorization: ${WEBHOOK_AUTHORIZATION}" \
+            -H "Content-Type: application/json" \
+            --data-binary @"${RUNNER_TEMP}/event.json"
