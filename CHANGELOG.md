@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-10
+
 ### Added
 
 - `llm.providers` の具体プロバイダー（`ollama` / `openai_compat`）に任意の `prompt` を追加した
