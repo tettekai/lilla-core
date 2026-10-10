@@ -48,9 +48,11 @@ argument changes nothing and only lists the defined keys and the key in effect.
 `reset` is reserved and cannot be used as a key in `llm.providers` (startup fails
 if it is).
 
-The expansion happens once inside `run_conversation` (after the history is built,
-before the LLM is called), so Discord, extension clients and tasks all follow the
-same order. When a resolver name reaches `chat_to_llm` without going through
+The expansion happens inside `run_conversation`, right before every LLM call (both
+the first call after the history is built and each follow-up call after tools have
+run), so Discord, extension clients and tasks all follow the same order. When the
+key is a concrete provider (an explicit `llm_name` or a `!model` pin), the script is
+not called, even during the tool loop. When a resolver name reaches `chat_to_llm` without going through
 `run_conversation` (`!selftest`, or a task that calls `chat_to_llm` directly),
 there is no context to pass, so the script is not called and `fallback` is used.
 `ConversationContext.llm_name` in conversation start hooks carries the key before
@@ -108,14 +110,37 @@ Adding fields is non-breaking.
 | `channel_name` | The `name` from `discord.channels` if the channel is registered |
 | `user_text` | Text of the latest user message (timestamp removed, truncated to 500 characters) |
 | `has_image` | `True` only when this turn's user message has an image attachment passed to the LLM as an image part |
+| `called_tool_names` | Tuple of tool names already called in this turn (in order, duplicates kept). Empty on the first call |
+| `previous_provider` | The concrete provider chosen for the previous call in this turn. `None` on the first call |
 
-The full system prompt, tool results and image data (data URLs, bytes) are never
+The full system prompt, tool arguments and results, and image data (data URLs, bytes) are never
 passed. An image in an earlier turn of the history does not make `has_image`
 `True`. Which key to choose for images is up to the script; the core keeps no
 per-provider vision table.
 
 `user_text` is the user's own words. If you pass it to a judge model, frame it as
 data rather than instructions (prompt-injection hygiene).
+
+## Switching during the tool loop
+
+`resolve` is called again before each LLM call that follows tool calls. To keep the
+same provider, return `ctx.previous_provider` as is; return a different key only
+when you want to switch (`None` means `fallback`, not "keep the previous one"). The
+core remembers the previous choice, so the script does not need to keep state.
+
+```python
+def resolve(ctx):
+    # Switch to the thinking-mode provider only after a write tool has been called
+    if "calendar_create" in ctx.called_tool_names:
+        return "deepseek-flash-high"
+    return ctx.previous_provider or "deepseek-flash-low"
+```
+
+For heavy work such as calling a judge model, skip it and return the previous name
+when `ctx.previous_provider` is set, so the judgement does not run after every tool.
+Whether a provider accepts a mid-turn switch (for example, an error when thinking
+mode changes) is not handled by the core; align it in your script and provider
+settings.
 
 ## Template
 

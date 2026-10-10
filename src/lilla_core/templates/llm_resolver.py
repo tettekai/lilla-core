@@ -27,6 +27,9 @@ llm:
   `None` を返すとそのエントリの `fallback` が使われる
 - 未知の名前・別の resolver 名・例外・タイムアウト（`timeout_seconds`。既定 10 秒）も
   警告ログを出して `fallback` に落ちる。会話は止まらない
+- ツールループ中は LLM を呼ぶたびに呼ばれる。`ctx.called_tool_names` にその回しで
+  呼んだツール名、`ctx.previous_provider` に前回選んだ名前が載る（最初は空 / `None`）。
+  同じを続けるなら `ctx.previous_provider` を返す（`None` は `fallback` になる）
 """
 from __future__ import annotations
 
@@ -45,7 +48,8 @@ def resolve(ctx) -> str | None:
     Args:
         ctx: `LlmResolveContext`。`client_type` / `discord_channel_id` /
             `channel_name` / `user_text` / `has_image` / `provider_names` /
-            `resolver_name` / `fallback` を持つ。
+            `resolver_name` / `fallback` / `called_tool_names` /
+            `previous_provider` を持つ。
     """
     # 画像添付があるときは視覚対応のキーへ寄せる
     if ctx.has_image and VISION_PROVIDER in ctx.provider_names:
@@ -58,6 +62,8 @@ def resolve(ctx) -> str | None:
     # 判定モデルに発話の性質を尋ねて選ぶこともできる（任意）。例:
     #
     #   async def resolve(ctx):
+    #       if ctx.previous_provider is not None:
+    #           return ctx.previous_provider  # ツールループの続きでは判定し直さない
     #       from lilla_core.api.llm_client import chat_to_llm
     #       answer = await chat_to_llm(
     #           f"Reply with 'high' or 'low' only. How hard is this?\n{ctx.user_text}",

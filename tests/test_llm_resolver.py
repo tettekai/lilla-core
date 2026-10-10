@@ -350,6 +350,46 @@ class TestResolveLlmName:
         # 画像本体は文脈に載らない
         assert "base64" not in repr(ctx)
 
+    async def test_tool_loop_fields_default(self, modules, config_root):
+        """最初の呼び出しでは呼んだツール名は空、前回のプロバイダー名は `None`。"""
+        _, resolver_mod = modules
+        cfg = self._cfg(
+            modules,
+            config_root,
+            "captured = []\ndef resolve(ctx):\n    captured.append(ctx)\n    return None\n",
+        )
+        await resolver_mod.resolve_llm_name(None, client_type="discord", config=cfg)
+        func = next(iter(resolver_mod._resolve_functions.values()))
+        ctx = func.__globals__["captured"][0]
+        assert ctx.called_tool_names == ()
+        assert ctx.previous_provider is None
+
+    async def test_tool_loop_fields_passed(self, modules, config_root):
+        """呼んだツール名と前回のプロバイダー名が文脈に載り、前回の名前を返せば続く。"""
+        _, resolver_mod = modules
+        cfg = self._cfg(
+            modules,
+            config_root,
+            "captured = []\n"
+            "def resolve(ctx):\n"
+            "    captured.append(ctx)\n"
+            "    return 'high' if 'write' in ctx.called_tool_names else ctx.previous_provider\n",
+        )
+        same = await resolver_mod.resolve_llm_name(
+            None, client_type="discord", called_tool_names=["read", "read"],
+            previous_provider="low", config=cfg,
+        )
+        switched = await resolver_mod.resolve_llm_name(
+            None, client_type="discord", called_tool_names=("read", "write"),
+            previous_provider="low", config=cfg,
+        )
+        assert same == "low"
+        assert switched == "high"
+        func = next(iter(resolver_mod._resolve_functions.values()))
+        ctx = func.__globals__["captured"][0]
+        assert ctx.called_tool_names == ("read", "read")
+        assert ctx.previous_provider == "low"
+
     async def test_unregistered_channel_has_no_name(self, modules, config_root):
         """未登録チャンネルでは `channel_name` は `None`。"""
         _, resolver_mod = modules
