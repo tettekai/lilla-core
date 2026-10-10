@@ -191,6 +191,130 @@ class TestLlmResolverExpansion:
         assert mock_resolve.call_args.kwargs["has_image"] is False
 
 
+class TestLlmResolverPerToolCall:
+    """ツールループ内の各 LLM 呼び出しの前に resolver を再判定すること。"""
+
+    @staticmethod
+    def _tool_response(*names: str) -> dict:
+        """指定したツールを呼ぶ LLM 応答を作る。"""
+        calls = [
+            {"id": f"c{i}", "function": {"name": n, "arguments": {"secret_arg": "ARG-VALUE"}}}
+            for i, n in enumerate(names)
+        ]
+        return {
+            "content": None, "tool_calls": calls, "finish_reason": "tool_calls",
+            "raw_message": {"role": "assistant", "content": None, "tool_calls": calls},
+        }
+
+    @staticmethod
+    def _final_response() -> dict:
+        """ツールを呼ばない最終応答を作る。"""
+        return {
+            "content": "done", "tool_calls": None, "finish_reason": "stop",
+            "raw_message": {"role": "assistant", "content": "done"},
+        }
+
+    def _setup(self, conversation_service, monkeypatch, responses, choose):
+        """LLM 応答の列と、resolver キーのときだけ `choose(kwargs)` を呼ぶ偽の展開を仕込む。"""
+        mock_with_tools = AsyncMock(side_effect=responses)
+        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_with_tools)
+        script = MagicMock(side_effect=choose)
+
+        async def fake_resolve(name, **kwargs):
+            """`router` だけを resolver とみなし、それ以外はそのまま返す。"""
+            if name != "router":
+                return name
+            return script(kwargs)
+
+        monkeypatch.setattr(conversation_service, "resolve_llm_name", fake_resolve)
+        monkeypatch.setattr(
+            conversation_service,
+            "execute_tool_call",
+            AsyncMock(return_value={
+                "success": True, "tool_name": "x", "memory_entry": "RESULT-BODY", "data": None, "error": None,
+            }),
+        )
+        return mock_with_tools, script
+
+    async def test_resolve_called_before_each_llm_call(
+        self, conversation_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ツール 1 回ごとに再判定し、呼んだツール名と前回の選択が渡る。"""
+        mock_with_tools, script = self._setup(
+            conversation_service,
+            monkeypatch,
+            [self._tool_response("read_a"), self._tool_response("write_b", "read_a"), self._final_response()],
+            lambda kw: "thinking" if "write_b" in kw["called_tool_names"] else "plain",
+        )
+
+        reply = await conversation_service.run_conversation(
+            {"read_a": {}, "write_b": {}}, llm_name="router"
+        )
+
+        assert reply == "done"
+        assert script.call_count == 3
+        calls = [c.args[0] for c in script.call_args_list]
+        assert calls[0]["called_tool_names"] == ()
+        assert calls[0]["previous_provider"] is None
+        assert calls[1]["called_tool_names"] == ("read_a",)
+        assert calls[1]["previous_provider"] == "plain"
+        assert calls[2]["called_tool_names"] == ("read_a", "write_b", "read_a")
+        assert calls[2]["previous_provider"] == "plain"
+        used = [c.kwargs["llm_name"] for c in mock_with_tools.call_args_list]
+        assert used == ["plain", "plain", "thinking"]
+
+    async def test_returning_previous_keeps_provider(
+        self, conversation_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """スクリプトが前回の名前を返せば同じプロバイダーが使われ続ける。"""
+        mock_with_tools, _ = self._setup(
+            conversation_service,
+            monkeypatch,
+            [self._tool_response("t"), self._tool_response("t"), self._final_response()],
+            lambda kw: kw["previous_provider"] or "first",
+        )
+
+        await conversation_service.run_conversation({"t": {}}, llm_name="router")
+
+        used = [c.kwargs["llm_name"] for c in mock_with_tools.call_args_list]
+        assert used == ["first", "first", "first"]
+
+    async def test_concrete_provider_never_calls_script(
+        self, conversation_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """具体プロバイダーを直接指定した回は、ツールループ中もスクリプトが呼ばれない。"""
+        mock_with_tools, script = self._setup(
+            conversation_service,
+            monkeypatch,
+            [self._tool_response("t"), self._tool_response("t"), self._final_response()],
+            lambda kw: "other",
+        )
+
+        await conversation_service.run_conversation({"t": {}}, llm_name="low")
+
+        script.assert_not_called()
+        used = [c.kwargs["llm_name"] for c in mock_with_tools.call_args_list]
+        assert used == ["low", "low", "low"]
+
+    async def test_tool_arguments_and_results_not_in_context(
+        self, conversation_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ツールの引数や結果本文は resolver の文脈に載らない。"""
+        _, script = self._setup(
+            conversation_service,
+            monkeypatch,
+            [self._tool_response("t"), self._final_response()],
+            lambda kw: "plain",
+        )
+
+        await conversation_service.run_conversation({"t": {}}, llm_name="router")
+
+        dumped = repr([c.args[0] for c in script.call_args_list])
+        assert "ARG-VALUE" not in dumped
+        assert "secret_arg" not in dumped
+        assert "RESULT-BODY" not in dumped
+
+
 # ---------------------------------------------------------------------------
 # TestRunConversation
 # ---------------------------------------------------------------------------

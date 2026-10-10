@@ -9,6 +9,17 @@
 
 ### Added
 
+- `type: resolver` の展開を、`run_conversation` のツールループ内で LLM を呼ぶたびに
+  （最初の呼び出しを含む）やり直すようにした（#207）。`LlmResolveContext` に、その回しで
+  既に呼んだツール名（出現順・重複あり。引数や結果は載せない）の `called_tool_names` と、
+  前回選んだ具体プロバイダー名の `previous_provider`（最初は `None`）を足した。同じ
+  プロバイダーを続けるにはスクリプトが `previous_provider` を返す（`None` は従来どおり
+  `fallback`）。これまで 1 回目の判定だけで足りていたスクリプトもそのまま動くが、ツールを
+  呼んだ回しでは複数回呼ばれるため、判定モデルを呼ぶような重いスクリプトは
+  `previous_provider` があれば前回の名前を返すようにするとよい。具体プロバイダーのキー
+  （明示の `llm_name` や `!model` での固定）と、`chat_to_llm` を直接呼ぶ経路は従来どおり
+  スクリプトを呼ばない
+
 - `llm.send_blocklist_path`（任意）を追加した（#204）。JSON の文字列配列ファイルの絶対パスを
   書くと、`chat_to_llm` / `chat_to_llm_with_tools` / `chat_to_llm_responses` が送る直前に
   リクエストボディ内の文字列（ヘッダーと画像の data URL は除く）を NFKC 正規化・大文字小文字を

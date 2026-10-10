@@ -162,8 +162,10 @@ async def run_conversation(
         非同期依頼ツールなど、後から同じチャンネルへ結果を返すツールが参照する。
     llm_name : str, optional
         使用する LLM プロバイダー名。None の場合はデフォルトプロバイダーを使用する。
-        決まったキーが `type: resolver` なら、履歴を組み立てたあとにスクリプトの
-        `resolve(ctx)` で具体プロバイダーへ展開する（`services/llm_resolver.py`）。
+        決まったキーが `type: resolver` なら、ツールループ内の各 LLM 呼び出しの前
+        （最初の呼び出しを含む）にスクリプトの `resolve(ctx)` で具体プロバイダーへ
+        展開する（`services/llm_resolver.py`）。その回しで既に呼んだツール名と前回
+        選んだ具体プロバイダー名を文脈に載せる。
         会話開始フックの `ConversationContext.llm_name` は展開前のキーのまま。
     inject_user_content : str | list, optional
         履歴の末尾に user メッセージとして追加する一時プロンプト。
@@ -237,18 +239,18 @@ async def run_conversation(
     if inject_user_content is not None:
         history.append({"role": "user", "content": _stamp_user_content(inject_user_content)})
 
-    # 決まったキーが resolver 型なら、ここで回しごとに具体プロバイダーへ展開する。
+    # 決まったキーが resolver 型なら、LLM を呼ぶたびに具体プロバイダーへ展開する。
     # 入口（Discord・拡張のクライアント・task）ごとに複製しないよう、ここに一本化する。
     # 画像の有無は今回 LLM へ実際に渡す入力（適用された差し替え・追加分）だけから
-    # 判断し、過去の履歴は見ない。
-    llm_name = await resolve_llm_name(
-        llm_name,
-        client_type=client_type,
-        discord_channel_id=discord_channel_id,
-        user_content=history[-1]["content"] if history and history[-1]["role"] == "user" else None,
-        has_image=(override_applied and content_has_image(override_last_user_content))
+    # 判断し、過去の履歴は見ない。具体プロバイダーのキーならスクリプトは呼ばれない。
+    llm_key = llm_name
+    resolve_kwargs = {
+        "client_type": client_type,
+        "discord_channel_id": discord_channel_id,
+        "user_content": history[-1]["content"] if history and history[-1]["role"] == "user" else None,
+        "has_image": (override_applied and content_has_image(override_last_user_content))
         or content_has_image(inject_user_content),
-    )
+    }
 
     # 省略（None）は「`main` セットを使う」。展開結果が空（`main` 未設定を含む）なら
     # ツールを渡さない。
@@ -256,7 +258,8 @@ async def run_conversation(
         allowed_tool_names = resolve_available_tools([MAIN_TOOLSET_TOKEN], llm_tools)
 
     if not llm_tools or allowed_tool_names == []:
-        reply = await chat_to_llm(history, system_prompt=system_prompt, llm_name=llm_name)
+        resolved_name = await resolve_llm_name(llm_key, **resolve_kwargs)
+        reply = await chat_to_llm(history, system_prompt=system_prompt, llm_name=resolved_name)
         return _apply_meta_actions(reply)
 
     tools_param = build_tools_param(
@@ -281,10 +284,19 @@ async def run_conversation(
         context["_tool_call_notifier"] = tool_call_notifier
     iteration = 0
     pending_reauth_notices: list[str] = []
+    # resolver へ渡す、この回しで既に呼んだツール名（出現順・重複あり）と前回の選択
+    called_tool_names: list[str] = []
+    resolved_name: str | None = None
 
     while iteration < max_iterations:
+        resolved_name = await resolve_llm_name(
+            llm_key,
+            called_tool_names=tuple(called_tool_names),
+            previous_provider=resolved_name,
+            **resolve_kwargs,
+        )
         response = await chat_to_llm_with_tools(
-            messages, system_prompt=system_prompt, tools=tools_param, llm_name=llm_name
+            messages, system_prompt=system_prompt, tools=tools_param, llm_name=resolved_name
         )
 
         if response["tool_calls"]:
@@ -315,6 +327,7 @@ async def run_conversation(
                             "content": tool_content,
                         })
                         continue
+                called_tool_names.append(tc["function"]["name"])
                 result = await execute_tool_call(
                     tc["function"]["name"],
                     arguments,
