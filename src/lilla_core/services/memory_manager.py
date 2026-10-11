@@ -50,42 +50,34 @@ def _floor_to_hour(dt: datetime, tz: tzinfo) -> datetime:
     return dt.astimezone(tz).replace(minute=0, second=0, microsecond=0)
 
 
-def _align_history_cutoff_to_hour(docs: list[dict], max_turns: int, tz: tzinfo) -> list[dict]:
-    """件数制限で切った会話履歴の先頭を「時の境界」に揃える。
+def _history_hour_cutoff(docs: list[dict], max_turns: int, tz: tzinfo) -> datetime | None:
+    """件数制限で切った会話履歴の切り出し位置を「時の境界」に揃えたカットオフを返す。
 
-    `docs` は日数制限を適用済みで時系列順に並んだ、最大 `max_turns + 1` 件の
-    会話（直近を残したもの）。`max_turns` 件以下なら件数制限は効いていないので
-    そのまま返す。
+    `docs` は日数制限を適用済みで時系列順に並んだ、直近最大 `max_turns` 件の
+    会話（候補）。最も古い候補が属する時（`tz` のローカル時刻）の開始時刻を
+    カットオフとし、呼び出し側はその時刻以降の発言を **すべて** 履歴に含める。
+    同じ時の中で件数制限により切られていた発言も含めるため、履歴の件数は
+    `max_turns` を超えることがある（`max_turns` は「最低でもこの件数まで
+    さかのぼる」目安になる）。絶対上限は設けない。
 
-    件数制限が効いたときは直近 `max_turns` 件を候補とし、最も古い候補が属する
-    時（`tz` のローカル時刻）の開始時刻をカットオフとする。ただし切り落とされた
-    発言がその時の中にもあるなら、その時は丸ごと入りきらないため次の時の開始を
-    カットオフにする。どちらの場合もカットオフは HH:00 に揃い、件数は `max_turns`
-    以下に収まる。カットオフは「その時以降の発言が `max_turns` を超えたとき」
-    だけ前へ進むので、同じ時の中で新しい発言が来ても切り出し位置は動きにくい
-    （システムプロンプトの時刻表示が時単位でマスクされているのと合わせて、
-    LLM の前綴キャッシュを効きやすくするため）。
+    カットオフは「最も古い候補が次の時へ移ったとき」だけ前へ進むので、同じ時の
+    中で新しい発言が来ても履歴の先頭は動かない（システムプロンプトの時刻表示が
+    時単位でマスクされているのと合わせて、LLM の前綴キャッシュを効きやすくするため）。
 
-    直近の 1 時間だけで `max_turns` を超えるなど、揃えると候補が 1 件も残らない
-    場合は、履歴が空になるのを避けて従来どおり直近 `max_turns` 件を返す。
+    `max_turns` が 0 以下のとき、または候補が `max_turns` 件に満たない（件数制限が
+    効いていない）ときは時の境界で切らないため `None` を返す。
 
     Args:
         docs: 時系列順の会話ドキュメント（`time` は aware な UTC）。
-        max_turns: 返す件数の上限。
+        max_turns: 件数制限（`memory.max_history_turns`）。
         tz: 時の境界を数えるタイムゾーン。
 
     Returns:
-        採用する会話ドキュメント（時系列順。`max_turns` 件以下）。
+        時の境界に揃えたカットオフ（aware）。揃えない場合は `None`。
     """
-    if len(docs) <= max_turns:
-        return docs
-    dropped = docs[: len(docs) - max_turns]
-    candidates = docs[len(docs) - max_turns :]
-    cutoff = _floor_to_hour(candidates[0]["time"], tz)
-    if dropped[-1]["time"] >= cutoff:
-        cutoff += timedelta(hours=1)
-    aligned = [doc for doc in candidates if doc["time"] >= cutoff]
-    return aligned or candidates
+    if max_turns <= 0 or len(docs) < max_turns:
+        return None
+    return _floor_to_hour(docs[0]["time"], tz)
 
 
 class MemoryManager:
@@ -153,10 +145,11 @@ class MemoryManager:
         content がリスト（画像添付など）の場合は、先頭の type="text" ブロックの
         text フィールド先頭に付与する。text ブロックが存在しない場合は先頭に挿入する。
 
-        取得範囲は `history_days` の日数制限と `max_history_turns` の件数制限の
-        両方を満たす。件数制限が効くときは、LLM の前綴キャッシュが効きやすいよう
-        切り出し位置を「時の境界」（同じタイムゾーンの HH:00）に揃える
-        （`_align_history_cutoff_to_hour` を参照）。
+        取得範囲は `history_days` の日数制限の内側で、まず `max_history_turns` 件の
+        直近の発言を候補にする。件数制限が効くときは、LLM の前綴キャッシュが効き
+        やすいよう、最も古い候補が属する時の開始（同じタイムゾーンの HH:00）以降の
+        発言をすべて含める（件数は `max_history_turns` を超えることがある。
+        `_history_hour_cutoff` を参照）。
         """
         now_local = local_now()
         local_tz = now_local.tzinfo
@@ -166,11 +159,13 @@ class MemoryManager:
             tzinfo=local_tz,
         ) - timedelta(days=self._config.memory.history_days - 1)
         since_utc = since_local.astimezone(timezone.utc)
-        # 件数制限で切り落とされた発言があるかを知るため、1 件だけ余分に取る
-        docs = await self._conv_repo.load_with_time_since(
-            since_utc, self._max_history_turns + 1
-        )
-        docs = _align_history_cutoff_to_hour(docs, self._max_history_turns, local_tz)
+        docs = await self._conv_repo.load_with_time_since(since_utc, self._max_history_turns)
+        cutoff = _history_hour_cutoff(docs, self._max_history_turns, local_tz)
+        if cutoff is not None:
+            # 日数制限の起点も同じタイムゾーンの 0:00 なので、cutoff が since を
+            # 下回ることはないが、日数制限で落ちた発言を拾わないよう念のため揃える
+            cutoff_utc = max(cutoff.astimezone(timezone.utc), since_utc)
+            docs = await self._conv_repo.load_with_time_since(cutoff_utc, None)
         tz = local_tz
         result = []
         for doc in docs:

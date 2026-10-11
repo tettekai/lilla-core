@@ -338,6 +338,8 @@ class BotConfig(BaseModel):
 class MemoryConfig(BaseModel):
     """lilla.yaml の `memory:` セクション。"""
 
+    # LLM へ渡す会話履歴をさかのぼる件数の目安。件数制限が効くときは最も古い候補が
+    # 属する時の開始（HH:00）以降をすべて含めるため、この件数を超えることがある。
     max_history_turns: int = 30
     conversation_ttl_hours: int = 72
     history_days: int = 2
