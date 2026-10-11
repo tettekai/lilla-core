@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from functools import lru_cache
 
 from lilla_core.core.config import AppConfig, get_config
@@ -43,6 +43,49 @@ def _resolve_client_prompt(client_type: str) -> str:
     if client_type == "discord":
         return get_config().discord_client_prompt
     return ""
+
+
+def _floor_to_hour(dt: datetime, tz: tzinfo) -> datetime:
+    """`dt` を `tz` に変換し、それが属する時の開始時刻（HH:00:00）を返す。"""
+    return dt.astimezone(tz).replace(minute=0, second=0, microsecond=0)
+
+
+def _align_history_cutoff_to_hour(docs: list[dict], max_turns: int, tz: tzinfo) -> list[dict]:
+    """件数制限で切った会話履歴の先頭を「時の境界」に揃える。
+
+    `docs` は日数制限を適用済みで時系列順に並んだ、最大 `max_turns + 1` 件の
+    会話（直近を残したもの）。`max_turns` 件以下なら件数制限は効いていないので
+    そのまま返す。
+
+    件数制限が効いたときは直近 `max_turns` 件を候補とし、最も古い候補が属する
+    時（`tz` のローカル時刻）の開始時刻をカットオフとする。ただし切り落とされた
+    発言がその時の中にもあるなら、その時は丸ごと入りきらないため次の時の開始を
+    カットオフにする。どちらの場合もカットオフは HH:00 に揃い、件数は `max_turns`
+    以下に収まる。カットオフは「その時以降の発言が `max_turns` を超えたとき」
+    だけ前へ進むので、同じ時の中で新しい発言が来ても切り出し位置は動きにくい
+    （システムプロンプトの時刻表示が時単位でマスクされているのと合わせて、
+    LLM の前綴キャッシュを効きやすくするため）。
+
+    直近の 1 時間だけで `max_turns` を超えるなど、揃えると候補が 1 件も残らない
+    場合は、履歴が空になるのを避けて従来どおり直近 `max_turns` 件を返す。
+
+    Args:
+        docs: 時系列順の会話ドキュメント（`time` は aware な UTC）。
+        max_turns: 返す件数の上限。
+        tz: 時の境界を数えるタイムゾーン。
+
+    Returns:
+        採用する会話ドキュメント（時系列順。`max_turns` 件以下）。
+    """
+    if len(docs) <= max_turns:
+        return docs
+    dropped = docs[: len(docs) - max_turns]
+    candidates = docs[len(docs) - max_turns :]
+    cutoff = _floor_to_hour(candidates[0]["time"], tz)
+    if dropped[-1]["time"] >= cutoff:
+        cutoff += timedelta(hours=1)
+    aligned = [doc for doc in candidates if doc["time"] >= cutoff]
+    return aligned or candidates
 
 
 class MemoryManager:
@@ -109,6 +152,11 @@ class MemoryManager:
 
         content がリスト（画像添付など）の場合は、先頭の type="text" ブロックの
         text フィールド先頭に付与する。text ブロックが存在しない場合は先頭に挿入する。
+
+        取得範囲は `history_days` の日数制限と `max_history_turns` の件数制限の
+        両方を満たす。件数制限が効くときは、LLM の前綴キャッシュが効きやすいよう
+        切り出し位置を「時の境界」（同じタイムゾーンの HH:00）に揃える
+        （`_align_history_cutoff_to_hour` を参照）。
         """
         now_local = local_now()
         local_tz = now_local.tzinfo
@@ -118,7 +166,11 @@ class MemoryManager:
             tzinfo=local_tz,
         ) - timedelta(days=self._config.memory.history_days - 1)
         since_utc = since_local.astimezone(timezone.utc)
-        docs = await self._conv_repo.load_with_time_since(since_utc, self._max_history_turns)
+        # 件数制限で切り落とされた発言があるかを知るため、1 件だけ余分に取る
+        docs = await self._conv_repo.load_with_time_since(
+            since_utc, self._max_history_turns + 1
+        )
+        docs = _align_history_cutoff_to_hour(docs, self._max_history_turns, local_tz)
         tz = local_tz
         result = []
         for doc in docs:
