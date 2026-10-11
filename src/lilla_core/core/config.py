@@ -554,6 +554,14 @@ class UiConfig(BaseModel):
 # 同名のプロバイダーがあると切り替えと解除の区別が付かなくなる。
 RESERVED_LLM_PROVIDER_NAMES: frozenset[str] = frozenset({"reset"})
 
+# `llm.response_prefix_strip_patterns` を省略（または null）したときの既定。
+# 履歴読み込み時にシステムが付ける `[Apr 28 11:22] ` 形式と、モデルが自発的に付けがちな
+# `[19:14] ` 形式。先頭限定でマッチさせるのはコード側（`services/message_splitter.py`）。
+DEFAULT_RESPONSE_PREFIX_STRIP_PATTERNS: tuple[str, ...] = (
+    r"\[(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2} \d{2}:\d{2}\]\s*",
+    r"\[\d{1,2}:\d{2}\]\s*",
+)
+
 
 class LlmConfig(BaseModel):
     """lilla.yaml の `llm:` セクション。"""
@@ -564,6 +572,31 @@ class LlmConfig(BaseModel):
     # LLM へ送る直前の拒否リスト（JSON の文字列配列）の絶対パス。未指定なら検査しない。
     # 実体は `core/llm_send_guard.py` が読む。
     send_blocklist_path: str | None = None
+    # LLM 応答を分割した各ブロックの先頭から順に除去する正規表現。空リストなら除去しない。
+    response_prefix_strip_patterns: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_RESPONSE_PREFIX_STRIP_PATTERNS)
+    )
+
+    @field_validator("response_prefix_strip_patterns", mode="before")
+    @classmethod
+    def _default_response_prefix_strip_patterns(cls, value: Any) -> Any:
+        """キーだけ書いて値が空（null）の場合も、省略と同じく既定のパターンにする。"""
+        if value is None:
+            return list(DEFAULT_RESPONSE_PREFIX_STRIP_PATTERNS)
+        return value
+
+    @field_validator("response_prefix_strip_patterns")
+    @classmethod
+    def _validate_response_prefix_strip_patterns(cls, value: list[str]) -> list[str]:
+        """各パターンが正規表現としてコンパイルできることを起動時に検証する。"""
+        for index, pattern in enumerate(value):
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(
+                    f"llm.response_prefix_strip_patterns[{index}] is not a valid regular expression: {exc}"
+                ) from exc
+        return value
 
     @field_validator("send_blocklist_path")
     @classmethod
