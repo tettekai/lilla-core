@@ -77,14 +77,17 @@ class ConversationRepository:
         docs.reverse()
         return docs
 
-    async def load_with_time_since(self, since: datetime, max_turns: int) -> list[dict]:
-        """since 以降の会話を時系列順に返す。max_turns を超える場合は末尾（直近）を残す。"""
+    async def load_with_time_since(self, since: datetime, max_turns: int | None) -> list[dict]:
+        """since 以降の会話を時系列順に返す。max_turns を超える場合は末尾（直近）を残す。
+
+        max_turns が None なら件数で切らず、since 以降を全件返す。
+        """
         cursor = self._collection.find(
             {"time": {"$gte": since}},
             {"_id": 0, "message": 1, "time": 1},
         ).sort("time", ASCENDING)
         docs = await cursor.to_list(length=None)
-        if len(docs) > max_turns:
+        if max_turns is not None and len(docs) > max_turns:
             docs = docs[-max_turns:]
         return docs
 
