@@ -1,4 +1,4 @@
-"""スキル（名前付きの再利用プロンプト）の名前規則。
+"""スキル（名前付きの再利用プロンプト）の名前規則と、LLM へ渡す展開形式。
 
 スキル名は `!skill <スキル名>` のコマンド引数として空白区切りで渡されるため、
 半角英数字・アンダースコア・ハイフンだけを許し、大文字小文字は区別しない
@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import re
+
+from lilla_core.ui.messages import t
 
 #: スキル名の最大文字数
 SKILL_NAME_MAX_LENGTH = 64
@@ -28,3 +30,36 @@ def normalize_skill_name(name) -> str | None:
     if not isinstance(name, str) or not _SKILL_NAME_RE.fullmatch(name):
         return None
     return name.lower()
+
+
+def format_skill_instruction(name: str, prompt: str, extra: str | None = None) -> str:
+    """スキルの本文を「システムからの動作指示」のラッパーで囲み、追加指示があれば続けて返す。
+
+    ユーザーの発言と区別できるよう、開始行・前置き文・本文・終了行の形で囲む。文言は
+    `ui.locale` のカタログ（`command.skill.instruction_*`）から取る。`!skill` はこの出力を
+    そのターンの最新の user メッセージとして LLM へ渡し、会話履歴にもそのまま保存する
+    （システムプロンプトには入れない）。将来 LLM が自分でスキルを読み込むツールを足すときも、
+    ツール結果として同じ出力を返す想定のため、追加指示は省略できる。
+
+    Args:
+        name: スキル名（正規化済み）。
+        prompt: スキルの本文。前後の空白だけを除き、それ以外は加工しない。
+        extra: スキル名の後ろに書かれた追加指示。前後の空白を除いて空なら付けない。
+            複数行でも 1 行目にだけラベルを付け、残りはそのまま続ける。
+
+    Returns:
+        展開後の文字列。
+    """
+    block = "\n".join(
+        [
+            t("command.skill.instruction_start", name=name),
+            t("command.skill.instruction_preamble"),
+            "",
+            prompt.strip(),
+            t("command.skill.instruction_end"),
+        ]
+    )
+    extra = (extra or "").strip()
+    if extra:
+        return f"{block}\n\n{t('command.skill.instruction_extra', extra=extra)}"
+    return block
