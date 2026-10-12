@@ -574,3 +574,46 @@ tr.clickable:hover { background: var(--bg-secondary); }
   font-size: 14px;
   font-weight: normal;
 }
+
+/* ---- Skills ---- */
+
+.skill-add-form,
+.skill-edit-form {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.skill-name-input,
+.skill-description-input {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-sizing: border-box;
+  color: var(--text);
+  font-size: 12px;
+  max-width: 100%;
+  padding: 4px 8px;
+}
+
+.skill-name-input { font-family: var(--font-mono); width: 32ch; }
+.skill-description-input { width: calc(120ch + 16px); }
+
+.skill-name-input:focus,
+.skill-description-input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.skill-heading {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.skill-name { color: var(--accent); font-family: var(--font-mono); font-weight: 600; }
+.skill-description { color: var(--text-muted); font-size: 12px; }

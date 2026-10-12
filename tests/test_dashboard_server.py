@@ -784,6 +784,290 @@ class TestHandleApiUserMemoDetail:
 
 
 # ---------------------------------------------------------------------------
+# TestHandleApiSkills
+# ---------------------------------------------------------------------------
+
+
+class _FakeSkillUpdateResult:
+    """`SkillUpdateResult` の代わり（実モジュールを import せずに同一性で比べる）。"""
+
+    UPDATED = object()
+    NOT_FOUND = object()
+    DUPLICATE_NAME = object()
+
+
+def _make_mock_skill_repo(skills=None):
+    """SkillRepository のモックを生成する。"""
+    repo = MagicMock()
+    repo.get_all = AsyncMock(return_value=skills or [])
+    repo.add = AsyncMock(return_value={"name": "review", "prompt": "p", "enabled": True})
+    repo.update = AsyncMock(return_value=_FakeSkillUpdateResult.UPDATED)
+    repo.delete = AsyncMock(return_value=True)
+    return repo
+
+
+def _patch_skill_repo(monkeypatch: pytest.MonkeyPatch, repo: MagicMock) -> None:
+    """sys.modules の lilla_core.repository.skill_repository を差し替える。"""
+    mock_module = MagicMock()
+    mock_module.get_skill_repo = MagicMock(return_value=repo)
+    mock_module.SkillUpdateResult = _FakeSkillUpdateResult
+    monkeypatch.setitem(sys.modules, "lilla_core.repository.skill_repository", mock_module)
+
+
+def _make_skill_request(method: str, body=None, skill_id: str | None = None) -> MagicMock:
+    """スキル API 用のリクエストモックを生成する。"""
+    req = MagicMock()
+    req.method = method
+    req.rel_url.query = {}
+    req.json = AsyncMock(return_value=body)
+    if skill_id is not None:
+        req.match_info = {"id": skill_id}
+    return req
+
+
+def _response_status(mock_web: MagicMock) -> int | None:
+    """`web.Response` に渡された status を返す。"""
+    return mock_web.Response.call_args[1].get("status")
+
+
+class TestHandleApiSkills:
+    async def test_get_returns_all_skills(self, dashboard_server, mock_web, monkeypatch) -> None:
+        """GET /api/skills が全件を返す。"""
+        dt = datetime(2026, 4, 2, 10, 0, 0, tzinfo=timezone.utc)
+        repo = _make_mock_skill_repo(skills=[{"name": "review", "prompt": "p", "created_at": dt}])
+        _patch_skill_repo(monkeypatch, repo)
+        mock_web.json_response.reset_mock()
+
+        await dashboard_server.handle_api_skills(_make_skill_request("GET"))
+
+        data = mock_web.json_response.call_args[0][0]
+        assert [item["name"] for item in data["items"]] == ["review"]
+
+    async def test_post_normalizes_name_to_lowercase(
+        self, dashboard_server, mock_web, monkeypatch
+    ) -> None:
+        """POST は名前を小文字に正規化し、本文と説明の前後空白を除いて保存する。"""
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+        mock_web.json_response.reset_mock()
+
+        await dashboard_server.handle_api_skills(
+            _make_skill_request(
+                "POST", {"name": "Code-Review_1", "description": " 説明 ", "prompt": " 本文 "}
+            )
+        )
+
+        repo.add.assert_awaited_once_with("code-review_1", "説明", "本文")
+        assert mock_web.json_response.call_args[1]["status"] == 201
+
+    async def test_post_description_is_optional(
+        self, dashboard_server, mock_web, monkeypatch
+    ) -> None:
+        """説明を省略しても追加できる（空文字で保存）。"""
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+
+        await dashboard_server.handle_api_skills(
+            _make_skill_request("POST", {"name": "review", "prompt": "本文"})
+        )
+
+        repo.add.assert_awaited_once_with("review", "", "本文")
+
+    @pytest.mark.parametrize(
+        "name",
+        ["", "has space", "日本語", "a" * 65, "dot.name", None, 123, " review"],
+    )
+    async def test_post_rejects_invalid_name(
+        self, dashboard_server, mock_web, monkeypatch, name
+    ) -> None:
+        """名前の規則に合わない入力は 400 で、保存しない。"""
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+        mock_web.Response.reset_mock()
+
+        await dashboard_server.handle_api_skills(
+            _make_skill_request("POST", {"name": name, "prompt": "本文"})
+        )
+
+        assert _response_status(mock_web) == 400
+        repo.add.assert_not_awaited()
+
+    async def test_post_accepts_64_chars(self, dashboard_server, mock_web, monkeypatch) -> None:
+        """64 文字ちょうどの名前は受け付ける。"""
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+
+        await dashboard_server.handle_api_skills(
+            _make_skill_request("POST", {"name": "a" * 64, "prompt": "本文"})
+        )
+
+        repo.add.assert_awaited_once()
+
+    async def test_post_rejects_empty_prompt(self, dashboard_server, mock_web, monkeypatch) -> None:
+        """本文が空なら 400。"""
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+        mock_web.Response.reset_mock()
+
+        await dashboard_server.handle_api_skills(
+            _make_skill_request("POST", {"name": "review", "prompt": "  "})
+        )
+
+        assert _response_status(mock_web) == 400
+        repo.add.assert_not_awaited()
+
+    async def test_post_returns_409_for_duplicate(self, dashboard_server, mock_web, monkeypatch) -> None:
+        """同名が既にあれば 409。"""
+        repo = _make_mock_skill_repo()
+        repo.add = AsyncMock(return_value=None)
+        _patch_skill_repo(monkeypatch, repo)
+        mock_web.Response.reset_mock()
+
+        await dashboard_server.handle_api_skills(
+            _make_skill_request("POST", {"name": "Review", "prompt": "本文"})
+        )
+
+        assert _response_status(mock_web) == 409
+
+    async def test_post_rejects_non_object_body(self, dashboard_server, mock_web, monkeypatch) -> None:
+        """JSON がオブジェクトでなければ 400。"""
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+        mock_web.Response.reset_mock()
+
+        await dashboard_server.handle_api_skills(_make_skill_request("POST", ["review"]))
+
+        assert _response_status(mock_web) == 400
+
+
+class TestHandleApiSkillDetail:
+    async def test_patch_updates_only_given_fields(
+        self, dashboard_server, mock_web, monkeypatch
+    ) -> None:
+        """PATCH はボディにあるフィールドだけを渡し、名前は小文字に正規化する。"""
+        from bson import ObjectId
+        oid = str(ObjectId())
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+        mock_web.Response.reset_mock()
+
+        await dashboard_server.handle_api_skill_detail(
+            _make_skill_request("PATCH", {"name": "Review", "prompt": "新しい本文"}, oid)
+        )
+
+        repo.update.assert_awaited_once_with(
+            oid, name="review", description=None, prompt="新しい本文", enabled=None
+        )
+        mock_web.Response.assert_called_once_with(status=204)
+
+    async def test_patch_toggles_enabled(self, dashboard_server, mock_web, monkeypatch) -> None:
+        """有効 / 無効だけを切り替えられる。"""
+        from bson import ObjectId
+        oid = str(ObjectId())
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+
+        await dashboard_server.handle_api_skill_detail(
+            _make_skill_request("PATCH", {"enabled": False}, oid)
+        )
+
+        repo.update.assert_awaited_once_with(
+            oid, name=None, description=None, prompt=None, enabled=False
+        )
+
+    async def test_patch_rejects_invalid_name(self, dashboard_server, mock_web, monkeypatch) -> None:
+        """名前の規則に合わない編集は 400。"""
+        from bson import ObjectId
+        oid = str(ObjectId())
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+        mock_web.Response.reset_mock()
+
+        await dashboard_server.handle_api_skill_detail(
+            _make_skill_request("PATCH", {"name": "bad name"}, oid)
+        )
+
+        assert _response_status(mock_web) == 400
+        repo.update.assert_not_awaited()
+
+    async def test_patch_rejects_non_bool_enabled(self, dashboard_server, mock_web, monkeypatch) -> None:
+        """enabled が真偽値でなければ 400。"""
+        from bson import ObjectId
+        oid = str(ObjectId())
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+        mock_web.Response.reset_mock()
+
+        await dashboard_server.handle_api_skill_detail(
+            _make_skill_request("PATCH", {"enabled": "false"}, oid)
+        )
+
+        assert _response_status(mock_web) == 400
+        repo.update.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("result_name", "status"), [("NOT_FOUND", 404), ("DUPLICATE_NAME", 409)]
+    )
+    async def test_patch_maps_repository_result(
+        self, dashboard_server, mock_web, monkeypatch, result_name, status
+    ) -> None:
+        """リポジトリの結果に応じて 404 / 409 を返す。"""
+        from bson import ObjectId
+        oid = str(ObjectId())
+        repo = _make_mock_skill_repo()
+        repo.update = AsyncMock(return_value=getattr(_FakeSkillUpdateResult, result_name))
+        _patch_skill_repo(monkeypatch, repo)
+        mock_web.Response.reset_mock()
+
+        await dashboard_server.handle_api_skill_detail(
+            _make_skill_request("PATCH", {"name": "review"}, oid)
+        )
+
+        assert _response_status(mock_web) == status
+
+    async def test_delete_removes_skill(self, dashboard_server, mock_web, monkeypatch) -> None:
+        """DELETE がスキルを削除する。"""
+        from bson import ObjectId
+        oid = str(ObjectId())
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+        mock_web.Response.reset_mock()
+
+        await dashboard_server.handle_api_skill_detail(_make_skill_request("DELETE", skill_id=oid))
+
+        repo.delete.assert_awaited_once_with(oid)
+        mock_web.Response.assert_called_once_with(status=204)
+
+    async def test_delete_returns_404_when_not_found(
+        self, dashboard_server, mock_web, monkeypatch
+    ) -> None:
+        """存在しないスキルの削除は 404。"""
+        from bson import ObjectId
+        oid = str(ObjectId())
+        repo = _make_mock_skill_repo()
+        repo.delete = AsyncMock(return_value=False)
+        _patch_skill_repo(monkeypatch, repo)
+        mock_web.Response.reset_mock()
+
+        await dashboard_server.handle_api_skill_detail(_make_skill_request("DELETE", skill_id=oid))
+
+        assert _response_status(mock_web) == 404
+
+    async def test_returns_400_for_invalid_id(self, dashboard_server, mock_web, monkeypatch) -> None:
+        """不正な ID は 400。"""
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+        mock_web.Response.reset_mock()
+
+        await dashboard_server.handle_api_skill_detail(
+            _make_skill_request("PATCH", {"enabled": True}, "invalid-id")
+        )
+
+        assert _response_status(mock_web) == 400
+        repo.update.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
 # 認証まわり
 # ---------------------------------------------------------------------------
 
@@ -1781,17 +2065,18 @@ class TestHandleApiDashboardNav:
     async def test_returns_builtin_pages(
         self, dashboard_server, mock_web, monkeypatch
     ) -> None:
-        """拡張が 0 個でも組み込み 4 画面を返す。"""
+        """拡張が 0 個でも組み込み 5 画面を返す。"""
         _patch_dashboard_contributions(monkeypatch, dashboard_server)
 
         await dashboard_server.handle_api_dashboard_nav(_make_request())
 
         pages = self._payload(mock_web)["pages"]
-        assert [p["name"] for p in pages] == ["home", "conversations", "memos", "logs"]
+        assert [p["name"] for p in pages] == ["home", "conversations", "memos", "skills", "logs"]
         assert [p["hash"] for p in pages] == [
             "#/",
             "#/conversations",
             "#/memos",
+            "#/skills",
             "#/admin/logs",
         ]
         assert all(p["module"] is None for p in pages)
@@ -1809,6 +2094,7 @@ class TestHandleApiDashboardNav:
             "home": "main",
             "conversations": "main",
             "memos": "main",
+            "skills": "main",
             "logs": "admin",
         }
 
@@ -1825,7 +2111,7 @@ class TestHandleApiDashboardNav:
         await dashboard_server.handle_api_dashboard_nav(_make_request())
 
         names = [p["name"] for p in self._payload(mock_web)["pages"]]
-        assert names == ["home", "conversations", "memos", "logs", "habits", "cal"]
+        assert names == ["home", "conversations", "memos", "skills", "logs", "habits", "cal"]
 
     async def test_extension_paths_come_from_the_core(
         self, dashboard_server, mock_web, monkeypatch

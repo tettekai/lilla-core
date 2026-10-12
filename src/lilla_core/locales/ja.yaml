@@ -28,6 +28,11 @@ command:
     not_found: "モデル '{name}' は見つかりません。利用可能なモデル: {available}"
     none: "（なし）"
 
+  skill:
+    usage: "スキル名を指定してください: `!skill <スキル名> [追加指示]`"
+    not_found: "スキル '{name}' は見つかりません。"
+    disabled: "スキル '{name}' は無効になっています。"
+
   mongodata:
     json_parse_title: "!mongodata: JSONパースエラー"
     invalid_request_title: "!mongodata: 不正なリクエスト"

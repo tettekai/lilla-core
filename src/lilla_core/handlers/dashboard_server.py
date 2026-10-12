@@ -1,6 +1,6 @@
 """観測用ダッシュボードの HTTP サーバー。
 
-コアが所有する状態（会話履歴・ユーザーメモ・ログ・管理セッション）を人が見るための
+コアが所有する状態（会話履歴・ユーザーメモ・スキル・ログ・管理セッション）を人が見るための
 窓で、`bot.py` が `main()` の中で（拡張の `setup()` を終えたあと、Discord へ
 接続する前に）起動する。用途特化の HTTP サーバー（機械向けの Bearer API など）は
 コアには持たず、拡張が `Extension.setup()` で自前のリスナーを起こす。
@@ -22,7 +22,7 @@
 - 認証判定（``auth_middleware``）: リクエストごとに Cookie のセッションを引き、
   ``expires_at`` を毎回比較する。期限切れ・未発行はすべて 401。
 
-画面（ナビ）は組み込みの 4 つだけでなく、拡張が ``Extension.dashboard_page()`` で
+画面（ナビ）は組み込みの 5 つだけでなく、拡張が ``Extension.dashboard_page()`` で
 申告したページも ``GET /api/dashboard/nav`` のカタログに載せる。拡張のセッション API
 （``/api/{name}``）は Cookie の内側、公開コールバック（``/oauth/{name}``）と静的ファイル
 （``/static/ext/{name}/``）は外側に載せる。経路は lilla-core が ``Extension.name`` から
@@ -46,6 +46,7 @@ from lilla_core.utils.datetime_utils import parse_iso_utc, utc_now
 
 from lilla_core.handlers.request_params import parse_int_param, parse_json_body, parse_object_id
 from lilla_core.core.config import get_config
+from lilla_core.services.skills import SKILL_NAME_MAX_LENGTH, normalize_skill_name
 from lilla_core.core.extension import (
     get_dashboard_pages,
     get_dashboard_public_routes,
@@ -77,6 +78,11 @@ LOGIN_MAX_FAILURES = 5
 #: 一度きりのセットアップトークンの長さ（``secrets.token_urlsafe`` に渡すバイト数）
 SETUP_TOKEN_BYTES = 32
 
+#: スキル名が規則に合わないときの 400 応答の本文
+_INVALID_SKILL_NAME_TEXT = (
+    "name must be 1-%d characters of ASCII letters, digits, '_' or '-'" % SKILL_NAME_MAX_LENGTH
+)
+
 #: パスワード未登録のあいだだけ有効な一度きりのセットアップトークン。
 #: プロセス内メモリにだけ持ち、登録に成功したら捨てる。再起動すると作り直すため、
 #: 古いトークンは無効になる。
@@ -91,7 +97,7 @@ _AUTH_EXEMPT_PATHS = frozenset({"/", "/api/auth/status", "/api/login"})
 #: ``state`` の検証は拡張側の責任。
 _AUTH_EXEMPT_PREFIXES = ("/static/", "/oauth/")
 
-#: ダッシュボード組み込みの 4 画面。拡張のページと同じ形で ``/api/dashboard/nav``
+#: ダッシュボード組み込みの 5 画面。拡張のページと同じ形で ``/api/dashboard/nav``
 #: に並べ、フロントは組み込みと拡張を区別せずナビを組む。``name`` は
 #: lilla-core が ``RESERVED_EXTENSION_NAMES`` で押さえているので拡張と衝突しない。
 #: ``module`` が None のものは ``index.html`` に DOM を持つ組み込み画面。
@@ -105,6 +111,7 @@ _BUILTIN_PAGES: tuple[dict, ...] = (
         "module": None,
     },
     {"name": "memos", "label": "Memos", "group": "main", "hash": "#/memos", "module": None},
+    {"name": "skills", "label": "Skills", "group": "main", "hash": "#/skills", "module": None},
     {
         "name": "logs",
         "label": "Admin",
@@ -402,6 +409,112 @@ async def handle_api_user_memo_detail(request: web.Request) -> web.Response:
     updated = await repo.update(memo_id, content, enabled)
     if not updated:
         return web.Response(status=404, text="Memo not found")
+    return web.Response(status=204)
+
+
+def _parse_skill_text_field(body: dict, key: str) -> tuple[str | None, str | None]:
+    """スキルの文字列フィールドをボディから取り出す。
+
+    Returns:
+        ``(値, エラーメッセージ)``。キーが無ければ値は None。文字列でなければエラー。
+    """
+    value = body.get(key)
+    if value is None:
+        return None, None
+    if not isinstance(value, str):
+        return None, f"{key} must be a string"
+    return value.strip(), None
+
+
+async def handle_api_skills(request: web.Request) -> web.Response:
+    """GET /api/skills - 全スキルを返す。POST /api/skills - スキルを追加する。
+
+    ``name`` はスキル名の規則（半角英数字・``_``・``-`` のみ、64 文字以内）に合わなければ
+    400 で、小文字に正規化して保存する。同名（大文字小文字を区別しない）が既にあれば 409。
+    """
+    from lilla_core.repository.skill_repository import get_skill_repo
+
+    repo = get_skill_repo()
+
+    if request.method == "GET":
+        skills = await repo.get_all()
+        return web.json_response({"items": [_serialize_doc(s) for s in skills]})
+
+    # POST
+    body, ok = await parse_json_body(request)
+    if not ok or not isinstance(body, dict):
+        return web.Response(status=400, text="Invalid JSON body")
+
+    name = normalize_skill_name(body.get("name"))
+    if name is None:
+        return web.Response(status=400, text=_INVALID_SKILL_NAME_TEXT)
+
+    description, error = _parse_skill_text_field(body, "description")
+    if error:
+        return web.Response(status=400, text=error)
+    prompt, error = _parse_skill_text_field(body, "prompt")
+    if error:
+        return web.Response(status=400, text=error)
+    if not prompt:
+        return web.Response(status=400, text="prompt is required")
+
+    doc = await repo.add(name, description or "", prompt)
+    if doc is None:
+        return web.Response(status=409, text="Skill name already exists")
+    return web.json_response(_serialize_doc(doc), status=201)
+
+
+async def handle_api_skill_detail(request: web.Request) -> web.Response:
+    """PATCH /api/skills/{id} - スキルを更新する。DELETE /api/skills/{id} - スキルを削除する。
+
+    PATCH はボディに含まれたフィールド（``name`` / ``description`` / ``prompt`` /
+    ``enabled``）だけを更新する。
+    """
+    from lilla_core.repository.skill_repository import SkillUpdateResult, get_skill_repo
+
+    skill_id = request.match_info["id"]
+    if parse_object_id(skill_id) is None:
+        return web.Response(status=400, text="Invalid ID format")
+
+    repo = get_skill_repo()
+
+    if request.method == "DELETE":
+        deleted = await repo.delete(skill_id)
+        if not deleted:
+            return web.Response(status=404, text="Skill not found")
+        return web.Response(status=204)
+
+    # PATCH
+    body, ok = await parse_json_body(request)
+    if not ok or not isinstance(body, dict):
+        return web.Response(status=400, text="Invalid JSON body")
+
+    name = None
+    if "name" in body:
+        name = normalize_skill_name(body.get("name"))
+        if name is None:
+            return web.Response(status=400, text=_INVALID_SKILL_NAME_TEXT)
+
+    description, error = _parse_skill_text_field(body, "description")
+    if error:
+        return web.Response(status=400, text=error)
+    prompt, error = _parse_skill_text_field(body, "prompt")
+    if error:
+        return web.Response(status=400, text=error)
+    if prompt is not None and not prompt:
+        return web.Response(status=400, text="prompt must not be empty")
+
+    enabled = body.get("enabled")
+    if enabled is not None and not isinstance(enabled, bool):
+        return web.Response(status=400, text="enabled must be a boolean")
+
+    result = await repo.update(
+        skill_id, name=name, description=description, prompt=prompt, enabled=enabled
+    )
+    if result is SkillUpdateResult.NOT_FOUND:
+        return web.Response(status=404, text="Skill not found")
+    if result is SkillUpdateResult.DUPLICATE_NAME:
+        return web.Response(status=409, text="Skill name already exists")
     return web.Response(status=204)
 
 
@@ -822,7 +935,7 @@ async def handle_api_logout(request: web.Request) -> web.Response:
 async def handle_api_dashboard_nav(request: web.Request) -> web.Response:
     """GET /api/dashboard/nav - ナビに並べる画面のカタログを返す。
 
-    組み込みの 4 画面に、拡張が ``Extension.dashboard_page()`` で申告したページを
+    組み込みの 5 画面に、拡張が ``Extension.dashboard_page()`` で申告したページを
     ロード順で足して返す。経路（ハッシュ・API 接頭辞・JS モジュール URL）は
     lilla-core が ``Extension.name`` から導出したものをそのまま載せ、ここでも
     フロントでも組み立て直さない。
@@ -910,6 +1023,10 @@ async def start_dashboard_server() -> None:
     app.router.add_post("/api/user-memos", handle_api_user_memos)
     app.router.add_patch("/api/user-memos/{id}", handle_api_user_memo_detail)
     app.router.add_delete("/api/user-memos/{id}", handle_api_user_memo_detail)
+    app.router.add_get("/api/skills", handle_api_skills)
+    app.router.add_post("/api/skills", handle_api_skills)
+    app.router.add_patch("/api/skills/{id}", handle_api_skill_detail)
+    app.router.add_delete("/api/skills/{id}", handle_api_skill_detail)
     app.router.add_get("/api/dashboard/nav", handle_api_dashboard_nav)
     app.router.add_get("/api/dashboard/status", handle_api_dashboard_status)
     _add_extension_routes(app)

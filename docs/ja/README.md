@@ -21,6 +21,7 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [LLM 送信前の拒否リスト](llm-send-guard.md) — `llm.send_blocklist_path`
 - [LLM 応答の先頭 prefix の除去](llm-response-prefix.md) — `llm.response_prefix_strip_patterns`
 - [観測用ダッシュボード](dashboard.md) — 公開面への注意を含む
+- [スキル](skills.md) — `!skill` と、ダッシュボードの Skills 画面
 - [共有 HTTP サーバー](http-server.md) — `http:`、Bearer トークン、拡張からのルート追加
 - [ツール契約](tools.md) — LLM ツール・task ツール・組み込みツール
 - [判定ヘルパー（Jev）](jev.md) — 任意の `lilla_core.tool_support.jev`

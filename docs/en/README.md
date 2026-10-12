@@ -23,6 +23,7 @@ The index of the lilla-core user documentation.
 - [LLM send blocklist](llm-send-guard.md) — `llm.send_blocklist_path`
 - [Stripping prefixes from LLM responses](llm-response-prefix.md) — `llm.response_prefix_strip_patterns`
 - [The observability dashboard](dashboard.md) — including the exposure warning
+- [Skills](skills.md) — `!skill` and the Skills page of the dashboard
 - [The shared HTTP server](http-server.md) — `http:`, Bearer tokens, adding routes from extensions
 - [Tool contracts](tools.md) — LLM tools, task tools, built-in tools
 - [Decision helper (Jev)](jev.md) — the optional `lilla_core.tool_support.jev`

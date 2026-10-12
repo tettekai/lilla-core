@@ -28,6 +28,11 @@ command:
     not_found: "Model '{name}' was not found. Available models: {available}"
     none: "(none)"
 
+  skill:
+    usage: "Specify a skill name: `!skill <skill name> [additional instructions]`"
+    not_found: "Skill '{name}' was not found."
+    disabled: "Skill '{name}' is disabled."
+
   mongodata:
     json_parse_title: "!mongodata: JSON parse error"
     invalid_request_title: "!mongodata: Invalid request"

@@ -4,7 +4,7 @@
 > differ, the Japanese version is authoritative.
 
 At startup the core brings up an HTTP dashboard for reading conversation history, user
-memos and logs. There is no enable/disable flag — if the bot runs, the terminal is open.
+memos, skills and logs. There is no enable/disable flag — if the bot runs, the terminal is open.
 It is configured under `dashboard:` in `lilla.yaml`; omit the section for the defaults.
 
 ```yaml
@@ -35,6 +35,11 @@ dashboard:
 > - `cookie_secure: true` is the safe default and assumes HTTPS. Reaching
 >   `http://<host>:8765` directly over a LAN needs `false`, otherwise login succeeds but
 >   the browser never sends the cookie back.
+
+## Skills
+
+Skills (`#/skills`) lists the skills called with `!skill` and lets you add, edit, delete
+and enable / disable them. See [Skills](skills.md) for the naming rules and how to call them.
 
 ## Home
 

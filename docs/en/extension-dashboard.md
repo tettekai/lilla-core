@@ -49,7 +49,7 @@ An extension that returns a `dashboard_page()` puts `page.js` at the root of its
 Because `name` ends up verbatim in URLs, a name that does not match
 `^[a-z0-9][a-z0-9-]*$`, or one of the core's reserved names (`api`, `oauth`,
 `static`, `admin`, `dashboard`, `auth`, `login`, `logout`, `setup`, `home`,
-`conversations`, `memos`, `logs`), fails at load time. So does a route path
+`conversations`, `memos`, `skills`, `logs`), fails at load time. So does a route path
 outside the extension's own prefix, or a tab declared without a
 `dashboard_static_dir()`.
 

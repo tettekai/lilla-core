@@ -63,6 +63,11 @@ def prepend_timestamp_prefix(content, prefix: str):
 SESSION_MEMORY_START = "---SESSION_MEMORY---"
 SESSION_MEMORY_END = "---END_SESSION_MEMORY---"
 
+# === スキルブロック（`!skill` が最新の user メッセージへ展開する形式） ===
+# 開始マーカーは `---SKILL: <スキル名>---` の形で、名前を埋める書式文字列として持つ。
+SKILL_START = "---SKILL: {name}---"
+SKILL_END = "---END_SKILL---"
+
 _EXCESS_BLANK_LINES_RE = re.compile(r"\n{3,}")
 
 
@@ -75,6 +80,27 @@ def format_session_memory_block(content: str) -> str:
     """
     return f"{SESSION_MEMORY_START}\n{content}\n{SESSION_MEMORY_END}"
 
+
+
+def format_skill_block(name: str, prompt: str, extra: str = "") -> str:
+    """スキルの本文を規定のブロック形式に展開し、追加指示があれば続けた文字列を返す。
+
+    `!skill` がそのターンの最新の user メッセージとして LLM へ渡し、会話履歴にも
+    そのまま保存する形式（システムプロンプトには入れない）。
+
+    Args:
+        name: スキル名（正規化済み）。
+        prompt: スキルの本文。
+        extra: スキル名の後ろに書かれた追加指示。空なら付けない。
+
+    Returns:
+        展開後の文字列。
+    """
+    block = f"{SKILL_START.format(name=name)}\n{prompt}\n{SKILL_END}"
+    extra = extra.strip()
+    if extra:
+        return f"{block}\n\n{extra}"
+    return block
 
 # === META ブロック（LLM が出力し、conversation_service が抽出してアクションを適用する） ===
 META_START = "---META---"
