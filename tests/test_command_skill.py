@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from lilla_core.services.skills import format_skill_instruction
+
 skill_command = importlib.import_module("lilla_core.commands.skill")
 
 
@@ -52,9 +54,12 @@ class TestHandleSkill:
             msg,
             bot,
             {"tool": {}},
-            "---SKILL: review---\nレビューして\n---END_SKILL---\n\nこの PR を見て",
+            format_skill_instruction("review", "レビューして", "この PR を見て"),
         )
         msg.reply.assert_not_awaited()
+        content = repo.start_conversation.call_args.args[3]
+        assert content.startswith("[システム指示: スキル「review」]\n")
+        assert "\nレビューして\n[/システム指示]\n\n追加指示: この PR を見て" in content
 
     async def test_name_is_case_insensitive(self, repo: MagicMock) -> None:
         """大文字小文字の違う名前でも小文字に正規化して照合する。"""
@@ -64,7 +69,8 @@ class TestHandleSkill:
 
         repo.find_by_name.assert_awaited_once_with("review")
         content = repo.start_conversation.call_args.args[3]
-        assert content == "---SKILL: review---\np\n---END_SKILL---"
+        assert content == format_skill_instruction("review", "p")
+        assert "追加指示" not in content
 
     async def test_not_found_replies_without_llm(self, repo: MagicMock) -> None:
         """存在しないスキルは元チャンネルへエラーを返し、会話を始めない。"""

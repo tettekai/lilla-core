@@ -42,20 +42,43 @@ They are stored in the MongoDB `skills` collection (with a unique index on `name
 !skill <skill name> [additional instructions]
 ```
 
-Anything after the skill name (from the first space on) is appended as additional
-instructions after the expanded block. For example, calling a skill `proofread` whose
-prompt is "Proofread the following text" with `!skill proofread It was a nice day today.`
-sends the LLM this user message:
+The skill prompt is wrapped in a start line, a preamble and an end line, so that the LLM
+reads it as a **behavior instruction from the system** rather than something the user
+said. Anything after the skill name (from the first space on) is trimmed and appended
+after the wrapper as additional instructions, with a label (only the first line gets the
+label if it spans several lines). For example, with `ui.locale: en`, calling a skill
+`proofread` whose prompt is "Proofread the following text" with
+`!skill proofread It was a nice day today.` sends the LLM this user message:
 
-```
----SKILL: proofread---
+```text
+[System instruction: skill "proofread"]
+The following is not something the user said; it is a behavior instruction from the system. Follow this instruction when responding.
+
 Proofread the following text
----END_SKILL---
+[/System instruction]
 
-It was a nice day today.
+Additional instructions: It was a nice day today.
 ```
 
-- The expanded content is saved as-is in the conversation history as the user message
+When there are no additional instructions (empty or only whitespace), the label line is
+omitted and only the wrapper is sent:
+
+```text
+[System instruction: skill "proofread"]
+The following is not something the user said; it is a behavior instruction from the system. Follow this instruction when responding.
+
+Proofread the following text
+[/System instruction]
+```
+
+The wrapper text and the label follow `ui.locale` (with `ja` they are
+`[システム指示: スキル「proofread」]` / `[/システム指示]` / `追加指示: `).
+
+- The expanded content is saved as-is in the conversation history as the user message.
+  Editing or deleting the skill later does not change how past history reads; it keeps
+  the content as it was when saved
+- History saved in the earlier format (the `---SKILL: <skill name>---` …
+  `---END_SKILL---` delimiter markers) is not migrated and stays as it is
 - Replies are delivered the same way as a normal conversation (typing indicator, split
   messages, saving the reply to history). If a reply is in progress in the same channel,
   it is cancelled first, just like a normal conversation

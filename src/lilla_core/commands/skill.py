@@ -1,7 +1,8 @@
 """`!skill <スキル名> [追加指示]` コマンド。
 
 `skills` コレクションに保存した名前付きのプロンプト（スキル）を、そのターンの最新の
-user メッセージとして展開し、通常の会話と同じ流れ（`handlers/message_handler.py` の
+user メッセージとして（ユーザーの発言ではなくシステムからの動作指示と分かる形式で）
+展開し、通常の会話と同じ流れ（`handlers/message_handler.py` の
 `start_conversation`）で LLM へ渡す。展開後の内容は会話履歴にもそのまま残る
 （システムプロンプトには入れない）。
 
@@ -13,8 +14,7 @@ from __future__ import annotations
 import logging
 
 from lilla_core.commands.registry import register_command
-from lilla_core.services.message_util import format_skill_block
-from lilla_core.services.skills import normalize_skill_name
+from lilla_core.services.skills import format_skill_instruction, normalize_skill_name
 from lilla_core.ui.messages import t
 
 logger = logging.getLogger(__name__)
@@ -24,8 +24,9 @@ logger = logging.getLogger(__name__)
 async def handle_skill(message, arg: str, tools: dict, bot) -> None:
     """`!skill <スキル名> [追加指示]` の処理。
 
-    スキル名の後ろ（最初の空白以降）は追加指示として、展開したスキルブロックの後ろに
-    そのまま続ける。
+    スキル本文は `services/skills.py` の `format_skill_instruction` で「システムからの
+    動作指示」のラッパーに囲み、スキル名の後ろ（最初の空白以降）は追加指示として
+    ラベル付きでその後ろに続ける。
 
     Args:
         message: コマンドを送信した Discord メッセージ（承認済みコマンドの代理オブジェクトでもよい）。
@@ -61,5 +62,5 @@ async def handle_skill(message, arg: str, tools: dict, bot) -> None:
         return
 
     logger.info("[SKILL] Expanding skill '%s'", name)
-    content = format_skill_block(name, skill.get("prompt", ""), extra)
+    content = format_skill_instruction(name, skill.get("prompt", ""), extra)
     start_conversation(message, bot, get_llm_tools(), content)
