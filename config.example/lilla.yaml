@@ -84,7 +84,8 @@ bot:
   max_image_attachment_size_mb: 8
 
 memory:
-  # LLM へ渡す会話履歴の最大件数（既定: 30）
+  # LLM へ渡す会話履歴をさかのぼる件数の目安（既定: 30）。件数制限が効くときは
+  # 最も古い候補が属する時の開始（HH:00）以降をすべて含めるため、この件数を超えることがある
   max_history_turns: 30
   # 会話履歴を MongoDB に残す時間（既定: 72）。0 なら期限なしで残す
   conversation_ttl_hours: 72
