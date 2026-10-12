@@ -37,6 +37,7 @@ from lilla_core.loaders.task_tool_loader import load_all_tools
 from lilla_core.loaders.llm_tool_loader import get_llm_tools, validate_tool_sets
 from lilla_core.repository.conversation_repository import get_conversation_repo
 from lilla_core.repository.user_memo_repository import get_user_memo_repo
+from lilla_core.repository.skill_repository import get_skill_repo
 from lilla_core.repository.tool_cache_repository import get_tool_cache_repo
 from lilla_core.repository.button_actions_repository import get_button_actions_repo
 from lilla_core.repository.pending_tool_calls_repository import get_pending_tool_calls_repo
@@ -62,6 +63,7 @@ _config = get_config()
 _CORE_STARTUP_REPOS = [
     get_conversation_repo,
     get_user_memo_repo,
+    get_skill_repo,
     get_tool_cache_repo,
     get_button_actions_repo,
     get_pending_tool_calls_repo,

@@ -11,6 +11,7 @@ from lilla_core.services.message_util import (
     build_correlation_frontmatter,
     extract_meta_block,
     format_session_memory_block,
+    format_skill_block,
     parse_correlation_frontmatter,
     parse_message_flags,
     prepend_timestamp_prefix,
@@ -119,6 +120,22 @@ class TestFormatSessionMemoryBlock:
         """複数行の内容もそのままマーカーで挟まれる。"""
         result = format_session_memory_block("1行目\n2行目")
         assert result == "---SESSION_MEMORY---\n1行目\n2行目\n---END_SESSION_MEMORY---"
+
+
+class TestFormatSkillBlock:
+    def test_wraps_prompt_in_markers(self):
+        """本文を `---SKILL: 名前---` と `---END_SKILL---` で挟む。"""
+        result = format_skill_block("review", "1行目\n2行目")
+        assert result == "---SKILL: review---\n1行目\n2行目\n---END_SKILL---"
+
+    def test_appends_extra_after_blank_line(self):
+        """追加指示は空行を挟んでブロックの後ろに続ける。"""
+        result = format_skill_block("review", "本文", "  この PR を見て  ")
+        assert result == "---SKILL: review---\n本文\n---END_SKILL---\n\nこの PR を見て"
+
+    def test_blank_extra_is_omitted(self):
+        """空白だけの追加指示は付けない。"""
+        assert format_skill_block("review", "本文", "   ").endswith("---END_SKILL---")
 
 
 class TestExtractMetaBlock:

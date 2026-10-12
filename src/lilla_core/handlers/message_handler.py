@@ -77,6 +77,111 @@ async def _save_assistant_block(message, block: str, sent_msg) -> None:
     )
 
 
+async def _run_conversation_turn(
+    message, bot, llm_tools, content: str | list, memory_content: str | None, channel_id: int
+) -> None:
+    """1 ターン分の会話（履歴保存 → LLM 呼び出し → 分割送信 → 返答の履歴保存）を行う。
+
+    `start_conversation()` がチャンネルごとのタスクとして動かす本体。キャンセルされたら
+    送信済みのブロックだけを履歴に残して終える。
+
+    Args:
+        message: 返信元の Discord メッセージ（承認済みコマンドの代理オブジェクトでもよい）。
+        bot: Discord ボットインスタンス。エラー通知に使う。
+        llm_tools: LLM ツールのマップ。
+        content: LLM へ渡す最新の user メッセージ（文字列、または画像パートを含むリスト）。
+        memory_content: 会話履歴へ保存する内容。None なら `content` をそのまま保存する。
+        channel_id: 送信中タスクの管理と履歴の紐付けに使うチャンネル ID。
+    """
+    user_entry_id: str | None = None
+    try:
+        async with message.channel.typing():
+            save_content = memory_content if memory_content is not None else content
+            user_entry_id = await _memory_manager.add_conversation(
+                {"role": "user", "content": save_content},
+                discord_channel_id=channel_id,
+            )
+            override = content if memory_content is not None else None
+            reply = await run_conversation(
+                llm_tools,
+                client_type="discord",
+                discord_channel_id=channel_id,
+                llm_name=get_active_llm_name(),
+                override_last_user_content=override,
+                tool_call_notifier=lambda tool_name, depth: message.channel.send(
+                    format_tool_call_line(tool_name, depth)
+                ),
+            )
+            blocks = split_response(reply)
+            # 送信済みブロックを (本文, Discord メッセージ) のタプルで保持する。
+            # 会話履歴には対応する Discord メッセージの情報もあわせて残す。
+            sent_blocks = []
+            try:
+                for i, block in enumerate(blocks):
+                    sent_msg = await (
+                        message.reply(block) if i == 0 else message.channel.send(block)
+                    )
+                    sent_blocks.append((block, sent_msg))
+                    if i < len(blocks) - 1:
+                        await asyncio.sleep(2.00)
+            except asyncio.CancelledError:
+                # 送信済み分のみ履歴に保存して終了
+                for block, sent_msg in sent_blocks:
+                    await _save_assistant_block(message, block, sent_msg)
+                raise
+            # 正常完了時：全ブロックを履歴に保存
+            for block, sent_msg in sent_blocks:
+                await _save_assistant_block(message, block, sent_msg)
+    except asyncio.CancelledError:
+        pass
+    except LlmSendBlockedError as e:
+        # 止めた発言を履歴に残すと、以後の会話（別チャンネルや task も含む）の
+        # 送信ボディにも同じ語が入り続けるため、保存したばかりのこの発言を消す
+        await _discard_blocked_user_entry(user_entry_id)
+        # 一致した語は例外にも文言にも載らない（固定文言だけを通知する）
+        await notify_error(bot, t("message.llm_send_blocked"), e)
+    except Exception as e:
+        await notify_error(bot, t("message.error"), e)
+    finally:
+        current = asyncio.current_task()
+        if _discord_active_tasks.get(channel_id) is current:
+            _discord_active_tasks.pop(channel_id, None)
+
+
+def start_conversation(
+    message, bot, llm_tools, content: str | list, memory_content: str | None = None
+) -> asyncio.Task:
+    """Discord の会話 1 ターンをチャンネル単位のタスクとして開始する。
+
+    同じチャンネルで送信中のタスクがあればキャンセルしてから、新しいタスクを登録する。
+    通常会話（メンション・DM・登録チャンネル）と `!skill` コマンドが共有する入口で、
+    user メッセージの履歴保存・入力中表示・`run_conversation` の呼び出し・返答の
+    分割送信と履歴保存はすべてこの中で行う。
+
+    Args:
+        message: 返信元の Discord メッセージ。
+        bot: Discord ボットインスタンス。
+        llm_tools: LLM ツールのマップ。
+        content: LLM へ渡す最新の user メッセージ。
+        memory_content: 会話履歴へ保存する内容。None なら `content` をそのまま保存する。
+
+    Returns:
+        登録したタスク。
+    """
+    channel_id = message.channel.id
+
+    # 送信中のタスクがあればキャンセル
+    existing_task = _discord_active_tasks.get(channel_id)
+    if existing_task and not existing_task.done():
+        existing_task.cancel()
+
+    task = asyncio.create_task(
+        _run_conversation_turn(message, bot, llm_tools, content, memory_content, channel_id)
+    )
+    _discord_active_tasks[channel_id] = task
+    return task
+
+
 async def handle_message(message, bot, tools, llm_tools, message_hook) -> None:
     """Discord のメッセージ受信イベントを処理する。
 
@@ -132,67 +237,6 @@ async def handle_message(message, bot, tools, llm_tools, message_hook) -> None:
         or isinstance(message.channel, discord.DMChannel)
         or mention_optional
     ):
-        channel_id = message.channel.id
-
-        # 送信中のタスクがあればキャンセル
-        existing_task = _discord_active_tasks.get(channel_id)
-        if existing_task and not existing_task.done():
-            existing_task.cancel()
-
-        async def send_split_messages(message, content: str | list, memory_content: str | None = None):
-            user_entry_id: str | None = None
-            try:
-                async with message.channel.typing():
-                    save_content = memory_content if memory_content is not None else content
-                    user_entry_id = await _memory_manager.add_conversation(
-                        {"role": "user", "content": save_content},
-                        discord_channel_id=channel_id,
-                    )
-                    override = content if memory_content is not None else None
-                    reply = await run_conversation(
-                        llm_tools,
-                        client_type="discord",
-                        discord_channel_id=channel_id,
-                        llm_name=get_active_llm_name(),
-                        override_last_user_content=override,
-                        tool_call_notifier=lambda tool_name, depth: message.channel.send(
-                            format_tool_call_line(tool_name, depth)
-                        ),
-                    )
-                    blocks = split_response(reply)
-                    # 送信済みブロックを (本文, Discord メッセージ) のタプルで保持する。
-                    # 会話履歴には対応する Discord メッセージの情報もあわせて残す。
-                    sent_blocks = []
-                    try:
-                        for i, block in enumerate(blocks):
-                            sent_msg = await (
-                                message.reply(block) if i == 0 else message.channel.send(block)
-                            )
-                            sent_blocks.append((block, sent_msg))
-                            if i < len(blocks) - 1:
-                                await asyncio.sleep(2.00)
-                    except asyncio.CancelledError:
-                        # 送信済み分のみ履歴に保存して終了
-                        for block, sent_msg in sent_blocks:
-                            await _save_assistant_block(message, block, sent_msg)
-                        raise
-                    # 正常完了時：全ブロックを履歴に保存
-                    for block, sent_msg in sent_blocks:
-                        await _save_assistant_block(message, block, sent_msg)
-            except asyncio.CancelledError:
-                pass
-            except LlmSendBlockedError as e:
-                # 止めた発言を履歴に残すと、以後の会話（別チャンネルや task も含む）の
-                # 送信ボディにも同じ語が入り続けるため、保存したばかりのこの発言を消す
-                await _discard_blocked_user_entry(user_entry_id)
-                # 一致した語は例外にも文言にも載らない（固定文言だけを通知する）
-                await notify_error(bot, t("message.llm_send_blocked"), e)
-            except Exception as e:
-                await notify_error(bot, t("message.error"), e)
-            finally:
-                if _discord_active_tasks.get(channel_id) is task:
-                    _discord_active_tasks.pop(channel_id, None)
-
         image_attachments = image_attachment.filter_image_attachments(message.attachments)
 
         if image_attachments:
@@ -212,10 +256,8 @@ async def handle_message(message, bot, tools, llm_tools, message_hook) -> None:
             image_count = len(image_attachments)
             text_for_memory = (content + " " if content else "") + f"[画像 {image_count} 枚添付]"
 
-            task = asyncio.create_task(
-                send_split_messages(message, content_parts, memory_content=text_for_memory)
+            start_conversation(
+                message, bot, llm_tools, content_parts, memory_content=text_for_memory
             )
         else:
-            task = asyncio.create_task(send_split_messages(message, content))
-
-        _discord_active_tasks[channel_id] = task
+            start_conversation(message, bot, llm_tools, content)

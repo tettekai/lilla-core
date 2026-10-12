@@ -4,16 +4,22 @@
 // GET /api/dashboard/nav が正で、組み込みも拡張も同じ形で並ぶ。ハッシュと
 // 画面名の対応表はそのカタログから 1 度だけ組み立てる（二重管理しない）。
 
-// カタログを取れなかったときの退避。組み込み 4 画面だけはカタログ無しでも
+// カタログを取れなかったときの退避。組み込み 5 画面だけはカタログ無しでも
 // 開けるようにして、ナビの取得失敗でダッシュボードごと使えなくならないようにする。
 const FALLBACK_PAGES = [
   { name: 'home', label: 'Home', group: 'main', hash: '#/', module: null },
   { name: 'conversations', label: 'Conversations', group: 'main', hash: '#/conversations', module: null },
   { name: 'memos', label: 'Memos', group: 'main', hash: '#/memos', module: null },
+  { name: 'skills', label: 'Skills', group: 'main', hash: '#/skills', module: null },
   { name: 'logs', label: 'Admin', group: 'admin', hash: '#/admin/logs', module: null },
 ];
 
 const DEFAULT_HASH = '#/';
+
+// スキル名の規則（サーバー側の services/skills.py と同じ）。半角英数字・`_`・`-` のみで
+// 64 文字以内。大文字小文字は区別せず、サーバーが小文字に正規化して保存する。
+const SKILL_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const SKILL_NAME_HINT = '名前は半角英数字・アンダースコア・ハイフンのみ、64 文字以内で入力してください';
 const DEFAULT_TAB = 'home';
 
 function dashboardApp() {
@@ -85,6 +91,18 @@ function dashboardApp() {
       newContent: '',
       editingId: null,
       editContent: '',
+    },
+
+    skills: {
+      items: [],
+      loading: false,
+      newName: '',
+      newDescription: '',
+      newPrompt: '',
+      editingId: null,
+      editName: '',
+      editDescription: '',
+      editPrompt: '',
     },
 
     // ---- 認証 ----
@@ -207,6 +225,8 @@ function dashboardApp() {
         this.fetchConversations(this.conversations.page);
       } else if (tab === 'memos') {
         this.fetchMemos();
+      } else if (tab === 'skills') {
+        this.fetchSkills();
       } else if (tab === 'home') {
         this.fetchHomeStatus();
       }
@@ -611,6 +631,140 @@ function dashboardApp() {
         }
       } catch (e) {
         console.error('Failed to delete memo', e);
+        alert('削除に失敗しました');
+      }
+    },
+
+    // ---- Skills ----
+
+    isValidSkillName(name) {
+      return SKILL_NAME_RE.test(name);
+    },
+
+    // 失敗時はサーバーの応答本文（名前の規則違反・重複など）を添えて知らせる。
+    async alertSkillFailure(res, action) {
+      let detail = '';
+      try {
+        detail = await res.text();
+      } catch (e) {
+        detail = '';
+      }
+      if (res.status === 409) detail = '同じ名前のスキルが既にあります';
+      alert(action + 'に失敗しました' + (detail ? ': ' + detail : ''));
+    },
+
+    async fetchSkills() {
+      this.skills.loading = true;
+      try {
+        const res = await this.authedFetch('/api/skills');
+        const data = await res.json();
+        this.skills.items = data.items || [];
+      } catch (e) {
+        console.error('Failed to fetch skills', e);
+      } finally {
+        this.skills.loading = false;
+      }
+    },
+
+    async addSkill() {
+      const name = this.skills.newName.trim();
+      const description = this.skills.newDescription.trim();
+      const prompt = this.skills.newPrompt.trim();
+      if (!name || !prompt) return;
+      if (!this.isValidSkillName(name)) {
+        alert(SKILL_NAME_HINT);
+        return;
+      }
+      try {
+        const res = await this.authedFetch('/api/skills', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, description, prompt }),
+        });
+        if (res.ok) {
+          this.skills.newName = '';
+          this.skills.newDescription = '';
+          this.skills.newPrompt = '';
+          await this.fetchSkills();
+        } else {
+          await this.alertSkillFailure(res, '追加');
+        }
+      } catch (e) {
+        console.error('Failed to add skill', e);
+        alert('追加に失敗しました');
+      }
+    },
+
+    async toggleSkill(skill) {
+      try {
+        const res = await this.authedFetch('/api/skills/' + skill._id, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: !skill.enabled }),
+        });
+        if (res.ok) {
+          await this.fetchSkills();
+        } else {
+          await this.alertSkillFailure(res, '更新');
+        }
+      } catch (e) {
+        console.error('Failed to toggle skill', e);
+        alert('更新に失敗しました');
+      }
+    },
+
+    startSkillEdit(skill) {
+      this.skills.editingId = skill._id;
+      this.skills.editName = skill.name;
+      this.skills.editDescription = skill.description || '';
+      this.skills.editPrompt = skill.prompt;
+    },
+
+    cancelSkillEdit() {
+      this.skills.editingId = null;
+      this.skills.editName = '';
+      this.skills.editDescription = '';
+      this.skills.editPrompt = '';
+    },
+
+    async saveSkillEdit(skill) {
+      const name = this.skills.editName.trim();
+      const description = this.skills.editDescription.trim();
+      const prompt = this.skills.editPrompt.trim();
+      if (!name || !prompt) return;
+      if (!this.isValidSkillName(name)) {
+        alert(SKILL_NAME_HINT);
+        return;
+      }
+      try {
+        const res = await this.authedFetch('/api/skills/' + skill._id, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, description, prompt }),
+        });
+        if (res.ok) {
+          this.cancelSkillEdit();
+          await this.fetchSkills();
+        } else {
+          await this.alertSkillFailure(res, '更新');
+        }
+      } catch (e) {
+        console.error('Failed to save skill', e);
+        alert('更新に失敗しました');
+      }
+    },
+
+    async deleteSkill(skill) {
+      if (!window.confirm('スキル「' + skill.name + '」を削除しますか？')) return;
+      try {
+        const res = await this.authedFetch('/api/skills/' + skill._id, { method: 'DELETE' });
+        if (res.ok) {
+          await this.fetchSkills();
+        } else {
+          alert('削除に失敗しました');
+        }
+      } catch (e) {
+        console.error('Failed to delete skill', e);
         alert('削除に失敗しました');
       }
     },

@@ -56,7 +56,7 @@
     <header>
       <div class="header-bar">
         <h1>Lilla Dashboard</h1>
-        <!-- ナビは /api/dashboard/nav のカタログから組む。組み込みの 4 画面も
+        <!-- ナビは /api/dashboard/nav のカタログから組む。組み込みの 5 画面も
              拡張のページも同じ形で並ぶので、ここで区別しない。 -->
         <nav class="tabs">
           <template x-for="page in mainNav" :key="page.name">
@@ -230,6 +230,53 @@
           </div>
         </template>
         <div x-show="memos.items.length === 0" class="empty">メモがありません</div>
+      </div>
+    </section>
+
+    <!-- Skills Tab -->
+    <section x-show="activeTab === 'skills'">
+      <div class="skill-add-form">
+        <input type="text" x-model="skills.newName" placeholder="スキル名（例: review）" class="skill-name-input"
+          maxlength="64">
+        <input type="text" x-model="skills.newDescription" placeholder="説明（任意）" class="skill-description-input">
+        <textarea x-model="skills.newPrompt" placeholder="展開するプロンプト本文..." class="memo-input"
+          rows="5"></textarea>
+        <button @click="addSkill()" :disabled="!skills.newName.trim() || !skills.newPrompt.trim()">追加</button>
+      </div>
+
+      <div x-show="skills.loading" class="loading">読み込み中...</div>
+
+      <div class="memo-list" x-show="!skills.loading">
+        <template x-for="skill in skills.items" :key="skill._id">
+          <div :class="'memo-item' + (skill.enabled ? '' : ' memo-disabled')">
+            <div class="memo-content" x-show="skills.editingId !== skill._id">
+              <div class="skill-heading">
+                <code class="skill-name" x-text="'!skill ' + skill.name"></code>
+                <span class="skill-description" x-text="skill.description"></span>
+              </div>
+              <span x-text="skill.prompt"></span>
+            </div>
+            <div class="memo-edit-form skill-edit-form" x-show="skills.editingId === skill._id">
+              <input type="text" x-model="skills.editName" class="skill-name-input" maxlength="64">
+              <input type="text" x-model="skills.editDescription" placeholder="説明（任意）"
+                class="skill-description-input">
+              <textarea x-model="skills.editPrompt" @keydown.escape="cancelSkillEdit()"
+                class="memo-input" rows="5"></textarea>
+            </div>
+            <div class="memo-actions">
+              <span class="memo-time" x-text="formatDate(skill.updated_at)"></span>
+              <label class="memo-toggle">
+                <input type="checkbox" :checked="skill.enabled" @change="toggleSkill(skill)">
+                有効
+              </label>
+              <button x-show="skills.editingId !== skill._id" @click="startSkillEdit(skill)">編集</button>
+              <button x-show="skills.editingId === skill._id" @click="saveSkillEdit(skill)">保存</button>
+              <button x-show="skills.editingId === skill._id" @click="cancelSkillEdit()">キャンセル</button>
+              <button class="btn-delete" @click="deleteSkill(skill)" title="削除">×</button>
+            </div>
+          </div>
+        </template>
+        <div x-show="skills.items.length === 0" class="empty">スキルがありません</div>
       </div>
     </section>
 

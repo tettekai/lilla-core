@@ -305,3 +305,66 @@ class TestLlmSendBlocked:
         await message_handler._discord_active_tasks[200]
         following.reply.assert_awaited_once_with("返事")
         assert all(dummy not in str(entry["content"]) for entry in history.values())
+
+
+class TestStartConversation:
+    """通常会話と `!skill` が共有する `start_conversation()` を検証する。"""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        manager = MagicMock()
+        manager.add_conversation = AsyncMock(return_value="id0")
+        monkeypatch.setattr(message_handler, "_memory_manager", manager)
+        monkeypatch.setattr(message_handler, "_discord_active_tasks", {})
+        monkeypatch.setattr(message_handler, "split_response", lambda reply: [reply])
+        self.manager = manager
+
+    async def test_saves_user_message_runs_llm_and_replies(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """user 発言の保存 → 会話 → 返信 → 返答の保存までを 1 つのタスクで行う。"""
+        run = AsyncMock(return_value="返事")
+        monkeypatch.setattr(message_handler, "run_conversation", run)
+        message = _make_message(100)
+        message.reply = AsyncMock(return_value=MagicMock(id=555))
+
+        task = message_handler.start_conversation(message, MagicMock(), {}, "展開した本文")
+        assert message_handler._discord_active_tasks[100] is task
+        await task
+
+        user_call, assistant_call = self.manager.add_conversation.await_args_list
+        assert user_call.args[0] == {"role": "user", "content": "展開した本文"}
+        assert user_call.kwargs["discord_channel_id"] == 100
+        assert run.await_args.kwargs["override_last_user_content"] is None
+        message.reply.assert_awaited_once_with("返事")
+        assert assistant_call.args[0] == {"role": "assistant", "content": "返事"}
+        assert assistant_call.kwargs["discord_message_ids"] == [555]
+        # 終わったタスクは管理表から外れる
+        assert 100 not in message_handler._discord_active_tasks
+
+    async def test_cancels_running_task_in_same_channel(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """同じチャンネルで実行中のタスクがあればキャンセルする。"""
+        import asyncio
+
+        started = asyncio.Event()
+
+        async def slow_run(*args, **kwargs):
+            started.set()
+            await asyncio.sleep(10)
+            return "遅い返事"
+
+        monkeypatch.setattr(message_handler, "run_conversation", slow_run)
+        message = _make_message(100)
+        message.reply = AsyncMock(return_value=MagicMock(id=1))
+
+        first = message_handler.start_conversation(message, MagicMock(), {}, "1 回目")
+        await started.wait()
+        monkeypatch.setattr(message_handler, "run_conversation", AsyncMock(return_value="返事"))
+        second = message_handler.start_conversation(message, MagicMock(), {}, "2 回目")
+        await asyncio.gather(first, second)
+
+        assert first.cancelled() or first.done()
+        message.reply.assert_awaited_once_with("返事")
+        assert 100 not in message_handler._discord_active_tasks
