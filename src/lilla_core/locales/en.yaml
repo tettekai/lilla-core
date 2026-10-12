@@ -29,7 +29,9 @@ command:
     none: "(none)"
 
   skill:
-    usage: "Specify a skill name: `!skill <skill name> [additional instructions]`"
+    list_header: "Available skills:"
+    list_footer: "Usage: `!skill <skill name> [additional instructions]`"
+    list_empty: "No skills are available. You can register them on the Skills page of the dashboard."
     not_found: "Skill '{name}' was not found."
     disabled: "Skill '{name}' is disabled."
     # The wrapper used when an expanded skill is passed to the LLM (format_skill_instruction in services/skills.py)

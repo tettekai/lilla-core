@@ -17,6 +17,7 @@ def repo(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     """スキルリポジトリ・会話の開始・LLM ツールを差し替える。"""
     repo = MagicMock()
     repo.find_by_name = AsyncMock(return_value=None)
+    repo.get_enabled = AsyncMock(return_value=[])
 
     repo_module = MagicMock()
     repo_module.get_skill_repo = MagicMock(return_value=repo)
@@ -37,6 +38,7 @@ def repo(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 def _make_message() -> MagicMock:
     msg = MagicMock()
     msg.reply = AsyncMock()
+    msg.channel.send = AsyncMock()
     return msg
 
 
@@ -101,18 +103,78 @@ class TestHandleSkill:
         msg.reply.assert_awaited_once_with("スキル '日本語' は見つかりません。")
         repo.start_conversation.assert_not_called()
 
-    @pytest.mark.parametrize("arg", ["", "   "])
-    async def test_missing_name_replies_usage(self, repo: MagicMock, arg: str) -> None:
-        """スキル名が無ければ使い方を返す。"""
-        msg = _make_message()
-
-        await skill_command.handle_skill(msg, arg, {}, MagicMock())
-
-        assert "!skill" in msg.reply.await_args.args[0]
-        repo.start_conversation.assert_not_called()
-
     async def test_registered_as_command(self) -> None:
         """`skill` がコマンドレジストリに登録されている。"""
         from lilla_core.commands.registry import get_command_handler
 
         assert get_command_handler("skill") is skill_command.handle_skill
+
+
+class TestSkillList:
+    @pytest.mark.parametrize("arg", ["", "   "])
+    async def test_lists_enabled_skills_without_llm(self, repo: MagicMock, arg: str) -> None:
+        """引数なしなら有効なスキルの一覧をリポジトリの順で返し、会話を始めない。"""
+        repo.get_enabled.return_value = [
+            {"name": "alpha", "description": "最初のスキル"},
+            {"name": "beta", "description": ""},
+            {"name": "gamma"},
+        ]
+        msg = _make_message()
+
+        await skill_command.handle_skill(msg, arg, {}, MagicMock())
+
+        repo.get_enabled.assert_awaited_once_with()
+        repo.find_by_name.assert_not_awaited()
+        repo.start_conversation.assert_not_called()
+        msg.reply.assert_awaited_once_with(
+            "利用できるスキル:\n"
+            "- `alpha`: 最初のスキル\n"
+            "- `beta`\n"
+            "- `gamma`\n"
+            "呼び出し方: `!skill <スキル名> [追加指示]`"
+        )
+        msg.channel.send.assert_not_awaited()
+
+    async def test_description_newlines_become_spaces(self, repo: MagicMock) -> None:
+        """説明内の改行は空白に置き換えて 1 行にする。"""
+        repo.get_enabled.return_value = [
+            {"name": "review", "description": "1 行目\n2 行目\r\n3 行目"},
+        ]
+        msg = _make_message()
+
+        await skill_command.handle_skill(msg, "", {}, MagicMock())
+
+        assert "- `review`: 1 行目 2 行目 3 行目\n" in msg.reply.await_args.args[0]
+
+    async def test_empty_list_replies_list_empty(self, repo: MagicMock) -> None:
+        """有効なスキルが 0 件なら list_empty の文言を返す。"""
+        msg = _make_message()
+
+        await skill_command.handle_skill(msg, "", {}, MagicMock())
+
+        msg.reply.assert_awaited_once_with(
+            "利用できるスキルはありません。ダッシュボードのスキルページから登録できます。"
+        )
+        repo.start_conversation.assert_not_called()
+
+    async def test_long_list_is_split_on_line_boundaries(self, repo: MagicMock) -> None:
+        """2000 文字を超える一覧は行の境界で複数メッセージに分けて同じチャンネルへ送る。"""
+        repo.get_enabled.return_value = [
+            {"name": f"skill-{i:03d}", "description": "説" * 80} for i in range(40)
+        ]
+        msg = _make_message()
+
+        await skill_command.handle_skill(msg, "", {}, MagicMock())
+
+        sent = [msg.reply.await_args.args[0]] + [
+            call.args[0] for call in msg.channel.send.await_args_list
+        ]
+        assert len(sent) > 1
+        assert all(len(chunk) <= 2000 for chunk in sent)
+        expected = (
+            ["利用できるスキル:"]
+            + [f"- `skill-{i:03d}`: {'説' * 80}" for i in range(40)]
+            + ["呼び出し方: `!skill <スキル名> [追加指示]`"]
+        )
+        # 各メッセージを行に戻して並べると、元の一覧と行単位で一致する（行の途中で切れていない）
+        assert [line for chunk in sent for line in chunk.split("\n")] == expected

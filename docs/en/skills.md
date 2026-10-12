@@ -20,7 +20,7 @@ enable / disable them.
 | Field | Meaning |
 |-------|---------|
 | Name | The name used to call the skill (required) |
-| Description | Shown in the list (optional; planned as a hint for the LLM to choose skills) |
+| Description | Shown in the list (optional; shown in the dashboard list and in the `!skill` list; planned as a hint for the LLM to choose skills) |
 | Prompt | The prompt that is expanded (required) |
 | Enabled | Disabled skills cannot be called (new skills start enabled) |
 
@@ -87,3 +87,28 @@ The wrapper text and the label follow `ui.locale` (with `ja` they are
   channel without calling the LLM
 - `!skill` from anyone other than the owner goes through the approval flow, like other
   commands (it runs once approved in the approval channel)
+
+### Listing skills
+
+Sending `!skill` without a skill name (an argument of only whitespace counts the same)
+replies with the list of skills you can call, in the same channel, without calling the
+LLM. With `ui.locale: en`:
+
+```text
+Available skills:
+- `proofread`: Proofread text
+- `review`
+Usage: `!skill <skill name> [additional instructions]`
+```
+
+- Only **enabled skills** are listed, sorted by skill name in ascending order. Disabled
+  skills cannot be called, so they are not listed
+- A skill with a description is shown as `name: description`, one without as just the
+  name. Line breaks in the description are replaced with spaces to keep it on one line
+  (long descriptions are not truncated)
+- If there are no enabled skills, you get "No skills are available" instead of a list,
+  together with a note that you can register them on the Skills page of the dashboard
+- If the list does not fit in one Discord message, it is split at line boundaries and sent
+  as several consecutive messages
+- Listing from anyone other than the owner also goes through the approval flow; once
+  approved, the list is sent back to the original channel

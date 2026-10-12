@@ -69,6 +69,16 @@ class SkillRepository:
         cursor = self._collection.find({}, _PROJECTION).sort("name", ASCENDING)
         return await cursor.to_list(length=None)
 
+    async def get_enabled(self) -> list[dict]:
+        """有効なスキルだけを名前順で返す（`!skill` の一覧用）。
+
+        `enabled` を持たないドキュメントは有効として扱う。
+        """
+        cursor = self._collection.find(
+            {"enabled": {"$ne": False}}, _PROJECTION
+        ).sort("name", ASCENDING)
+        return await cursor.to_list(length=None)
+
     async def find_by_name(self, name: str) -> dict | None:
         """正規化済みの名前でスキルを 1 件取得する。無ければ None を返す。"""
         return await self._collection.find_one({"name": name}, _PROJECTION)
