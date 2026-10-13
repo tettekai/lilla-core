@@ -10,6 +10,7 @@ command:
     unknown_title: "Command error"
     unknown: "Unknown command: !{name}\nCurrently supported commands: {supported}"
     error: "An error occurred while processing the command"
+    discord_only: "!{name} can only be run from Discord."
 
   cleardirty:
     not_found: "No history entry to delete was found."

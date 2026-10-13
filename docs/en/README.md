@@ -32,6 +32,7 @@ The index of the lilla-core user documentation.
 ## Extensions
 
 - [Extension basics](extensions.md) — method table, collision rules, locale catalogs, dependencies, compatibility
+- [Writing commands and running them outside Discord](commands.md) — `CommandContext` and `dispatch_command`
 - [Config composition](extension-config.md) — `config_model()` / `env_fields()` / `get_section()`
 - [Dashboard contributions](extension-dashboard.md)
 - [Testing an extension](extension-testing.md) — `lilla_core.testing`

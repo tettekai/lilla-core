@@ -10,6 +10,7 @@ command:
     unknown_title: "コマンド処理エラー"
     unknown: "未知のコマンドです: !{name}\n現在サポートしているコマンド: {supported}"
     error: "コマンド処理中にエラーが発生しました"
+    discord_only: "!{name} は Discord からのみ実行できます。"
 
   cleardirty:
     not_found: "削除対象の履歴が見つかりません。"

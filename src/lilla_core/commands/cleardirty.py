@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 @register_command("cleardirty")
-async def handle_cleardirty(message, arg: str, tools: dict, bot) -> None:
+async def handle_cleardirty(ctx, arg: str, tools: dict, bot) -> None:
     """tags に "dirty" を含む直近 1 件の会話履歴と、対応する Discord メッセージを削除する。
 
     `!toolresult` の配送で保存された返信は、外部エージェント由来のテキストを LLM に
@@ -26,7 +26,7 @@ async def handle_cleardirty(message, arg: str, tools: dict, bot) -> None:
     残っていない場合（Discord 以外のクライアント経由の配送など）は会話履歴の削除のみを行う。
 
     Args:
-        message: コマンドを送信した Discord メッセージ。結果の返信に使用する。
+        ctx: コマンドコンテキスト。結果の返信に使用する。
         arg: コマンド名の後ろに続く引数文字列（このコマンドでは使用しない）。
         tools: ツールレジストリ（未使用）。
         bot: Discord クライアント。削除対象メッセージの取得に使用する。
@@ -36,7 +36,7 @@ async def handle_cleardirty(message, arg: str, tools: dict, bot) -> None:
     repo = get_conversation_repo()
     record = await repo.find_latest_by_tag("dirty")
     if record is None:
-        await message.reply(t("command.cleardirty.not_found"))
+        await ctx.reply(t("command.cleardirty.not_found"))
         return
 
     deleted_discord = 0
@@ -55,4 +55,4 @@ async def handle_cleardirty(message, arg: str, tools: dict, bot) -> None:
                     logger.warning("!cleardirty: Failed to delete Discord message: %s", e)
 
     await repo.delete(str(record["_id"]))
-    await message.reply(t("command.cleardirty.deleted", discord_count=deleted_discord))
+    await ctx.reply(t("command.cleardirty.deleted", discord_count=deleted_discord))

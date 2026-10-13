@@ -1,7 +1,8 @@
 """コマンド共通の Discord ユーティリティ。
 
 複数のコマンド（`toolresult` / `cleardirty`）が共有するチャンネル解決処理と、
-Discord の 1 メッセージ上限に収めるための行単位の分割処理（`skill`）を置く。
+Discord の 1 メッセージ上限に収めるための行単位の分割処理（Discord 用のコマンド
+コンテキスト `handlers/command_handler.DiscordCommandContext` の返信）を置く。
 コマンドを登録しないモジュールなので `load_all_commands()` から import されても
 レジストリには影響しない。
 """

@@ -16,6 +16,9 @@ _EXPECTED_COMMANDS = {"mongodata", "runtask", "cleardirty", "toolresult"}
 def isolated_registry(monkeypatch: pytest.MonkeyPatch) -> None:
     """レジストリをコピーに差し替え、テスト内の登録が他テストへ漏れないようにする。"""
     monkeypatch.setattr(registry, "_KNOWN_COMMANDS", dict(registry._KNOWN_COMMANDS))
+    monkeypatch.setattr(
+        registry, "_DISCORD_ONLY_COMMANDS", set(registry._DISCORD_ONLY_COMMANDS)
+    )
 
 
 class TestRegisterCommand:
@@ -51,6 +54,31 @@ class TestRegisterCommand:
         registry.register_command("dummy")(handler)
 
         assert registry.get_command_handler("dummy") is handler
+
+
+class TestIsDiscordOnly:
+    def test_defaults_to_false(self) -> None:
+        """`discord_only` を指定しなければ Discord 専用にならない。"""
+        registry.register_command("plain")(AsyncMock())
+        assert registry.is_discord_only("plain") is False
+
+    def test_registered_as_discord_only(self) -> None:
+        """`discord_only=True` で登録したコマンドは Discord 専用になる。"""
+        registry.register_command("discord_thing", discord_only=True)(AsyncMock())
+        assert registry.is_discord_only("discord_thing") is True
+
+    def test_unknown_command_is_not_discord_only(self) -> None:
+        """未登録のコマンド名は Discord 専用ではない。"""
+        assert registry.is_discord_only("nosuch") is False
+
+    def test_reregistering_same_handler_updates_flag(self) -> None:
+        """同じハンドラの再登録では最後の指定が有効になる。"""
+        async def handler(ctx, arg, tools, bot) -> None:
+            """テスト用のハンドラ。"""
+
+        registry.register_command("toggle", discord_only=True)(handler)
+        registry.register_command("toggle")(handler)
+        assert registry.is_discord_only("toggle") is False
 
 
 class TestKnownCommandNames:

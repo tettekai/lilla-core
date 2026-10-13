@@ -8,12 +8,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from lilla_core.commands import runtask
+from lilla_core.handlers.command_handler import DiscordCommandContext
 
 
 def _make_message() -> MagicMock:
     msg = MagicMock()
     msg.reply = AsyncMock()
     return msg
+
+
+async def _run(msg: MagicMock, arg: str, tools: dict, bot):
+    """Discord 用のコンテキストでコマンドハンドラを呼び出し、結果を返す。"""
+    ctx = DiscordCommandContext(msg, bot)
+    await runtask.handle_runtask(ctx, arg, tools, bot)
+    return ctx.build_result()
 
 
 _FAKE_LLM_TOOLS = {"llm_dummy": {"schema": {}, "execute": None}}
@@ -58,7 +66,8 @@ class TestHandleRuntask:
         """ツール名が指定されていない場合はエラー通知のみ行う。"""
         msg = _make_message()
         bot = MagicMock()
-        await runtask.handle_runtask(msg, "", {}, bot)
+        result = await _run(msg, "", {}, bot)
+        assert result.status == "error"
         mock_notify_error.assert_called_once()
         assert mock_notify_error.call_args[0][0] is bot
         assert "ツール名" in _notified_text(mock_notify_error)
@@ -66,7 +75,8 @@ class TestHandleRuntask:
 
     async def test_unknown_tool_notifies_not_found(self, mock_notify_error: AsyncMock) -> None:
         msg = _make_message()
-        await runtask.handle_runtask(msg, "no_such_tool", {}, MagicMock())
+        result = await _run(msg, "no_such_tool", {}, MagicMock())
+        assert result.status == "error"
         mock_notify_error.assert_called_once()
         assert "見つかりません" in _notified_text(mock_notify_error)
         msg.reply.assert_not_called()
@@ -77,7 +87,8 @@ class TestHandleRuntask:
         msg = _make_message()
         tools = _make_tools()
         bot = MagicMock()
-        await runtask.handle_runtask(msg, "task_tool", tools, bot)
+        result = await _run(msg, "task_tool", tools, bot)
+        assert result.status == "ok"
         tools["task_tool"]["instance"].execute.assert_called_once()
         call_args = tools["task_tool"]["instance"].execute.call_args[0][0]
         assert call_args["discord_client"] is bot
@@ -88,7 +99,8 @@ class TestHandleRuntask:
         """引数の前後の空白は無視される。"""
         msg = _make_message()
         tools = _make_tools()
-        await runtask.handle_runtask(msg, "  task_tool  ", tools, MagicMock())
+        result = await _run(msg, "  task_tool  ", tools, MagicMock())
+        assert result.status == "ok"
         tools["task_tool"]["instance"].execute.assert_called_once()
 
     async def test_non_task_tool_notifies_unsupported(
@@ -96,7 +108,8 @@ class TestHandleRuntask:
     ) -> None:
         msg = _make_message()
         tools = _make_tools()
-        await runtask.handle_runtask(msg, "other_tool", tools, MagicMock())
+        result = await _run(msg, "other_tool", tools, MagicMock())
+        assert result.status == "error"
         mock_notify_error.assert_called_once()
         assert "対応していません" in _notified_text(mock_notify_error)
         msg.reply.assert_not_called()
@@ -108,7 +121,8 @@ class TestHandleRuntask:
         msg = _make_message()
         tools = _make_tools()
         tools["task_tool"]["instance"].execute = AsyncMock(side_effect=Exception("tool error"))
-        await runtask.handle_runtask(msg, "task_tool", tools, MagicMock())
+        result = await _run(msg, "task_tool", tools, MagicMock())
+        assert result.status == "error"
         msg.reply.assert_not_called()
         mock_notify_error.assert_called_once()
         assert "エラーが発生しました" in _notified_text(mock_notify_error)

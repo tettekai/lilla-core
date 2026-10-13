@@ -43,17 +43,18 @@ def _available_names(config) -> str:
 
 
 @register_command("model")
-async def handle_model(message, arg: str, tools: dict, bot) -> None:
+async def handle_model(ctx, arg: str, tools: dict, bot) -> None:
     """`!model [プロバイダー名 | reset]` の処理。
 
     引数なしの場合は状態を変えず、`lilla.yaml` の `llm.providers` に定義された
     プロバイダーの一覧と、今有効なモデル名（上書きが無ければ `llm.default`）を返信する。
     `reset` の場合は上書きを解除して `llm.default` に戻す（`reset` はプロバイダー名に
     使えない予約語で、起動時に検証済み）。それ以外は定義済みのプロバイダーへ切り替え、
-    未定義の名前が指定された場合は状態を変更せず、利用可能な名前の一覧を返信する。
+    未定義の名前が指定された場合は状態を変更せず、利用可能な名前の一覧を入力ミスとして
+    返す（`ctx.reply_error`）。
 
     Args:
-        message: コマンドを送信した Discord メッセージ。結果の返信に使用する。
+        ctx: コマンドコンテキスト。結果の返信に使用する。
         arg: 切り替え先のプロバイダー名、または `reset`（無い場合は空文字列）。
         tools: ツールレジストリ（未使用）。
         bot: Discord クライアント（未使用）。
@@ -63,7 +64,7 @@ async def handle_model(message, arg: str, tools: dict, bot) -> None:
 
     if not name:
         current = get_active_llm_name() or config.llm.default
-        await message.reply(
+        await ctx.reply(
             t("command.model.status", current=current, available=_available_names(config))
         )
         return
@@ -71,15 +72,15 @@ async def handle_model(message, arg: str, tools: dict, bot) -> None:
     if name == RESET_KEYWORD:
         reset_active_llm_name()
         logger.info("[MODEL] Reverted to default model (%s)", config.llm.default)
-        await message.reply(t("command.model.reset", model=config.llm.default))
+        await ctx.reply(t("command.model.reset", model=config.llm.default))
         return
 
     if name not in config.llm.providers:
-        await message.reply(
+        await ctx.reply_error(
             t("command.model.not_found", name=name, available=_available_names(config))
         )
         return
 
     set_active_llm_name(name)
     logger.info("[MODEL] Switched model to %s", name)
-    await message.reply(t("command.model.switched", model=name))
+    await ctx.reply(t("command.model.switched", model=name))

@@ -14,7 +14,9 @@
   （LLM API の課金が毎回 1 往復分だけ発生する）
 
 他のコマンド（`!mongodata` 等）と異なり `notify_error` のみで済ませず、診断が目的の
-ため結果は常に呼び出し元チャンネルへ返す。
+ため結果は常に呼び出し元チャンネルへ返す。詳細を添付ファイルで送るため Discord 専用
+（`discord_only=True`）で、Discord 以外のクライアントは共有 HTTP サーバーの
+`GET /api/selftest` を使う。
 """
 from __future__ import annotations
 
@@ -73,8 +75,8 @@ def _build_detail(results: list[CheckResult]) -> str:
     return "\n".join(lines)
 
 
-@register_command("selftest")
-async def handle_selftest(message, arg: str, tools: dict, bot) -> None:
+@register_command("selftest", discord_only=True)
+async def handle_selftest(ctx, arg: str, tools: dict, bot) -> None:
     """`!selftest [full]` の処理。
 
     各チェックを順に実行し、要約を本文・詳細を添付ファイル（`selftest_result.txt`）
@@ -82,7 +84,8 @@ async def handle_selftest(message, arg: str, tools: dict, bot) -> None:
     1 件の失敗が他のチェックの実行を妨げることはない。
 
     Args:
-        message: コマンドを送信した Discord メッセージ。結果の送信に使用する。
+        ctx: コマンドコンテキスト（Discord 用）。`ctx.discord_message` のチャンネルへ
+            結果を送信する。
         arg: コマンド名の後ろに続く引数文字列。`full` なら LLM 疎通確認も行う。
         tools: task ツールのレジストリ。件数チェックに使用する。
         bot: Discord クライアント（未使用）。
@@ -94,4 +97,6 @@ async def handle_selftest(message, arg: str, tools: dict, bot) -> None:
     attachment = discord.File(
         io.BytesIO(_build_detail(results).encode("utf-8")), filename=RESULT_FILENAME
     )
-    await message.channel.send(content=_build_summary(results, full_mode), file=attachment)
+    await ctx.discord_message.channel.send(
+        content=_build_summary(results, full_mode), file=attachment
+    )

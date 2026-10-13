@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from lilla_core.commands import attachment_body, mongodata
+from lilla_core.handlers.command_handler import DiscordCommandContext
 
 
 def _make_message(attachments: list | None = None) -> MagicMock:
@@ -84,9 +85,12 @@ def _notified_text(mock_notify_error: AsyncMock) -> str:
     return f"{context}: {error}"
 
 
-async def _run(msg: MagicMock, arg: str, bot: MagicMock | None = None) -> None:
-    """コマンドハンドラを呼び出す（未使用の tools はダミー）。"""
-    await mongodata.handle_mongodata(msg, arg, {}, bot or MagicMock())
+async def _run(msg: MagicMock, arg: str, bot: MagicMock | None = None):
+    """Discord 用のコンテキストでコマンドハンドラを呼び出し、結果を返す（未使用の tools はダミー）。"""
+    bot = bot or MagicMock()
+    ctx = DiscordCommandContext(msg, bot)
+    await mongodata.handle_mongodata(ctx, arg, {}, bot)
+    return ctx.build_result()
 
 
 class TestHandleMongodata:
@@ -95,7 +99,8 @@ class TestHandleMongodata:
     ) -> None:
         _patch_mongo(monkeypatch, _make_config())
         msg = _make_message()
-        await _run(msg, "{invalid")
+        result = await _run(msg, "{invalid")
+        assert result.status == "error"
         mock_notify_error.assert_called_once()
         assert "パース" in _notified_text(mock_notify_error)
         msg.reply.assert_not_called()
@@ -106,7 +111,8 @@ class TestHandleMongodata:
         """本文にも添付にも JSON が無い場合は BODY 未検出として通知する。"""
         _patch_mongo(monkeypatch, _make_config())
         msg = _make_message()
-        await _run(msg, "")
+        result = await _run(msg, "")
+        assert result.status == "error"
         mock_notify_error.assert_called_once()
         assert "BODY" in _notified_text(mock_notify_error)
         msg.reply.assert_not_called()
@@ -116,7 +122,8 @@ class TestHandleMongodata:
     ) -> None:
         _patch_mongo(monkeypatch, _make_config())
         msg = _make_message()
-        await _run(msg, '{"payload": {}}')
+        result = await _run(msg, '{"payload": {}}')
+        assert result.status == "error"
         mock_notify_error.assert_called_once()
         assert "collection" in _notified_text(mock_notify_error)
         msg.reply.assert_not_called()
@@ -126,7 +133,8 @@ class TestHandleMongodata:
     ) -> None:
         _patch_mongo(monkeypatch, _make_config(allowed=["other"]))
         msg = _make_message()
-        await _run(msg, '{"collection": "asken_daily", "payload": {}}')
+        result = await _run(msg, '{"collection": "asken_daily", "payload": {}}')
+        assert result.status == "error"
         mock_notify_error.assert_called_once()
         assert "許可されていない" in _notified_text(mock_notify_error)
         msg.reply.assert_not_called()
@@ -136,7 +144,8 @@ class TestHandleMongodata:
     ) -> None:
         _patch_mongo(monkeypatch, _make_config())
         msg = _make_message()
-        await _run(msg, '{"collection": "asken_daily", "payload": "notdict"}')
+        result = await _run(msg, '{"collection": "asken_daily", "payload": "notdict"}')
+        assert result.status == "error"
         mock_notify_error.assert_called_once()
         assert "payload" in _notified_text(mock_notify_error)
         msg.reply.assert_not_called()
@@ -146,7 +155,8 @@ class TestHandleMongodata:
     ) -> None:
         col = _patch_mongo(monkeypatch, _make_config())
         msg = _make_message()
-        await _run(msg, '{"collection": "asken_daily", "payload": {"a": 1}}')
+        result = await _run(msg, '{"collection": "asken_daily", "payload": {"a": 1}}')
+        assert result.status == "ok"
         col.insert_one.assert_called_once_with({"a": 1})
         col.update_one.assert_not_called()
         msg.reply.assert_not_called()

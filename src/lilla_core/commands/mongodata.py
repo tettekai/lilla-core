@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 @register_command("mongodata")
-async def handle_mongodata(message, arg: str, tools: dict, bot) -> None:
+async def handle_mongodata(ctx, arg: str, tools: dict, bot) -> None:
     """`!mongodata <JSON>` の処理。正常時は INFO ログのみ、エラー時は notify_error で通知する。
 
     JSON 本体はコマンド名の後ろ（同じ行でも次の行でもよい）に置く::
@@ -30,10 +30,12 @@ async def handle_mongodata(message, arg: str, tools: dict, bot) -> None:
 
     JSON の後ろに続く文章は無視する（外部サービスが案内文を付けてくる場合がある）。
 
-    エラーは元のチャンネルへ返信せず、ERROR ログとエラー通知チャンネルにのみ出力する。
+    エラーは元のチャンネルへ返信せず、ERROR ログとエラー通知チャンネルにのみ出力し、
+    `dispatch_command` の結果を error にする（Discord 以外の呼び出し元はこれで失敗を知る）。
 
     Args:
-        message: Discord メッセージ。添付ファイルの BODY 解決に使用する。
+        ctx: コマンドコンテキスト。添付ファイル（`ctx.attachments`）の BODY 解決と
+            失敗の記録に使用する。
         arg: コマンド名の後ろに続く引数文字列（JSON 本体）。
         tools: ツールレジストリ（未使用）。
         bot: Discord クライアント。エラー通知に使用する。
@@ -43,8 +45,9 @@ async def handle_mongodata(message, arg: str, tools: dict, bot) -> None:
 
     config = get_config()
 
-    body_text = await resolve_command_body(message, arg, bot, "!mongodata")
+    body_text = await resolve_command_body(ctx, arg, bot, "!mongodata")
     if body_text is None:
+        ctx.mark_failed()
         return
 
     try:
@@ -52,6 +55,7 @@ async def handle_mongodata(message, arg: str, tools: dict, bot) -> None:
         body, _ = decoder.raw_decode(body_text.strip())
     except json.JSONDecodeError as e:
         await notify_error(bot, t("command.mongodata.json_parse_title"), e)
+        ctx.mark_failed()
         return
 
     collection_name = body.get("collection", "").strip()
@@ -61,6 +65,7 @@ async def handle_mongodata(message, arg: str, tools: dict, bot) -> None:
             t("command.mongodata.invalid_request_title"),
             t("command.mongodata.collection_required"),
         )
+        ctx.mark_failed()
         return
 
     if collection_name not in config.commands.mongodata.allowed_collections:
@@ -69,6 +74,7 @@ async def handle_mongodata(message, arg: str, tools: dict, bot) -> None:
             t("command.mongodata.invalid_request_title"),
             t("command.mongodata.collection_not_allowed", collection=collection_name),
         )
+        ctx.mark_failed()
         return
 
     payload = body.get("payload")
@@ -78,6 +84,7 @@ async def handle_mongodata(message, arg: str, tools: dict, bot) -> None:
             t("command.mongodata.invalid_request_title"),
             t("command.mongodata.invalid_payload"),
         )
+        ctx.mark_failed()
         return
 
     payload.pop("_id", None)
@@ -96,6 +103,7 @@ async def handle_mongodata(message, arg: str, tools: dict, bot) -> None:
                     t("command.mongodata.invalid_request_title"),
                     t("command.mongodata.key_field_missing", key_field=key_field),
                 )
+                ctx.mark_failed()
                 return
             await col.update_one(
                 {key_field: key_value},
@@ -112,3 +120,4 @@ async def handle_mongodata(message, arg: str, tools: dict, bot) -> None:
 
     except Exception as e:
         await notify_error(bot, t("command.mongodata.db_error_title"), e)
+        ctx.mark_failed()

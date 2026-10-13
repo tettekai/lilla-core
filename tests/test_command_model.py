@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 model_command = importlib.import_module("lilla_core.commands.model")
+command_handler = importlib.import_module("lilla_core.handlers.command_handler")
 runtime_state = importlib.import_module("lilla_core.core.runtime_state")
 
 
@@ -35,9 +36,11 @@ def _make_message() -> MagicMock:
     return msg
 
 
-async def _run(msg: MagicMock, arg: str) -> None:
-    """コマンドハンドラを呼び出す（tools / bot は未使用）。"""
-    await model_command.handle_model(msg, arg, {}, MagicMock())
+async def _run(msg: MagicMock, arg: str):
+    """Discord 用のコンテキストでコマンドハンドラを呼び出し、結果を返す（tools / bot は未使用）。"""
+    ctx = command_handler.DiscordCommandContext(msg, MagicMock())
+    await model_command.handle_model(ctx, arg, {}, MagicMock())
+    return ctx.build_result()
 
 
 class TestHandleModel:
@@ -110,8 +113,9 @@ class TestHandleModel:
         runtime_state.set_active_llm_name("deepseek-pro")
         msg = _make_message()
 
-        await _run(msg, "unknown-model")
+        result = await _run(msg, "unknown-model")
 
+        assert result.status == "error"
         assert runtime_state.get_active_llm_name() == "deepseek-pro"
         reply = msg.reply.call_args[0][0]
         assert "モデル 'unknown-model' は見つかりません" in reply
