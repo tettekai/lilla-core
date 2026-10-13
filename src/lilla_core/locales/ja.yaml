@@ -29,7 +29,9 @@ command:
     none: "（なし）"
 
   skill:
-    usage: "スキル名を指定してください: `!skill <スキル名> [追加指示]`"
+    list_header: "利用できるスキル:"
+    list_footer: "呼び出し方: `!skill <スキル名> [追加指示]`"
+    list_empty: "利用できるスキルはありません。ダッシュボードのスキルページから登録できます。"
     not_found: "スキル '{name}' は見つかりません。"
     disabled: "スキル '{name}' は無効になっています。"
     # 以下は展開したスキルを LLM へ渡すときのラッパー（services/skills.py の format_skill_instruction）

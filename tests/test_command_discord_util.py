@@ -6,7 +6,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from lilla_core.commands.discord_util import resolve_discord_channel  # noqa: E402
+from lilla_core.commands.discord_util import (  # noqa: E402
+    DISCORD_CHUNK_SIZE,
+    chunk_lines,
+    resolve_discord_channel,
+)
 
 
 # 他のテストが discord をモックした状態でこのモジュールが読み込まれていると、
@@ -63,3 +67,42 @@ class TestResolveDiscordChannel:
         )
 
         assert await resolve_discord_channel(555, bot) is None
+
+
+class TestChunkLines:
+    def test_short_text_is_single_chunk(self) -> None:
+        """上限以内のテキストはそのまま 1 チャンクになる。"""
+        assert chunk_lines("a\nb\nc", size=10) == ["a\nb\nc"]
+
+    def test_empty_text(self) -> None:
+        """空文字列は空のチャンク 1 つを返す。"""
+        assert chunk_lines("") == [""]
+
+    def test_splits_on_line_boundaries(self) -> None:
+        """次の行を足すと上限を超えるところで、行の境界で区切る。"""
+        assert chunk_lines("aaa\nbbb\nccc", size=7) == ["aaa\nbbb", "ccc"]
+
+    def test_exact_size_fits(self) -> None:
+        """改行を含めてちょうど上限の長さなら同じチャンクに入れる。"""
+        assert chunk_lines("abc\ndef", size=7) == ["abc\ndef"]
+
+    def test_long_line_is_split_by_characters(self) -> None:
+        """1 行だけで上限を超える行は文字数で分割する。"""
+        assert chunk_lines("x\n" + "y" * 12 + "\nz", size=5) == [
+            "x", "yyyyy", "yyyyy", "yy\nz",
+        ]
+
+    def test_all_chunks_within_default_size(self) -> None:
+        """既定の分割幅（1900）を超えるチャンクを作らず、改行でつなぐと元に戻る。"""
+        text = "\n".join("行" * (i % 300) for i in range(200))
+        chunks = chunk_lines(text)
+
+        assert DISCORD_CHUNK_SIZE == 1900
+        assert len(chunks) > 1
+        assert all(len(c) <= DISCORD_CHUNK_SIZE for c in chunks)
+        assert "\n".join(chunks) == text
+
+    def test_rejects_non_positive_size(self) -> None:
+        """size が 1 未満なら ValueError。"""
+        with pytest.raises(ValueError):
+            chunk_lines("abc", size=0)

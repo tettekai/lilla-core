@@ -8,6 +8,9 @@ user メッセージとして（ユーザーの発言ではなくシステムか
 
 スキル名は大文字小文字を区別せず、小文字に正規化して照合する。存在しない・無効な
 スキルは LLM を呼ばず、元のチャンネルへ固定文言で返信する（`!model` の未定義名と同じ扱い）。
+
+引数なし（空白のみを含む）の `!skill` は、LLM を呼ばずに有効なスキルの一覧を
+名前順で返信する。
 """
 from __future__ import annotations
 
@@ -37,7 +40,7 @@ async def handle_skill(message, arg: str, tools: dict, bot) -> None:
     """
     parts = arg.strip().split(maxsplit=1)
     if not parts:
-        await message.reply(t("command.skill.usage"))
+        await _reply_skill_list(message)
         return
     raw_name = parts[0]
     extra = parts[1] if len(parts) > 1 else ""
@@ -64,3 +67,41 @@ async def handle_skill(message, arg: str, tools: dict, bot) -> None:
     logger.info("[SKILL] Expanding skill '%s'", name)
     content = format_skill_instruction(name, skill.get("prompt", ""), extra)
     start_conversation(message, bot, get_llm_tools(), content)
+
+
+def format_skill_list_line(skill: dict) -> str:
+    """一覧の 1 行（`- `名前`: 説明`。説明が空なら名前だけ）を組み立てる。
+
+    説明は 1 行に収めるため、改行を空白に置き換える。
+    """
+    name = skill.get("name", "")
+    description = " ".join((skill.get("description") or "").splitlines()).strip()
+    if description:
+        return f"- `{name}`: {description}"
+    return f"- `{name}`"
+
+
+async def _reply_skill_list(message) -> None:
+    """有効なスキルの一覧を元のチャンネルへ返信する（LLM は呼ばない）。
+
+    1 通目は `message.reply`、上限を超えて分割した 2 通目以降は `message.channel.send`
+    で同じチャンネルへ続けて送る。
+
+    Args:
+        message: コマンドを送信した Discord メッセージ（承認済みコマンドの代理オブジェクトでもよい）。
+    """
+    from lilla_core.commands.discord_util import chunk_lines
+    from lilla_core.repository.skill_repository import get_skill_repo
+
+    skills = await get_skill_repo().get_enabled()
+    if not skills:
+        await message.reply(t("command.skill.list_empty"))
+        return
+
+    lines = [t("command.skill.list_header")]
+    lines.extend(format_skill_list_line(skill) for skill in skills)
+    lines.append(t("command.skill.list_footer"))
+    chunks = chunk_lines("\n".join(lines))
+    await message.reply(chunks[0])
+    for chunk in chunks[1:]:
+        await message.channel.send(chunk)
