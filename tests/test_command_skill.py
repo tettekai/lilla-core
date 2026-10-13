@@ -10,6 +10,7 @@ import pytest
 from lilla_core.services.skills import format_skill_instruction
 
 skill_command = importlib.import_module("lilla_core.commands.skill")
+command_handler = importlib.import_module("lilla_core.handlers.command_handler")
 
 
 @pytest.fixture
@@ -42,6 +43,11 @@ def _make_message() -> MagicMock:
     return msg
 
 
+def _ctx(msg: MagicMock, bot: MagicMock | None = None):
+    """Discord 用のコマンドコンテキストで包む（会話の開始は `bot` を引き継ぐ）。"""
+    return command_handler.DiscordCommandContext(msg, bot if bot is not None else MagicMock())
+
+
 class TestHandleSkill:
     async def test_expands_skill_and_starts_conversation(self, repo: MagicMock) -> None:
         """有効なスキルは展開して通常の会話の流れへ渡す。"""
@@ -49,7 +55,7 @@ class TestHandleSkill:
         msg = _make_message()
         bot = MagicMock()
 
-        await skill_command.handle_skill(msg, "review  この PR を見て", {}, bot)
+        await skill_command.handle_skill(_ctx(msg, bot), "review  この PR を見て", {}, bot)
 
         repo.find_by_name.assert_awaited_once_with("review")
         repo.start_conversation.assert_called_once_with(
@@ -67,7 +73,7 @@ class TestHandleSkill:
         """大文字小文字の違う名前でも小文字に正規化して照合する。"""
         repo.find_by_name.return_value = {"name": "review", "prompt": "p", "enabled": True}
 
-        await skill_command.handle_skill(_make_message(), "Review", {}, MagicMock())
+        await skill_command.handle_skill(_ctx(_make_message()), "Review", {}, MagicMock())
 
         repo.find_by_name.assert_awaited_once_with("review")
         content = repo.start_conversation.call_args.args[3]
@@ -78,7 +84,7 @@ class TestHandleSkill:
         """存在しないスキルは元チャンネルへエラーを返し、会話を始めない。"""
         msg = _make_message()
 
-        await skill_command.handle_skill(msg, "missing", {}, MagicMock())
+        await skill_command.handle_skill(_ctx(msg), "missing", {}, MagicMock())
 
         msg.reply.assert_awaited_once_with("スキル 'missing' は見つかりません。")
         repo.start_conversation.assert_not_called()
@@ -88,7 +94,7 @@ class TestHandleSkill:
         repo.find_by_name.return_value = {"name": "review", "prompt": "p", "enabled": False}
         msg = _make_message()
 
-        await skill_command.handle_skill(msg, "review", {}, MagicMock())
+        await skill_command.handle_skill(_ctx(msg), "review", {}, MagicMock())
 
         msg.reply.assert_awaited_once_with("スキル 'review' は無効になっています。")
         repo.start_conversation.assert_not_called()
@@ -97,7 +103,7 @@ class TestHandleSkill:
         """規則に合わない名前は DB を引かずに見つからない扱いにする。"""
         msg = _make_message()
 
-        await skill_command.handle_skill(msg, "日本語", {}, MagicMock())
+        await skill_command.handle_skill(_ctx(msg), "日本語", {}, MagicMock())
 
         repo.find_by_name.assert_not_awaited()
         msg.reply.assert_awaited_once_with("スキル '日本語' は見つかりません。")
@@ -121,7 +127,7 @@ class TestSkillList:
         ]
         msg = _make_message()
 
-        await skill_command.handle_skill(msg, arg, {}, MagicMock())
+        await skill_command.handle_skill(_ctx(msg), arg, {}, MagicMock())
 
         repo.get_enabled.assert_awaited_once_with()
         repo.find_by_name.assert_not_awaited()
@@ -142,7 +148,7 @@ class TestSkillList:
         ]
         msg = _make_message()
 
-        await skill_command.handle_skill(msg, "", {}, MagicMock())
+        await skill_command.handle_skill(_ctx(msg), "", {}, MagicMock())
 
         assert "- `review`: 1 行目 2 行目 3 行目\n" in msg.reply.await_args.args[0]
 
@@ -150,7 +156,7 @@ class TestSkillList:
         """有効なスキルが 0 件なら list_empty の文言を返す。"""
         msg = _make_message()
 
-        await skill_command.handle_skill(msg, "", {}, MagicMock())
+        await skill_command.handle_skill(_ctx(msg), "", {}, MagicMock())
 
         msg.reply.assert_awaited_once_with(
             "利用できるスキルはありません。ダッシュボードのスキルページから登録できます。"
@@ -164,7 +170,7 @@ class TestSkillList:
         ]
         msg = _make_message()
 
-        await skill_command.handle_skill(msg, "", {}, MagicMock())
+        await skill_command.handle_skill(_ctx(msg), "", {}, MagicMock())
 
         sent = [msg.reply.await_args.args[0]] + [
             call.args[0] for call in msg.channel.send.await_args_list

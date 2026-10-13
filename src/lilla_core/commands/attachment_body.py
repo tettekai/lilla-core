@@ -55,7 +55,7 @@ def is_textual_attachment(attachment: object) -> bool:
 
 
 def get_attachments(message: object) -> list:
-    """メッセージから添付ファイルのリストを取り出す。
+    """メッセージ（またはコマンドコンテキスト）から添付ファイルのリストを取り出す。
 
     添付を持たないメッセージオブジェクトが渡されても落ちないよう、
     取得できない場合は空リストを返す。
@@ -154,7 +154,8 @@ async def resolve_command_body(
     3. どちらも無ければ `notify_error` で通知し None を返す
 
     Args:
-        message: コマンドを含む Discord メッセージ。
+        message: 添付ファイル（`attachments` 属性）を持つオブジェクト。Discord のメッセージ
+            （承認フロー）か、コマンドコンテキスト（`commands/context.py`。コマンド本体）。
         text_body: コマンド引数から得たテキスト側の BODY 候補。
         bot: Discord クライアント。エラー通知に使う。
         error_title: エラー通知の見出しに使うコマンド名（例: `"!mongodata"`）。

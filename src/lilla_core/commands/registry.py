@@ -11,14 +11,20 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
-# コマンドハンドラのシグネチャ: (message, arg, tools, bot) -> Awaitable[None]
-#   message: コマンドを含む Discord メッセージ
-#   arg:     コマンド名の後ろに続く引数文字列（無い場合は空文字列）
-#   tools:   task ツールのレジストリ
-#   bot:     Discord クライアント
+# コマンドハンドラのシグネチャ: (ctx, arg, tools, bot) -> Awaitable[None]
+#   ctx:   呼び出し元を表すコマンドコンテキスト（`commands/context.py` の
+#          `CommandContext`）。結果は `ctx.reply` / `ctx.reply_error` で返し、
+#          会話を始めるときは `ctx.start_conversation` を使う。Discord のメッセージは
+#          直接受け取らない（Discord 専用コマンドだけが `ctx.discord_message` を使う）
+#   arg:   コマンド名の後ろに続く引数文字列（無い場合は空文字列）
+#   tools: task ツールのレジストリ
+#   bot:   Discord クライアント（Discord 以外からの呼び出しでもエラー通知などに使う）
 CommandHandler = Callable[..., Awaitable[None]]
 
 _KNOWN_COMMANDS: dict[str, CommandHandler] = {}
+
+# Discord 専用として登録されたコマンド名
+_DISCORD_ONLY_COMMANDS: set[str] = set()
 
 
 def _identity(func: CommandHandler):
@@ -42,7 +48,9 @@ def _describe(func: CommandHandler) -> str:
     return f"{getattr(func, '__module__', '?')}.{qualname}"
 
 
-def register_command(name: str) -> Callable[[CommandHandler], CommandHandler]:
+def register_command(
+    name: str, *, discord_only: bool = False
+) -> Callable[[CommandHandler], CommandHandler]:
     """コマンド名にハンドラ関数を登録するデコレータを返す。
 
     同じ名前を別のハンドラで登録しようとした場合は fail-fast する（静かな
@@ -53,6 +61,9 @@ def register_command(name: str) -> Callable[[CommandHandler], CommandHandler]:
 
     Args:
         name: `!` を除いたコマンド名（例: "cleardirty"）。
+        discord_only: Discord 固有の機能（添付付きの送信・ボタン付きメッセージの
+            書き換えなど）が必須なら True。Discord 以外から呼ばれると
+            `dispatch_command` が実行せずに非対応のエラーを返す。
 
     Returns:
         ハンドラ関数をそのまま返すデコレータ。
@@ -67,6 +78,10 @@ def register_command(name: str) -> Callable[[CommandHandler], CommandHandler]:
                 f"Command name '{name}' is already registered by {_describe(existing)}"
             )
         _KNOWN_COMMANDS[name] = func
+        if discord_only:
+            _DISCORD_ONLY_COMMANDS.add(name)
+        else:
+            _DISCORD_ONLY_COMMANDS.discard(name)
         return func
 
     return decorator
@@ -80,3 +95,8 @@ def known_command_names() -> list[str]:
 def get_command_handler(name: str) -> CommandHandler | None:
     """コマンド名に対応するハンドラを返す。未登録なら None。"""
     return _KNOWN_COMMANDS.get(name)
+
+
+def is_discord_only(name: str) -> bool:
+    """コマンドが Discord 専用として登録されていれば True を返す。"""
+    return name in _DISCORD_ONLY_COMMANDS

@@ -2,12 +2,13 @@
 
 `skills` コレクションに保存した名前付きのプロンプト（スキル）を、そのターンの最新の
 user メッセージとして（ユーザーの発言ではなくシステムからの動作指示と分かる形式で）
-展開し、通常の会話と同じ流れ（`handlers/message_handler.py` の
-`start_conversation`）で LLM へ渡す。展開後の内容は会話履歴にもそのまま残る
-（システムプロンプトには入れない）。
+展開し、呼び出し元の通常の会話と同じ流れ（`ctx.start_conversation`。Discord では
+`handlers/message_handler.py` の `start_conversation`）で LLM へ渡す。展開後の内容は
+会話履歴にもそのまま残る（システムプロンプトには入れない）。
 
 スキル名は大文字小文字を区別せず、小文字に正規化して照合する。存在しない・無効な
-スキルは LLM を呼ばず、元のチャンネルへ固定文言で返信する（`!model` の未定義名と同じ扱い）。
+スキルは LLM を呼ばず、入力ミスとして固定文言を返す（`ctx.reply_error`。`!model` の
+未定義名と同じ扱い）。
 
 引数なし（空白のみを含む）の `!skill` は、LLM を呼ばずに有効なスキルの一覧を
 名前順で返信する。
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 @register_command("skill")
-async def handle_skill(message, arg: str, tools: dict, bot) -> None:
+async def handle_skill(ctx, arg: str, tools: dict, bot) -> None:
     """`!skill <スキル名> [追加指示]` の処理。
 
     スキル本文は `services/skills.py` の `format_skill_instruction` で「システムからの
@@ -32,41 +33,38 @@ async def handle_skill(message, arg: str, tools: dict, bot) -> None:
     ラベル付きでその後ろに続ける。
 
     Args:
-        message: コマンドを送信した Discord メッセージ（承認済みコマンドの代理オブジェクトでもよい）。
-            エラーの返信と会話の返信先に使う。
+        ctx: コマンドコンテキスト。エラーの返信と会話の開始に使う。
         arg: スキル名と追加指示（無い場合は空文字列）。
         tools: ツールレジストリ（未使用）。
-        bot: Discord クライアント。会話処理のエラー通知に使う。
+        bot: Discord クライアント（未使用）。
     """
     parts = arg.strip().split(maxsplit=1)
     if not parts:
-        await _reply_skill_list(message)
+        await _reply_skill_list(ctx)
         return
     raw_name = parts[0]
     extra = parts[1] if len(parts) > 1 else ""
 
     name = normalize_skill_name(raw_name)
     if name is None:
-        await message.reply(t("command.skill.not_found", name=raw_name))
+        await ctx.reply_error(t("command.skill.not_found", name=raw_name))
         return
 
-    # 以下はいずれも import 時に設定を読み込むため、コマンドモジュールの import を
-    # 軽く保つ目的で関数内 import にしている。
-    from lilla_core.handlers.message_handler import start_conversation
-    from lilla_core.loaders.llm_tool_loader import get_llm_tools
+    # import 時に設定を読み込むため、コマンドモジュールの import を軽く保つ目的で
+    # 関数内 import にしている。
     from lilla_core.repository.skill_repository import get_skill_repo
 
     skill = await get_skill_repo().find_by_name(name)
     if skill is None:
-        await message.reply(t("command.skill.not_found", name=name))
+        await ctx.reply_error(t("command.skill.not_found", name=name))
         return
     if not skill.get("enabled", True):
-        await message.reply(t("command.skill.disabled", name=name))
+        await ctx.reply_error(t("command.skill.disabled", name=name))
         return
 
     logger.info("[SKILL] Expanding skill '%s'", name)
     content = format_skill_instruction(name, skill.get("prompt", ""), extra)
-    start_conversation(message, bot, get_llm_tools(), content)
+    await ctx.start_conversation(content)
 
 
 def format_skill_list_line(skill: dict) -> str:
@@ -81,27 +79,24 @@ def format_skill_list_line(skill: dict) -> str:
     return f"- `{name}`"
 
 
-async def _reply_skill_list(message) -> None:
-    """有効なスキルの一覧を元のチャンネルへ返信する（LLM は呼ばない）。
+async def _reply_skill_list(ctx) -> None:
+    """有効なスキルの一覧を呼び出し元へ返す（LLM は呼ばない）。
 
-    1 通目は `message.reply`、上限を超えて分割した 2 通目以降は `message.channel.send`
-    で同じチャンネルへ続けて送る。
+    一覧は 1 つの文言として `ctx.reply` に渡す。Discord の 1 メッセージ上限を超える
+    場合の分割（1 通目は返信、2 通目以降は同じチャンネルへ続けて送信）は Discord 用の
+    コンテキストが行う。
 
     Args:
-        message: コマンドを送信した Discord メッセージ（承認済みコマンドの代理オブジェクトでもよい）。
+        ctx: コマンドコンテキスト。
     """
-    from lilla_core.commands.discord_util import chunk_lines
     from lilla_core.repository.skill_repository import get_skill_repo
 
     skills = await get_skill_repo().get_enabled()
     if not skills:
-        await message.reply(t("command.skill.list_empty"))
+        await ctx.reply(t("command.skill.list_empty"))
         return
 
     lines = [t("command.skill.list_header")]
     lines.extend(format_skill_list_line(skill) for skill in skills)
     lines.append(t("command.skill.list_footer"))
-    chunks = chunk_lines("\n".join(lines))
-    await message.reply(chunks[0])
-    for chunk in chunks[1:]:
-        await message.channel.send(chunk)
+    await ctx.reply("\n".join(lines))

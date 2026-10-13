@@ -16,7 +16,7 @@ from lilla_core.utils.datetime_utils import local_now
 logger = logging.getLogger(__name__)
 
 
-async def run_task(tool_name: str, tools: dict, bot, params: dict | None = None) -> None:
+async def run_task(tool_name: str, tools: dict, bot, params: dict | None = None) -> bool:
     """ツールを実行する（Discord・HTTP共通）。完了通知は行わない。
 
     LLM ツール一覧（`llm_tools`）は呼び出し元から受け取らず、キャッシュ付きの
@@ -33,17 +33,21 @@ async def run_task(tool_name: str, tools: dict, bot, params: dict | None = None)
         tools: ツールレジストリ。
         bot: Discord クライアント。
         params: ツールに渡す追加パラメータ（拡張側の手動実行エンドポイント経由で指定可能）。
+
+    Returns:
+        ツールを実行して例外なく終えたら True。ツールが見つからない・手動実行に
+        対応していない・実行中に例外が出た（`notify_error` 済み）場合は False。
     """
     if tool_name not in tools:
         logger.warning("[RUNTASK] Tool '%s' not found", tool_name)
-        return
+        return False
 
     tool_info = tools[tool_name]
     tool = tool_info["instance"]
 
     if tool_info["trigger"] != "task":
         logger.warning("[RUNTASK] Tool '%s' does not support manual execution", tool_name)
-        return
+        return False
 
     # loaders.llm_tool_loader は import 時に設定を読み込むため、
     # コマンドモジュールの import を軽く保つ目的で関数内 import にしている。
@@ -61,16 +65,21 @@ async def run_task(tool_name: str, tools: dict, bot, params: dict | None = None)
         await tool.execute(context)
     except Exception as e:
         await notify_error(bot, t("command.runtask.execution_error_title", tool=tool_name), e)
+        return False
+    return True
 
 
 @register_command("runtask")
-async def handle_runtask(message, arg: str, tools: dict, bot) -> None:
+async def handle_runtask(ctx, arg: str, tools: dict, bot) -> None:
     """`!runtask <ツール名>` の処理。
 
-    エラーは元のチャンネルへ返信せず、ERROR ログとエラー通知チャンネルにのみ出力する。
+    タスクの出力（タスクツールが `discord_client` で送るもの）の送り先は呼び出し元に
+    よらず変わらない。呼び出し元へは何も返信せず（Discord で完了の返信をしないのも
+    従来どおり）、受け付け・完了・失敗は `dispatch_command` の結果で伝える。
+    エラーは ERROR ログとエラー通知チャンネルにのみ出力し、結果を error にする。
 
     Args:
-        message: コマンドを送信した Discord メッセージ（未使用）。
+        ctx: コマンドコンテキスト。失敗の記録に使う。
         arg: 実行するツール名。
         tools: ツールレジストリ。
         bot: Discord クライアント。エラー通知にも使用する。
@@ -83,6 +92,7 @@ async def handle_runtask(message, arg: str, tools: dict, bot) -> None:
             t("command.runtask.invalid_request_title"),
             t("command.runtask.tool_name_required"),
         )
+        ctx.mark_failed()
         return
 
     if tool_name not in tools:
@@ -91,6 +101,7 @@ async def handle_runtask(message, arg: str, tools: dict, bot) -> None:
             t("command.runtask.invalid_request_title"),
             t("command.runtask.tool_not_found", tool=tool_name),
         )
+        ctx.mark_failed()
         return
 
     if tools[tool_name]["trigger"] != "task":
@@ -99,9 +110,13 @@ async def handle_runtask(message, arg: str, tools: dict, bot) -> None:
             t("command.runtask.invalid_request_title"),
             t("command.runtask.tool_not_manual", tool=tool_name),
         )
+        ctx.mark_failed()
         return
 
     try:
-        await run_task(tool_name, tools, bot)
+        succeeded = await run_task(tool_name, tools, bot)
     except Exception as e:
         await notify_error(bot, t("command.runtask.tool_error_title"), e)
+        succeeded = False
+    if not succeeded:
+        ctx.mark_failed()

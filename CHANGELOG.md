@@ -9,6 +9,23 @@
 
 ### Added
 
+- `!` コマンドを Discord 以外のクライアントから実行できるようにした（#229）。トランスポート
+  非依存の入口 `lilla_core.handlers.command_handler.dispatch_command(text, ctx)` と、呼び出し元を
+  表すコマンドコンテキスト `lilla_core.commands.context.CommandContext`（`reply` / `reply_error` /
+  `start_conversation` / `mark_failed`、`client_type` / `author_id` / `is_owner` / `attachments` /
+  `discord_message`）を追加した。拡張は `CommandContext` を継承して `deliver_reply` /
+  `deliver_error` / `deliver_conversation` を実装し、認証済みの接続についてのみ `is_owner=True` で
+  `dispatch_command` を呼ぶ（承認判定は行わず、`is_owner` が `False` なら何も実行しない）。
+  戻り値の `CommandResult`（`status` が `ok` / `error`、`replied`、`conversation_started`）で、
+  コマンドが何も返信しなかった場合も完了・失敗を判別できる。未知のコマンド・ハンドラ内の例外は
+  従来どおり `notify_error` に出て結果が `error` になり、例外の文字列は呼び出し元へ渡さない。
+  `tools` / `bot` を省略したときは起動時に `set_command_runtime()` で登録した値を使う
+  （`bot.py` がツールのロード直後に登録する）。説明は `docs/ja/commands.md`
+- `register_command(name, discord_only=True)` で Discord 専用のコマンドを宣言できるようにした
+  （#229。判定は `is_discord_only()`）。Discord 以外から呼ばれると実行せず、
+  `command.handler.discord_only` の文言を `reply_error` で返す。`!selftest` は添付付きで結果を
+  返すため Discord 専用にした
+
 - 引数なし（空白のみを含む）の `!skill` で、呼び出せるスキルの一覧を返すようにした（#224）。
   LLM は呼ばず、有効なスキルだけを名前の昇順で、説明があれば `` - `名前`: 説明 ``（説明の改行は
   空白に置き換える）、無ければ `` - `名前` `` の行で並べ、見出しと呼び出し方の案内を添えて同じ
@@ -53,6 +70,27 @@
   配列）/ `body`（無ければ空文字。4000 文字で切り詰め）/ `body_truncated`（切り詰めたら `true`）
 
 ### Changed
+
+- **BREAKING**: コマンドハンドラの第 1 引数を Discord のメッセージからコマンドコンテキスト
+  （`CommandContext`）に変え、シグネチャを `(ctx, arg, tools, bot)` にした（#229）。拡張が
+  `command_packages()` などで登録したコマンドも書き換えが必要で、返信は `message.reply` ではなく
+  `ctx.reply` / `ctx.reply_error`、添付は `ctx.attachments` を使う。ボタン付きメッセージの書き換え
+  など Discord のメッセージそのものが要るコマンドは `discord_only=True` で登録して
+  `ctx.discord_message` を使う。`Extension` のメソッドではないため `EXTENSION_API_VERSION` は
+  上げていない。Discord での各コマンドの返信先・承認フロー・`notify_error` への出力は変わらない
+  - `handle_command(message, content, tools, bot)` は Discord 用のコンテキストを組み立てて
+    `dispatch_command` を呼ぶ薄いラッパーになり、`CommandResult` を返す。`content` が `!` で
+    始まらないと `ValueError` になる（以前は先頭 1 文字を捨てて未知のコマンドとして扱っていた）
+  - `!model` の未定義名、`!skill` の存在しない・無効なスキル、`!` だけの入力は `ctx.reply_error`
+    で返す（Discord では従来どおり元メッセージへの返信）
+  - `!skill` は展開した内容を `ctx.start_conversation` へ渡す（Discord では従来どおり
+    `message_handler.start_conversation` の会話フロー）。スキル一覧の分割送信は Discord 用の
+    コンテキストが行う（1 通目は返信、2 通目以降は同じチャンネルへ送信。従来と同じ）
+  - `!runtask` / `!mongodata` / `!toolresult` の、`notify_error` だけで報告していた入力エラー
+    （`!toolresult` の correlation_id なし・依頼が見つからない場合を含む）は、Discord では
+    従来どおり `notify_error` のみで、結果を `error` にする
+  - `commands.runtask.run_task` は実行できたら `True`、ツールが見つからない・手動実行に
+    非対応・実行中の例外（`notify_error` 済み）なら `False` を返すようにした
 
 - LLM へ渡す会話履歴が `memory.max_history_turns` の件数制限に掛かったとき、切り出し位置を
   「時の境界」（`ui.timezone` の HH:00）に揃えるようにした（#219）。直近 `max_history_turns` 件の

@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 
 
 @register_command("enable_tools")
-async def handle_enable_tools(message, arg: str, tools: dict, bot) -> None:
+async def handle_enable_tools(ctx, arg: str, tools: dict, bot) -> None:
     """通常会話のツールを有効に戻す。"""
     set_tools_disabled(False)
     logger.info("[TOOLS] Re-enabled tools for normal conversation")
-    await message.reply(t("command.enable_tools.done"))
+    await ctx.reply(t("command.enable_tools.done"))

@@ -142,9 +142,13 @@ def _make_http_error(error_class) -> Exception:
     return error_class(MagicMock(status=404, reason="Not Found"), "エラー")
 
 
-async def _run(arg: str, bot, attachments: list | None = None) -> None:
-    """コマンドハンドラを呼び出す（未使用の tools はダミー）。"""
-    await toolresult.handle_toolresult(_make_message(attachments), arg, {}, bot)
+async def _run(arg: str, bot, attachments: list | None = None):
+    """Discord 用のコンテキストでコマンドハンドラを呼び出し、結果を返す（未使用の tools はダミー）。"""
+    from lilla_core.handlers.command_handler import DiscordCommandContext
+
+    ctx = DiscordCommandContext(_make_message(attachments), bot)
+    await toolresult.handle_toolresult(ctx, arg, {}, bot)
+    return ctx.build_result()
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +204,8 @@ class TestHandleToolresult:
         repo = _patch_pending_repo(monkeypatch, _make_pending_record())
         bot, channel = _make_bot_with_channel()
 
-        await _run(f"{_UUID}\n検索結果です\n2行目", bot)
+        result = await _run(f"{_UUID}\n検索結果です\n2行目", bot)
+        assert result.status == "ok"
 
         repo.complete.assert_called_once_with(_UUID)
         bot.get_channel.assert_called_once_with(555)
@@ -224,7 +229,8 @@ class TestHandleToolresult:
         _patch_pending_repo(monkeypatch, None)
         bot, channel = _make_bot_with_channel()
 
-        await _run(f"{_UUID}\n結果", bot)
+        result = await _run(f"{_UUID}\n結果", bot)
+        assert result.status == "error"
 
         channel.send.assert_not_called()
 
@@ -233,7 +239,8 @@ class TestHandleToolresult:
         repo = _patch_pending_repo(monkeypatch, _make_pending_record())
         bot, channel = _make_bot_with_channel()
 
-        await _run("", bot)
+        result = await _run("", bot)
+        assert result.status == "error"
 
         repo.complete.assert_not_called()
         channel.send.assert_not_called()
@@ -671,7 +678,8 @@ class TestToolresultAttachmentBody:
         repo = _patch_pending_repo(monkeypatch, _make_pending_record())
         bot, channel = _make_bot_with_channel()
 
-        await _run(_UUID, bot)
+        result = await _run(_UUID, bot)
+        assert result.status == "error"
 
         mock_notify_error.assert_called_once()
         assert mock_notify_error.call_args[0][0] is bot
