@@ -1,0 +1,8 @@
+# Strings the files extension shows on Discord (English).
+#
+# The only top-level key is the extension name `files` (the core locale catalog rule).
+# When adding a string, add the same key to ja.yaml as well.
+
+files:
+  tool:
+    unexpected_error: "Unexpected error in file tool {tool}"
