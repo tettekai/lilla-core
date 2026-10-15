@@ -3,6 +3,7 @@ aiohttp の実際の通信はモック、環境変数は .env を読まずテス
 """
 from __future__ import annotations
 
+import logging
 import sys
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -411,6 +412,60 @@ class TestSendHttpRequest:
         )
         assert mock_session.request.call_args.kwargs["data"] == form
         assert mock_session.request.call_args.kwargs["json"] is None
+
+    async def test_post_with_body_sends_raw_body(
+        self, http_util, session_mock: tuple[MagicMock, MagicMock]
+    ) -> None:
+        """body を指定すると生のボディとして data に渡され json は None になる"""
+        mock_session, _ = session_mock
+        await http_util.send_http_request(
+            "http://example.com",
+            method="PATCH",
+            body=b"raw text",
+            headers={"Content-Type": "text/plain"},
+        )
+        kwargs = mock_session.request.call_args.kwargs
+        assert kwargs["data"] == b"raw text"
+        assert kwargs["json"] is None
+        assert kwargs["headers"] == {"Content-Type": "text/plain"}
+
+    async def test_body_takes_priority_over_data_and_form_data(
+        self, http_util, session_mock: tuple[MagicMock, MagicMock]
+    ) -> None:
+        """body・form_data・data が全部指定された場合は body が優先される"""
+        mock_session, _ = session_mock
+        await http_util.send_http_request(
+            "http://example.com",
+            method="POST",
+            data={"json_key": "json_value"},
+            form_data={"form_key": "form_value"},
+            body="raw",
+        )
+        assert mock_session.request.call_args.kwargs["data"] == "raw"
+        assert mock_session.request.call_args.kwargs["json"] is None
+
+    async def test_get_request_ignores_body(
+        self, http_util, session_mock: tuple[MagicMock, MagicMock]
+    ) -> None:
+        """GET では body を指定しても送らない"""
+        mock_session, _ = session_mock
+        await http_util.send_http_request("http://example.com", method="GET", body="raw")
+        assert mock_session.request.call_args.kwargs["data"] is None
+        assert mock_session.request.call_args.kwargs["json"] is None
+
+    async def test_raw_body_is_not_logged(
+        self,
+        http_util,
+        session_mock: tuple[MagicMock, MagicMock],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """DEBUG ログには生のボディの中身を出さず、長さだけを出す"""
+        with caplog.at_level(logging.DEBUG, logger=http_util.__name__):
+            await http_util.send_http_request(
+                "http://example.com", method="POST", body="secret file content"
+            )
+        assert "secret file content" not in caplog.text
+        assert "19 bytes" in caplog.text
 
 
 # ---------------------------------------------------------------------------
