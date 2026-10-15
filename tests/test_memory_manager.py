@@ -498,6 +498,12 @@ class TestBuildSystemPrompt:
         assert "Current time:" in result
         assert ":xx" in result
 
+    async def test_extra_sections_inserted_before_time(self, manager, mock_conv_repo, mock_memo_repo, mock_tool_cache_repo, mock_session_memory) -> None:
+        """`extra_sections` は現在時刻の前に入り、空文字列は読み飛ばす。"""
+        result = await manager.build_system_prompt(extra_sections=["## Extra\n- a", ""])
+        assert "## Extra\n- a\n\nCurrent time:" in result
+        assert "\n\n\n\n" not in result
+
     async def test_contains_weekday_en(self, manager, mock_conv_repo, mock_memo_repo, mock_tool_cache_repo, mock_session_memory) -> None:
         """曜日が英語で含まれる。"""
         import calendar

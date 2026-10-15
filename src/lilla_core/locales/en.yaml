@@ -126,3 +126,13 @@ task:
 conversation:
   reauth_required: "[Re-authentication required]\n{service} authentication has expired.\nPlease sign in from the link below.\n{url}"
   tool_call_limit: "Reached the tool call limit, so processing was stopped."
+
+tool:
+  # Built-in tool llm_load_skill (builtin_tools/llm_load_skill.py)
+  load_skill:
+    list_header: "## Available skills"
+    list_intro: "You can load the body of the skills below by passing a name to the `{tool}` tool. Check the names and descriptions and load a skill only when you judge it necessary."
+    list_truncated: "{count} more skill(s) are not listed. If you know the name, you can still load it with `{tool}`."
+    not_found: "Skill '{name}' was not found."
+    disabled: "Skill '{name}' is disabled."
+    loaded: "Loaded skill '{name}'."

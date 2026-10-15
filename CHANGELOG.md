@@ -9,6 +9,13 @@
 
 ### Added
 
+- LLM が自分でスキルを読み込む組み込みツール `llm_load_skill` を追加した（#227）。`${CONFIG_ROOT}/tools/` に
+  `type: llm_load_skill` の YAML を置き `tools.sets` に含めた場合だけ使える opt-in で、引数は `name`（必須。
+  `!skill` と同じ規則で大文字小文字を区別しない）と `reason`（任意。結果には使わない）。結果は `!skill` と同じ
+  「システムからの動作指示」の形式（追加指示なし）で、キャッシュしない。このツールが LLM に渡される会話では、
+  有効なスキルの名前と説明の一覧（本文は含めない）をシステムプロンプトへ足す。一覧の上限はツール YAML の
+  `max_skills`（既定 50）/ `max_description_chars`（既定 200）/ `max_list_chars`（既定 4000）で変えられ、
+  0 以下や数値でない値は起動時に落とす。説明は `docs/ja/skills.md`
 - 公式拡張パックにローカルのファイル読み書きの拡張 `lilla_core.extensions.files`（`name = "files"`。
   他の拡張に依存しない）を追加した（#233）。`lilla.yaml` の `extensions.files` にホワイトリストの
   ディレクトリ（`read_only_dirs` / `writable_dirs`。絶対パスの文字列か `{path, name}`。入れ子にすると

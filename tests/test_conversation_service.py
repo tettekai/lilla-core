@@ -1435,3 +1435,111 @@ class TestSystemPromptChannelContext:
 
         kwargs = mock_memory_manager_instance.build_system_prompt.await_args.kwargs
         assert kwargs["discord_channel_id"] is None
+
+
+class TestSkillListInjection:
+    """`llm_load_skill` を LLM に渡す会話でだけスキル一覧の節を足すことを検証する。"""
+
+    @pytest.fixture
+    def tools(self) -> dict:
+        """スキル読み込みツール（stem は利用者が決める名前）と別のツール。"""
+        return {
+            "my_skill_loader": {
+                "schema": {"type": "function", "function": {"name": "my_skill_loader"}},
+                "execute": AsyncMock(),
+                "tool_config": {"type": "llm_load_skill", "max_skills": 7},
+            },
+            "other_tool": {
+                "schema": {"type": "function", "function": {"name": "other_tool"}},
+                "execute": AsyncMock(),
+                "tool_config": {"type": "other_tool"},
+            },
+        }
+
+    @pytest.fixture
+    def section_builder(
+        self, conversation_service, monkeypatch: pytest.MonkeyPatch
+    ) -> AsyncMock:
+        """一覧の組み立てと LLM 呼び出し・ツールの絞り込みを差し替える。"""
+        from lilla_core.builtin_tools import llm_load_skill
+
+        builder = AsyncMock(return_value="SKILL-SECTION")
+        monkeypatch.setattr(llm_load_skill, "build_skill_list_section", builder)
+        monkeypatch.setattr(
+            conversation_service,
+            "build_tools_param",
+            lambda tools, client_type="discord", allowed_names=None: [
+                entry["schema"]
+                for name, entry in tools.items()
+                if allowed_names is None or name in allowed_names
+            ],
+        )
+        monkeypatch.setattr(conversation_service, "chat_to_llm", AsyncMock(return_value="ok"))
+        monkeypatch.setattr(
+            conversation_service,
+            "chat_to_llm_with_tools",
+            AsyncMock(return_value={
+                "content": "ok", "tool_calls": None, "finish_reason": "stop",
+                "raw_message": {"role": "assistant", "content": "ok"},
+            }),
+        )
+        monkeypatch.setattr(conversation_service, "is_tools_disabled", lambda: False)
+        return builder
+
+    def _extra_sections(self, mock_memory_manager_instance: MagicMock) -> list[str]:
+        return mock_memory_manager_instance.build_system_prompt.await_args.kwargs[
+            "extra_sections"
+        ]
+
+    async def test_injected_when_tool_is_passed(
+        self, conversation_service, mock_memory_manager_instance, section_builder, tools
+    ) -> None:
+        """渡すツールに含まれれば、その stem と YAML の設定で一覧を組み立てて足す。"""
+        await conversation_service.run_conversation(tools)
+
+        section_builder.assert_awaited_once_with(
+            "my_skill_loader", tools["my_skill_loader"]["tool_config"]
+        )
+        assert self._extra_sections(mock_memory_manager_instance) == ["SKILL-SECTION"]
+
+    async def test_not_injected_when_outside_set(
+        self, conversation_service, mock_memory_manager_instance, section_builder, tools
+    ) -> None:
+        """セットに含まれないなら足さない。"""
+        await conversation_service.run_conversation(tools, allowed_tool_names=["other_tool"])
+
+        section_builder.assert_not_awaited()
+        assert self._extra_sections(mock_memory_manager_instance) == [""]
+
+    async def test_not_injected_without_tools(
+        self, conversation_service, mock_memory_manager_instance, section_builder, tools
+    ) -> None:
+        """ツールなし（空の許可リスト・空のレジストリ）で LLM を呼ぶなら足さない。"""
+        await conversation_service.run_conversation(tools, allowed_tool_names=[])
+        await conversation_service.run_conversation({})
+
+        section_builder.assert_not_awaited()
+        assert self._extra_sections(mock_memory_manager_instance) == [""]
+
+    async def test_not_injected_when_tools_disabled(
+        self, conversation_service, mock_memory_manager_instance, section_builder, tools,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`!disable_tools` 中は足さない。"""
+        monkeypatch.setattr(conversation_service, "is_tools_disabled", lambda: True)
+
+        await conversation_service.run_conversation(tools)
+
+        section_builder.assert_not_awaited()
+        assert self._extra_sections(mock_memory_manager_instance) == [""]
+
+    async def test_main_set_is_resolved_before_prompt(
+        self, conversation_service, mock_memory_manager_instance, section_builder, tools,
+        mock_llm_tool_loader: MagicMock,
+    ) -> None:
+        """許可リスト省略時は `main` セットの展開結果で判定する。"""
+        mock_llm_tool_loader.resolve_available_tools.side_effect = lambda e, t: ["other_tool"]
+
+        await conversation_service.run_conversation(tools)
+
+        section_builder.assert_not_awaited()

@@ -105,6 +105,7 @@ tools:
     # 例:
     # main:
     #   - llm_current_datetime
+    #   - llm_load_skill   # LLM が自分でスキルを読み込む（docs/ja/skills.md）
     #   - $search
     # search:          # main 以外のセット名は自由（半角英数字と - _ のみ）
     #   - llm_conversation_get
