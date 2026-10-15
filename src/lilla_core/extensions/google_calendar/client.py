@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from functools import lru_cache
+from typing import NamedTuple
 
 from lilla_core.extensions.google_oauth.client import GoogleOAuthClient
 from lilla_core.utils.datetime_utils import local_timezone
@@ -33,6 +34,13 @@ def get_google_calendar_client() -> "GoogleCalendarClient":
 
 
 _GOOGLE_CALENDAR_EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/{calendarId}/events"
+
+
+class CalendarEvent(NamedTuple):
+    """取得元カレンダーの ID と、Calendar API の予定 1 件の組。"""
+
+    calendar_id: str
+    event: dict
 
 
 class GoogleCalendarClient(GoogleOAuthClient):
@@ -84,11 +92,13 @@ class GoogleCalendarClient(GoogleOAuthClient):
         time_max: datetime,
         max_results: int = 50,
         q: str | None = None,
-    ) -> list[dict]:
+    ) -> list[CalendarEvent]:
         """指定カレンダー群のイベントを取得し、startTime 昇順にマージして返す。
 
         calendar_ids をループし、カレンダーごとに 1 回 API を呼ぶ。
         各カレンダーの結果をマージ後、start.dateTime（または start.date）で昇順ソートして返す。
+        マージ後もどのカレンダーの予定かがわかるよう、各要素は取得元のカレンダー ID と
+        API の予定の組（``CalendarEvent``）にする。
 
         Parameters
         ----------
@@ -105,8 +115,9 @@ class GoogleCalendarClient(GoogleOAuthClient):
 
         Returns
         -------
-        list[dict]
-            start.dateTime（または start.date）昇順にソートされたイベントのリスト
+        list[CalendarEvent]
+            start.dateTime（または start.date）昇順にソートされた
+            （取得元カレンダー ID, イベント）のリスト
 
         Raises
         ------
@@ -125,16 +136,18 @@ class GoogleCalendarClient(GoogleOAuthClient):
         if q is not None:
             params["q"] = q
 
-        all_events: list[dict] = []
+        all_events: list[CalendarEvent] = []
 
         for calendar_id in calendar_ids:
             url = _GOOGLE_CALENDAR_EVENTS_URL.format(calendarId=calendar_id)
             # ループ内で同じ認証ヘッダを使い回し、トークンの再取得を避ける。
             result = await self._request_json(url, params=params, headers=headers)
-            all_events.extend(result.get("items", []))
+            all_events.extend(
+                CalendarEvent(calendar_id, event) for event in result.get("items", [])
+            )
 
-        def _sort_key(event: dict) -> str:
-            start = event.get("start", {})
+        def _sort_key(item: CalendarEvent) -> str:
+            start = item.event.get("start", {})
             return start.get("dateTime") or start.get("date") or ""
 
         all_events.sort(key=_sort_key)

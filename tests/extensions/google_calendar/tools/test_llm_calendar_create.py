@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -370,10 +371,10 @@ class TestExecuteOptionalFields:
 class TestExecuteSuccess:
     """成功時のレスポンス内容テスト。"""
 
-    async def test_memory_entry_contains_summary_and_html_link(
+    async def test_memory_entry_contains_summary_without_html_link(
         self, llm_calendar_create, patch_calendar_client
     ) -> None:
-        """memory_entry に summary と htmlLink が含まれる。"""
+        """memory_entry に summary と書き込み先が含まれ、htmlLink は含まれない。"""
         client = _make_client(
             created_event={
                 "id": "evt1",
@@ -394,27 +395,86 @@ class TestExecuteSuccess:
         )
 
         assert "予定" in result["memory_entry"]
-        assert "https://calendar.google.com/event?eid=evt1" in result["memory_entry"]
+        assert "個人のカレンダー" in result["memory_entry"]
+        assert "htmlLink" not in result["memory_entry"]
+        assert "https://" not in result["memory_entry"]
 
-    async def test_data_contains_created_event(
+    async def test_data_is_whitelisted_summary(
         self, llm_calendar_create, patch_calendar_client
     ) -> None:
-        """data に作成されたイベントがそのまま含まれる。"""
-        created = {"id": "evt1", "summary": "予定", "htmlLink": "https://x"}
+        """data は作成した予定の要約（ホワイトリストの項目と friendly_name）だけになる。"""
+        created = {
+            "kind": "calendar#event",
+            "id": "evt1",
+            "status": "confirmed",
+            "htmlLink": "https://www.google.com/calendar/event?eid=ZXZ0MSBvd25lckBleGFtcGxlLmNvbQ",
+            "summary": "会議",
+            "description": "説明",
+            "location": "会議室",
+            "creator": {"email": "owner@example.com", "self": True},
+            "organizer": {"email": "owner@example.com", "self": True},
+            "start": {"dateTime": "2026-04-20T10:00:00+09:00", "timeZone": "Asia/Tokyo"},
+            "end": {"dateTime": "2026-04-20T11:00:00+09:00", "timeZone": "Asia/Tokyo"},
+            "iCalUID": "evt1@google.com",
+        }
         client = _make_client(created_event=created)
         patch_calendar_client.get_google_calendar_client.return_value = client
 
         result = await llm_calendar_create.execute(
             {
                 "calendar": "個人のカレンダー",
-                "summary": "予定",
+                "summary": "会議",
+                "start": "2026-04-20T10:00:00+09:00",
+                "end": "2026-04-20T11:00:00+09:00",
+                "description": "説明",
+                "location": "会議室",
+            },
+            {},
+        )
+
+        assert result["data"] == {
+            "calendar": "個人のカレンダー",
+            "summary": "会議",
+            "start": "2026-04-20T10:00:00+09:00",
+            "end": "2026-04-20T11:00:00+09:00",
+            "all_day": False,
+            "status": "confirmed",
+            "location": "会議室",
+            "description": "説明",
+        }
+        assert "@" not in json.dumps(result, ensure_ascii=False)
+
+    async def test_all_day_data_end_is_inclusive(
+        self, llm_calendar_create, patch_calendar_client
+    ) -> None:
+        """終日予定の data の end は、入力と同じく最終日を含む日付になる。"""
+        created = {
+            "summary": "旅行",
+            "start": {"date": "2026-04-20"},
+            "end": {"date": "2026-04-23"},
+            "organizer": {"email": "owner@example.com"},
+        }
+        client = _make_client(created_event=created)
+        patch_calendar_client.get_google_calendar_client.return_value = client
+
+        result = await llm_calendar_create.execute(
+            {
+                "calendar": "個人のカレンダー",
+                "summary": "旅行",
                 "start": "2026-04-20",
+                "end": "2026-04-22",
                 "all_day": True,
             },
             {},
         )
 
-        assert result["data"] == created
+        assert result["data"] == {
+            "calendar": "個人のカレンダー",
+            "summary": "旅行",
+            "start": "2026-04-20",
+            "end": "2026-04-22",
+            "all_day": True,
+        }
 
 
 class TestExecuteReauth:

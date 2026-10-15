@@ -117,7 +117,8 @@ async def execute(input: dict, context: dict) -> dict:
     -------
     dict
         success, tool_name, memory_entry, needs_auth, needs_auth_list, data, error
-        を含む実行結果 dict
+        を含む実行結果 dict。成功時の data は作成した予定を
+        `event_summary.summarize_event` で絞った要約（書き込み先の friendly_name 付き）
     """
     tool_name = SCHEMA["function"]["name"]
     try:
@@ -183,8 +184,12 @@ async def execute(input: dict, context: dict) -> dict:
                 "Google Calendar の再認証が必要だったため、ユーザーにログインを依頼しました。",
             )
 
-        memory_entry = f"Google Calendar に予定「{summary}」を作成しました。{event.get('htmlLink', '')}"
-        return tool_success(tool_name, memory_entry, event)
+        from lilla_core.extensions.google_calendar.event_summary import summarize_event
+
+        # API の応答をそのまま返すと主催者・作成者のメールアドレスや、カレンダー ID を
+        # 埋め込んだ htmlLink が LLM に渡るため、取得ツールと同じ項目に絞る。
+        memory_entry = f"Google Calendar の「{calendar_name}」に予定「{summary}」を作成しました。"
+        return tool_success(tool_name, memory_entry, summarize_event(event, calendar_name))
 
     except Exception as e:
         logger.error("create_calendar_event error: %s", e)
