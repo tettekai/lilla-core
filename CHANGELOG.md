@@ -9,6 +9,17 @@
 
 ### Added
 
+- 公式拡張パックにローカルのファイル読み書きの拡張 `lilla_core.extensions.files`（`name = "files"`。
+  他の拡張に依存しない）を追加した（#233）。`lilla.yaml` の `extensions.files` にホワイトリストの
+  ディレクトリ（`read_only_dirs` / `writable_dirs`。絶対パスの文字列か `{path, name}`。入れ子にすると
+  最も深いディレクトリで判定する）と `max_read_chars`（既定 100,000 文字）を書く。ホワイトリストが
+  空ならすべて拒否する。LLM ツールは `llm_file_list`（直下の一覧）・`llm_file_read`（UTF-8 テキストの
+  読み取り。BOM は除去、`offset` / `limit` で続きを読む、バイナリ・非 UTF-8 は中身を返さない）・
+  `llm_file_write`（`create` / `overwrite` / `append`。書き込み可能ディレクトリの配下だけ）・
+  `llm_file_search`（中身のキーワード検索）の 4 つで、YAML は利用者の `${CONFIG_ROOT}/tools` に置く。
+  パスは「ディレクトリの名前/相対パス」の形でやりとりし、`..`・絶対パス・シンボリックリンクで外へ出る
+  アクセスは実体パスで判定して拒否する。想定外の例外は文字列を LLM へ返さず、エラー通知チャンネルへ
+  流す。説明は `docs/ja/files.md`
 - 公式拡張パックに Google Drive / Google Sheets の拡張 `lilla_core.extensions.google_drive`
   （`name = "google-drive"`、`requires = ("google-oauth",)`）を追加した（#231）。`LILLA_EXTENSIONS` に
   `google_oauth` より後ろで並べ、`lilla.yaml` の `extensions.google_drive` にアクセスを許すフォルダ ID

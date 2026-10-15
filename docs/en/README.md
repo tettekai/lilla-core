@@ -28,6 +28,7 @@ The index of the lilla-core user documentation.
 - [Tool contracts](tools.md) — LLM tools, task tools, built-in tools
 - [Decision helper (Jev)](jev.md) — the optional `lilla_core.tool_support.jev`
 - [Google OAuth / Calendar / Drive (official extension pack)](google.md) — extensions bundled in `lilla_core.extensions`
+- [Local file read / write (official extension pack)](files.md) — `lilla_core.extensions.files`
 
 ## Extensions
 
