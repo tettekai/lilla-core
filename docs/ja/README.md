@@ -25,7 +25,7 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [共有 HTTP サーバー](http-server.md) — `http:`、Bearer トークン、拡張からのルート追加
 - [ツール契約](tools.md) — LLM ツール・task ツール・組み込みツール
 - [判定ヘルパー（Jev）](jev.md) — 任意の `lilla_core.tool_support.jev`
-- [Google OAuth / Google Calendar（公式拡張パック）](google.md) — `lilla_core.extensions` の同梱拡張
+- [Google OAuth / Calendar / Drive（公式拡張パック）](google.md) — `lilla_core.extensions` の同梱拡張
 
 ## 拡張
 

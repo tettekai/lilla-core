@@ -27,7 +27,7 @@ The index of the lilla-core user documentation.
 - [The shared HTTP server](http-server.md) — `http:`, Bearer tokens, adding routes from extensions
 - [Tool contracts](tools.md) — LLM tools, task tools, built-in tools
 - [Decision helper (Jev)](jev.md) — the optional `lilla_core.tool_support.jev`
-- [Google OAuth / Google Calendar (official extension pack)](google.md) — extensions bundled in `lilla_core.extensions`
+- [Google OAuth / Calendar / Drive (official extension pack)](google.md) — extensions bundled in `lilla_core.extensions`
 
 ## Extensions
 

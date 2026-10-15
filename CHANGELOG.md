@@ -9,6 +9,24 @@
 
 ### Added
 
+- 公式拡張パックに Google Drive / Google Sheets の拡張 `lilla_core.extensions.google_drive`
+  （`name = "google-drive"`、`requires = ("google-oauth",)`）を追加した（#231）。`LILLA_EXTENSIONS` に
+  `google_oauth` より後ろで並べ、`lilla.yaml` の `extensions.google_drive` にアクセスを許すフォルダ ID
+  （`read_only_folders` / `writable_folders`。配下すべてが対象で、最も近いフォルダで判定する。
+  共有ドライブはドライブ ID を書けば対象になる）を書く。ホワイトリストが空ならすべて拒否する。
+  LLM ツールは `llm_google_drive_search_text`（テキストファイルの全文検索）・
+  `llm_google_drive_get_text`（本文の取得）・`llm_google_drive_write_text`（新規作成・上書き。
+  新規作成では作成先フォルダが必須）・`llm_google_sheets_get_range`（スプレッドシートの範囲の
+  読み取り）の 4 つで、YAML は利用者の `${CONFIG_ROOT}/tools` に置く。扱うのは `text/*` の
+  ファイルだけで、それ以外とゴミ箱のファイルは存在しないものとして扱う。スコープは
+  `drive.readonly` と `spreadsheets.readonly` を基本に、書き込み可能フォルダがあれば
+  `write_scope`（`file` 既定で `drive.file`＝この拡張が作ったファイルしか上書きできない /
+  `full` で `drive`）に応じて足す（`file` では、この拡張が作っていないフォルダへの新規作成も
+  拒否される可能性があり、拒否されたときはその旨のエラーを返す）。設定変更で必要なスコープが増えたら次の呼び出しで再認証を求める。
+  本文と Sheets の値は `max_read_chars`（既定 100,000 文字）で切り詰める。説明は `docs/ja/google.md`
+- `send_http_request` に生のボディを送る `body`（str / bytes）引数を追加した（#231）。Content-Type は
+  `headers` で渡し、`data` / `form_data` より優先する。DEBUG ログには中身を出さず長さだけを出す
+
 - `!` コマンドを Discord 以外のクライアントから実行できるようにした（#229）。トランスポート
   非依存の入口 `lilla_core.handlers.command_handler.dispatch_command(text, ctx)` と、呼び出し元を
   表すコマンドコンテキスト `lilla_core.commands.context.CommandContext`（`reply` / `reply_error` /
