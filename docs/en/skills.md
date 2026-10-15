@@ -8,8 +8,9 @@ Skills let you save reusable instruction prompts under a name and call them with
 of that turn and handed to the LLM through the same flow as a normal conversation (it is
 not added to the system prompt).
 
-For now only explicit command calls are supported. Letting the LLM pick skills on its own
-from their descriptions is planned as a future extension.
+If you enable the built-in tool `llm_load_skill`, the LLM can also load the skills it needs
+on its own, judging from their descriptions and the flow of the conversation
+([Letting the LLM load skills itself](#letting-the-llm-load-skills-itself)).
 
 ## Registering
 
@@ -20,7 +21,7 @@ enable / disable them.
 | Field | Meaning |
 |-------|---------|
 | Name | The name used to call the skill (required) |
-| Description | Shown in the list (optional; shown in the dashboard list and in the `!skill` list; planned as a hint for the LLM to choose skills) |
+| Description | Shown in the list (optional; shown in the dashboard list and in the `!skill` list; also listed in the system prompt's skill list in conversations where `llm_load_skill` is enabled, where it helps the LLM decide whether to load the skill) |
 | Prompt | The prompt that is expanded (required) |
 | Enabled | Disabled skills cannot be called (new skills start enabled) |
 
@@ -112,3 +113,74 @@ Usage: `!skill <skill name> [additional instructions]`
   as several consecutive messages
 - Listing from anyone other than the owner also goes through the approval flow; once
   approved, the list is sent back to the original channel
+
+## Letting the LLM load skills itself
+
+When the built-in tool `llm_load_skill` is enabled, the LLM sees a list of enabled skills
+and can load one by name when it judges it necessary.
+
+### Enabling it
+
+Like other built-in tools it is opt-in. It is handed to the LLM only when you put
+`${CONFIG_ROOT}/tools/llm_load_skill.yaml` and include it in `tools.sets` (`main`, etc.).
+
+```yaml
+type: llm_load_skill
+# Limits of the skill list in the system prompt (defaults when omitted)
+max_skills: 50              # number of skills listed
+max_description_chars: 200  # maximum description length per skill
+max_list_chars: 4000        # total characters of the list lines
+```
+
+```yaml
+# lilla.yaml
+tools:
+  sets:
+    main:
+      - llm_load_skill
+```
+
+Each limit must be a positive integer; zero, negative or non-numeric values fail at startup.
+
+### Arguments and result
+
+| Argument | Description |
+|----------|-------------|
+| `name` | Skill name to load (required). Validated with the same rules as `!skill`, case-insensitive |
+| `reason` | Why the skill is loaded or what will be done with it (optional). Not used in the result; it only stays as an argument of the tool call |
+
+On success, the tool result is the skill body wrapped in the same "instruction from the
+system" wrapper as `!skill` (without additional instructions). A name that breaks the rules,
+a missing skill and a disabled skill each return an error (missing and disabled skills use
+different messages).
+
+The result is not cached; every call reads the `skills` collection. Editing, enabling or
+disabling a skill in the dashboard takes effect from the next call.
+
+### The list in the system prompt
+
+Only when `llm_load_skill` is handed to the LLM in that conversation, a list of the
+**names and descriptions** of enabled skills is added to the system prompt (bodies are not
+included). It is not added when the tool is not in the set used, while `!disable_tools` is
+on, or when the LLM is called without tools.
+
+```text
+## Available skills
+You can load the body of the skills below by passing a name to the `llm_load_skill` tool. Check the names and descriptions and load a skill only when you judge it necessary.
+- proofread: Proofread a text
+- review
+```
+
+- Skills are sorted by name. A skill without a description shows only its name; line breaks
+  in descriptions are replaced with spaces
+- A description longer than `max_description_chars` is cut and ends with `…`
+- Lines are added from the top until either the count limit (`max_skills`) or the total
+  character limit of the lines (`max_list_chars`; the heading and intro are not counted) is
+  reached. If some skills were left out, a final line says how many and that they can still
+  be loaded by name. Enabled skills that are not listed can still be loaded with
+  `llm_load_skill`
+- If there is no enabled skill, the section is not added at all
+- The list is not cached either; it is fetched every time the system prompt is built
+
+Since the description is what the LLM uses to decide whether to load a skill, write it so
+that it is clear what the skill does.

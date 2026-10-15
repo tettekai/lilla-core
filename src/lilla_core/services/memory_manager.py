@@ -250,6 +250,7 @@ class MemoryManager:
         extra_prompt: str = "",
         client_type: str = "",
         discord_channel_id: int | None = None,
+        extra_sections: list[str] | None = None,
     ) -> str:
         """systemプロンプトを組み立てて返す。
 
@@ -259,13 +260,16 @@ class MemoryManager:
         3. 登録チャンネルの部屋ノート（要約が保存されている場合のみ）
         4. 動的メモリ（有効なuser_memosが存在する場合のみ）
         5. セッションメモリ（有効なセッションメモリが存在する場合のみ）
-        6. 現在日時と時刻付き会話履歴
+        6. 呼び出し元が渡した追加の節（`extra_sections`。空文字列は読み飛ばす）
+        7. 現在日時と時刻付き会話履歴
 
         Args:
             extra_prompt: base_prompt の直後に追記する文字列（会話プロンプトなど）。
             client_type: クライアント固有プロンプトの解決に使うクライアント種別。
             discord_channel_id: 会話が行われている Discord チャンネル ID。登録
                 チャンネルの一節の解決に使う。
+            extra_sections: セッションメモリの後ろに足す節（LLM に渡すツールに応じた
+                スキル一覧など、呼び出し元でしか決まらないもの）。
         """
         memos = await self._memo_repo.get_active()
         memo_section = ""
@@ -301,6 +305,7 @@ class MemoryManager:
             parts.append(memo_section)
         if session_memory_section:
             parts.append(session_memory_section)
+        parts.extend(section for section in (extra_sections or []) if section)
         parts.append(time_section)
 
         cache_records = await self._tool_cache_repo.get_all_valid()

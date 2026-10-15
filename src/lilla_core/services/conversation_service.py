@@ -118,6 +118,28 @@ def build_tool_message_content(result: dict) -> str:
     return tool_content
 
 
+async def _build_skill_list_section(tools_param: list, llm_tools: dict) -> str:
+    """LLM に渡すツールに `llm_load_skill` があれば、有効なスキル一覧の節を返す。
+
+    YAML の stem（LLM に見せる名前）は利用者が決めるため、`tools_param` の名前から
+    レジストリのエントリを引き、YAML の `type` で `llm_load_skill` かどうかを判定する。
+    複数あれば最初の 1 つの名前と上限設定を使う。
+
+    Returns:
+        節の文字列。該当するツールが無い・有効なスキルが無い場合は空文字列。
+    """
+    from lilla_core.builtin_tools import llm_load_skill
+
+    for schema in tools_param:
+        name = (schema.get("function") or {}).get("name") or schema.get("name")
+        entry = llm_tools.get(name)
+        if entry is not None and llm_load_skill.is_load_skill_tool(entry):
+            return await llm_load_skill.build_skill_list_section(
+                name, entry.get("tool_config")
+            )
+    return ""
+
+
 # `build_tool_context` は `core/extension.py` に実体があり、LLM ツールと task ツールの
 # 両方で共有する。ここから import できる名前は互換のため残している。
 __all__ = ["build_tool_context", "build_tool_message_content", "run_conversation"]
@@ -222,12 +244,30 @@ async def run_conversation(
     if is_tools_disabled() and client_type != "task":
         llm_tools = {}
 
+    # 省略（None）は「`main` セットを使う」。展開結果が空（`main` 未設定を含む）なら
+    # ツールを渡さない。システムプロンプトのスキル一覧は実際に渡すツールで決まるため、
+    # ツールの解決はシステムプロンプトの組み立てより先に行う。
+    if allowed_tool_names is None and llm_tools:
+        allowed_tool_names = resolve_available_tools([MAIN_TOOLSET_TOKEN], llm_tools)
+
+    use_tools = bool(llm_tools) and allowed_tool_names != []
+    tools_param = (
+        build_tools_param(
+            llm_tools,
+            client_type=client_type,
+            allowed_names=allowed_tool_names,
+        )
+        if use_tools
+        else []
+    )
+
     memory_manager = get_memory_manager()
     extra = _config.conversation_prompt if client_type != "task" else ""
     system_prompt = await memory_manager.build_system_prompt(
         extra_prompt=extra,
         client_type=client_type,
         discord_channel_id=discord_channel_id,
+        extra_sections=[await _build_skill_list_section(tools_param, llm_tools)],
     )
     history = await memory_manager.load_conversation_history_with_timestamps()
 
@@ -252,21 +292,11 @@ async def run_conversation(
         or content_has_image(inject_user_content),
     }
 
-    # 省略（None）は「`main` セットを使う」。展開結果が空（`main` 未設定を含む）なら
-    # ツールを渡さない。
-    if allowed_tool_names is None and llm_tools:
-        allowed_tool_names = resolve_available_tools([MAIN_TOOLSET_TOKEN], llm_tools)
-
-    if not llm_tools or allowed_tool_names == []:
+    if not use_tools:
         resolved_name = await resolve_llm_name(llm_key, **resolve_kwargs)
         reply = await chat_to_llm(history, system_prompt=system_prompt, llm_name=resolved_name)
         return _apply_meta_actions(reply)
 
-    tools_param = build_tools_param(
-        llm_tools,
-        client_type=client_type,
-        allowed_names=allowed_tool_names,
-    )
     messages = list(history)
     max_iterations = (
         max_tool_call_iterations

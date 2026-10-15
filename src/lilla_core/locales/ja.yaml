@@ -126,3 +126,13 @@ task:
 conversation:
   reauth_required: "【再認証が必要です】\n{service} の認証が切れています。\n以下のリンクからログインしてください。\n{url}"
   tool_call_limit: "ツール呼び出しの上限に達しました。処理を中断しました。"
+
+tool:
+  # 組み込みツール llm_load_skill（builtin_tools/llm_load_skill.py）
+  load_skill:
+    list_header: "## 利用できるスキル"
+    list_intro: "以下のスキルは `{tool}` ツールに名前を指定すると本文を読み込めます。一覧の名前と説明を見て、必要と判断したときだけ読み込んでください。"
+    list_truncated: "ほか {count} 件は一覧に載せていません。名前が分かれば `{tool}` で読み込めます。"
+    not_found: "スキル '{name}' は見つかりません。"
+    disabled: "スキル '{name}' は無効になっています。"
+    loaded: "スキル '{name}' を読み込みました。"
