@@ -49,6 +49,12 @@ _FILE_SCOPE_MESSAGE = (
     "このファイルは上書きできません（write_scope が file のため、"
     "Lilla が作成したファイルしか上書きできません）。"
 )
+#: `write_scope: file` で、新規作成を API に拒否されたときの文言（`drive.file` では、この拡張が
+#: 作っていないフォルダへの作成が拒否されることがある）。
+_FILE_SCOPE_CREATE_MESSAGE = (
+    "このフォルダにはファイルを作成できませんでした（write_scope が file のため、"
+    "Lilla が作成していないフォルダには作成できない可能性があります）。"
+)
 _READ_ONLY_MESSAGE = "このファイルがあるフォルダには書き込みが許可されていません。"
 _READ_ONLY_FOLDER_MESSAGE = "このフォルダには書き込みが許可されていません。"
 _FOLDER_NOT_FOUND_MESSAGE = "フォルダが見つからないか、アクセスが許可されていません。"
@@ -161,9 +167,15 @@ async def execute(input: dict, context: dict) -> dict:
             return tool_error(tool_name, None, _READ_ONLY_FOLDER_MESSAGE)
 
         file_name = name.strip()
-        created = await client.create_text_file(
-            file_name, parent_folder_id, content, guess_text_mime(file_name)
-        )
+        try:
+            created = await client.create_text_file(
+                file_name, parent_folder_id, content, guess_text_mime(file_name)
+            )
+        except aiohttp.ClientResponseError as e:
+            # drive.file では、この拡張が作っていない親フォルダが見えず拒否されることがある。
+            if config.write_scope == "file" and e.status in (403, 404):
+                return tool_error(tool_name, None, _FILE_SCOPE_CREATE_MESSAGE)
+            raise
         data = summarize_file(created, writable=True)
         data["created"] = True
         memory_entry = (

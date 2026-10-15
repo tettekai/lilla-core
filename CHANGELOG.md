@@ -21,7 +21,8 @@
   ファイルだけで、それ以外とゴミ箱のファイルは存在しないものとして扱う。スコープは
   `drive.readonly` と `spreadsheets.readonly` を基本に、書き込み可能フォルダがあれば
   `write_scope`（`file` 既定で `drive.file`＝この拡張が作ったファイルしか上書きできない /
-  `full` で `drive`）に応じて足す。設定変更で必要なスコープが増えたら次の呼び出しで再認証を求める。
+  `full` で `drive`）に応じて足す（`file` では、この拡張が作っていないフォルダへの新規作成も
+  拒否される可能性があり、拒否されたときはその旨のエラーを返す）。設定変更で必要なスコープが増えたら次の呼び出しで再認証を求める。
   本文と Sheets の値は `max_read_chars`（既定 100,000 文字）で切り詰める。説明は `docs/ja/google.md`
 - `send_http_request` に生のボディを送る `body`（str / bytes）引数を追加した（#231）。Content-Type は
   `headers` で渡し、`data` / `form_data` より優先する。DEBUG ログには中身を出さず長さだけを出す

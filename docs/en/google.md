@@ -201,7 +201,10 @@ type: llm_google_sheets_get_range
 
 - With `file` (`drive.file`), Google only lets the extension **overwrite files it created
   itself**. Files that were already in a writable folder can be read, but overwriting them
-  returns an error that says so
+  returns an error that says so. Creating a new file in a folder Lilla did not create (for example,
+  one made in the Drive UI) may also be refused by Google (not verified; when it is refused, the
+  error says this may be the cause). Use `full` if you need to create files in existing folders or
+  overwrite existing files
 - With `full` (`drive`), existing files under writable folders can be overwritten too. The token
   itself, however, can read and write the whole drive, and only this extension's whitelist narrows
   it down. Choose it knowing that a leaked token has a much larger impact

@@ -151,6 +151,34 @@ class TestCreate:
         assert "フォルダが見つからない" in result["error"]
         fake_drive.create_text_file.assert_not_awaited()
 
+    @pytest.mark.parametrize("status", [403, 404])
+    async def test_explains_drive_file_scope(
+        self, tool, fake_drive, http_error, status: int
+    ) -> None:
+        """`write_scope: file` で作成を API に拒否されたら、`drive.file` の制限の可能性を返す。"""
+        fake_drive.create_text_file.side_effect = http_error(status)
+
+        result = await tool.execute(
+            {"content": "x", "name": "a.txt", "parent_folder_id": "rw"}, {}
+        )
+
+        assert result["success"] is False
+        assert "write_scope" in result["error"]
+
+    async def test_full_scope_reports_api_error(
+        self, tool, fake_drive, drive_config, http_error
+    ) -> None:
+        """`write_scope: full` での拒否は通常の API エラーとして返す。"""
+        drive_config.write_scope = "full"
+        fake_drive.create_text_file.side_effect = http_error(403)
+
+        result = await tool.execute(
+            {"content": "x", "name": "a.txt", "parent_folder_id": "rw"}, {}
+        )
+
+        assert result["success"] is False
+        assert "write_scope" not in result["error"]
+
     async def test_empty_whitelist_denies(self, tool, fake_drive, drive_config) -> None:
         """ホワイトリストが空なら API を呼ばずに拒否する。"""
         drive_config.read_only_folders = []
