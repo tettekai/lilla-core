@@ -52,7 +52,8 @@ SCHEMA = {
 async def execute(input: dict, context: dict) -> dict:
     """配下のテキストファイルからキーワードを含む行を探す。
 
-    バイナリ・UTF-8 として読めない・大きすぎるファイルは黙って飛ばす。実体パスが
+    バイナリ・UTF-8 として読めない・大きすぎるファイルは黙って飛ばす。`path` が空文字の
+    ときは、存在しないホワイトリストのディレクトリも黙って飛ばす。実体パスが
     ホワイトリストの外を指すファイル（外へのシンボリックリンク）は読まず、
     ディレクトリへのシンボリックリンクは辿らない。
 
@@ -76,6 +77,7 @@ async def execute(input: dict, context: dict) -> dict:
         split_logical_path,
     )
     from lilla_core.extensions.files.tool_support import (
+        FileTooLargeError,
         NotTextError,
         read_text_file,
         run_file_operation,
@@ -95,7 +97,12 @@ async def execute(input: dict, context: dict) -> dict:
         if segments:
             targets = [resolve_target(roots, segments)]
         else:
-            targets = [resolve_target(roots, [r.label]) for r in roots]
+            # 全体検索では、存在しない（マウントが外れているなど）ディレクトリだけ飛ばす。
+            targets = [
+                t
+                for t in (resolve_target(roots, [r.label]) for r in roots)
+                if os.path.isdir(t.real)
+            ]
 
         matches: list[dict] = []
         seen: set[str] = set()
@@ -115,8 +122,9 @@ async def execute(input: dict, context: dict) -> dict:
             scanned += 1
             try:
                 text = read_text_file(real, MAX_SEARCH_FILE_BYTES)
-            except Exception:
+            except (NotTextError, FileTooLargeError, OSError):
                 # バイナリ・非 UTF-8・大きすぎる・読めないファイルは黙って飛ばす。
+                # それ以外の想定外の例外は run_file_operation へ上げてエラー通知に流す。
                 return True
             for number, line in enumerate(text.splitlines(), start=1):
                 if needle in line.casefold():

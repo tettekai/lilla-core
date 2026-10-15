@@ -49,6 +49,7 @@ async def execute(input: dict, context: dict) -> dict:
 
     書き込み可能ディレクトリ（`writable_dirs`）の配下だけを対象にし、読み取り専用
     ディレクトリの配下（書き込み可能ディレクトリの中に置いたものを含む）は拒否する。
+    `append` で既存ファイルの先頭がテキスト（UTF-8）として読めなければ追記しない。
     改行コードは変換せず、`content` をそのまま書く。
 
     Parameters
@@ -71,7 +72,12 @@ async def execute(input: dict, context: dict) -> dict:
         resolve_target,
         split_logical_path,
     )
-    from lilla_core.extensions.files.tool_support import run_file_operation
+    from lilla_core.extensions.files.tool_support import (
+        NOT_TEXT_MESSAGE,
+        NotTextError,
+        ensure_text_head,
+        run_file_operation,
+    )
 
     tool_name = SCHEMA["function"]["name"]
     content = input.get("content")
@@ -95,6 +101,12 @@ async def execute(input: dict, context: dict) -> dict:
         existed = os.path.exists(target.real)
         if mode == "create" and existed:
             raise FileAccessError("ファイルが既にあります（上書きするなら mode に overwrite を指定してください）。")
+        if mode == "append" and existed:
+            # Shift_JIS などへ UTF-8 で追記すると文字コードが混ざって読めなくなるため断る。
+            try:
+                ensure_text_head(target.real)
+            except NotTextError:
+                raise FileAccessError(NOT_TEXT_MESSAGE)
         parent = os.path.dirname(target.real)
         if os.path.exists(parent) and not os.path.isdir(parent):
             raise FileAccessError("親のパスがディレクトリではありません。")

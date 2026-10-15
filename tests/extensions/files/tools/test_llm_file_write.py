@@ -1,11 +1,13 @@
 """`lilla_core.extensions.files` 同梱の `tools/llm_file_write.py` のテスト。"""
 from __future__ import annotations
 
+import codecs
 import os
 
 import pytest
 
 from lilla_core.extensions.files.access import OUTSIDE_MESSAGE
+from lilla_core.extensions.files.tool_support import NOT_TEXT_MESSAGE
 
 
 @pytest.fixture
@@ -82,6 +84,40 @@ class TestModes:
         assert result["success"] is True
         assert result["data"]["path"] == "work/a/b/c.txt"
         assert (dirs["work"] / "a" / "b" / "c.txt").read_text(encoding="utf-8") == "c"
+
+    async def test_append_to_bom_file(self, tool, use_config, dirs) -> None:
+        """BOM 付きの UTF-8 ファイルには追記できる。"""
+        path = dirs["work"] / "bom.txt"
+        path.write_bytes(codecs.BOM_UTF8 + b"a\n")
+
+        result = await tool.execute({"path": "work/bom.txt", "content": "b\n", "mode": "append"}, {})
+
+        assert result["success"] is True
+        assert path.read_bytes() == codecs.BOM_UTF8 + b"a\nb\n"
+
+    @pytest.mark.parametrize(
+        "raw", ["日本語".encode("shift_jis"), b"PNG\x00\x01"], ids=["shift_jis", "binary"]
+    )
+    async def test_append_refuses_non_text(self, tool, use_config, dirs, raw: bytes) -> None:
+        """UTF-8 のテキストとして読めないファイルには追記せず、中身を変えない。"""
+        path = dirs["work"] / "legacy.txt"
+        path.write_bytes(raw)
+
+        result = await tool.execute({"path": "work/legacy.txt", "content": "x", "mode": "append"}, {})
+
+        assert result["success"] is False
+        assert result["error"] == NOT_TEXT_MESSAGE
+        assert path.read_bytes() == raw
+
+    async def test_overwrite_non_text_is_allowed(self, tool, use_config, dirs) -> None:
+        """丸ごと置き換える `overwrite` は既存の文字コードを問わない。"""
+        path = dirs["work"] / "legacy.txt"
+        path.write_bytes("日本語".encode("shift_jis"))
+
+        result = await tool.execute({"path": "work/legacy.txt", "content": "新", "mode": "overwrite"}, {})
+
+        assert result["success"] is True
+        assert path.read_text(encoding="utf-8") == "新"
 
     @pytest.mark.parametrize("mode", [None, "delete", "w"])
     async def test_rejects_unknown_mode(self, tool, use_config, mode) -> None:

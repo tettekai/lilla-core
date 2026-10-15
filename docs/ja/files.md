@@ -95,8 +95,8 @@ type: llm_file_search
 |--------|------|
 | `llm_file_list` | `path` の直下のエントリを名前順に返す（再帰しない）。各要素は `path` / `name` / `type`（`file` / `dir`）/ `size`（ファイルのみ）/ `modified_time`（UTC）/ `writable`。`pattern`（グロブ。例 `*.md`）で名前を絞り込める。500 件を超えたら切り詰めて `truncated: true` |
 | `llm_file_read` | UTF-8 のテキストを返す（先頭の BOM は取り除く）。`offset`（文字数。既定 0）と `limit`（既定・上限は `max_read_chars`）で途中から読める。続きがあれば `truncated: true` と `next_offset` を返す。先頭 8KB に NUL バイトがある・UTF-8 として読めない（Shift_JIS など）ファイルは中身を返さず「テキストとして読めない」旨のエラーにする。50MB を超えるファイルは読まない |
-| `llm_file_write` | `writable_dirs` の配下だけに、`content` を UTF-8（BOM 無し）で書く（改行コードは変換しない）。`mode` は `create`（既にあれば失敗）/ `overwrite`（丸ごと上書き。無ければ作る）/ `append`（末尾に追記。無ければ作る）。親ディレクトリが無ければ作る。結果の `created` で新しく作ったかがわかる |
-| `llm_file_search` | `path`（ディレクトリかファイル。空文字ですべて）の配下のテキストファイルから、`query` を含む行を探して `path` / `line`（行番号）/ `text` を返す（大文字小文字は区別しない）。バイナリ・UTF-8 で読めない・5MB を超えるファイルは黙って飛ばす。該当行 50 件・読むファイル 2,000 件を超えたら切り詰めて `truncated: true` |
+| `llm_file_write` | `writable_dirs` の配下だけに、`content` を UTF-8（BOM 無し）で書く（改行コードは変換しない）。`mode` は `create`（既にあれば失敗）/ `overwrite`（丸ごと上書き。無ければ作る）/ `append`（末尾に追記。無ければ作る）。`append` では、既存ファイルの先頭が UTF-8 のテキストとして読めない（Shift_JIS・バイナリなど）と文字コードが混ざらないよう追記しない。親ディレクトリが無ければ作る。結果の `created` で新しく作ったかがわかる |
+| `llm_file_search` | `path`（ディレクトリかファイル。空文字ですべて）の配下のテキストファイルから、`query` を含む行を探して `path` / `line`（行番号）/ `text` を返す（大文字小文字は区別しない）。バイナリ・UTF-8 で読めない・5MB を超える・OS のエラーで読めないファイルは黙って飛ばす（空文字のときは、存在しないディレクトリも飛ばす）。該当行 50 件・読むファイル 2,000 件を超えたら切り詰めて `truncated: true` |
 
 ## 安全性
 

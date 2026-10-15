@@ -48,6 +48,33 @@ class TestDecodeText:
         assert tool_support.read_text_file(str(path), max_bytes=6) == "abcdef"
 
 
+class TestEnsureTextHead:
+    """追記前の先頭の検査。"""
+
+    def test_utf8_with_bom(self, tmp_path) -> None:
+        """BOM 付きの UTF-8 は通る。"""
+        path = tmp_path / "a.txt"
+        path.write_bytes(codecs.BOM_UTF8 + "日本語".encode("utf-8"))
+
+        tool_support.ensure_text_head(str(path))
+
+    def test_multibyte_cut_at_window_end(self, tmp_path) -> None:
+        """検査範囲の末尾で切れたマルチバイト文字は不正とみなさない。"""
+        path = tmp_path / "a.txt"
+        path.write_bytes(b"a" * (tool_support.BINARY_SNIFF_BYTES - 1) + "あ".encode("utf-8"))
+
+        tool_support.ensure_text_head(str(path))
+
+    @pytest.mark.parametrize("raw", ["日本語".encode("shift_jis"), b"a\x00b"])
+    def test_rejects_non_text(self, tmp_path, raw: bytes) -> None:
+        """非 UTF-8・バイナリは `NotTextError`。"""
+        path = tmp_path / "a.bin"
+        path.write_bytes(raw)
+
+        with pytest.raises(tool_support.NotTextError):
+            tool_support.ensure_text_head(str(path))
+
+
 class TestRunFileOperation:
     """例外の標準結果辞書への変換。"""
 

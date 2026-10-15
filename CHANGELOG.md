@@ -15,7 +15,7 @@
   最も深いディレクトリで判定する）と `max_read_chars`（既定 100,000 文字）を書く。ホワイトリストが
   空ならすべて拒否する。LLM ツールは `llm_file_list`（直下の一覧）・`llm_file_read`（UTF-8 テキストの
   読み取り。BOM は除去、`offset` / `limit` で続きを読む、バイナリ・非 UTF-8 は中身を返さない）・
-  `llm_file_write`（`create` / `overwrite` / `append`。書き込み可能ディレクトリの配下だけ）・
+  `llm_file_write`（`create` / `overwrite` / `append`。書き込み可能ディレクトリの配下だけ。UTF-8 として読めないファイルには追記しない）・
   `llm_file_search`（中身のキーワード検索）の 4 つで、YAML は利用者の `${CONFIG_ROOT}/tools` に置く。
   パスは「ディレクトリの名前/相対パス」の形でやりとりし、`..`・絶対パス・シンボリックリンクで外へ出る
   アクセスは実体パスで判定して拒否する。想定外の例外は文字列を LLM へ返さず、エラー通知チャンネルへ

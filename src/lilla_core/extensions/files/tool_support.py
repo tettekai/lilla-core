@@ -95,6 +95,31 @@ def read_text_file(real: str, max_bytes: int | None = None) -> str:
     return decode_text(raw)
 
 
+def ensure_text_head(real: str) -> None:
+    """既存ファイルの先頭が UTF-8 のテキストとして読めるかを確かめる（追記の前に使う）。
+
+    先頭 `BINARY_SNIFF_BYTES` バイトだけを読み、NUL の有無と UTF-8 としての妥当性を
+    見る（末尾で切れたマルチバイト文字は不正とみなさない）。大きなファイルでも
+    全体は読まない。
+
+    Args:
+        real: 実体パス。
+
+    Raises:
+        NotTextError: バイナリ、または UTF-8 として読めない場合。
+    """
+    with open(real, "rb") as f:
+        head = f.read(BINARY_SNIFF_BYTES)
+    if b"\0" in head:
+        raise NotTextError
+    if head.startswith(codecs.BOM_UTF8):
+        head = head[len(codecs.BOM_UTF8):]
+    try:
+        codecs.getincrementaldecoder("utf-8")().decode(head, final=False)
+    except UnicodeDecodeError as e:
+        raise NotTextError from e
+
+
 def format_mtime(timestamp: float) -> str:
     """更新日時（UNIX 時刻）を UTC の ISO 8601 文字列にする。"""
     return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat().replace("+00:00", "Z")

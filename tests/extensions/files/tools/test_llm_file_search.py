@@ -91,6 +91,62 @@ class TestSearch:
 
         assert result["data"]["matches"] == []
 
+    async def test_empty_path_skips_missing_roots(self, tool, monkeypatch, dirs, tmp_path) -> None:
+        """全体検索では、存在しないディレクトリだけ飛ばして残りを探す。"""
+        from lilla_core.extensions import files
+        from lilla_core.extensions.files import tool_support
+
+        config = files.FilesConfig(
+            read_only_dirs=[str(dirs["docs"]), str(tmp_path / "unmounted")]
+        )
+        monkeypatch.setattr(tool_support, "load_config", lambda: config)
+
+        result = await tool.execute({"path": "", "query": "hello"}, {})
+
+        assert result["success"] is True
+        assert [m["path"] for m in result["data"]["matches"]] == [
+            "docs/readme.md",
+            "docs/sub/deep.txt",
+        ]
+
+    async def test_missing_explicit_path_is_an_error(self, tool, use_config) -> None:
+        """明示したパスが存在しなければエラーにする。"""
+        result = await tool.execute({"path": "docs/nope", "query": "hello"}, {})
+
+        assert result["success"] is False
+
+    async def test_skips_unreadable_files(self, tool, use_config, dirs, monkeypatch) -> None:
+        """OS のエラーで読めないファイルは黙って飛ばす。"""
+        from lilla_core.extensions.files import tool_support
+
+        real_read = tool_support.read_text_file
+
+        def fake_read(real, max_bytes=None):
+            if real.endswith("readme.md"):
+                raise PermissionError(real)
+            return real_read(real, max_bytes)
+
+        monkeypatch.setattr(tool_support, "read_text_file", fake_read)
+
+        result = await tool.execute({"path": "docs", "query": "hello"}, {})
+
+        assert [m["path"] for m in result["data"]["matches"]] == ["docs/sub/deep.txt"]
+
+    async def test_unexpected_error_is_notified(self, tool, use_config, notify, monkeypatch) -> None:
+        """想定外の例外は飛ばさず、汎用の文言にしてエラー通知へ流す。"""
+        from lilla_core.extensions.files import tool_support
+
+        def boom(real, max_bytes=None):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(tool_support, "read_text_file", boom)
+
+        result = await tool.execute({"path": "docs", "query": "hello"}, {})
+
+        assert result["success"] is False
+        assert result["error"] == tool_support.UNEXPECTED_ERROR_MESSAGE
+        notify.assert_awaited_once()
+
     @pytest.mark.parametrize("query", [None, "", "  "])
     async def test_rejects_blank_query(self, tool, use_config, query) -> None:
         """空のキーワードは拒否する。"""
