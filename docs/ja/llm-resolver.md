@@ -19,6 +19,7 @@ llm:
       url: "https://api.deepseek.com"
       model: "deepseek-flash"
       api_key_env: "DEEPSEEK_API_KEY"
+      # timeout_seconds: 300  # LLM の応答を待つ上限（既定 300 秒）
       extra_params:
         reasoning_effort: low
     deepseek-flash-high:
@@ -62,6 +63,10 @@ Discord・拡張のクライアント・task のどれから呼んでも同じ�
 | `script` | 必須 | `resolve` を定義した Python ファイル。`${config_root}` を展開し、`file:` 接頭は任意、相対パスは `CONFIG_ROOT` 基準。`dir:` は不可 |
 | `fallback` | 必須 | `llm.providers` にある具体プロバイダー名（resolver 型は不可） |
 | `timeout_seconds` | 任意 | `async def resolve` の待ち時間の上限（秒。既定 10） |
+
+`timeout_seconds` は具体プロバイダーにも書けますが、意味が違います。具体プロバイダーでは
+LLM の応答を待つ上限（秒。既定 300）で、resolver の値は選ばれた具体プロバイダーの送信には
+効きません。どちらも 0 以下は起動時に失敗します。
 
 resolver 型は HTTP を出さないため `url` / `model` / `api_key_env` / `wakeup_file` /
 `extra_params` は書けません。逆に具体プロバイダーは `url` / `model` が必須で、`script` /

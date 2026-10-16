@@ -20,6 +20,7 @@ llm:
       url: "https://api.deepseek.com"
       model: "deepseek-flash"
       api_key_env: "DEEPSEEK_API_KEY"
+      # timeout_seconds: 300  # upper bound for waiting on the LLM response (default 300 s)
       extra_params:
         reasoning_effort: low
     deepseek-flash-high:
@@ -65,6 +66,11 @@ expansion.
 | `script` | Yes | The Python file defining `resolve`. `${config_root}` is expanded, a `file:` prefix is optional, relative paths are relative to `CONFIG_ROOT`. `dir:` is not allowed |
 | `fallback` | Yes | A concrete provider name in `llm.providers` (not a resolver) |
 | `timeout_seconds` | No | Upper bound in seconds for an `async def resolve` (default 10) |
+
+Concrete providers also accept `timeout_seconds`, with a different meaning: there it is the
+upper bound in seconds for waiting on the LLM response (default 300). A resolver's value does
+not apply to the request sent to the chosen concrete provider. Zero or negative values fail
+startup for both.
 
 A resolver makes no HTTP calls, so `url` / `model` / `api_key_env` / `wakeup_file` /
 `extra_params` are not allowed on it. Conversely, concrete providers require `url`

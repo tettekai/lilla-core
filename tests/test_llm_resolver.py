@@ -135,6 +135,34 @@ class TestProviderConfigValidation:
         with pytest.raises(ValidationError, match=field):
             config_mod.LlmProviderConfig(**data)
 
+    @pytest.mark.parametrize(
+        ("data", "expected"),
+        [
+            ({"type": "openai_compat", "url": "u", "model": "m"}, 300.0),
+            ({"type": "ollama", "url": "u", "model": "m"}, 300.0),
+            ({"type": "resolver", "script": "x.py", "fallback": "high"}, 10.0),
+            ({"type": "openai_compat", "url": "u", "model": "m", "timeout_seconds": 600}, 600.0),
+            ({"type": "resolver", "script": "x.py", "fallback": "high", "timeout_seconds": 3}, 3.0),
+        ],
+    )
+    def test_timeout_seconds_default_depends_on_type(self, modules, data, expected):
+        """`timeout_seconds` は未指定なら具体プロバイダー 300 秒・resolver 10 秒になる。"""
+        config_mod, _ = modules
+        assert config_mod.LlmProviderConfig(**data).timeout_seconds == expected
+
+    @pytest.mark.parametrize("provider_type", ["openai_compat", "ollama", "resolver"])
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_timeout_seconds_must_be_positive(self, modules, provider_type, value):
+        """`timeout_seconds` に 0 以下を書くと、どの型でも起動時に落ちる。"""
+        config_mod, _ = modules
+        data = (
+            {"type": "resolver", "script": "x.py", "fallback": "high"}
+            if provider_type == "resolver"
+            else {"type": provider_type, "url": "u", "model": "m"}
+        )
+        with pytest.raises(ValidationError, match="timeout_seconds must be positive"):
+            config_mod.LlmProviderConfig(**data, timeout_seconds=value)
+
     def test_resolver_rejects_url(self, modules):
         """resolver は HTTP を出さないので `url` を持てない。"""
         config_mod, _ = modules
