@@ -8,7 +8,11 @@ from zoneinfo import ZoneInfo
 import pytest
 
 import lilla_core.extensions.google_calendar.client as google_calendar_client_module
-from lilla_core.extensions.google_calendar.client import SCOPES_CALENDAR, GoogleCalendarClient
+from lilla_core.extensions.google_calendar.client import (
+    SCOPES_CALENDAR,
+    CalendarEvent,
+    GoogleCalendarClient,
+)
 
 
 def _make_client() -> GoogleCalendarClient:
@@ -202,6 +206,49 @@ class TestCreateEventRequest:
         )
 
         assert result["htmlLink"] == "https://calendar.google.com/event?eid=evt1"
+
+
+class TestGetEvents:
+    """複数カレンダーの予定の取得とマージ。"""
+
+    async def test_returns_source_calendar_id_with_each_event(self, monkeypatch) -> None:
+        """各予定は取得元のカレンダー ID と組で返り、開始時刻の昇順に並ぶ。"""
+        _mock_get_config(monkeypatch, ui_timezone="Asia/Tokyo")
+        client = _make_client()
+        client._auth_headers = AsyncMock(return_value={"Authorization": "Bearer x"})
+        responses = {
+            "primary": {"items": [{"id": "p1", "start": {"dateTime": "2026-04-20T12:00:00+09:00"}}]},
+            "family@group.calendar.google.com": {
+                "items": [
+                    {"id": "f1", "start": {"dateTime": "2026-04-20T09:00:00+09:00"}},
+                    {"id": "f2", "start": {"date": "2026-04-21"}},
+                ]
+            },
+        }
+
+        async def fake_request_json(url, **kwargs):
+            for calendar_id, response in responses.items():
+                if f"/calendars/{calendar_id}/events" in url:
+                    return response
+            raise AssertionError(url)
+
+        client._request_json = fake_request_json
+
+        result = await client.get_events(
+            ["primary", "family@group.calendar.google.com"],
+            datetime(2026, 4, 20, tzinfo=timezone.utc),
+            datetime(2026, 4, 22, tzinfo=timezone.utc),
+        )
+
+        assert [(item.calendar_id, item.event["id"]) for item in result] == [
+            ("family@group.calendar.google.com", "f1"),
+            ("primary", "p1"),
+            ("family@group.calendar.google.com", "f2"),
+        ]
+        assert all(isinstance(item, CalendarEvent) for item in result)
+        calendar_id, event = result[0]
+        assert calendar_id == "family@group.calendar.google.com"
+        assert event["id"] == "f1"
 
 
 class TestScopes:

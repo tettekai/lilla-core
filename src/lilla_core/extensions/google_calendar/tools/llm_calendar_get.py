@@ -41,56 +41,13 @@ SCHEMA = {
 }
 
 
-def _strip_attendees(events: list[dict]) -> list[dict]:
-    """各イベントから attendees フィールドを除去した新しいリストを返す。
-
-    参加者のメールアドレスをLLMに渡さないよう、安全側に倒して除去する。
-    入力の events は破壊的に変更しない（副作用のない純粋関数）。
-    """
-    return [
-        {key: value for key, value in event.items() if key != "attendees"}
-        for event in events
-    ]
-
-
-def _mask_calendar_ids(events: list[dict], id_to_friendly: dict[str, str]) -> list[dict]:
-    """イベントリスト内のカレンダーIDを friendly_name に置換した新しいリストを返す。
-
-    構造を再帰的に走査し、値がカレンダーIDと「完全一致」する文字列だけを
-    friendly_name に置換する。organizer.email / creator.email など置換対象
-    フィールドを列挙せずに済む点は従来どおりだが、文字列全体の一致で判定する
-    ことで以下の誤動作を防ぐ:
-
-    - あるIDが別のIDの部分文字列であるときの多重・誤置換
-    - friendly_name が他のIDと衝突するときの再置換
-    - dict のイテレーション順序への依存
-
-    入力の events は破壊的に変更しない（副作用のない純粋関数）。
-    """
-    # "primary" は一般名詞のため置換対象から除外する。
-    replacements = {
-        calendar_id: friendly_name
-        for calendar_id, friendly_name in id_to_friendly.items()
-        if calendar_id != "primary"
-    }
-    if not replacements:
-        return events
-
-    def _mask(value: object) -> object:
-        """値を再帰的に走査し、IDと完全一致する文字列を置換する。"""
-        if isinstance(value, dict):
-            return {key: _mask(child) for key, child in value.items()}
-        if isinstance(value, list):
-            return [_mask(child) for child in value]
-        if isinstance(value, str):
-            return replacements.get(value, value)
-        return value
-
-    return [_mask(event) for event in events]
-
-
 async def execute(input: dict, context: dict) -> dict:
     """Google Calendar からイベントを取得する。
+
+    各予定は `event_summary.summarize_event` でホワイトリストの項目だけに絞り、
+    取得元カレンダーの `friendly_name`（後方互換モードでは `calendar_1` などの
+    汎用名）を `calendar` に付けて返す。主催者・作成者・参加者のメールアドレスや
+    カレンダー ID は返さない。
 
     Parameters
     ----------
@@ -116,6 +73,10 @@ async def execute(input: dict, context: dict) -> dict:
 
         from lilla_core.core.config import get_section
         from lilla_core.extensions.google_calendar import GoogleCalendarConfig
+        from lilla_core.extensions.google_calendar.event_summary import (
+            generic_calendar_name,
+            summarize_event,
+        )
         from lilla_core.tool_support.date_range import DateRange
         from lilla_core.extensions.google_calendar.client import get_google_calendar_client
         from lilla_core.core.exceptions import ReauthenticationRequiredError
@@ -123,11 +84,14 @@ async def execute(input: dict, context: dict) -> dict:
         # extensions.google_calendar.calendars（lilla.yaml）が正。なければ後方互換で calendar_ids を使用。
         calendars_config = get_section("google-calendar", GoogleCalendarConfig).calendars
         if calendars_config:
-            id_to_friendly: dict[str, str] = {c.id: c.friendly_name for c in calendars_config}
-            calendar_ids = list(id_to_friendly.keys())
+            name_by_id: dict[str, str] = {c.id: c.friendly_name for c in calendars_config}
+            calendar_ids = list(name_by_id.keys())
         else:
+            # 後方互換モードでは ID（メールアドレスでありうる）を出さず、汎用名を付ける。
             calendar_ids = context.get("calendar_ids") or ["primary"]
-            id_to_friendly = {}
+            name_by_id = {}
+            for index, calendar_id in enumerate(calendar_ids):
+                name_by_id.setdefault(calendar_id, generic_calendar_name(index))
 
         dr = DateRange.parse(date_range)
         time_min, time_max = dr.as_datetime()
@@ -135,7 +99,7 @@ async def execute(input: dict, context: dict) -> dict:
         calendar = get_google_calendar_client()
 
         try:
-            events = await calendar.get_events(
+            items = await calendar.get_events(
                 calendar_ids=calendar_ids,
                 time_min=time_min,
                 time_max=time_max,
@@ -149,10 +113,12 @@ async def execute(input: dict, context: dict) -> dict:
                 "Google Calendar の再認証が必要だったため、ユーザーにログインを依頼しました。",
             )
 
-        events = _strip_attendees(events)
-
-        if id_to_friendly:
-            events = _mask_calendar_ids(events, id_to_friendly)
+        # 取得元は get_events に渡した ID のどれかなので、対応表に無いことは通常ない。
+        # 万一無くても ID そのものは出さない。
+        events = [
+            summarize_event(event, name_by_id.get(calendar_id, "unknown"))
+            for calendar_id, event in items
+        ]
 
         memory_entry = (
             f"Google Calendar のイベントを取得しました（{date_range}）。{len(events)}件。"

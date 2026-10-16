@@ -132,11 +132,29 @@ type: llm_calendar_create
 
 | ツール | 関数名 | 内容 |
 |--------|--------|------|
-| `llm_calendar_get` | `get_calendar_events` | `date_range`（`today` / `last_7_days` / `2026-04-20/2026-04-26` など）・`query`・`max_results` で予定を取得する。参加者（`attendees`）は LLM へ渡さず、登録済みカレンダーの ID は `friendly_name` に置き換える |
+| `llm_calendar_get` | `get_calendar_events` | `date_range`（`today` / `last_7_days` / `2026-04-20/2026-04-26` など）・`query`・`max_results` で予定を取得する |
 | `llm_calendar_create` | `create_calendar_event` | `calendars` に登録済みの `friendly_name` を指定して予定を作る（終日・時間指定の両方）。登録に無いカレンダーへは書き込まない |
 
 `calendars` が空のとき、取得ツールは後方互換としてツール実行 context の `calendar_ids`
 （無ければ `primary`）を使います。
+
+### ツールの戻り値
+
+どちらのツールも、Calendar API の予定をそのまま LLM へ渡さず、次の項目だけに絞って返します
+（取得ツールは予定ごとに 1 つ、作成ツールは作成した予定 1 つ）。
+
+| 項目 | 内容 |
+|------|------|
+| `calendar` | 取得元（作成先）のカレンダーの `friendly_name`。`calendars` が空の後方互換モードでは、`calendar_ids` の並び順に `calendar_1` / `calendar_2` … |
+| `summary` | タイトル（無ければ空文字） |
+| `start` / `end` | 終日なら `YYYY-MM-DD`、時間指定なら ISO 8601 の日時。終日の `end` は最終日を含む日付（作成ツールの `end` と同じ） |
+| `all_day` | 終日の予定かどうか |
+| `status` / `location` / `description` | 値があるときだけ |
+
+主催者・作成者・参加者（`organizer` / `creator` / `attendees`）や `htmlLink` / `iCalUID` / `id`
+などそれ以外の項目は返しません。これらにはアカウントのメールアドレスやカレンダー ID が入って
+いるためです。`location` / `description` の本文は利用者が書いたものとしてそのまま返します
+（本文中のアドレスは伏せません）。
 
 ## Drive / Sheets のツール
 

@@ -140,11 +140,29 @@ To use them in normal conversations, also add these stems to `tools.sets.main` i
 
 | Tool | Function name | What it does |
 |------|---------------|--------------|
-| `llm_calendar_get` | `get_calendar_events` | Reads events by `date_range` (`today` / `last_7_days` / `2026-04-20/2026-04-26` and so on), `query`, and `max_results`. Attendees are never passed to the LLM, and IDs of registered calendars are replaced with their `friendly_name` |
+| `llm_calendar_get` | `get_calendar_events` | Reads events by `date_range` (`today` / `last_7_days` / `2026-04-20/2026-04-26` and so on), `query`, and `max_results` |
 | `llm_calendar_create` | `create_calendar_event` | Creates an event in a calendar given by a registered `friendly_name` (all-day or timed). It never writes to a calendar that is not registered |
 
 When `calendars` is empty, the read tool falls back to `calendar_ids` in the tool
 execution context (or `primary`) for backward compatibility.
+
+### What the tools return
+
+Neither tool hands Calendar API events to the LLM as they are. Both return only the fields
+below (the read tool returns one per event; the create tool returns one for the created event).
+
+| Field | Content |
+|-------|---------|
+| `calendar` | The `friendly_name` of the calendar the event came from (or was created in). In the backward-compatible mode where `calendars` is empty, `calendar_1` / `calendar_2` … in the order of `calendar_ids` |
+| `summary` | The title (an empty string if there is none) |
+| `start` / `end` | `YYYY-MM-DD` for all-day events, an ISO 8601 date-time for timed events. For all-day events `end` is the last day, inclusive (the same as the create tool's `end`) |
+| `all_day` | Whether the event is an all-day event |
+| `status` / `location` / `description` | Only when they have a value |
+
+Everything else — the organizer, creator, and attendees (`organizer` / `creator` /
+`attendees`), `htmlLink`, `iCalUID`, `id`, and so on — is not returned, because those carry
+account email addresses and calendar IDs. The text of `location` / `description` is treated as
+written by the user and returned as is (addresses inside it are not masked).
 
 ## Drive / Sheets tools
 

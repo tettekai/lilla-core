@@ -138,6 +138,18 @@
   場合は従来と同じ結果になる。`memory.history_days` の日数制限（日数制限で落ちた発言は時の境界の
   基準にも使わない）とタイムスタンプの付与は変わらない
 
+- `google-calendar` 拡張の LLM ツール `llm_calendar_get` / `llm_calendar_create` の戻り値（`data`）を、
+  予定ごとに `calendar`（取得元・作成先の `friendly_name`。`calendars` が空の後方互換モードでは
+  `calendar_1` などの汎用名）・`summary`・`start`・`end`（文字列。終日の `end` は最終日を含む日付）・
+  `all_day` と、値があるときだけ `status`・`location`・`description` に絞った（#236）。
+  `organizer` / `creator` / `attendees` / `htmlLink` / `iCalUID` / `id` などそれ以外の項目は返さない。
+  `primary` カレンダーの予定に入っている本人のメールアドレスが LLM へ渡り、送信ブロックリストで
+  会話が止まっていたため。作成ツールの `memory_entry` にも `htmlLink` を載せない。説明は `docs/ja/google.md`
+  - **BREAKING**: `GoogleCalendarClient.get_events()` の戻り値を、予定の dict のリストから
+    （取得元カレンダー ID, 予定）の組 `CalendarEvent`（`calendar_id` / `event`）のリストに変えた。
+    このメソッドを直接呼んでいる拡張は書き換えが必要。`Extension` 契約の変更ではないため
+    `EXTENSION_API_VERSION` は上げていない
+
 ## [0.6.0] - 2026-10-10
 
 ### Added
