@@ -625,3 +625,74 @@ class TestSendPaths:
                 await llm_client.chat_to_llm_with_tools([{"role": "user", "content": "hi"}])
         wake.assert_not_awaited()
         send.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("call", "provider_type"),
+        [("chat", "ollama"), ("chat", "openai_compat"), ("tools", "ollama"),
+         ("tools", "openai_compat"), ("responses", "openai_compat")],
+    )
+    async def test_timeout_comes_from_provider_setting(self, env, call, provider_type) -> None:
+        """タイムアウトはプロバイダー設定の `timeout_seconds` を使う。"""
+        cfg, send, *_ = env
+        cfg.get_llm_provider.return_value = self._provider(provider_type, timeout_seconds=42.5)
+        send.return_value = json.dumps({
+            "message": {"content": "ok"},
+            "choices": [{"message": {"content": "ok"}}],
+            "output": [],
+        })
+        msgs = [{"role": "user", "content": "hi"}]
+        if call == "chat":
+            await llm_client.chat_to_llm(msgs)
+        elif call == "tools":
+            await llm_client.chat_to_llm_with_tools(msgs)
+        else:
+            await llm_client.chat_to_llm_responses(msgs)
+        assert send.await_args.kwargs["timeout"] == 42.5
+
+
+class TestAdapters:
+    """アダプター単体（組み立て・解釈）と、`type` からの対応表を検証する。"""
+
+    def test_adapter_table_covers_each_type_and_api(self) -> None:
+        table = llm_client._ADAPTERS
+        assert isinstance(table["ollama"]["chat"], llm_client.OllamaNativeAdapter)
+        assert isinstance(table["ollama"]["tools"], llm_client.ChatCompletionsAdapter)
+        assert table["ollama"]["tools"].wakes_ollama is True
+        assert "responses" not in table["ollama"]
+        assert table["openai_compat"]["chat"] is table["openai_compat"]["tools"]
+        assert isinstance(table["openai_compat"]["responses"], llm_client.ResponsesAdapter)
+        assert table["openai_compat"]["responses"].wakes_ollama is False
+
+    def test_select_adapter_rejects_unknown_type(self) -> None:
+        with pytest.raises(ValueError, match="Unsupported LLM provider type: x"):
+            llm_client._select_adapter(MagicMock(type="x"), "chat")
+
+    def test_chat_completions_parse_does_not_fall_back_when_tool_calls(self) -> None:
+        """tool_calls がある回は reasoning_content へフォールバックしない。"""
+        adapter = llm_client.ChatCompletionsAdapter("/chat/completions", use_api_key=True)
+        message = {"content": "", "reasoning_content": "R", "tool_calls": [{"id": "c"}]}
+        result = adapter.parse_response({"choices": [{"message": message}]})
+        assert result.content == ""
+        assert result.tool_calls == [{"id": "c"}]
+        assert result.finish_reason == "stop"
+        assert result.raw is message
+
+    def test_chat_completions_parse_falls_back_without_tool_calls(self) -> None:
+        adapter = llm_client.ChatCompletionsAdapter("/chat/completions", use_api_key=True)
+        message = {"content": None, "reasoning_content": "R"}
+        result = adapter.parse_response({"choices": [{"message": message, "finish_reason": "length"}]})
+        assert result.content == "R"
+        assert result.finish_reason == "length"
+
+    def test_build_request_does_not_mutate_messages(self) -> None:
+        provider = MagicMock(url="https://u", model="m", extra_params={}, api_key_env=None)
+        messages = [{"role": "user", "content": "hi"}]
+        for adapter in (
+            llm_client.OllamaNativeAdapter(),
+            llm_client.ChatCompletionsAdapter("/chat/completions", use_api_key=True),
+            llm_client.ResponsesAdapter(),
+        ):
+            adapter.build_request(
+                provider, messages, system_prompt="S", provider_prompt="P", tools=None
+            )
+        assert messages == [{"role": "user", "content": "hi"}]

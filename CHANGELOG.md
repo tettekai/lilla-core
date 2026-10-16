@@ -105,7 +105,17 @@
   `base` / `head` / `author` / `merged_by` / `merged_at` / `merge_commit_sha` / `labels`（ラベル名の
   配列）/ `body`（無ければ空文字。4000 文字で切り詰め）/ `body_truncated`（切り詰めたら `true`）
 
+- 具体プロバイダー（`ollama` / `openai_compat`）のエントリに `timeout_seconds`（LLM の応答を待つ上限の
+  秒数。既定 300 秒で、これまでの固定値と同じ）を書けるようにした（#238）。これまで resolver だけが
+  読んでいた項目で、resolver の既定は従来どおり 10 秒。0 以下はどの型でも起動時に落ちる
+
 ### Changed
+
+- `api/llm_client.py` の LLM 送信経路をプロバイダーアダプターに統一した（#238）。Ollama ネイティブ
+  （`/api/chat`）・Chat Completions・Responses API をそれぞれアダプター（リクエストの組み立てと応答の
+  解釈）にし、送信前検査 → Ollama の WOL → HTTP 送信 → 例外ラップは共通の送信関数 1 か所で行う。
+  `type` からアダプターへの対応表も 1 か所にまとめた。`chat_to_llm` / `chat_to_llm_with_tools` /
+  `chat_to_llm_responses` のシグネチャと戻り値の形、送るリクエストの内容は変えていない
 
 - **BREAKING**: コマンドハンドラの第 1 引数を Discord のメッセージからコマンドコンテキスト
   （`CommandContext`）に変え、シグネチャを `(ctx, arg, tools, bot)` にした（#229）。拡張が

@@ -2,8 +2,9 @@ import asyncio
 import json
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NoReturn, Protocol
 
 from lilla_core.core.config import get_config, resolve_llm_provider_prompt_spec
 from lilla_core.core.exceptions import LLMError
@@ -147,6 +148,306 @@ async def _wake_ollama_if_needed(provider) -> None:
             logger.warning("wakeup_file is not configured. Skipping WOL")
 
 
+@dataclass(frozen=True)
+class LLMRequest:
+    """アダプターが組み立てた 1 回分の送信内容。
+
+    `body` は送信前検査（`ensure_llm_request_allowed`）の対象で、`headers` は対象外。
+    `headers` が `None` ならヘッダーを付けずに送る。
+    """
+
+    url: str
+    body: dict[str, Any]
+    headers: dict[str, str] | None = None
+
+
+@dataclass(frozen=True)
+class LLMResult:
+    """アダプターが応答 JSON から取り出した、プロバイダーに依らない形の結果。
+
+    `raw` は呼び出し元へそのまま返す生データ（Chat Completions / Ollama ネイティブなら
+    assistant メッセージ、Responses API なら `output` 配列）。
+    """
+
+    content: str | None
+    tool_calls: list[dict[str, Any]] | None
+    finish_reason: str
+    raw: Any
+
+
+class LLMProviderAdapter(Protocol):
+    """1 つの API 形式（エンドポイントと入出力の形）を表すプロバイダーアダプター。
+
+    送信前検査・WOL・HTTP 送信・例外ラップは共通の送信関数（`_send`）が行い、
+    アダプターはリクエストの組み立てと応答の解釈だけを受け持つ。
+    """
+
+    #: 送信前に Ollama の起動確認（WOL）を行うか
+    wakes_ollama: bool
+
+    def build_request(
+        self,
+        provider,
+        messages: list[dict[str, Any]],
+        *,
+        system_prompt: str | None,
+        provider_prompt: str,
+        tools: list | None,
+    ) -> LLMRequest:
+        """会話履歴・システムプロンプト・ツール定義から送信内容を組み立てる。"""
+        ...
+
+    def parse_response(self, response: Any) -> LLMResult:
+        """デコード済みの応答 JSON を共通の結果型へ変換する。"""
+        ...
+
+
+def _bearer_headers(api_key: str) -> dict[str, str]:
+    """`Authorization: Bearer` ヘッダーを返す（キーが空でもヘッダー自体は付ける）。"""
+    return {"Authorization": f"Bearer {api_key}"}
+
+
+class OllamaNativeAdapter:
+    """Ollama ネイティブの `/api/chat`（tools なし）。
+
+    `extra_params` はボディのトップレベルではなく `options`（既定 `temperature: 0.7`）へ
+    展開する。認証ヘッダーは付けない。
+    """
+
+    wakes_ollama = True
+
+    def build_request(
+        self,
+        provider,
+        messages: list[dict[str, Any]],
+        *,
+        system_prompt: str | None,
+        provider_prompt: str,
+        tools: list | None,
+    ) -> LLMRequest:
+        """`/api/chat` 向けのボディを組み立てる（tools は使わない）。"""
+        return LLMRequest(
+            url=f"{provider.url}/api/chat",
+            body={
+                "model": provider.model,
+                "messages": _ensure_system_prompt(messages, system_prompt, provider_prompt),
+                "stream": False,
+                "options": {"temperature": 0.7, **provider.extra_params},
+            },
+        )
+
+    def parse_response(self, response: Any) -> LLMResult:
+        """`message` から content を取り出す（空なら `reasoning_content` へフォールバック）。"""
+        message = response["message"]
+        return LLMResult(
+            content=_resolve_content(message),
+            tool_calls=None,
+            finish_reason="stop",
+            raw=message,
+        )
+
+
+class ChatCompletionsAdapter:
+    """OpenAI 互換の Chat Completions（`/chat/completions` 系）。
+
+    `path` はプロバイダーの `url` に続けるパス。`use_api_key` が偽なら `api_key_env` を
+    読まず、空のキーで `Authorization` ヘッダーを付ける（Ollama の OpenAI 互換エンドポイント）。
+    """
+
+    def __init__(self, path: str, *, use_api_key: bool, wakes_ollama: bool = False) -> None:
+        """エンドポイントのパスと、API キー・WOL の扱いを受け取る。"""
+        self.path = path
+        self.use_api_key = use_api_key
+        self.wakes_ollama = wakes_ollama
+
+    def build_request(
+        self,
+        provider,
+        messages: list[dict[str, Any]],
+        *,
+        system_prompt: str | None,
+        provider_prompt: str,
+        tools: list | None,
+    ) -> LLMRequest:
+        """`extra_params` をトップレベルへ展開し、tools があれば `tool_choice: auto` と共に足す。"""
+        body: dict[str, Any] = {
+            "model": provider.model,
+            "messages": _ensure_system_prompt(messages, system_prompt, provider_prompt),
+            "stream": False,
+            **provider.extra_params,
+        }
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = "auto"
+        api_key = _resolve_api_key(provider) if self.use_api_key else ""
+        return LLMRequest(
+            url=f"{provider.url}{self.path}",
+            body=body,
+            headers=_bearer_headers(api_key),
+        )
+
+    def parse_response(self, response: Any) -> LLMResult:
+        """`choices[0]` を解釈する。
+
+        tool_calls がある回は content をそのまま返し、`reasoning_content` への
+        フォールバックはしない（tool_calls が無い回だけフォールバックする）。
+        """
+        choice = response["choices"][0]
+        message = choice["message"]
+        tool_calls = message.get("tool_calls")
+        return LLMResult(
+            content=message.get("content") if tool_calls else _resolve_content(message),
+            tool_calls=tool_calls,
+            finish_reason=choice.get("finish_reason", "stop"),
+            raw=message,
+        )
+
+
+class ResponsesAdapter:
+    """OpenAI 互換の Responses API（`/responses`）。
+
+    会話履歴は `input` に、システムプロンプトは `instructions` に渡す。Chat Completions と
+    違い、`system_prompt` が無ければ既定のシステムプロンプトは補わない。
+    """
+
+    wakes_ollama = False
+
+    def build_request(
+        self,
+        provider,
+        messages: list[dict[str, Any]],
+        *,
+        system_prompt: str | None,
+        provider_prompt: str,
+        tools: list | None,
+    ) -> LLMRequest:
+        """`input` / `instructions` / `tools` を持つボディを組み立てる。"""
+        body: dict[str, Any] = {
+            "model": provider.model,
+            "input": messages,
+            "stream": False,
+            **provider.extra_params,
+        }
+        instructions = _append_prompt(system_prompt, provider_prompt)
+        if instructions:
+            body["instructions"] = instructions
+        if tools:
+            body["tools"] = tools
+        return LLMRequest(
+            url=f"{provider.url}/responses",
+            body=body,
+            headers=_bearer_headers(_resolve_api_key(provider)),
+        )
+
+    def parse_response(self, response: Any) -> LLMResult:
+        """`output` の `output_text` を連結し、`function_call` アイテムを tool_calls にする。"""
+        output = response.get("output", []) or []
+        content_parts: list[str] = []
+        tool_calls: list[dict[str, Any]] = []
+        for item in output:
+            item_type = item.get("type")
+            if item_type == "message":
+                for part in item.get("content", []) or []:
+                    if part.get("type") == "output_text":
+                        content_parts.append(part.get("text", ""))
+            elif item_type == "function_call":
+                tool_calls.append(item)
+        return LLMResult(
+            content="".join(content_parts) if content_parts else None,
+            tool_calls=tool_calls or None,
+            finish_reason="tool_calls" if tool_calls else "stop",
+            raw=output,
+        )
+
+
+#: 公開関数ごとの API の種類（`_ADAPTERS` の 2 段目のキー）と、エラーメッセージ用の名前
+_API_LABELS = {
+    "chat": "Chat API",
+    "tools": "Chat API with tools",
+    "responses": "Responses API",
+}
+
+_CHAT_COMPLETIONS = ChatCompletionsAdapter("/chat/completions", use_api_key=True)
+
+#: プロバイダーの `type` → API の種類 → アダプター の対応表（ここが唯一の分岐点）
+_ADAPTERS: dict[str, dict[str, LLMProviderAdapter]] = {
+    "ollama": {
+        "chat": OllamaNativeAdapter(),
+        # tools 付きは Ollama の OpenAI 互換エンドポイントを使う
+        "tools": ChatCompletionsAdapter(
+            "/v1/chat/completions", use_api_key=False, wakes_ollama=True
+        ),
+    },
+    "openai_compat": {
+        "chat": _CHAT_COMPLETIONS,
+        "tools": _CHAT_COMPLETIONS,
+        "responses": ResponsesAdapter(),
+    },
+}
+
+
+def _select_adapter(provider, api: str) -> LLMProviderAdapter:
+    """プロバイダーの `type` と API の種類からアダプターを選ぶ。
+
+    Raises:
+        ValueError: 未対応の `type`、またはその `type` が API の種類に対応していない場合。
+    """
+    adapters = _ADAPTERS.get(provider.type)
+    if adapters is None:
+        raise ValueError(f"Unsupported LLM provider type: {provider.type}")
+    adapter = adapters.get(api)
+    if adapter is None:
+        supported = " / ".join(t for t, by_api in _ADAPTERS.items() if api in by_api)
+        raise ValueError(
+            f"{_API_LABELS[api]} is only supported for the {supported} provider. "
+            f"Specified provider type: {provider.type}"
+        )
+    return adapter
+
+
+async def _send(adapter: LLMProviderAdapter, provider, request: LLMRequest) -> LLMResult:
+    """送信前検査 → （必要なら）WOL → HTTP 送信 → 応答解釈 → 例外ラップ を順に行う。
+
+    送信を止める回は WOL もしないよう、検査を最初に済ませる。タイムアウトはプロバイダー
+    設定の `timeout_seconds`（具体プロバイダーの既定 300 秒）を使う。検査の例外
+    （`LLMError` のサブクラス）はそのまま、送信と解釈の失敗は `LLMError` にラップして送出する。
+    """
+    ensure_llm_request_allowed(request.body)
+    if adapter.wakes_ollama:
+        await _wake_ollama_if_needed(provider)
+    try:
+        reply = await send_http_request(
+            request.url,
+            method="POST",
+            data=request.body,
+            headers=request.headers,
+            timeout=provider.timeout_seconds,
+        )
+        return adapter.parse_response(json.loads(reply))
+    except Exception as e:
+        _raise_llm_error(e)
+
+
+async def _call(
+    api: str,
+    messages: list[dict[str, Any]],
+    system_prompt: str | None,
+    tools: list | None,
+    llm_name: str | None,
+) -> LLMResult:
+    """プロバイダーを解決してアダプターを選び、組み立てて送る（公開関数の共通部分）。"""
+    provider = _get_provider(llm_name)
+    adapter = _select_adapter(provider, api)
+    request = adapter.build_request(
+        provider,
+        messages,
+        system_prompt=system_prompt,
+        provider_prompt=_load_provider_prompt(provider),
+        tools=tools,
+    )
+    return await _send(adapter, provider, request)
+
+
 async def chat_to_llm(
     messages: list[dict[str, Any]] | str,
     system_prompt: str | None = None,
@@ -160,70 +461,12 @@ async def chat_to_llm(
     文字列の場合は {"role": "user", "content": messages} に変換します。
     system_prompt を指定した場合はそれを使用し、未指定の場合はデフォルトのシステムプロンプトを使用します。
     実際に送る具体プロバイダーに `prompt` があれば、システムプロンプトの末尾へ空行区切りで足します。
+    Ollama はネイティブの `/api/chat`、OpenAI 互換は `/chat/completions` を使います。
     """
     if isinstance(messages, str):
         messages = [{"role": "user", "content": messages}]
-    provider = _get_provider(llm_name)
-    messages = _ensure_system_prompt(messages, system_prompt, _load_provider_prompt(provider))
-
-    if provider.type == "ollama":
-        return await _chat_ollama(messages, provider)
-    elif provider.type == "openai_compat":
-        return await _chat_openai_compat(messages, provider)
-    else:
-        raise ValueError(f"Unsupported LLM provider type: {provider.type}")
-
-
-async def _chat_ollama(messages: list[dict[str, Any]], provider) -> str:
-    """Ollama へチャットリクエストを送信し、応答を返す。WOL 処理も行う。
-
-    送信前（WOL より前）に `ensure_llm_request_allowed` でボディを検査する。
-    """
-    request_data = {
-        "model": provider.model,
-        "messages": messages,
-        "stream": False,
-        "options": {"temperature": 0.7, **provider.extra_params},
-    }
-    ensure_llm_request_allowed(request_data)
-    await _wake_ollama_if_needed(provider)
-
-    try:
-        reply = await send_http_request(
-            f"{provider.url}/api/chat",
-            method="POST",
-            data=request_data,
-            timeout=300,
-        )
-        return _resolve_content(json.loads(reply)["message"])
-    except Exception as e:
-        _raise_llm_error(e)
-
-
-async def _chat_openai_compat(messages: list[dict[str, Any]], provider) -> str:
-    """OpenAI 互換 API へチャットリクエストを送信し、応答を返す。
-
-    送信前に `ensure_llm_request_allowed` でボディを検査する（ヘッダーは対象外）。
-    """
-    request_data = {
-        "model": provider.model,
-        "messages": messages,
-        "stream": False,
-        **provider.extra_params,
-    }
-    ensure_llm_request_allowed(request_data)
-    api_key = _resolve_api_key(provider)
-    try:
-        reply = await send_http_request(
-            f"{provider.url}/chat/completions",
-            method="POST",
-            data=request_data,
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=300,
-        )
-        return _resolve_content(json.loads(reply)["choices"][0]["message"])
-    except Exception as e:
-        _raise_llm_error(e)
+    result = await _call("chat", messages, system_prompt, None, llm_name)
+    return result.content or ""
 
 
 async def chat_to_llm_with_tools(
@@ -259,90 +502,13 @@ async def chat_to_llm_with_tools(
             "raw_message": dict          # messages に追加するための assistant メッセージ
         }
     """
-    provider = _get_provider(llm_name)
-    messages = _ensure_system_prompt(messages, system_prompt, _load_provider_prompt(provider))
-
-    if provider.type == "ollama":
-        # Ollama は OpenAI 互換エンドポイントを使用
-        url = f"{provider.url}/v1/chat/completions"
-        api_key = ""
-    elif provider.type == "openai_compat":
-        url = f"{provider.url}/chat/completions"
-        api_key = _resolve_api_key(provider)
-    else:
-        raise ValueError(f"Unsupported LLM provider type: {provider.type}")
-
-    request_data = _build_tools_request_data(messages, provider, tools)
-    # 送信を止める回は WOL も行わないよう、検査を先に済ませる
-    ensure_llm_request_allowed(request_data)
-    if provider.type == "ollama":
-        await _wake_ollama_if_needed(provider)
-
-    return await _chat_with_tools_openai_compat(request_data, url, api_key)
-
-
-def _build_tools_request_data(
-    messages: list[dict[str, Any]],
-    provider,
-    tools: list | None,
-) -> dict[str, Any]:
-    """tools パラメータ付きの Chat Completions リクエストボディを組み立てる。"""
-    request_data: dict[str, Any] = {
-        "model": provider.model,
-        "messages": messages,
-        "stream": False,
-        **provider.extra_params,
+    result = await _call("tools", messages, system_prompt, tools, llm_name)
+    return {
+        "content": result.content,
+        "tool_calls": result.tool_calls,
+        "finish_reason": result.finish_reason,
+        "raw_message": result.raw,
     }
-    if tools:
-        request_data["tools"] = tools
-        request_data["tool_choice"] = "auto"
-    return request_data
-
-
-async def _chat_with_tools_openai_compat(
-    request_data: dict[str, Any],
-    url: str,
-    api_key: str,
-) -> dict:
-    """OpenAI 互換 API へ tools パラメータ付きでリクエストを送信し、結果を返す。
-
-    Parameters
-    ----------
-    request_data : dict[str, Any]
-        `_build_tools_request_data` が組み立て、検査を済ませたリクエストボディ
-    url : str
-        エンドポイント URL
-    api_key : str
-        認証用 API キー
-
-    Returns
-    -------
-    dict
-        {"content", "tool_calls", "finish_reason", "raw_message"} を含む辞書
-    """
-    try:
-        reply = await send_http_request(
-            url,
-            method="POST",
-            data=request_data,
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=300,
-        )
-        response = json.loads(reply)
-        choice = response["choices"][0]
-        message = choice["message"]
-        finish_reason = choice.get("finish_reason", "stop")
-        tool_calls = message.get("tool_calls")
-        content = message.get("content") if tool_calls else _resolve_content(message)
-
-        return {
-            "content": content,
-            "tool_calls": tool_calls,
-            "finish_reason": finish_reason,
-            "raw_message": message,
-        }
-    except Exception as e:
-        _raise_llm_error(e)
 
 
 async def chat_to_llm_responses(
@@ -387,62 +553,10 @@ async def chat_to_llm_responses(
             "raw_output": list            # Responses API の output 配列そのまま
         }
     """
-    provider = _get_provider(llm_name)
-
-    if provider.type != "openai_compat":
-        raise ValueError(
-            "Responses API is only supported for the openai_compat provider. "
-            f"Specified provider type: {provider.type}"
-        )
-
-    api_key = _resolve_api_key(provider)
-
-    request_data: dict[str, Any] = {
-        "model": provider.model,
-        "input": messages,
-        "stream": False,
-        **provider.extra_params,
+    result = await _call("responses", messages, system_prompt, tools, llm_name)
+    return {
+        "content": result.content,
+        "tool_calls": result.tool_calls,
+        "finish_reason": result.finish_reason,
+        "raw_output": result.raw,
     }
-    instructions = _append_prompt(system_prompt, _load_provider_prompt(provider))
-    if instructions:
-        request_data["instructions"] = instructions
-    if tools:
-        request_data["tools"] = tools
-    ensure_llm_request_allowed(request_data)
-
-    try:
-        reply = await send_http_request(
-            f"{provider.url}/responses",
-            method="POST",
-            data=request_data,
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=300,
-        )
-        response = json.loads(reply)
-        output = response.get("output", []) or []
-
-        content_parts: list[str] = []
-        tool_calls: list[dict[str, Any]] = []
-        for item in output:
-            item_type = item.get("type")
-            if item_type == "message":
-                for part in item.get("content", []) or []:
-                    if part.get("type") == "output_text":
-                        content_parts.append(part.get("text", ""))
-            elif item_type == "function_call":
-                tool_calls.append(item)
-
-        content = "".join(content_parts) if content_parts else None
-        tool_calls_result = tool_calls or None
-        finish_reason = "tool_calls" if tool_calls_result else "stop"
-
-        return {
-            "content": content,
-            "tool_calls": tool_calls_result,
-            "finish_reason": finish_reason,
-            "raw_output": output,
-        }
-    except Exception as e:
-        _raise_llm_error(e)
-
-
