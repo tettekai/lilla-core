@@ -125,6 +125,14 @@
 
 ### Changed
 
+- **BREAKING**: `google-calendar` 拡張の LLM ツールを、提供元を接頭辞に含む名前へ改名した（#242）。
+  ツール名（YAML の `type:`・`tools.sets` に書く名前）は `llm_calendar_get` → `llm_google_calendar_get`、
+  `llm_calendar_create` → `llm_google_calendar_create`、LLM に渡す関数名は `get_calendar_events` →
+  `google_calendar_get_events`、`create_calendar_event` → `google_calendar_create_event`。旧名の互換
+  エイリアスは無く、旧名の `type:` は未知のツールとして扱われる。`${CONFIG_ROOT}/tools/` の YAML の
+  ファイル名と `type:`、`lilla.yaml` の `tools.sets` を書き換えること。`Extension` 契約の変更ではないため
+  `EXTENSION_API_VERSION` は上げていない
+
 - 拡張の `name` の予約名（`RESERVED_EXTENSION_NAMES`）に `usage` を足した（#239）。ダッシュボードの
   組み込み画面 Usage（`#/usage`）と経路が重なるため。`name = "usage"` の拡張はロード時に落ちる
 

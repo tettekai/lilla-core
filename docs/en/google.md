@@ -126,13 +126,13 @@ The tool code lives in the `google-calendar` extension; the YAML lives in your
 `${CONFIG_ROOT}/tools/` (the extension does not bundle YAML). `type` is resolved by file name.
 
 ```yaml
-# ${CONFIG_ROOT}/tools/llm_calendar_get.yaml
-type: llm_calendar_get
+# ${CONFIG_ROOT}/tools/llm_google_calendar_get.yaml
+type: llm_google_calendar_get
 ```
 
 ```yaml
-# ${CONFIG_ROOT}/tools/llm_calendar_create.yaml
-type: llm_calendar_create
+# ${CONFIG_ROOT}/tools/llm_google_calendar_create.yaml
+type: llm_google_calendar_create
 ```
 
 To use them in normal conversations, also add these stems to `tools.sets.main` in
@@ -140,8 +140,8 @@ To use them in normal conversations, also add these stems to `tools.sets.main` i
 
 | Tool | Function name | What it does |
 |------|---------------|--------------|
-| `llm_calendar_get` | `get_calendar_events` | Reads events by `date_range` (`today` / `last_7_days` / `2026-04-20/2026-04-26` and so on), `query`, and `max_results` |
-| `llm_calendar_create` | `create_calendar_event` | Creates an event in a calendar given by a registered `friendly_name` (all-day or timed). It never writes to a calendar that is not registered |
+| `llm_google_calendar_get` | `google_calendar_get_events` | Reads events by `date_range` (`today` / `last_7_days` / `2026-04-20/2026-04-26` and so on), `query`, and `max_results` |
+| `llm_google_calendar_create` | `google_calendar_create_event` | Creates an event in a calendar given by a registered `friendly_name` (all-day or timed). It never writes to a calendar that is not registered |
 
 When `calendars` is empty, the read tool falls back to `calendar_ids` in the tool
 execution context (or `primary`) for backward compatibility.

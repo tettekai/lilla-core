@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 SCHEMA = {
     "type": "function",
     "function": {
-        "name": "get_calendar_events",
+        "name": "google_calendar_get_events",
         "description": "Google Calendarからイベントを取得します。date_rangeで期間を柔軟に指定してください。",
         "parameters": {
             "type": "object",
@@ -126,5 +126,5 @@ async def execute(input: dict, context: dict) -> dict:
         return tool_success(tool_name, memory_entry, events)
 
     except Exception as e:
-        logger.error("get_calendar_events error: %s", e)
+        logger.error("google_calendar_get_events error: %s", e)
         return tool_error(tool_name, None, str(e))

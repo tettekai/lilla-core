@@ -118,13 +118,13 @@ Calendar が要求するスコープは `https://www.googleapis.com/auth/calenda
 置きます（拡張は YAML を同梱しません）。`type` はファイル名で解決されます。
 
 ```yaml
-# ${CONFIG_ROOT}/tools/llm_calendar_get.yaml
-type: llm_calendar_get
+# ${CONFIG_ROOT}/tools/llm_google_calendar_get.yaml
+type: llm_google_calendar_get
 ```
 
 ```yaml
-# ${CONFIG_ROOT}/tools/llm_calendar_create.yaml
-type: llm_calendar_create
+# ${CONFIG_ROOT}/tools/llm_google_calendar_create.yaml
+type: llm_google_calendar_create
 ```
 
 通常会話で使うには、`lilla.yaml` の `tools.sets.main` にもこれらの stem を足します
@@ -132,8 +132,8 @@ type: llm_calendar_create
 
 | ツール | 関数名 | 内容 |
 |--------|--------|------|
-| `llm_calendar_get` | `get_calendar_events` | `date_range`（`today` / `last_7_days` / `2026-04-20/2026-04-26` など）・`query`・`max_results` で予定を取得する |
-| `llm_calendar_create` | `create_calendar_event` | `calendars` に登録済みの `friendly_name` を指定して予定を作る（終日・時間指定の両方）。登録に無いカレンダーへは書き込まない |
+| `llm_google_calendar_get` | `google_calendar_get_events` | `date_range`（`today` / `last_7_days` / `2026-04-20/2026-04-26` など）・`query`・`max_results` で予定を取得する |
+| `llm_google_calendar_create` | `google_calendar_create_event` | `calendars` に登録済みの `friendly_name` を指定して予定を作る（終日・時間指定の両方）。登録に無いカレンダーへは書き込まない |
 
 `calendars` が空のとき、取得ツールは後方互換としてツール実行 context の `calendar_ids`
 （無ければ `primary`）を使います。

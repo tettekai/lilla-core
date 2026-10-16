@@ -182,15 +182,15 @@ class TestToolRoots:
         """取得・作成の両ツールがその配下にある（YAML の `type` で解決できる）。"""
         root = google_calendar.extension.tool_roots()[0]
 
-        assert (root / "llm_calendar_get.py").is_file()
-        assert (root / "llm_calendar_create.py").is_file()
+        assert (root / "llm_google_calendar_get.py").is_file()
+        assert (root / "llm_google_calendar_create.py").is_file()
 
     def test_bundles_no_tool_config(self) -> None:
         """ツール YAML は利用者の `${CONFIG_ROOT}/tools` にあるものを使う（同梱しない）。"""
         assert google_calendar.extension.tool_config_roots() == []
 
     def test_tools_load_from_user_yaml(self, calendar_config_root: Path) -> None:
-        """登録すると、利用者の YAML（`type: llm_calendar_get` など）からツールが読める。
+        """登録すると、利用者の YAML（`type: llm_google_calendar_get` など）からツールが読める。
 
         ツール本体はパッケージ内にあり、コアのツール探索（`tool_roots()`）と
         ロード可能ディレクトリの検査を通ってロードされる。
@@ -200,16 +200,16 @@ class TestToolRoots:
 
         tools_dir = calendar_config_root / "tools"
         tools_dir.mkdir()
-        (tools_dir / "llm_calendar_get.yaml").write_text("type: llm_calendar_get\n")
-        (tools_dir / "llm_calendar_create.yaml").write_text("type: llm_calendar_create\n")
+        (tools_dir / "llm_google_calendar_get.yaml").write_text("type: llm_google_calendar_get\n")
+        (tools_dir / "llm_google_calendar_create.yaml").write_text("type: llm_google_calendar_create\n")
 
         with use_extensions(
             google_oauth.extension, google_calendar.extension, config_root=calendar_config_root
         ):
             tools = llm_tool_loader.load_llm_tools(config_root=calendar_config_root)
-            create_schema = tools["llm_calendar_create"]["schema"]
+            create_schema = tools["llm_google_calendar_create"]["schema"]
 
-        assert set(tools) == {"llm_calendar_get", "llm_calendar_create"}
+        assert set(tools) == {"llm_google_calendar_get", "llm_google_calendar_create"}
         # `build_schema` が登録済みのカレンダー一覧を calendar パラメータへ注入している。
         calendar_prop = create_schema["function"]["parameters"]["properties"]["calendar"]
         assert calendar_prop["enum"] == ["メイン"]
