@@ -48,12 +48,21 @@ llm:
   # response_prefix_strip_patterns:
   #   - '\[(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2} \d{2}:\d{2}\]\s*'
   #   - '\[\d{1,2}:\d{2}\]\s*'
+  # LLM のトークン使用量の記録（MongoDB の llm_usage コレクション。ダッシュボードの Usage 画面で集計する）。
+  # 節ごと省略すると「記録する・90 日保持」。メッセージ本文やプロンプトは記録しない
+  usage_log:
+    enabled: true        # false で記録を止める（既存の記録は保持期間まで残る）
+    retention_days: 90   # 保持日数（1 以上）。変更後に書いた記録から効く
   providers:
     grok:
       type: openai_compat
       url: "https://api.x.ai/v1"
       model: "grok-4.3"
       api_key_env: "GROK_API_KEY"
+      # 任意: 概算コストの表示に使う 100 万トークンあたりの単価（入力・出力。通貨は自由）。
+      # 書いたプロバイダーだけ Usage 画面に概算コストが出る。請求額とは一致しない目安
+      # input_price_per_million_tokens: 1.25
+      # output_price_per_million_tokens: 2.5
 
 paths:
   tool_root: /tmp/lilla-tools

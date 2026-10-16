@@ -696,3 +696,155 @@ class TestAdapters:
                 provider, messages, system_prompt="S", provider_prompt="P", tools=None
             )
         assert messages == [{"role": "user", "content": "hi"}]
+
+
+class TestUsageRecording:
+    """各送信経路で応答の使用量が記録されること（#239）。"""
+
+    @pytest.fixture
+    def env(self, monkeypatch):
+        """設定・送信・WOL・送信前検査・記録関数をモックする。"""
+        send = AsyncMock()
+        record = MagicMock()
+        with (
+            patch.object(llm_client, "get_config") as mock_get_config,
+            patch.object(llm_client, "send_http_request", new=send),
+            patch.object(llm_client, "_wake_ollama_if_needed", new=AsyncMock()),
+            patch.object(llm_client, "ensure_llm_request_allowed", new=MagicMock()),
+            patch.object(llm_client, "record_llm_usage", new=record),
+        ):
+            cfg = mock_get_config.return_value
+            cfg.system_prompt = "SYSTEM"
+            cfg.llm.default = "main"
+            yield cfg, send, record
+
+    @staticmethod
+    def _provider(provider_type="openai_compat", **kw):
+        return MagicMock(
+            type=provider_type,
+            url="https://llm.example/v1",
+            model="m1",
+            api_key_env=None,
+            extra_params={},
+            prompt=None,
+            timeout_seconds=300.0,
+            **kw,
+        )
+
+    async def test_chat_completions_usage(self, env) -> None:
+        cfg, send, record = env
+        provider = self._provider()
+        cfg.get_llm_provider.return_value = provider
+        send.return_value = json.dumps({
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {
+                "prompt_tokens": 12,
+                "completion_tokens": 5,
+                "total_tokens": 17,
+                "completion_tokens_details": {"reasoning_tokens": 3},
+            },
+        })
+        assert await llm_client.chat_to_llm("hi", llm_name="grok") == "ok"
+        kwargs = record.call_args.kwargs
+        assert kwargs["provider_name"] == "grok"
+        assert kwargs["provider"] is provider
+        assert kwargs["api"] == "chat"
+        assert isinstance(kwargs["duration_ms"], int) and kwargs["duration_ms"] >= 0
+        usage = kwargs["usage"]
+        assert (usage.input_tokens, usage.output_tokens, usage.total_tokens) == (12, 5, 17)
+        assert usage.raw["completion_tokens_details"] == {"reasoning_tokens": 3}
+
+    async def test_tools_path_uses_default_provider_name(self, env) -> None:
+        cfg, send, record = env
+        cfg.get_llm_provider.return_value = self._provider()
+        send.return_value = json.dumps({
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+        })
+        await llm_client.chat_to_llm_with_tools([{"role": "user", "content": "hi"}])
+        kwargs = record.call_args.kwargs
+        assert kwargs["provider_name"] == "main"
+        assert kwargs["api"] == "tools"
+        # 合計が無ければ入力と出力の和
+        assert kwargs["usage"].total_tokens == 3
+
+    async def test_responses_usage(self, env) -> None:
+        cfg, send, record = env
+        cfg.get_llm_provider.return_value = self._provider()
+        send.return_value = json.dumps({
+            "output": [],
+            "usage": {"input_tokens": 30, "output_tokens": 10, "total_tokens": 40},
+        })
+        await llm_client.chat_to_llm_responses([{"role": "user", "content": "hi"}])
+        kwargs = record.call_args.kwargs
+        assert kwargs["api"] == "responses"
+        usage = kwargs["usage"]
+        assert (usage.input_tokens, usage.output_tokens, usage.total_tokens) == (30, 10, 40)
+
+    async def test_ollama_native_usage(self, env) -> None:
+        cfg, send, record = env
+        cfg.get_llm_provider.return_value = self._provider("ollama")
+        send.return_value = json.dumps({
+            "message": {"content": "ok"},
+            "prompt_eval_count": 20,
+            "eval_count": 7,
+            "eval_duration": 123,
+        })
+        await llm_client.chat_to_llm("hi")
+        usage = record.call_args.kwargs["usage"]
+        assert (usage.input_tokens, usage.output_tokens, usage.total_tokens) == (20, 7, 27)
+        assert usage.raw == {"prompt_eval_count": 20, "eval_count": 7, "eval_duration": 123}
+
+    async def test_missing_usage_is_recorded_as_unknown(self, env) -> None:
+        cfg, send, record = env
+        cfg.get_llm_provider.return_value = self._provider()
+        send.return_value = json.dumps({"choices": [{"message": {"content": "ok"}}]})
+        await llm_client.chat_to_llm("hi")
+        record.assert_called_once()
+        assert record.call_args.kwargs["usage"] is None
+
+    async def test_resolver_name_is_recorded_as_fallback(self, env) -> None:
+        cfg, send, record = env
+        resolver = MagicMock(type="resolver", fallback="concrete")
+        concrete = self._provider()
+        cfg.get_llm_provider.side_effect = lambda name: resolver if name == "auto" else concrete
+        send.return_value = json.dumps({"choices": [{"message": {"content": "ok"}}]})
+        await llm_client.chat_to_llm("hi", llm_name="auto")
+        assert record.call_args.kwargs["provider_name"] == "concrete"
+        assert record.call_args.kwargs["provider"] is concrete
+
+    async def test_failed_send_is_not_recorded(self, env) -> None:
+        cfg, send, record = env
+        cfg.get_llm_provider.return_value = self._provider()
+        send.side_effect = RuntimeError("down")
+        with pytest.raises(llm_client.LLMError):
+            await llm_client.chat_to_llm("hi")
+        record.assert_not_called()
+
+
+class TestUsageRecordingFailure:
+    """記録の失敗が LLM 呼び出しの結果に影響しないこと（本物の record_llm_usage を通す）。"""
+
+    async def test_write_failure_does_not_affect_result(self, monkeypatch, caplog) -> None:
+        import lilla_core.services.llm_usage as llm_usage
+
+        def boom(record):
+            raise RuntimeError("mongo down")
+
+        monkeypatch.setattr(llm_usage, "_schedule_write", boom)
+        provider = TestUsageRecording._provider()
+        body = json.dumps({
+            "choices": [{"message": {"content": "ok"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        })
+        with (
+            patch.object(llm_client, "get_config") as mock_get_config,
+            patch.object(llm_client, "send_http_request", new=AsyncMock(return_value=body)),
+            patch.object(llm_client, "ensure_llm_request_allowed", new=MagicMock()),
+            caplog.at_level(logging.WARNING),
+        ):
+            mock_get_config.return_value.get_llm_provider.return_value = provider
+            mock_get_config.return_value.system_prompt = "S"
+            mock_get_config.return_value.llm.default = "main"
+            assert await llm_client.chat_to_llm("hi") == "ok"
+        assert any("Failed to record LLM usage" in r.message for r in caplog.records)

@@ -150,6 +150,15 @@ header h1 {
 .home-status dt { color: var(--text-muted); }
 .home-status dd { margin: 0; }
 
+/* ---- Usage ---- */
+
+.usage-note { color: var(--text-muted); margin: 0 0 8px; }
+.usage-totals { margin-bottom: 16px; }
+.usage-heading { font-size: 1rem; margin: 18px 0 6px; }
+.usage-scroll { overflow-x: auto; }
+.usage-table td:not(:first-child),
+.usage-table th:not(:first-child) { white-space: nowrap; }
+
 /* ---- Sections ---- */
 
 section { padding: 14px 16px; }

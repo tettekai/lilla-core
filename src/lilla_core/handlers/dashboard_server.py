@@ -22,7 +22,7 @@
 - 認証判定（``auth_middleware``）: リクエストごとに Cookie のセッションを引き、
   ``expires_at`` を毎回比較する。期限切れ・未発行はすべて 401。
 
-画面（ナビ）は組み込みの 5 つだけでなく、拡張が ``Extension.dashboard_page()`` で
+画面（ナビ）は組み込みの 6 つだけでなく、拡張が ``Extension.dashboard_page()`` で
 申告したページも ``GET /api/dashboard/nav`` のカタログに載せる。拡張のセッション API
 （``/api/{name}``）は Cookie の内側、公開コールバック（``/oauth/{name}``）と静的ファイル
 （``/static/ext/{name}/``）は外側に載せる。経路は lilla-core が ``Extension.name`` から
@@ -42,7 +42,7 @@ from aiohttp import web
 from bson import ObjectId
 
 from lilla_core.repository.mongo_client import create_mongo_client
-from lilla_core.utils.datetime_utils import parse_iso_utc, utc_now
+from lilla_core.utils.datetime_utils import local_now, parse_iso_utc, utc_now
 
 from lilla_core.handlers.request_params import parse_int_param, parse_json_body, parse_object_id
 from lilla_core.core.config import get_config
@@ -97,7 +97,7 @@ _AUTH_EXEMPT_PATHS = frozenset({"/", "/api/auth/status", "/api/login"})
 #: ``state`` の検証は拡張側の責任。
 _AUTH_EXEMPT_PREFIXES = ("/static/", "/oauth/")
 
-#: ダッシュボード組み込みの 5 画面。拡張のページと同じ形で ``/api/dashboard/nav``
+#: ダッシュボード組み込みの 6 画面。拡張のページと同じ形で ``/api/dashboard/nav``
 #: に並べ、フロントは組み込みと拡張を区別せずナビを組む。``name`` は
 #: lilla-core が ``RESERVED_EXTENSION_NAMES`` で押さえているので拡張と衝突しない。
 #: ``module`` が None のものは ``index.html`` に DOM を持つ組み込み画面。
@@ -112,6 +112,7 @@ _BUILTIN_PAGES: tuple[dict, ...] = (
     },
     {"name": "memos", "label": "Memos", "group": "main", "hash": "#/memos", "module": None},
     {"name": "skills", "label": "Skills", "group": "main", "hash": "#/skills", "module": None},
+    {"name": "usage", "label": "Usage", "group": "main", "hash": "#/usage", "module": None},
     {
         "name": "logs",
         "label": "Admin",
@@ -127,6 +128,14 @@ HOME_LOG_LEVELS = ("ERROR", "WARNING")
 HOME_LOG_WINDOW_HOURS = 24
 #: Home のログ件数 1 レベル分の集計を待つ上限（秒）。届かなければその項目だけ失敗にする
 HOME_LOG_COUNT_TIMEOUT_SECONDS = 3
+
+#: Home に LLM の使用量の合計を出す時間窓（時間）
+HOME_LLM_USAGE_WINDOW_HOURS = 24
+#: Home の LLM 使用量の集計を待つ上限（秒）
+HOME_LLM_USAGE_TIMEOUT_SECONDS = 3
+#: Usage 画面の集計期間（日）の既定値と上限
+USAGE_DEFAULT_DAYS = 7
+USAGE_MAX_DAYS = 366
 
 #: 失敗記録の一括掃除を始めるエントリ数（メモリの上限を設けるためのしきい値）
 _LOGIN_FAILURES_MAX_ENTRIES = 1000
@@ -295,11 +304,119 @@ async def handle_api_dashboard_status(request: web.Request) -> web.Response:
     else:
         logger.warning("Dashboard home: MongoDB ping failed: %s", mongo.detail)
 
+    llm_usage: dict = {
+        "ok": False,
+        "window_hours": HOME_LLM_USAGE_WINDOW_HOURS,
+        "enabled": get_config().llm.usage_log.enabled,
+        "totals": None,
+    }
+    if mongo.ok:
+        try:
+            llm_usage["totals"] = await asyncio.wait_for(
+                _usage_repo().summarize(
+                    utc_now() - timedelta(hours=HOME_LLM_USAGE_WINDOW_HOURS)
+                ),
+                timeout=HOME_LLM_USAGE_TIMEOUT_SECONDS,
+            )
+            llm_usage["ok"] = True
+        except Exception:
+            logger.warning("Failed to summarize LLM usage for dashboard home", exc_info=True)
+
     return web.json_response({
         "alive": True,
         "mongodb": {"ok": mongo.ok, "elapsed_ms": mongo.elapsed_ms},
         "logs": logs,
+        "llm_usage": llm_usage,
         "checked_at": utc_now().isoformat(),
+    })
+
+
+def _usage_repo():
+    """LLM 使用量のリポジトリを返す（テストで差し替えやすいよう呼び出しのたびに引く）。"""
+    from lilla_core.repository.llm_usage_repository import get_llm_usage_repo
+
+    return get_llm_usage_repo()
+
+
+def _mongo_timezone_label() -> str:
+    """Mongo の `$dateToString` に渡す、暦日を数えるタイムゾーンを返す。
+
+    `ui.timezone` を指定していればその IANA 名、未指定なら OS のローカルの今の
+    UTC オフセット（`+09:00` の形）。`local_timezone()` は OS のローカルだと
+    IANA 名を持たない tzinfo を返すため、オフセットで渡す。
+    """
+    name = get_config().ui.timezone
+    if name:
+        return name
+    offset = local_now().strftime("%z") or "+0000"
+    return f"{offset[:3]}:{offset[3:]}"
+
+
+def _fill_daily(rows: list[dict], first_day, days: int) -> list[dict]:
+    """日別の集計に、記録の無い日を 0 件の行として補って日付順に並べる。"""
+    by_date = {row.get("date"): row for row in rows}
+    filled = []
+    for offset in range(days):
+        date = (first_day + timedelta(days=offset)).isoformat()
+        row = by_date.get(date)
+        if row is None:
+            row = {
+                "date": date,
+                "calls": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "unknown_calls": 0,
+                "cost": 0,
+                "priced_calls": 0,
+                "duration_ms": 0,
+            }
+        filled.append(row)
+    return filled
+
+
+async def handle_api_usage(request: web.Request) -> web.Response:
+    """GET /api/usage - LLM のトークン使用量の集計を返す。
+
+    クエリパラメータ:
+    - days: 集計する日数（今日を含む。既定 ``USAGE_DEFAULT_DAYS``、1〜``USAGE_MAX_DAYS``）
+
+    期間は ``ui.timezone`` の暦日で数え、日別・プロバイダー別（モデル名つき）・入口別の
+    集計と合計を返す。概算コストは単価を設定したプロバイダーの記録の分だけを足した目安で、
+    請求額とは一致しない。記録そのもの（1 件ごとの行）は返さない。
+    """
+    config = get_config()
+    days = parse_int_param(
+        request.rel_url.query, "days", USAGE_DEFAULT_DAYS, minimum=1, maximum=USAGE_MAX_DAYS
+    )
+    today = local_now()
+    first_day = today.date() - timedelta(days=days - 1)
+    since = today.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
+    timezone_label = _mongo_timezone_label()
+
+    repo = _usage_repo()
+    totals = await repo.summarize(since)
+    daily = await repo.aggregate(since, "day", timezone=timezone_label)
+    by_provider = await repo.aggregate(since, "provider")
+    by_entry = await repo.aggregate(since, "entry")
+
+    priced_providers = sorted(
+        name
+        for name, provider in config.llm.providers.items()
+        if provider.input_price_per_million_tokens is not None
+        or provider.output_price_per_million_tokens is not None
+    )
+    return web.json_response({
+        "enabled": config.llm.usage_log.enabled,
+        "retention_days": config.llm.usage_log.retention_days,
+        "days": days,
+        "since": since.isoformat(),
+        "timezone": timezone_label,
+        "priced_providers": priced_providers,
+        "totals": totals,
+        "daily": _fill_daily(daily, first_day, days),
+        "by_provider": by_provider,
+        "by_entry": by_entry,
     })
 
 
@@ -1029,6 +1146,7 @@ async def start_dashboard_server() -> None:
     app.router.add_delete("/api/skills/{id}", handle_api_skill_detail)
     app.router.add_get("/api/dashboard/nav", handle_api_dashboard_nav)
     app.router.add_get("/api/dashboard/status", handle_api_dashboard_status)
+    app.router.add_get("/api/usage", handle_api_usage)
     _add_extension_routes(app)
     app.router.add_static("/static", DASHBOARD_DIR)
 

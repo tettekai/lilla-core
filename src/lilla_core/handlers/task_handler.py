@@ -9,6 +9,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from lilla_core.core.error_notify import notify_error
 from lilla_core.core.extension import build_tool_context
+from lilla_core.core.llm_call_origin import llm_call_origin
 from lilla_core.ui.messages import t
 from lilla_core.utils.datetime_utils import local_now, local_timezone
 
@@ -109,6 +110,8 @@ async def _run_tool(tool_name: str, tool, bot, now: datetime, llm_tools: dict) -
     try:
         context = build_tool_context()
         context.update({"discord_client": bot, "now": now, "llm_tools": llm_tools})
-        await tool.execute(context)
+        # タスク内の LLM 呼び出しを使用量の記録でこのタスクに数えるため、入口を積む
+        with llm_call_origin(task_name=tool_name):
+            await tool.execute(context)
     except Exception as e:
         await notify_error(bot, t("task.execution_error_title", tool=tool_name), e)

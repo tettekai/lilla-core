@@ -41,12 +41,39 @@ def with_mocked_modules(mock_cfg: MagicMock):
         yield
 
 
+def _usage_totals(**kw) -> dict:
+    """`LlmUsageRepository.summarize()` の戻り値に見立てた合計。"""
+    totals = {
+        "calls": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "unknown_calls": 0,
+        "cost": 0,
+        "priced_calls": 0,
+        "duration_ms": 0,
+    }
+    totals.update(kw)
+    return totals
+
+
 @pytest.fixture
-def dashboard_server(with_mocked_modules, mock_web: MagicMock):
+def usage_repo() -> MagicMock:
+    """LLM 使用量のリポジトリのモック（既定は記録なし）。"""
+    repo = MagicMock()
+    repo.summarize = AsyncMock(return_value=_usage_totals())
+    repo.aggregate = AsyncMock(return_value=[])
+    return repo
+
+
+@pytest.fixture
+def dashboard_server(with_mocked_modules, mock_web: MagicMock, usage_repo: MagicMock):
     """patch.dict 有効後に dashboard_server をロードする。"""
     sys.modules.pop("lilla_core.handlers.dashboard_server", None)
     import lilla_core.handlers.dashboard_server as loaded
     loaded.web = mock_web
+    # 本物のリポジトリ（lru_cache のシングルトン）をモックの設定で作らせない
+    loaded._usage_repo = lambda: usage_repo
     yield loaded
     sys.modules.pop("lilla_core.handlers.dashboard_server", None)
 
@@ -2065,18 +2092,19 @@ class TestHandleApiDashboardNav:
     async def test_returns_builtin_pages(
         self, dashboard_server, mock_web, monkeypatch
     ) -> None:
-        """拡張が 0 個でも組み込み 5 画面を返す。"""
+        """拡張が 0 個でも組み込み 6 画面を返す。"""
         _patch_dashboard_contributions(monkeypatch, dashboard_server)
 
         await dashboard_server.handle_api_dashboard_nav(_make_request())
 
         pages = self._payload(mock_web)["pages"]
-        assert [p["name"] for p in pages] == ["home", "conversations", "memos", "skills", "logs"]
+        assert [p["name"] for p in pages] == ["home", "conversations", "memos", "skills", "usage", "logs"]
         assert [p["hash"] for p in pages] == [
             "#/",
             "#/conversations",
             "#/memos",
             "#/skills",
+            "#/usage",
             "#/admin/logs",
         ]
         assert all(p["module"] is None for p in pages)
@@ -2095,6 +2123,7 @@ class TestHandleApiDashboardNav:
             "conversations": "main",
             "memos": "main",
             "skills": "main",
+            "usage": "main",
             "logs": "admin",
         }
 
@@ -2111,7 +2140,7 @@ class TestHandleApiDashboardNav:
         await dashboard_server.handle_api_dashboard_nav(_make_request())
 
         names = [p["name"] for p in self._payload(mock_web)["pages"]]
-        assert names == ["home", "conversations", "memos", "skills", "logs", "habits", "cal"]
+        assert names == ["home", "conversations", "memos", "skills", "usage", "logs", "habits", "cal"]
 
     async def test_extension_paths_come_from_the_core(
         self, dashboard_server, mock_web, monkeypatch
@@ -2285,6 +2314,18 @@ class TestStartDashboardServer:
         assert "/api/dashboard/status" in paths
         assert not dashboard_server._is_auth_exempt("/api/dashboard/status")
 
+    async def test_usage_endpoint_is_registered_behind_auth(
+        self, dashboard_server, monkeypatch, started_app
+    ) -> None:
+        """LLM 使用量の集計 API はセッション認証の内側に載る。"""
+        _patch_dashboard_contributions(monkeypatch, dashboard_server)
+
+        app = await started_app()
+
+        paths = [call.args[0] for call in app.router.add_get.call_args_list]
+        assert "/api/usage" in paths
+        assert not dashboard_server._is_auth_exempt("/api/usage")
+
     async def test_extension_static_is_registered_before_the_global_static(
         self, dashboard_server, monkeypatch, tmp_path, started_app
     ) -> None:
@@ -2301,3 +2342,149 @@ class TestStartDashboardServer:
 
         prefixes = [call.args[0] for call in app.router.add_static.call_args_list]
         assert prefixes.index("/static/ext/habits") < prefixes.index("/static")
+
+
+# ---------------------------------------------------------------------------
+# LLM 使用量（#239）
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardStatusLlmUsage:
+    async def test_home_includes_last_24h_usage(
+        self, dashboard_server, mock_web, usage_repo, mock_cfg, monkeypatch
+    ) -> None:
+        now = datetime(2026, 10, 16, 12, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr(dashboard_server, "utc_now", lambda: now)
+        col = MagicMock()
+        col.count_documents = AsyncMock(return_value=0)
+        monkeypatch.setattr(dashboard_server, "_get_collection", lambda name: col)
+        monkeypatch.setattr(
+            dashboard_server, "_check_mongodb", AsyncMock(return_value=_mongo_result(True))
+        )
+        mock_cfg.llm.usage_log.enabled = True
+        totals = _usage_totals(calls=3, total_tokens=1200, cost=0.5, priced_calls=3)
+        usage_repo.summarize.return_value = totals
+
+        await dashboard_server.handle_api_dashboard_status(_make_request())
+
+        data = mock_web.json_response.call_args[0][0]
+        assert data["llm_usage"] == {
+            "ok": True,
+            "window_hours": 24,
+            "enabled": True,
+            "totals": totals,
+        }
+        usage_repo.summarize.assert_awaited_once_with(
+            datetime(2026, 10, 15, 12, 0, tzinfo=timezone.utc)
+        )
+
+    async def test_usage_failure_keeps_rest(
+        self, dashboard_server, mock_web, usage_repo, monkeypatch
+    ) -> None:
+        col = MagicMock()
+        col.count_documents = AsyncMock(return_value=0)
+        monkeypatch.setattr(dashboard_server, "_get_collection", lambda name: col)
+        monkeypatch.setattr(
+            dashboard_server, "_check_mongodb", AsyncMock(return_value=_mongo_result(True))
+        )
+        usage_repo.summarize.side_effect = RuntimeError("boom")
+
+        await dashboard_server.handle_api_dashboard_status(_make_request())
+
+        data = mock_web.json_response.call_args[0][0]
+        assert data["logs"]["ok"] is True
+        assert data["llm_usage"]["ok"] is False
+        assert data["llm_usage"]["totals"] is None
+
+    async def test_usage_skipped_when_mongodb_down(
+        self, dashboard_server, mock_web, usage_repo, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(dashboard_server, "_get_collection", MagicMock())
+        monkeypatch.setattr(
+            dashboard_server, "_check_mongodb", AsyncMock(return_value=_mongo_result(False))
+        )
+
+        await dashboard_server.handle_api_dashboard_status(_make_request())
+
+        data = mock_web.json_response.call_args[0][0]
+        assert data["llm_usage"]["ok"] is False
+        usage_repo.summarize.assert_not_awaited()
+
+
+class TestHandleApiUsage:
+    @pytest.fixture
+    def setup(self, dashboard_server, mock_cfg, monkeypatch):
+        """今日を 2026-10-16（Asia/Tokyo）に固定し、単価つきのプロバイダーを 1 つ置く。"""
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo("Asia/Tokyo")
+        monkeypatch.setattr(
+            dashboard_server, "local_now", lambda: datetime(2026, 10, 16, 9, 30, tzinfo=tz)
+        )
+        mock_cfg.ui.timezone = "Asia/Tokyo"
+        mock_cfg.llm.usage_log.enabled = True
+        mock_cfg.llm.usage_log.retention_days = 90
+        priced = MagicMock(input_price_per_million_tokens=1.0, output_price_per_million_tokens=None)
+        free = MagicMock(input_price_per_million_tokens=None, output_price_per_million_tokens=None)
+        mock_cfg.llm.providers = {"grok": priced, "local": free}
+        return tz
+
+    async def test_aggregates_by_day_provider_entry(
+        self, dashboard_server, mock_web, usage_repo, setup
+    ) -> None:
+        tz = setup
+        totals = _usage_totals(calls=2, total_tokens=30)
+        daily = [{"date": "2026-10-15", **_usage_totals(calls=2, total_tokens=30)}]
+        by_provider = [{"provider": "grok", "model": "g", **_usage_totals(calls=2)}]
+        by_entry = [{"entry": "conversation:discord", **_usage_totals(calls=2)}]
+        usage_repo.summarize.return_value = totals
+
+        async def aggregate(since, group_by, timezone="UTC"):
+            return {"day": daily, "provider": by_provider, "entry": by_entry}[group_by]
+
+        usage_repo.aggregate.side_effect = aggregate
+
+        await dashboard_server.handle_api_usage(_make_request({"days": "3"}))
+
+        data = mock_web.json_response.call_args[0][0]
+        since = datetime(2026, 10, 14, 0, 0, tzinfo=tz)
+        usage_repo.summarize.assert_awaited_once_with(since)
+        day_call = usage_repo.aggregate.await_args_list[0]
+        assert day_call.args == (since, "day")
+        assert day_call.kwargs == {"timezone": "Asia/Tokyo"}
+        assert data["days"] == 3
+        assert data["enabled"] is True
+        assert data["retention_days"] == 90
+        assert data["timezone"] == "Asia/Tokyo"
+        assert data["priced_providers"] == ["grok"]
+        assert data["totals"] == totals
+        assert [row["date"] for row in data["daily"]] == ["2026-10-14", "2026-10-15", "2026-10-16"]
+        assert data["daily"][0]["calls"] == 0
+        assert data["daily"][1]["total_tokens"] == 30
+        assert data["by_provider"] == by_provider
+        assert data["by_entry"] == by_entry
+
+    async def test_days_default_and_clamp(
+        self, dashboard_server, mock_web, usage_repo, setup
+    ) -> None:
+        await dashboard_server.handle_api_usage(_make_request())
+        assert mock_web.json_response.call_args[0][0]["days"] == 7
+        await dashboard_server.handle_api_usage(_make_request({"days": "9999"}))
+        data = mock_web.json_response.call_args[0][0]
+        assert data["days"] == dashboard_server.USAGE_MAX_DAYS
+        assert len(data["daily"]) == dashboard_server.USAGE_MAX_DAYS
+
+    def test_timezone_offset_when_unset(self, dashboard_server, mock_cfg, monkeypatch) -> None:
+        from datetime import timedelta as td
+
+        mock_cfg.ui.timezone = None
+        monkeypatch.setattr(
+            dashboard_server,
+            "local_now",
+            lambda: datetime(2026, 10, 16, tzinfo=timezone(td(hours=-5, minutes=-30))),
+        )
+        assert dashboard_server._mongo_timezone_label() == "-05:30"
+
+    def test_usage_route_is_registered(self, dashboard_server) -> None:
+        names = [p["name"] for p in dashboard_server._BUILTIN_PAGES]
+        assert "usage" in names

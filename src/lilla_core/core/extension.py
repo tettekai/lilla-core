@@ -163,6 +163,7 @@ RESERVED_EXTENSION_NAMES = frozenset(
         "conversations",
         "memos",
         "skills",
+        "usage",
         "logs",
     }
 )

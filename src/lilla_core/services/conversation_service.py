@@ -17,6 +17,7 @@ from lilla_core.core.extension import (
     build_tool_context,
     get_conversation_start_hooks,
 )
+from lilla_core.core.llm_call_origin import llm_call_origin
 from lilla_core.core.runtime_state import is_tools_disabled
 from lilla_core.api.llm_client import chat_to_llm, chat_to_llm_with_tools
 from lilla_core.loaders.llm_tool_loader import (
@@ -220,6 +221,37 @@ async def run_conversation(
         含まれていた場合は、その `actions` を適用（`set_session_memory` なら
         SessionMemoryManager へ反映）したうえで、本文から除去した文字列を返す。
     """
+    # 使用量の記録（`services/llm_usage.py`）が入口を知れるよう、会話のクライアント種別と
+    # チャンネルを `contextvars` に積む。タスクやツールの中から呼ばれた場合は、外側が
+    # 積んだタスク名・ツール名をそのまま残す。
+    with llm_call_origin(client_type=client_type, discord_channel_id=discord_channel_id):
+        return await _run_conversation(
+            llm_tools,
+            client_type=client_type,
+            client_state=client_state,
+            discord_channel_id=discord_channel_id,
+            llm_name=llm_name,
+            inject_user_content=inject_user_content,
+            override_last_user_content=override_last_user_content,
+            tool_call_notifier=tool_call_notifier,
+            allowed_tool_names=allowed_tool_names,
+            max_tool_call_iterations=max_tool_call_iterations,
+        )
+
+
+async def _run_conversation(
+    llm_tools: dict,
+    client_type: str = "discord",
+    client_state: Any = None,
+    discord_channel_id: int | None = None,
+    llm_name: str | None = None,
+    inject_user_content=None,
+    override_last_user_content=None,
+    tool_call_notifier: Callable[[str, int], Awaitable[None]] | None = None,
+    allowed_tool_names: list[str] | None = None,
+    max_tool_call_iterations: int | None = None,
+) -> str:
+    """`run_conversation` の本体（引数の意味は `run_conversation` を参照）。"""
     # クライアント種別ごとの会話開始フック（拡張側のクライアント固有の前処理用）。
     # 複数の拡張が同じ client_type に登録していればロード順に await する。
     # 未登録の client_type では何もしない。フックの失敗は会話本体も後続の

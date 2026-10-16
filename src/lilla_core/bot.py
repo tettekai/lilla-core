@@ -44,6 +44,7 @@ from lilla_core.repository.pending_tool_calls_repository import get_pending_tool
 from lilla_core.repository.admin_credential_repository import get_admin_credential_repo
 from lilla_core.repository.admin_session_repository import get_admin_session_repo
 from lilla_core.repository.channel_summary_repository import get_channel_summary_repo
+from lilla_core.repository.llm_usage_repository import get_llm_usage_repo
 from lilla_core.handlers import message_handler, interaction_handler, task_handler
 from lilla_core.handlers.command_handler import set_command_runtime
 from lilla_core.handlers.dashboard_server import start_dashboard_server
@@ -71,6 +72,7 @@ _CORE_STARTUP_REPOS = [
     get_admin_credential_repo,
     get_admin_session_repo,
     get_channel_summary_repo,
+    get_llm_usage_repo,
 ]
 
 bot.http.proxy = _config.proxy.resolve_url()

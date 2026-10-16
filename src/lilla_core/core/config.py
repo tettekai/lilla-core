@@ -79,6 +79,10 @@ class LlmProviderConfig(BaseModel):
     # resolver では `async def resolve` の待ち時間（既定 10 秒。超えたら `fallback` へ落とす）。
     # 未指定なら `type` に応じた既定値をバリデータが入れる
     timeout_seconds: float | None = None
+    # 具体プロバイダーのみ。概算コストの表示に使う単価（100 万トークンあたり。通貨は
+    # 利用者が決める）。未指定ならコストを出さない
+    input_price_per_million_tokens: float | None = None
+    output_price_per_million_tokens: float | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -104,6 +108,8 @@ class LlmProviderConfig(BaseModel):
         書かれていても検証せず無視する（resolver は送信しないため追記の持ち主にしない）。
         `timeout_seconds` は正の数に限り、未指定なら `type` に応じた既定値
         （具体プロバイダー 300 秒・resolver 10 秒）を入れる。
+        単価（`input_price_per_million_tokens` / `output_price_per_million_tokens`）は
+        具体プロバイダーだけが持ち、0 以上に限る。
         """
         if self.type == "resolver":
             missing = [name for name in ("script", "fallback") if not getattr(self, name)]
@@ -113,7 +119,14 @@ class LlmProviderConfig(BaseModel):
                 )
             unexpected = [
                 name
-                for name in ("url", "model", "api_key_env", "wakeup_file")
+                for name in (
+                    "url",
+                    "model",
+                    "api_key_env",
+                    "wakeup_file",
+                    "input_price_per_million_tokens",
+                    "output_price_per_million_tokens",
+                )
                 if getattr(self, name) is not None
             ]
             if self.extra_params:
@@ -135,6 +148,10 @@ class LlmProviderConfig(BaseModel):
                 )
             if self.prompt is not None:
                 _validate_provider_prompt_spec(self.prompt)
+            for name in ("input_price_per_million_tokens", "output_price_per_million_tokens"):
+                price = getattr(self, name)
+                if price is not None and price < 0:
+                    raise ValueError(f"llm provider {name} must not be negative")
         if self.timeout_seconds is None:
             self.timeout_seconds = (
                 RESOLVER_TIMEOUT_SECONDS if self.type == "resolver" else LLM_REQUEST_TIMEOUT_SECONDS
@@ -579,12 +596,30 @@ DEFAULT_RESPONSE_PREFIX_STRIP_PATTERNS: tuple[str, ...] = (
 )
 
 
+#: `llm.usage_log.retention_days` の既定値（日）
+DEFAULT_LLM_USAGE_RETENTION_DAYS = 90
+
+
+class LlmUsageLogConfig(BaseModel):
+    """lilla.yaml の `llm.usage_log:` セクション（LLM のトークン使用量の記録）。
+
+    全項目に既定があり、節そのものを省略すると記録は有効・保持 90 日になる。
+    """
+
+    # 使用量を `llm_usage` コレクションへ記録するか
+    enabled: bool = True
+    # 記録の保持日数。各記録の `expire_at` に反映し、TTL インデックスが消す
+    retention_days: int = Field(default=DEFAULT_LLM_USAGE_RETENTION_DAYS, ge=1)
+
+
 class LlmConfig(BaseModel):
     """lilla.yaml の `llm:` セクション。"""
 
     default: str = "ollama-gemma3"
     providers: dict[str, LlmProviderConfig] = {}
     max_tool_call_iterations: int = 10
+    # トークン使用量の記録（`services/llm_usage.py`）
+    usage_log: LlmUsageLogConfig = Field(default_factory=LlmUsageLogConfig)
     # LLM へ送る直前の拒否リスト（JSON の文字列配列）の絶対パス。未指定なら検査しない。
     # 実体は `core/llm_send_guard.py` が読む。
     send_blocklist_path: str | None = None
@@ -592,6 +627,14 @@ class LlmConfig(BaseModel):
     response_prefix_strip_patterns: list[str] = Field(
         default_factory=lambda: list(DEFAULT_RESPONSE_PREFIX_STRIP_PATTERNS)
     )
+
+    @field_validator("usage_log", mode="before")
+    @classmethod
+    def _default_usage_log(cls, value: Any) -> Any:
+        """`usage_log:` とキーだけ書いて値が空（null）の場合も、省略と同じく既定にする。"""
+        if value is None:
+            return {}
+        return value
 
     @field_validator("response_prefix_strip_patterns", mode="before")
     @classmethod

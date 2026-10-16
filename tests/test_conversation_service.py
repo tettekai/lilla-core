@@ -325,6 +325,30 @@ class TestLlmResolverPerToolCall:
 
 
 class TestRunConversation:
+    async def test_sets_conversation_as_llm_call_origin(
+        self, conversation_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """LLM 呼び出し中はクライアント種別とチャンネルが入口として積まれ、外側のタスク名は残る。"""
+        from lilla_core.core.llm_call_origin import get_llm_call_origin, llm_call_origin
+
+        seen = []
+
+        async def chat(*args, **kwargs):
+            seen.append(get_llm_call_origin())
+            return "ok"
+
+        monkeypatch.setattr(conversation_service, "chat_to_llm", chat)
+
+        with llm_call_origin(task_name="task_daily"):
+            await conversation_service.run_conversation(
+                {}, client_type="discord", discord_channel_id=99
+            )
+
+        assert seen[0].client_type == "discord"
+        assert seen[0].discord_channel_id == 99
+        assert seen[0].task_name == "task_daily"
+        assert get_llm_call_origin().client_type is None
+
     async def test_fallback_to_chat_to_llm_when_no_tools(
         self, conversation_service, mock_memory_manager_instance, monkeypatch: pytest.MonkeyPatch
     ) -> None:
