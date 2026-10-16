@@ -391,3 +391,237 @@ class TestProviderPrompt:
         (tmp_path / "prompts" / "mimo.md").write_text("CHANGED", encoding="utf-8")
         await llm_client.chat_to_llm("hi", system_prompt="BASE", llm_name="mimo")
         assert self._system(send) == "BASE\n\nCHANGED"
+
+
+class TestSendPaths:
+    """4 つの送信経路（Ollama ネイティブ・Chat Completions・tools 付き・Responses API）の
+    リクエストの組み立てと応答の解釈、共通の送信処理（検査・WOL・タイムアウト・例外ラップ）を検証する。
+    """
+
+    CHAT_BODY = json.dumps({"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]})
+
+    @pytest.fixture
+    def env(self, monkeypatch):
+        """設定・送信・WOL・送信前検査をモックし、呼ばれた順を記録する。"""
+        order: list[str] = []
+        send = AsyncMock(return_value=self.CHAT_BODY)
+        send.side_effect = lambda *a, **kw: order.append("send") or send.return_value
+        wake = AsyncMock(side_effect=lambda provider: order.append("wake"))
+        guard = MagicMock(side_effect=lambda data: order.append("guard"))
+        monkeypatch.setenv("DUMMY_LLM_KEY", "secret-key")
+        with (
+            patch.object(llm_client, "get_config") as mock_get_config,
+            patch.object(llm_client, "send_http_request", new=send),
+            patch.object(llm_client, "_wake_ollama_if_needed", new=wake),
+            patch.object(llm_client, "ensure_llm_request_allowed", new=guard),
+        ):
+            cfg = mock_get_config.return_value
+            cfg.system_prompt = "SYSTEM"
+            yield cfg, send, wake, guard, order
+
+    @staticmethod
+    def _provider(provider_type="openai_compat", **kw):
+        return MagicMock(
+            type=provider_type,
+            url="https://llm.example/v1",
+            model="m1",
+            api_key_env=kw.get("api_key_env", "DUMMY_LLM_KEY"),
+            extra_params=kw.get("extra_params", {}),
+            prompt=None,
+            timeout_seconds=kw.get("timeout_seconds", 300.0),
+        )
+
+    async def test_ollama_native_request_and_response(self, env) -> None:
+        cfg, send, wake, guard, order = env
+        cfg.get_llm_provider.return_value = self._provider("ollama", extra_params={"num_ctx": 8})
+        send.return_value = json.dumps({"message": {"content": "", "reasoning_content": "R"}})
+        result = await llm_client.chat_to_llm("hi")
+        assert result == "R"
+        assert order == ["guard", "wake", "send"]
+        assert send.await_args.args == ("https://llm.example/v1/api/chat",)
+        kwargs = send.await_args.kwargs
+        assert kwargs["method"] == "POST"
+        assert kwargs["data"] == {
+            "model": "m1",
+            "messages": [
+                {"role": "system", "content": "SYSTEM"},
+                {"role": "user", "content": "hi"},
+            ],
+            "stream": False,
+            "options": {"temperature": 0.7, "num_ctx": 8},
+        }
+        assert kwargs.get("headers") is None
+        assert kwargs["timeout"] == 300
+
+    async def test_chat_completions_request(self, env) -> None:
+        cfg, send, wake, guard, order = env
+        cfg.get_llm_provider.return_value = self._provider(extra_params={"reasoning_effort": "low"})
+        assert await llm_client.chat_to_llm("hi", system_prompt="BASE") == "ok"
+        assert order == ["guard", "send"]
+        wake.assert_not_awaited()
+        assert send.await_args.args == ("https://llm.example/v1/chat/completions",)
+        kwargs = send.await_args.kwargs
+        assert kwargs["data"] == {
+            "model": "m1",
+            "messages": [
+                {"role": "system", "content": "BASE"},
+                {"role": "user", "content": "hi"},
+            ],
+            "stream": False,
+            "reasoning_effort": "low",
+        }
+        assert kwargs["headers"] == {"Authorization": "Bearer secret-key"}
+        assert kwargs["timeout"] == 300
+
+    async def test_chat_completions_without_api_key_env_sends_empty_bearer(self, env) -> None:
+        cfg, send, *_ = env
+        cfg.get_llm_provider.return_value = self._provider(api_key_env=None)
+        await llm_client.chat_to_llm("hi")
+        assert send.await_args.kwargs["headers"] == {"Authorization": "Bearer "}
+
+    async def test_with_tools_request_and_response(self, env) -> None:
+        cfg, send, wake, guard, order = env
+        cfg.get_llm_provider.return_value = self._provider()
+        tool_calls = [{"id": "c1", "function": {"name": "x", "arguments": "{}"}}]
+        message = {"content": "thinking aloud", "tool_calls": tool_calls}
+        send.return_value = json.dumps({"choices": [{"message": message, "finish_reason": "tool_calls"}]})
+        tools = [{"type": "function", "function": {"name": "x"}}]
+        result = await llm_client.chat_to_llm_with_tools(
+            [{"role": "user", "content": "hi"}], system_prompt="BASE", tools=tools
+        )
+        assert result == {
+            "content": "thinking aloud",
+            "tool_calls": tool_calls,
+            "finish_reason": "tool_calls",
+            "raw_message": message,
+        }
+        assert order == ["guard", "send"]
+        assert send.await_args.args == ("https://llm.example/v1/chat/completions",)
+        data = send.await_args.kwargs["data"]
+        assert data["tools"] == tools
+        assert data["tool_choice"] == "auto"
+        assert send.await_args.kwargs["headers"] == {"Authorization": "Bearer secret-key"}
+        assert send.await_args.kwargs["timeout"] == 300
+
+    async def test_with_tools_without_tools_omits_tool_keys(self, env) -> None:
+        cfg, send, *_ = env
+        cfg.get_llm_provider.return_value = self._provider()
+        send.return_value = json.dumps({"choices": [{"message": {"content": "ok"}}]})
+        result = await llm_client.chat_to_llm_with_tools([{"role": "user", "content": "hi"}], tools=[])
+        assert result["finish_reason"] == "stop"
+        assert result["tool_calls"] is None
+        assert "tools" not in send.await_args.kwargs["data"]
+        assert "tool_choice" not in send.await_args.kwargs["data"]
+
+    async def test_with_tools_ollama_uses_v1_endpoint_and_wakes(self, env) -> None:
+        cfg, send, wake, guard, order = env
+        cfg.get_llm_provider.return_value = self._provider("ollama")
+        await llm_client.chat_to_llm_with_tools([{"role": "user", "content": "hi"}])
+        assert order == ["guard", "wake", "send"]
+        assert send.await_args.args == ("https://llm.example/v1/v1/chat/completions",)
+        # Ollama には API キーを渡さない（api_key_env が書かれていても使わない）
+        assert send.await_args.kwargs["headers"] == {"Authorization": "Bearer "}
+        assert "options" not in send.await_args.kwargs["data"]
+
+    async def test_responses_request_and_response(self, env) -> None:
+        cfg, send, wake, guard, order = env
+        cfg.get_llm_provider.return_value = self._provider(extra_params={"store": False})
+        output = [
+            {"type": "web_search_call", "id": "ws1"},
+            {"type": "message", "content": [
+                {"type": "output_text", "text": "A"},
+                {"type": "other"},
+                {"type": "output_text", "text": "B"},
+            ]},
+        ]
+        send.return_value = json.dumps({"output": output})
+        tools = [{"type": "x_search"}]
+        msgs = [{"role": "user", "content": "hi"}]
+        result = await llm_client.chat_to_llm_responses(msgs, system_prompt="INS", tools=tools)
+        assert result == {"content": "AB", "tool_calls": None, "finish_reason": "stop", "raw_output": output}
+        assert order == ["guard", "send"]
+        assert send.await_args.args == ("https://llm.example/v1/responses",)
+        assert send.await_args.kwargs["data"] == {
+            "model": "m1", "input": msgs, "stream": False, "store": False,
+            "instructions": "INS", "tools": tools,
+        }
+        assert send.await_args.kwargs["headers"] == {"Authorization": "Bearer secret-key"}
+        assert send.await_args.kwargs["timeout"] == 300
+
+    async def test_responses_function_call_and_no_instructions(self, env) -> None:
+        cfg, send, *_ = env
+        cfg.get_llm_provider.return_value = self._provider()
+        call = {"type": "function_call", "name": "x", "arguments": "{}"}
+        send.return_value = json.dumps({"output": [call]})
+        result = await llm_client.chat_to_llm_responses([{"role": "user", "content": "hi"}])
+        assert result["content"] is None
+        assert result["tool_calls"] == [call]
+        assert result["finish_reason"] == "tool_calls"
+        # system_prompt が無ければ既定のシステムプロンプトも入れない
+        assert "instructions" not in send.await_args.kwargs["data"]
+        assert "tools" not in send.await_args.kwargs["data"]
+
+    async def test_responses_empty_output(self, env) -> None:
+        cfg, send, *_ = env
+        cfg.get_llm_provider.return_value = self._provider()
+        send.return_value = json.dumps({"output": None})
+        result = await llm_client.chat_to_llm_responses([{"role": "user", "content": "hi"}])
+        assert result == {"content": None, "tool_calls": None, "finish_reason": "stop", "raw_output": []}
+
+    async def test_responses_rejects_ollama(self, env) -> None:
+        cfg, send, wake, guard, _ = env
+        cfg.get_llm_provider.return_value = self._provider("ollama")
+        with pytest.raises(ValueError, match="only supported for the openai_compat"):
+            await llm_client.chat_to_llm_responses([{"role": "user", "content": "hi"}])
+        guard.assert_not_called()
+        send.assert_not_awaited()
+
+    @pytest.mark.parametrize("call", ["chat", "tools"])
+    async def test_unsupported_type_raises_value_error(self, env, call) -> None:
+        cfg, send, *_ = env
+        cfg.get_llm_provider.return_value = self._provider("anthropic")
+        with pytest.raises(ValueError, match="Unsupported LLM provider type: anthropic"):
+            if call == "chat":
+                await llm_client.chat_to_llm("hi")
+            else:
+                await llm_client.chat_to_llm_with_tools([{"role": "user", "content": "hi"}])
+        send.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("call", "provider_type"),
+        [("chat", "ollama"), ("chat", "openai_compat"), ("tools", "ollama"),
+         ("tools", "openai_compat"), ("responses", "openai_compat")],
+    )
+    @pytest.mark.parametrize("failure", ["http", "json", "shape"])
+    async def test_failures_are_wrapped_in_llm_error(self, env, call, provider_type, failure) -> None:
+        cfg, send, *_ = env
+        cfg.get_llm_provider.return_value = self._provider(provider_type)
+        if failure == "http":
+            send.side_effect = RuntimeError("boom")
+        elif failure == "json":
+            send.return_value = "not json"
+        else:
+            send.return_value = json.dumps({"unexpected": True} if call != "responses" else [])
+        msgs = [{"role": "user", "content": "hi"}]
+        with pytest.raises(llm_client.LLMError, match="^LLM call error: ") as exc_info:
+            if call == "chat":
+                await llm_client.chat_to_llm(msgs)
+            elif call == "tools":
+                await llm_client.chat_to_llm_with_tools(msgs)
+            else:
+                await llm_client.chat_to_llm_responses(msgs)
+        assert exc_info.value.__cause__ is not None
+
+    @pytest.mark.parametrize("call", ["chat", "tools"])
+    async def test_blocked_send_does_not_wake_ollama(self, env, call) -> None:
+        """送信を止める回は WOL もしない。"""
+        cfg, send, wake, guard, _ = env
+        cfg.get_llm_provider.return_value = self._provider("ollama")
+        guard.side_effect = llm_client.LLMError("blocked")
+        with pytest.raises(llm_client.LLMError):
+            if call == "chat":
+                await llm_client.chat_to_llm("hi")
+            else:
+                await llm_client.chat_to_llm_with_tools([{"role": "user", "content": "hi"}])
+        wake.assert_not_awaited()
+        send.assert_not_awaited()
