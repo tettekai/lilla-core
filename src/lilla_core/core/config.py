@@ -39,6 +39,12 @@ _apply_dotenv_to_os_environ()
 #: `LlmProviderConfig.type` のうち、実際に LLM へ HTTP を出す具体プロバイダーの種別。
 CONCRETE_LLM_PROVIDER_TYPES = ("ollama", "openai_compat")
 
+#: 具体プロバイダーの `timeout_seconds` の既定値（LLM の応答を待つ上限の秒数）
+LLM_REQUEST_TIMEOUT_SECONDS = 300.0
+
+#: resolver の `timeout_seconds` の既定値（`async def resolve` を待つ上限の秒数）
+RESOLVER_TIMEOUT_SECONDS = 10.0
+
 
 class LlmProviderConfig(BaseModel):
     """LLMプロバイダーの設定モデル。
@@ -69,8 +75,10 @@ class LlmProviderConfig(BaseModel):
     script: str | None = None
     # `resolve` が具体名を返せなかったときに使う具体プロバイダー名
     fallback: str | None = None
-    # `async def resolve` の待ち時間の上限（秒）。超えたら `fallback` へ落とす
-    timeout_seconds: float = 10.0
+    # 待ち時間の上限（秒）。具体プロバイダーでは LLM の応答待ち（既定 300 秒）、
+    # resolver では `async def resolve` の待ち時間（既定 10 秒。超えたら `fallback` へ落とす）。
+    # 未指定なら `type` に応じた既定値をバリデータが入れる
+    timeout_seconds: float | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -94,6 +102,8 @@ class LlmProviderConfig(BaseModel):
         `model` / `api_key_env` / `wakeup_file` / `extra_params` を持たない。
         `prompt` は具体プロバイダーでのみ source spec の形を検証し、resolver では
         書かれていても検証せず無視する（resolver は送信しないため追記の持ち主にしない）。
+        `timeout_seconds` は正の数に限り、未指定なら `type` に応じた既定値
+        （具体プロバイダー 300 秒・resolver 10 秒）を入れる。
         """
         if self.type == "resolver":
             missing = [name for name in ("script", "fallback") if not getattr(self, name)]
@@ -112,8 +122,6 @@ class LlmProviderConfig(BaseModel):
                 raise ValueError(
                     "llm provider of type 'resolver' must not set: " + ", ".join(unexpected)
                 )
-            if self.timeout_seconds <= 0:
-                raise ValueError("llm provider timeout_seconds must be positive")
         else:
             missing = [name for name in ("url", "model") if not getattr(self, name)]
             if missing:
@@ -127,6 +135,12 @@ class LlmProviderConfig(BaseModel):
                 )
             if self.prompt is not None:
                 _validate_provider_prompt_spec(self.prompt)
+        if self.timeout_seconds is None:
+            self.timeout_seconds = (
+                RESOLVER_TIMEOUT_SECONDS if self.type == "resolver" else LLM_REQUEST_TIMEOUT_SECONDS
+            )
+        elif self.timeout_seconds <= 0:
+            raise ValueError("llm provider timeout_seconds must be positive")
         return self
 
 
