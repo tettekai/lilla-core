@@ -1,4 +1,4 @@
-"""`lilla_core.extensions.google_calendar` 同梱の `tools/llm_calendar_get.py` のテスト。"""
+"""`lilla_core.extensions.google_calendar` 同梱の `tools/llm_google_calendar_get.py` のテスト。"""
 from __future__ import annotations
 
 import importlib.util
@@ -13,8 +13,8 @@ import pytest
 from lilla_core.extensions import google_calendar
 
 # ツールモジュールを直接ロード
-_tool_path = Path(google_calendar.__file__).resolve().parent / "tools" / "llm_calendar_get.py"
-_spec = importlib.util.spec_from_file_location("llm_calendar_get", str(_tool_path))
+_tool_path = Path(google_calendar.__file__).resolve().parent / "tools" / "llm_google_calendar_get.py"
+_spec = importlib.util.spec_from_file_location("llm_google_calendar_get", str(_tool_path))
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 execute = _mod.execute
@@ -74,8 +74,8 @@ class TestSchema:
     """SCHEMA の構造テスト。"""
 
     def test_function_name(self) -> None:
-        """SCHEMA の関数名が get_calendar_events である。"""
-        assert SCHEMA["function"]["name"] == "get_calendar_events"
+        """SCHEMA の関数名が google_calendar_get_events である。"""
+        assert SCHEMA["function"]["name"] == "google_calendar_get_events"
 
     def test_date_range_is_required(self) -> None:
         """date_range が required に含まれる。"""

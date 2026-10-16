@@ -3,7 +3,7 @@
 Calendar API の予定には主催者・作成者・参加者のメールアドレス（`organizer` /
 `creator` / `attendees`）や、カレンダー ID を埋め込んだ `htmlLink` / `iCalUID` が
 含まれる。値の置き換えでは取りこぼしが出るため、LLM に返す項目をここで列挙した
-ものだけに絞る。`llm_calendar_get` / `llm_calendar_create` の両ツールが共有する。
+ものだけに絞る。`llm_google_calendar_get` / `llm_google_calendar_create` の両ツールが共有する。
 """
 from __future__ import annotations
 

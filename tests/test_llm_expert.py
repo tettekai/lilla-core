@@ -233,12 +233,12 @@ class TestLLMExpertExecute:
         mock_llm_client.chat_to_llm_with_tools.return_value = _stop_response()
         mock_loader.resolve_available_tools.side_effect = None
         mock_loader.resolve_available_tools.return_value = ["resolved_a", "resolved_b"]
-        ctx = _base_context(available_tools=["llm_health_get", "llm_calendar_get"])
+        ctx = _base_context(available_tools=["llm_health_get", "llm_google_calendar_get"])
 
         await llm_expert.execute({"prompt": "x"}, ctx)
 
         mock_loader.resolve_available_tools.assert_called_once_with(
-            ["llm_health_get", "llm_calendar_get"], ctx["llm_tools"]
+            ["llm_health_get", "llm_google_calendar_get"], ctx["llm_tools"]
         )
         mock_loader.build_tools_param.assert_called_once()
         kwargs = mock_loader.build_tools_param.call_args.kwargs
@@ -389,17 +389,17 @@ class TestLLMExpertToolsetResolution:
         self, llm_expert_with_real_loader, mock_cfg: MagicMock, mock_llm_client: MagicMock
     ) -> None:
         """`$main` を書いた Expert は tools.sets の main セットのツールを使える。"""
-        mock_cfg.tools.sets = {"main": ["llm_calendar_get", "llm_health_get"]}
+        mock_cfg.tools.sets = {"main": ["llm_google_calendar_get", "llm_health_get"]}
         mock_llm_client.chat_to_llm_with_tools.return_value = _stop_response()
         ctx = _base_context(
             available_tools=["$main"],
-            llm_tools=_llm_tools("llm_calendar_get", "llm_health_get", "llm_obsidian_write"),
+            llm_tools=_llm_tools("llm_google_calendar_get", "llm_health_get", "llm_obsidian_write"),
         )
 
         await llm_expert_with_real_loader.execute({"prompt": "x"}, ctx)
 
         tools = mock_llm_client.chat_to_llm_with_tools.call_args.kwargs["tools"]
-        assert [t["function"]["name"] for t in tools] == ["llm_calendar_get", "llm_health_get"]
+        assert [t["function"]["name"] for t in tools] == ["llm_google_calendar_get", "llm_health_get"]
 
     async def test_unknown_stem_raises_from_core(
         self, llm_expert_with_real_loader, mock_llm_client: MagicMock

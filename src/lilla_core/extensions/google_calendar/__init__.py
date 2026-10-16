@@ -13,7 +13,7 @@
 - 取得・作成の LLM ツール（`tools/`。`tool_roots()` でコアの探索ルートへ足す）
 
 タイムゾーンはコア確定の `ui.timezone` をそのまま使い、この拡張は TZ 設定を
-持たない。ツール YAML（`llm_calendar_get.yaml` / `llm_calendar_create.yaml`）は
+持たない。ツール YAML（`llm_google_calendar_get.yaml` / `llm_google_calendar_create.yaml`）は
 利用者側の `${CONFIG_ROOT}/tools` にあるものをそのまま使うため、`tool_config_roots()`
 での同梱はしない。
 
@@ -76,7 +76,7 @@ class GoogleCalendarExtension(Extension):
         """カレンダーの LLM ツール（このパッケージの `tools/`）の探索先を返す。
 
         利用者の `paths.tool_root` 配下には置かないため、コアの探索ルートへ
-        この拡張から足す（YAML の `type: llm_calendar_get` のようにファイル名で解決される）。ツール YAML そのものは利用者の `${CONFIG_ROOT}/tools`
+        この拡張から足す（YAML の `type: llm_google_calendar_get` のようにファイル名で解決される）。ツール YAML そのものは利用者の `${CONFIG_ROOT}/tools`
         にあるものを使う（同梱しない）。
         """
         return [Path(__file__).resolve().parent / "tools"]

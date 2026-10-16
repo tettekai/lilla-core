@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 SCHEMA = {
     "type": "function",
     "function": {
-        "name": "create_calendar_event",
+        "name": "google_calendar_create_event",
         "description": (
             "Google Calendarに新しい予定を作成します。"
             "書き込み先はlilla.yamlのextensions.google_calendar.calendarsに登録済みのカレンダーに限られます。"
@@ -192,5 +192,5 @@ async def execute(input: dict, context: dict) -> dict:
         return tool_success(tool_name, memory_entry, summarize_event(event, calendar_name))
 
     except Exception as e:
-        logger.error("create_calendar_event error: %s", e)
+        logger.error("google_calendar_create_event error: %s", e)
         return tool_error(tool_name, None, str(e))
