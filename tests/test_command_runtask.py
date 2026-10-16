@@ -151,6 +151,18 @@ class TestRunTask:
         call_args = tools["task_tool"]["instance"].execute.call_args[0][0]
         assert call_args["discord_client"] is bot
 
+    async def test_sets_task_name_as_llm_call_origin(self) -> None:
+        """手動実行でも、LLM 使用量の記録の入口としてタスク名が積まれる。"""
+        from lilla_core.core.llm_call_origin import get_llm_call_origin
+
+        seen = []
+        tools = _make_tools()
+        tools["task_tool"]["instance"].execute = AsyncMock(
+            side_effect=lambda ctx: seen.append(get_llm_call_origin())
+        )
+        await runtask.run_task("task_tool", tools, MagicMock())
+        assert seen[0].task_name == "task_tool"
+
     async def test_default_params_is_empty_dict(self) -> None:
         """params 未指定時は空 dict が渡される。"""
         tools = _make_tools()

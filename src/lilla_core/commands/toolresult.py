@@ -12,6 +12,7 @@ import re
 from lilla_core.commands.attachment_body import resolve_command_body
 from lilla_core.commands.discord_util import resolve_discord_channel
 from lilla_core.commands.registry import register_command
+from lilla_core.core.llm_call_origin import llm_call_origin
 from lilla_core.services.message_util import resolve_dm_channel
 
 logger = logging.getLogger(__name__)
@@ -149,7 +150,9 @@ async def _generate_reply(record: dict, result_text: str, client_type: str) -> s
         ),
     }]
 
-    return await chat_to_llm(messages, system_prompt=system_prompt)
+    # 使用量の記録では入口を toolresult に数える
+    with llm_call_origin(source="toolresult"):
+        return await chat_to_llm(messages, system_prompt=system_prompt)
 
 
 def _chunk_text(text: str, size: int = _DISCORD_CHUNK_SIZE) -> list[str]:

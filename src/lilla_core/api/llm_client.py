@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn, Protocol
@@ -10,6 +11,7 @@ from lilla_core.core.config import get_config, resolve_llm_provider_prompt_spec
 from lilla_core.core.exceptions import LLMError
 from lilla_core.core.http_util import send_http_request
 from lilla_core.core.llm_send_guard import ensure_llm_request_allowed
+from lilla_core.services.llm_usage import LlmUsage, build_usage, record_llm_usage
 from lilla_core.utils.resource_loader import load_text_resources
 
 logger = logging.getLogger(__name__)
@@ -84,23 +86,32 @@ def _ensure_system_prompt(
     return [{"role": "system", "content": effective_prompt}, *messages]
 
 
-def _get_provider(llm_name: str | None):
-    """HTTP を出せる具体プロバイダーの設定を返す。
+def _resolve_provider(llm_name: str | None):
+    """HTTP を出せる具体プロバイダーのキーと設定を返す。
 
     `llm_name` が resolver 型なら、スクリプトは呼ばずにそのエントリの `fallback` を返す。
     回しごとの展開は `run_conversation` が済ませてから具体名を渡すため、ここへ resolver
     名が届くのは文脈を持たない直接呼び出し（`chat_to_llm` を直に呼ぶタスクや
     `!selftest` など）だけで、その場合は fallback を使う。
+
+    Returns:
+        `(プロバイダーのキー, LlmProviderConfig)`。キーは使用量の記録に使う。
     """
     config = get_config()
+    name = llm_name or config.llm.default
     provider = config.get_llm_provider(llm_name)
     if provider.type == "resolver":
         logger.debug(
             "LLM provider '%s' is a resolver; using its fallback '%s' for a direct call",
-            llm_name or config.llm.default, provider.fallback,
+            name, provider.fallback,
         )
-        return config.get_llm_provider(provider.fallback)
-    return provider
+        return provider.fallback, config.get_llm_provider(provider.fallback)
+    return name, provider
+
+
+def _get_provider(llm_name: str | None):
+    """HTTP を出せる具体プロバイダーの設定を返す（`_resolve_provider` の設定だけ）。"""
+    return _resolve_provider(llm_name)[1]
 
 
 def _load_provider_prompt(provider) -> str:
@@ -167,12 +178,14 @@ class LLMResult:
 
     `raw` は呼び出し元へそのまま返す生データ（Chat Completions / Ollama ネイティブなら
     assistant メッセージ、Responses API なら `output` 配列）。
+    `usage` は応答の使用量で、応答に無ければ None（記録上はトークン数不明になる）。
     """
 
     content: str | None
     tool_calls: list[dict[str, Any]] | None
     finish_reason: str
     raw: Any
+    usage: LlmUsage | None = None
 
 
 class LLMProviderAdapter(Protocol):
@@ -198,8 +211,43 @@ class LLMProviderAdapter(Protocol):
         ...
 
     def parse_response(self, response: Any) -> LLMResult:
-        """デコード済みの応答 JSON を共通の結果型へ変換する。"""
+        """デコード済みの応答 JSON を共通の結果型へ変換する（使用量も取り出す）。"""
         ...
+
+
+#: Ollama ネイティブの応答のうち、使用量として生のまま残す数値項目
+_OLLAMA_USAGE_KEYS = (
+    "prompt_eval_count",
+    "eval_count",
+    "total_duration",
+    "load_duration",
+    "prompt_eval_duration",
+    "eval_duration",
+)
+
+
+def _openai_usage(response: Any, input_key: str, output_key: str) -> LlmUsage | None:
+    """OpenAI 互換の応答の `usage` から使用量を取り出す（無ければ None）。
+
+    Chat Completions は `prompt_tokens` / `completion_tokens`、Responses API は
+    `input_tokens` / `output_tokens` を使う。どちらも合計は `total_tokens`。
+    """
+    usage = response.get("usage") if isinstance(response, dict) else None
+    if not isinstance(usage, dict):
+        return None
+    return build_usage(
+        usage.get(input_key), usage.get(output_key), usage.get("total_tokens"), usage
+    )
+
+
+def _ollama_usage(response: Any) -> LlmUsage | None:
+    """Ollama ネイティブの応答（`prompt_eval_count` / `eval_count`）から使用量を取り出す。"""
+    if not isinstance(response, dict):
+        return None
+    raw = {key: response[key] for key in _OLLAMA_USAGE_KEYS if key in response}
+    if not raw:
+        return None
+    return build_usage(raw.get("prompt_eval_count"), raw.get("eval_count"), None, raw)
 
 
 def _bearer_headers(api_key: str) -> dict[str, str]:
@@ -244,6 +292,7 @@ class OllamaNativeAdapter:
             tool_calls=None,
             finish_reason="stop",
             raw=message,
+            usage=_ollama_usage(response),
         )
 
 
@@ -300,6 +349,7 @@ class ChatCompletionsAdapter:
             tool_calls=tool_calls,
             finish_reason=choice.get("finish_reason", "stop"),
             raw=message,
+            usage=_openai_usage(response, "prompt_tokens", "completion_tokens"),
         )
 
 
@@ -357,6 +407,7 @@ class ResponsesAdapter:
             tool_calls=tool_calls or None,
             finish_reason="tool_calls" if tool_calls else "stop",
             raw=output,
+            usage=_openai_usage(response, "input_tokens", "output_tokens"),
         )
 
 
@@ -405,16 +456,27 @@ def _select_adapter(provider, api: str) -> LLMProviderAdapter:
     return adapter
 
 
-async def _send(adapter: LLMProviderAdapter, provider, request: LLMRequest) -> LLMResult:
+async def _send(
+    adapter: LLMProviderAdapter,
+    provider,
+    request: LLMRequest,
+    *,
+    provider_name: str,
+    api: str,
+) -> LLMResult:
     """送信前検査 → （必要なら）WOL → HTTP 送信 → 応答解釈 → 例外ラップ を順に行う。
 
     送信を止める回は WOL もしないよう、検査を最初に済ませる。タイムアウトはプロバイダー
     設定の `timeout_seconds`（具体プロバイダーの既定 300 秒）を使う。検査の例外
     （`LLMError` のサブクラス）はそのまま、送信と解釈の失敗は `LLMError` にラップして送出する。
+
+    応答を解釈できたら、HTTP 送信から解釈までの所要時間と使用量を
+    `record_llm_usage()` で記録する（記録の失敗は結果に影響しない）。
     """
     ensure_llm_request_allowed(request.body)
     if adapter.wakes_ollama:
         await _wake_ollama_if_needed(provider)
+    started = time.monotonic()
     try:
         reply = await send_http_request(
             request.url,
@@ -423,9 +485,17 @@ async def _send(adapter: LLMProviderAdapter, provider, request: LLMRequest) -> L
             headers=request.headers,
             timeout=provider.timeout_seconds,
         )
-        return adapter.parse_response(json.loads(reply))
+        result = adapter.parse_response(json.loads(reply))
     except Exception as e:
         _raise_llm_error(e)
+    record_llm_usage(
+        provider_name=provider_name,
+        provider=provider,
+        api=api,
+        duration_ms=int((time.monotonic() - started) * 1000),
+        usage=result.usage,
+    )
+    return result
 
 
 async def _call(
@@ -436,7 +506,7 @@ async def _call(
     llm_name: str | None,
 ) -> LLMResult:
     """プロバイダーを解決してアダプターを選び、組み立てて送る（公開関数の共通部分）。"""
-    provider = _get_provider(llm_name)
+    provider_name, provider = _resolve_provider(llm_name)
     adapter = _select_adapter(provider, api)
     request = adapter.build_request(
         provider,
@@ -445,7 +515,7 @@ async def _call(
         provider_prompt=_load_provider_prompt(provider),
         tools=tools,
     )
-    return await _send(adapter, provider, request)
+    return await _send(adapter, provider, request, provider_name=provider_name, api=api)
 
 
 async def chat_to_llm(

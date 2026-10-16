@@ -10,6 +10,7 @@ import logging
 from lilla_core.commands.registry import register_command
 from lilla_core.core.error_notify import notify_error
 from lilla_core.core.extension import build_tool_context
+from lilla_core.core.llm_call_origin import llm_call_origin
 from lilla_core.ui.messages import t
 from lilla_core.utils.datetime_utils import local_now
 
@@ -62,7 +63,9 @@ async def run_task(tool_name: str, tools: dict, bot, params: dict | None = None)
             "llm_tools": get_llm_tools(),
             "params": params or {},
         })
-        await tool.execute(context)
+        # タスク内の LLM 呼び出しを使用量の記録でこのタスクに数えるため、入口を積む
+        with llm_call_origin(task_name=tool_name):
+            await tool.execute(context)
     except Exception as e:
         await notify_error(bot, t("command.runtask.execution_error_title", tool=tool_name), e)
         return False

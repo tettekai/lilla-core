@@ -18,6 +18,7 @@ import yaml
 
 from lilla_core.core.config import get_config
 from lilla_core.core.extension import get_tool_context_providers
+from lilla_core.core.llm_call_origin import llm_call_origin
 from lilla_core.loaders.tool_paths import (
     find_tool_file,
     import_tool_module,
@@ -656,7 +657,10 @@ async def execute_tool_call(
         tool_context[_TOOL_CALL_DEPTH_KEY] = depth + 1
         tool_context["call_tool"] = _make_call_tool(llm_tools, tool_context)
         await _notify_tool_call(context, tool_name, depth)
-        result = await tool_entry["execute"](tool_input, tool_context)
+        # ツールの中で起きた LLM 呼び出し（llm_expert など）を使用量の記録で
+        # このツールに数えられるよう、入口として YAML stem を積む
+        with llm_call_origin(tool_name=yaml_stem):
+            result = await tool_entry["execute"](tool_input, tool_context)
         await _save_tool_cache(yaml_stem, tool_input, tool_config, result)
         if isinstance(result, dict):
             result.pop("cache_writes", None)

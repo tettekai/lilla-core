@@ -4,13 +4,14 @@
 // GET /api/dashboard/nav が正で、組み込みも拡張も同じ形で並ぶ。ハッシュと
 // 画面名の対応表はそのカタログから 1 度だけ組み立てる（二重管理しない）。
 
-// カタログを取れなかったときの退避。組み込み 5 画面だけはカタログ無しでも
+// カタログを取れなかったときの退避。組み込み 6 画面だけはカタログ無しでも
 // 開けるようにして、ナビの取得失敗でダッシュボードごと使えなくならないようにする。
 const FALLBACK_PAGES = [
   { name: 'home', label: 'Home', group: 'main', hash: '#/', module: null },
   { name: 'conversations', label: 'Conversations', group: 'main', hash: '#/conversations', module: null },
   { name: 'memos', label: 'Memos', group: 'main', hash: '#/memos', module: null },
   { name: 'skills', label: 'Skills', group: 'main', hash: '#/skills', module: null },
+  { name: 'usage', label: 'Usage', group: 'main', hash: '#/usage', module: null },
   { name: 'logs', label: 'Admin', group: 'admin', hash: '#/admin/logs', module: null },
 ];
 
@@ -81,6 +82,14 @@ function dashboardApp() {
     // Home の状態。status は /api/dashboard/status の応答、error は取得自体の失敗。
     home: {
       status: null,
+      loading: false,
+      error: false,
+    },
+
+    // LLM の使用量。data は /api/usage の応答で、days は集計する日数（今日を含む）。
+    usage: {
+      days: 7,
+      data: null,
       loading: false,
       error: false,
     },
@@ -227,6 +236,8 @@ function dashboardApp() {
         this.fetchMemos();
       } else if (tab === 'skills') {
         this.fetchSkills();
+      } else if (tab === 'usage') {
+        this.fetchUsage();
       } else if (tab === 'home') {
         this.fetchHomeStatus();
       }
@@ -427,6 +438,61 @@ function dashboardApp() {
       if (!logs || !logs.ok || !logs.counts) return '取得できません';
       const count = logs.counts[level] || 0;
       return count === 0 ? 'なし' : `${count} 件`;
+    },
+
+    // 直近 24 時間の LLM 使用量の一行表示。数えられなかったときは「取得できません」。
+    homeUsageSummary() {
+      const usage = this.home.status && this.home.status.llm_usage;
+      if (!usage || !usage.ok || !usage.totals) return '取得できません';
+      const totals = usage.totals;
+      if (!totals.calls) return usage.enabled ? 'なし' : 'なし（記録は無効）';
+      let text = `${this.formatCalls(totals)} / ${this.formatNumber(totals.total_tokens)} トークン`;
+      if (totals.priced_calls) text += ` / 概算 ${this.formatCost(totals)}`;
+      return text;
+    },
+
+    // ---- Usage ----
+
+    async fetchUsage() {
+      this.usage.loading = true;
+      this.usage.error = false;
+      try {
+        const params = new URLSearchParams({ days: String(this.usage.days) });
+        const res = await this.authedFetch('/api/usage?' + params.toString());
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        this.usage.data = await res.json();
+      } catch (e) {
+        console.error('Failed to fetch LLM usage', e);
+        this.usage.data = null;
+        this.usage.error = true;
+      } finally {
+        this.usage.loading = false;
+      }
+    },
+
+    // 呼び出し件数。トークン数が分からなかった呼び出しがあれば内数で添える。
+    formatCalls(row) {
+      if (!row) return '';
+      const calls = `${this.formatNumber(row.calls)} 回`;
+      return row.unknown_calls ? `${calls}（うち不明 ${this.formatNumber(row.unknown_calls)}）` : calls;
+    },
+
+    // 単価を設定したプロバイダーの記録が 1 件も無ければ「-」。設定の無い記録が
+    // 混ざっているときは、その分を含まない目安であることを添える。
+    formatCost(row) {
+      if (!row || !row.priced_calls) return '-';
+      const cost = Number(row.cost || 0);
+      const text = cost.toLocaleString('ja-JP', { maximumFractionDigits: 4 });
+      return row.priced_calls < row.calls ? `${text}（単価設定分のみ）` : text;
+    },
+
+    formatAvgDuration(row) {
+      if (!row || !row.calls) return '-';
+      return `${(row.duration_ms / row.calls / 1000).toFixed(1)} 秒`;
+    },
+
+    formatNumber(value) {
+      return Number(value || 0).toLocaleString('ja-JP');
     },
 
     // ---- Logs ----

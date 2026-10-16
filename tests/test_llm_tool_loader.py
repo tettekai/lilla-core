@@ -874,6 +874,23 @@ class TestExecuteToolCall:
         assert callable(called_context["call_tool"])
         assert called_context[llm_tool_loader._TOOL_CALL_DEPTH_KEY] == 1
 
+    async def test_sets_tool_name_as_llm_call_origin(self, llm_tool_loader) -> None:
+        """ツールの実行中は、LLM 使用量の記録の入口として YAML stem が積まれる。"""
+        from lilla_core.core.llm_call_origin import get_llm_call_origin
+
+        seen = []
+
+        async def execute(tool_input, context):
+            seen.append(get_llm_call_origin())
+            return "ok"
+
+        llm_tools = {
+            "llm_expert_x": {"schema": {"function": {"name": "expert"}}, "execute": execute}
+        }
+        await llm_tool_loader.execute_tool_call("expert", {}, llm_tools, {})
+        assert seen[0].tool_name == "llm_expert_x"
+        assert get_llm_call_origin().tool_name is None
+
     async def test_returns_error_dict_when_tool_not_found(self, llm_tool_loader) -> None:
         """ツールが見つからないとき例外を上げずエラー情報を含む dict を返す。"""
         result = await llm_tool_loader.execute_tool_call("unknown_tool", {}, {}, {})

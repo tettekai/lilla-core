@@ -45,7 +45,7 @@ SPA はタブを開いたときにこれを `import()` し、`mount(el, ctx)` �
 
 `name` は URL にそのまま埋まるため、`^[a-z0-9][a-z0-9-]*$` に合わない名前と、
 コアが押さえている予約名（`api` / `oauth` / `static` / `admin` / `dashboard` /
-`auth` / `login` / `logout` / `setup` / `home` / `conversations` / `memos` / `skills` / `logs`）は
+`auth` / `login` / `logout` / `setup` / `home` / `conversations` / `memos` / `skills` / `usage` / `logs`）は
 ロード時に fail-fast します。ルートのパスが自分の接頭辞の外にある場合、タブを出すのに
 `dashboard_static_dir()` を返していない場合も同様です。
 

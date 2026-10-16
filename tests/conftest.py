@@ -36,6 +36,40 @@ def _restore_shell_config_root():
         os.environ["CONFIG_ROOT"] = _ORIGINAL_CONFIG_ROOT
 
 
+def pytest_configure(config):
+    """このリポジトリのテストで使うマーカーを登録する。"""
+    config.addinivalue_line(
+        "markers",
+        "real_llm_usage_writes: LLM 使用量の記録の書き込み（_schedule_write）を差し替えない",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_llm_usage_writes(request):
+    """LLM 呼び出しのたびに使用量の記録が本物の MongoDB へ書きに行かないようにする。
+
+    `api/llm_client.py` の送信関数は応答のたびに `record_llm_usage()` を呼び、既定の
+    設定（`llm.usage_log.enabled: true`）では書き込みをタスクとして投げる。テストでは
+    書き込みの投入（`_schedule_write`）だけを何もしない関数へ差し替える。記録の
+    組み立ては本物のまま通る。書き込み自体を確かめるテストは
+    `@pytest.mark.real_llm_usage_writes` で外す。
+
+    `monkeypatch` は使わない（ここで先に作ると、各テストの `monkeypatch` の巻き戻しが
+    テストモジュール側の autouse fixture の後片付けより後ろへずれるため）。
+    """
+    if request.node.get_closest_marker("real_llm_usage_writes") is not None:
+        yield
+        return
+    import lilla_core.services.llm_usage as llm_usage
+
+    original = llm_usage._schedule_write
+    llm_usage._schedule_write = lambda record: None
+    try:
+        yield
+    finally:
+        llm_usage._schedule_write = original
+
+
 _INTERNAL_PACKAGES = frozenset({
     "api", "commands", "handlers", "repository", "services", "loaders", "lilla_core"
 })

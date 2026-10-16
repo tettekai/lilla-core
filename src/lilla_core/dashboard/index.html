@@ -97,6 +97,8 @@
           <dd x-text="homeLogCount('error')"></dd>
           <dt>警告（直近 24 時間）</dt>
           <dd x-text="homeLogCount('warning')"></dd>
+          <dt>LLM 使用量（直近 24 時間）</dt>
+          <dd x-text="homeUsageSummary()"></dd>
           <dt>確認時刻</dt>
           <dd x-text="formatDate(home.status.checked_at)"></dd>
         </dl>
@@ -231,6 +233,113 @@
         </template>
         <div x-show="memos.items.length === 0" class="empty">メモがありません</div>
       </div>
+    </section>
+
+    <!-- Usage Tab -->
+    <section x-show="activeTab === 'usage'">
+      <h2 class="page-title">LLM Usage</h2>
+      <div class="filters">
+        <select x-model.number="usage.days" @change="fetchUsage()">
+          <option value="1">今日</option>
+          <option value="7">直近 7 日</option>
+          <option value="30">直近 30 日</option>
+          <option value="90">直近 90 日</option>
+        </select>
+        <button @click="fetchUsage()">再読み込み</button>
+      </div>
+
+      <div x-show="usage.loading && !usage.data" class="loading">読み込み中...</div>
+      <div x-show="usage.error" class="empty">使用量を取得できませんでした</div>
+
+      <template x-if="usage.data">
+        <div>
+          <p class="usage-note" x-show="!usage.data.enabled">
+            記録は無効です（<code>llm.usage_log.enabled: false</code>）。表示しているのは無効にする前の記録です。
+          </p>
+          <p class="usage-note">
+            保持期間 <span x-text="usage.data.retention_days"></span> 日。
+            トークン数を返さなかった呼び出しは「不明」として件数だけ数えます。
+            概算コストは <code>lilla.yaml</code> に設定した単価による目安で、実際の請求額とは一致しません。
+          </p>
+
+          <dl class="home-status usage-totals">
+            <dt>呼び出し</dt>
+            <dd x-text="formatCalls(usage.data.totals)"></dd>
+            <dt>入力 / 出力</dt>
+            <dd x-text="formatNumber(usage.data.totals.input_tokens) + ' / ' + formatNumber(usage.data.totals.output_tokens)"></dd>
+            <dt>合計トークン</dt>
+            <dd x-text="formatNumber(usage.data.totals.total_tokens)"></dd>
+            <dt>概算コスト</dt>
+            <dd x-text="formatCost(usage.data.totals)"></dd>
+          </dl>
+
+          <h3 class="usage-heading">日別</h3>
+          <div class="usage-scroll"><table class="usage-table">
+            <thead>
+              <tr><th>日付</th><th>呼び出し</th><th>入力</th><th>出力</th><th>合計</th><th>概算コスト</th></tr>
+            </thead>
+            <tbody>
+              <template x-for="row in usage.data.daily" :key="row.date">
+                <tr>
+                  <td x-text="row.date"></td>
+                  <td x-text="formatCalls(row)"></td>
+                  <td x-text="formatNumber(row.input_tokens)"></td>
+                  <td x-text="formatNumber(row.output_tokens)"></td>
+                  <td x-text="formatNumber(row.total_tokens)"></td>
+                  <td x-text="formatCost(row)"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table></div>
+
+          <h3 class="usage-heading">プロバイダー別</h3>
+          <div class="usage-scroll"><table class="usage-table">
+            <thead>
+              <tr><th>プロバイダー</th><th>モデル</th><th>呼び出し</th><th>入力</th><th>出力</th><th>合計</th><th>平均所要時間</th><th>概算コスト</th></tr>
+            </thead>
+            <tbody>
+              <template x-for="row in usage.data.by_provider" :key="row.provider + '/' + row.model">
+                <tr>
+                  <td x-text="row.provider"></td>
+                  <td x-text="row.model"></td>
+                  <td x-text="formatCalls(row)"></td>
+                  <td x-text="formatNumber(row.input_tokens)"></td>
+                  <td x-text="formatNumber(row.output_tokens)"></td>
+                  <td x-text="formatNumber(row.total_tokens)"></td>
+                  <td x-text="formatAvgDuration(row)"></td>
+                  <td x-text="formatCost(row)"></td>
+                </tr>
+              </template>
+              <tr x-show="usage.data.by_provider.length === 0">
+                <td colspan="8" class="empty">記録がありません</td>
+              </tr>
+            </tbody>
+          </table></div>
+
+          <h3 class="usage-heading">入口別</h3>
+          <div class="usage-scroll"><table class="usage-table">
+            <thead>
+              <tr><th>入口</th><th>呼び出し</th><th>入力</th><th>出力</th><th>合計</th><th>平均所要時間</th><th>概算コスト</th></tr>
+            </thead>
+            <tbody>
+              <template x-for="row in usage.data.by_entry" :key="row.entry">
+                <tr>
+                  <td x-text="row.entry"></td>
+                  <td x-text="formatCalls(row)"></td>
+                  <td x-text="formatNumber(row.input_tokens)"></td>
+                  <td x-text="formatNumber(row.output_tokens)"></td>
+                  <td x-text="formatNumber(row.total_tokens)"></td>
+                  <td x-text="formatAvgDuration(row)"></td>
+                  <td x-text="formatCost(row)"></td>
+                </tr>
+              </template>
+              <tr x-show="usage.data.by_entry.length === 0">
+                <td colspan="7" class="empty">記録がありません</td>
+              </tr>
+            </tbody>
+          </table></div>
+        </div>
+      </template>
     </section>
 
     <!-- Skills Tab -->

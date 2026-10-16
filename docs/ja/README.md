@@ -20,6 +20,7 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [プロバイダーごとのシステムプロンプト追記](llm-provider-prompt.md) — `llm.providers.<キー>.prompt`
 - [LLM 送信前の拒否リスト](llm-send-guard.md) — `llm.send_blocklist_path`
 - [LLM 応答の先頭 prefix の除去](llm-response-prefix.md) — `llm.response_prefix_strip_patterns`
+- [LLM のトークン使用量の記録](llm-usage.md) — `llm.usage_log` と、ダッシュボードの Usage 画面
 - [観測用ダッシュボード](dashboard.md) — 公開面への注意を含む
 - [スキル](skills.md) — `!skill` と、ダッシュボードの Skills 画面
 - [共有 HTTP サーバー](http-server.md) — `http:`、Bearer トークン、拡張からのルート追加

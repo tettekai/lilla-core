@@ -44,7 +44,7 @@ and enable / disable them. See [Skills](skills.md) for the naming rules and how 
 ## Home
 
 Home (`#/`) does not repeat the other lists; it only shows the current state. Each time it
-opens it calls `GET /api/dashboard/status` (login required) and shows two things:
+opens it calls `GET /api/dashboard/status` (login required) and shows three things:
 
 - Liveness: that the dashboard itself responds, and whether a ping to MongoDB succeeds.
   It does not run the full self-test that includes the LLM check (`!selftest full`).
@@ -52,8 +52,16 @@ opens it calls `GET /api/dashboard/status` (login required) and shows two things
   `logs` collection). Zero is shown as "none". No message text, logger names or stack
   traces are returned. If logs are not stored in MongoDB, the counts are always "none".
 
+- The number of LLM calls and total tokens in the last 24 hours (plus the estimated cost
+  if prices are configured). The detailed breakdown is on the Usage page.
+
 When MongoDB cannot be reached the page still loads; the affected items show as
 "no response" / "unavailable".
+
+## Usage
+
+Usage (`#/usage`) aggregates LLM token usage by day, provider and entry point. See
+[Recording LLM token usage](llm-usage.md) for the settings and what is recorded.
 
 Only `/oauth/{extension name}` sits outside the auth middleware, for public GETs a
 browser makes without a session (OAuth redirect targets and the like). An upstream access

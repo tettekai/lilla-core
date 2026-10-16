@@ -9,6 +9,20 @@
 
 ### Added
 
+- LLM のトークン使用量の記録を追加した（#239）。Chat Completions（tools 付きを含む）・Responses API・
+  Ollama ネイティブのどの経路でも、応答の入力・出力・合計トークン数（応答に無ければ不明として残し、推定は
+  しない）と生の `usage`（数値だけ）を、プロバイダー名・モデル名・入口・所要時間とともに MongoDB の
+  `llm_usage` コレクションへ 1 呼び出し 1 件で記録する。メッセージ本文・プロンプト・ツール結果は記録しない。
+  書き込みは非同期で、失敗しても WARNING ログだけで LLM 呼び出しは成功扱いのまま。入口は `contextvars`
+  （新設の `lilla_core.core.llm_call_origin`）で渡し、会話（`conversation:<client_type>`）・定期タスク
+  （`task:<YAML stem>`。`!runtask` / `POST /api/runtask` を含む）・LLM ツール（`tool:<YAML stem>`）・
+  `selftest` / `toolresult` を区別する。公開関数の引数は変えていない。設定は `llm.usage_log`
+  （`enabled` 既定 `true` / `retention_days` 既定 90。各記録の `expire_at` に反映し TTL インデックスで消す）。
+  具体プロバイダーに任意の単価 `input_price_per_million_tokens` / `output_price_per_million_tokens`
+  （100 万トークンあたり。0 以上。resolver 型には書けない）を書くと概算コストも記録・表示する。
+  ダッシュボードに Usage 画面（`#/usage`、`GET /api/usage?days=N`）を足し、日別・プロバイダー別・入口別の
+  集計を出す。Home には直近 24 時間の合計を一行足した（`GET /api/dashboard/status` の `llm_usage`）。
+  説明は `docs/ja/llm-usage.md`
 - LLM が自分でスキルを読み込む組み込みツール `llm_load_skill` を追加した（#227）。`${CONFIG_ROOT}/tools/` に
   `type: llm_load_skill` の YAML を置き `tools.sets` に含めた場合だけ使える opt-in で、引数は `name`（必須。
   `!skill` と同じ規則で大文字小文字を区別しない）と `reason`（任意。結果には使わない）。結果は `!skill` と同じ
@@ -110,6 +124,9 @@
   読んでいた項目で、resolver の既定は従来どおり 10 秒。0 以下はどの型でも起動時に落ちる
 
 ### Changed
+
+- 拡張の `name` の予約名（`RESERVED_EXTENSION_NAMES`）に `usage` を足した（#239）。ダッシュボードの
+  組み込み画面 Usage（`#/usage`）と経路が重なるため。`name = "usage"` の拡張はロード時に落ちる
 
 - `api/llm_client.py` の LLM 送信経路をプロバイダーアダプターに統一した（#238）。Ollama ネイティブ
   （`/api/chat`）・Chat Completions・Responses API をそれぞれアダプター（リクエストの組み立てと応答の
