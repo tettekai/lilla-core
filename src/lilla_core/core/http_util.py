@@ -120,6 +120,7 @@ async def send_http_request(
     params: dict[str, str] | None = None,
     timeout: int = 300,
     body: str | bytes | None = None,
+    allow_redirects: bool = True,
 ) -> str:
     """
     非同期HTTPリクエストを送信します。
@@ -130,6 +131,12 @@ async def send_http_request(
     指定する）で送信します。優先順は body → form_data → data です。
     params を指定するとクエリパラメータとして URL に付加されます。
     ボディは POST / PUT / PATCH の場合のみ送信されます。
+
+    allow_redirects は既定で True（aiohttp の既定どおりリダイレクトを追従し、
+    400 以上をエラーとする）。False にするとリダイレクトを追従せず、3xx を非成功として
+    扱い、300 以上で ``aiohttp.ClientResponseError`` を送出する（``status`` に 3xx、
+    ``headers`` に ``Location`` を含む）。POST が 301 / 302 / 303 で GET に変わって
+    ボディを失ったまま成功扱いになるのを避けたい呼び出し側向け。
     """
     proxy, auth = _resolve_proxy(url)
 
@@ -164,10 +171,12 @@ async def send_http_request(
             proxy=proxy,
             proxy_headers=auth,
             timeout=aiohttp.ClientTimeout(total=timeout),
+            allow_redirects=allow_redirects,
         ) as resp:
             logger.info("Status: %s", resp.status)
             response_text = await resp.text()
-            if resp.status >= 400:
+            error_threshold = 400 if allow_redirects else 300
+            if resp.status >= error_threshold:
                 logger.error(
                     "HTTP error %s %s: %s",
                     resp.status,
