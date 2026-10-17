@@ -9,6 +9,10 @@
 
 ### Added
 
+- `send_http_request` にキーワード引数 `allow_redirects`（既定 `True`＝従来どおり追従）を追加した。`False` にするとリダイレクトを
+  追従せず、3xx を `aiohttp.ClientResponseError` として送出する（`status` に 3xx、`headers` に `Location`）。
+  POST が 301 / 302 / 303 で GET に変わりボディを失ったまま成功扱いになるのを避けたい呼び出し側向け。
+  `stream_http_request` は対象外。
 - LLM のトークン使用量の記録を追加した（#239）。Chat Completions（tools 付きを含む）・Responses API・
   Ollama ネイティブのどの経路でも、応答の入力・出力・合計トークン数（応答に無ければ不明として残し、推定は
   しない）と生の `usage`（数値だけ）を、プロバイダー名・モデル名・入口・所要時間とともに MongoDB の
