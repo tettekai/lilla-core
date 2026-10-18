@@ -16,6 +16,8 @@ def mock_cfg() -> MagicMock:
     """conversation_service が参照する AppConfig モック。"""
     cfg = MagicMock()
     cfg.llm.max_tool_call_iterations = 3
+    cfg.llm.default = "default-llm"
+    cfg.llm.providers = {}
     cfg.media_reset_minutes = 5
     cfg.media_default = ""
     cfg.media_base_url = ""
@@ -815,6 +817,152 @@ class TestRunConversation:
 # ---------------------------------------------------------------------------
 # TestMetaActionsIntegration
 # ---------------------------------------------------------------------------
+
+
+class TestFinalReplyProvider:
+    """`final_reply_provider` による最終応答の書き直しのテスト。"""
+
+    @staticmethod
+    def _tool_response() -> dict:
+        """ツールを 1 回呼ぶ応答を返す。"""
+        return {
+            "content": None,
+            "finish_reason": "tool_calls",
+            "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "test_tool", "arguments": "{}"}}
+            ],
+            "raw_message": {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1"}]},
+        }
+
+    @staticmethod
+    def _text_response(content: str) -> dict:
+        """tool_calls なしの応答を返す。"""
+        return {
+            "content": content,
+            "finish_reason": "stop",
+            "tool_calls": None,
+            "raw_message": {"role": "assistant", "content": content},
+        }
+
+    @staticmethod
+    def _provider(final_reply_provider: str | None = None) -> MagicMock:
+        """`final_reply_provider` だけを持つ具体プロバイダー設定のモックを返す。"""
+        provider = MagicMock()
+        provider.final_reply_provider = final_reply_provider
+        return provider
+
+    @pytest.fixture
+    def setup_loop(self, conversation_service, mock_cfg: MagicMock, monkeypatch: pytest.MonkeyPatch):
+        """ツール 1 回 → 最終応答の順に返す LLM と、プロバイダー台帳を用意する。"""
+
+        def _setup(responses: list[dict], **providers: MagicMock) -> AsyncMock:
+            mock_cfg.llm.providers = providers
+            mock_chat = AsyncMock(side_effect=responses)
+            monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
+            monkeypatch.setattr(conversation_service, "resolve_llm_name", AsyncMock(return_value="local"))
+            return mock_chat
+
+        return _setup
+
+    async def test_final_reply_is_rewritten_by_configured_provider(
+        self, conversation_service, setup_loop
+    ) -> None:
+        """最終応答の本文は捨て、指定先にツールなしで 1 回問い合わせた結果を返す。"""
+        mock_chat = setup_loop(
+            [self._tool_response(), self._text_response("local draft"), self._text_response("rewritten")],
+            local=self._provider("main"),
+            main=self._provider(),
+        )
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(fake_tools)
+
+        assert result == "rewritten"
+        assert mock_chat.await_count == 3
+        rewrite_call = mock_chat.await_args_list[2]
+        assert rewrite_call.kwargs["llm_name"] == "main"
+        assert rewrite_call.kwargs["tools"] is None
+        assert rewrite_call.kwargs["system_prompt"] == "test system prompt"
+
+    async def test_rewrite_input_excludes_discarded_reply(
+        self, conversation_service, setup_loop
+    ) -> None:
+        """書き直しの入力は捨てた最終応答を含まず、ツール結果と指示で終わる。"""
+        mock_chat = setup_loop(
+            [self._tool_response(), self._text_response("local draft"), self._text_response("rewritten")],
+            local=self._provider("main"),
+            main=self._provider(),
+        )
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        await conversation_service.run_conversation(fake_tools)
+
+        rewrite_messages = mock_chat.await_args_list[2].args[0]
+        assert all("local draft" not in str(m.get("content")) for m in rewrite_messages)
+        assert rewrite_messages[-2]["role"] == "tool"
+        assert rewrite_messages[-1] == {
+            "role": "user",
+            "content": conversation_service._FINAL_REPLY_REWRITE_INSTRUCTION,
+        }
+
+    async def test_rewrite_does_not_chain(self, conversation_service, setup_loop) -> None:
+        """書き直し先の `final_reply_provider` は見ず、問い合わせは 1 回で閉じる。"""
+        mock_chat = setup_loop(
+            [self._tool_response(), self._text_response("local draft"), self._text_response("rewritten")],
+            local=self._provider("main"),
+            main=self._provider("other"),
+            other=self._provider(),
+        )
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(fake_tools)
+
+        assert result == "rewritten"
+        assert mock_chat.await_count == 3
+
+    async def test_meta_actions_apply_to_rewritten_reply(
+        self, conversation_service, setup_loop
+    ) -> None:
+        """META ブロックの処理は書き直し後の本文に対して行う。"""
+        rewritten = 'rewritten\n---META---\n{"actions": []}\n---END_META---'
+        setup_loop(
+            [self._tool_response(), self._text_response("local draft"), self._text_response(rewritten)],
+            local=self._provider("main"),
+            main=self._provider(),
+        )
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(fake_tools)
+
+        assert result.strip() == "rewritten"
+
+    async def test_unset_keeps_original_reply(self, conversation_service, setup_loop) -> None:
+        """未設定なら最終応答をそのまま返し、追加の問い合わせはしない。"""
+        mock_chat = setup_loop(
+            [self._tool_response(), self._text_response("local reply")],
+            local=self._provider(),
+        )
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(fake_tools)
+
+        assert result == "local reply"
+        assert mock_chat.await_count == 2
+
+    async def test_no_tools_conversation_is_not_rewritten(
+        self, conversation_service, mock_cfg: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ツールなしの会話（chat_to_llm 経路）では書き直さない。"""
+        mock_cfg.llm.providers = {"local": self._provider("main"), "main": self._provider()}
+        monkeypatch.setattr(conversation_service, "resolve_llm_name", AsyncMock(return_value="local"))
+        mock_with_tools = AsyncMock()
+        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_with_tools)
+        monkeypatch.setattr(conversation_service, "chat_to_llm", AsyncMock(return_value="plain reply"))
+
+        result = await conversation_service.run_conversation({})
+
+        assert result == "plain reply"
+        mock_with_tools.assert_not_awaited()
 
 
 class TestMetaActionsIntegration:

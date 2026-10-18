@@ -234,6 +234,55 @@ class TestProviderConfigValidation:
         )
 
 
+class TestFinalReplyProviderConfig:
+    """具体プロバイダーの `final_reply_provider`（最終応答の書き直し先）の設定検証。"""
+
+    @staticmethod
+    def _concrete(**kwargs) -> dict:
+        """具体プロバイダーのエントリを返す。"""
+        return {"type": "openai_compat", "url": "https://example.invalid", "model": "m", **kwargs}
+
+    def test_concrete_target_is_accepted(self, modules):
+        """台帳にある具体プロバイダーを指せば通る。"""
+        config_mod, _ = modules
+        llm = config_mod.LlmConfig(
+            default="local",
+            providers={"local": self._concrete(final_reply_provider="main"), "main": self._concrete()},
+        )
+        assert llm.providers["local"].final_reply_provider == "main"
+        assert llm.providers["main"].final_reply_provider is None
+
+    def test_resolver_target_fails(self, modules):
+        """resolver を指すと起動時に落ちる。"""
+        config_mod, _ = modules
+        with pytest.raises(ValidationError, match="final_reply_provider 'router' must be a concrete"):
+            config_mod.LlmConfig(
+                default="local",
+                providers={
+                    "local": self._concrete(final_reply_provider="router"),
+                    "main": self._concrete(),
+                    "router": {"type": "resolver", "script": "x.py", "fallback": "main"},
+                },
+            )
+
+    def test_unknown_target_fails(self, modules):
+        """台帳に無い名前を指すと起動時に落ちる。"""
+        config_mod, _ = modules
+        with pytest.raises(ValidationError, match="final_reply_provider 'missing' is not defined"):
+            config_mod.LlmConfig(
+                default="local",
+                providers={"local": self._concrete(final_reply_provider="missing")},
+            )
+
+    def test_resolver_must_not_set(self, modules):
+        """resolver 自身には書けない。"""
+        config_mod, _ = modules
+        with pytest.raises(ValidationError, match="must not set: final_reply_provider"):
+            config_mod.LlmProviderConfig(
+                type="resolver", script="x.py", fallback="main", final_reply_provider="main"
+            )
+
+
 class TestProviderPromptConfig:
     """具体プロバイダーの `prompt`（モデルごとの追記）の設定検証と spec 解決。"""
 

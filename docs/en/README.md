@@ -20,6 +20,7 @@ The index of the lilla-core user documentation.
 - [Timezone](timezone.md) — `ui.timezone`
 - [Choosing the LLM provider per turn](llm-resolver.md) — `type: resolver` in `llm.providers`
 - [Per-provider system prompt additions](llm-provider-prompt.md) — `llm.providers.<key>.prompt`
+- [Rewriting the tool loop's final reply](llm-final-reply.md) — `llm.providers.<key>.final_reply_provider`
 - [LLM send blocklist](llm-send-guard.md) — `llm.send_blocklist_path`
 - [Stripping prefixes from LLM responses](llm-response-prefix.md) — `llm.response_prefix_strip_patterns`
 - [Recording LLM token usage](llm-usage.md) — `llm.usage_log` and the dashboard's Usage page
