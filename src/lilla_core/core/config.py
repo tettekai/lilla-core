@@ -83,6 +83,10 @@ class LlmProviderConfig(BaseModel):
     # 利用者が決める）。未指定ならコストを出さない
     input_price_per_million_tokens: float | None = None
     output_price_per_million_tokens: float | None = None
+    # 具体プロバイダーのみ。`run_conversation` のツールループでこのプロバイダーが最終応答
+    # （tool_calls なし）を返したとき、その本文を捨てて書き直しに使う具体プロバイダー名。
+    # 書き直し先の `final_reply_provider` は見ない（連鎖しない）。未指定なら書き直さない
+    final_reply_provider: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -110,6 +114,7 @@ class LlmProviderConfig(BaseModel):
         （具体プロバイダー 300 秒・resolver 10 秒）を入れる。
         単価（`input_price_per_million_tokens` / `output_price_per_million_tokens`）は
         具体プロバイダーだけが持ち、0 以上に限る。
+        `final_reply_provider` も具体プロバイダーだけが持つ（指す先の検証は `LlmConfig`）。
         """
         if self.type == "resolver":
             missing = [name for name in ("script", "fallback") if not getattr(self, name)]
@@ -126,6 +131,7 @@ class LlmProviderConfig(BaseModel):
                     "wakeup_file",
                     "input_price_per_million_tokens",
                     "output_price_per_million_tokens",
+                    "final_reply_provider",
                 )
                 if getattr(self, name) is not None
             ]
@@ -678,8 +684,9 @@ class LlmConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_default_provider_exists(self) -> "LlmConfig":
-        """`default` が `providers` のキーに存在すること、resolver の `fallback` が
-        台帳にある具体プロバイダー（resolver 以外）を指すことを検証する。
+        """`default` が `providers` のキーに存在すること、resolver の `fallback` と
+        具体プロバイダーの `final_reply_provider` が台帳にある具体プロバイダー
+        （resolver 以外）を指すことを検証する。
 
         `llm:` セクション自体を省略した場合もクラスデフォルト
         （`default="ollama-gemma3"`, `providers={}`）に対してこの検証が走り、
@@ -701,6 +708,19 @@ class LlmConfig(BaseModel):
             )
         for name, provider in self.providers.items():
             if provider.type != "resolver":
+                if provider.final_reply_provider is None:
+                    continue
+                target = self.providers.get(provider.final_reply_provider)
+                if target is None:
+                    raise ValueError(
+                        f"llm.providers.{name}.final_reply_provider "
+                        f"'{provider.final_reply_provider}' is not defined in llm.providers"
+                    )
+                if target.type == "resolver":
+                    raise ValueError(
+                        f"llm.providers.{name}.final_reply_provider "
+                        f"'{provider.final_reply_provider}' must be a concrete provider, not a resolver"
+                    )
                 continue
             target = self.providers.get(provider.fallback)
             if target is None:

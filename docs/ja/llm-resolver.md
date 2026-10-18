@@ -75,6 +75,9 @@ resolver 型は HTTP を出さないため `url` / `model` / `api_key_env` / `wa
 書いても起動は失敗せず無視され、選ばれた具体プロバイダーの `prompt` が使われます
 （[プロバイダーごとのシステムプロンプト追記](llm-provider-prompt.md)）。
 
+引き継いだプロバイダーが書いた最終応答をメインのモデルで書き直すには、具体プロバイダー側に
+`final_reply_provider` を書きます（[ツールループの最終応答の書き直し](llm-final-reply.md)）。
+
 次は起動時に失敗します（fail-fast）。
 
 - `script` の解決後のパスが `CONFIG_ROOT` の外（`..` や外を指すシンボリックリンクを含む）

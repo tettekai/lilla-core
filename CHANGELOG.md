@@ -9,6 +9,13 @@
 
 ### Added
 
+- ツールループの最終応答を別プロバイダーで書き直す `llm.providers.<キー>.final_reply_provider` を追加した（#247）。
+  具体プロバイダーに書くと、`run_conversation` のツールループでそのプロバイダーが最終応答（tool_calls なし）を
+  返したとき、その本文を捨て、指定先の具体プロバイダーへツールなしで 1 回だけ問い合わせた結果を最終応答にする。
+  入力は捨てた最終応答を除いたメッセージ列に、口調を揃え事実を変えないよう求める指示を足したもの。書き直し先の
+  `final_reply_provider` は見ない（連鎖しない）。台帳に無い名前・resolver 型を指す場合と、resolver 型のエントリに
+  書いた場合は起動時に落とす。未設定なら従来どおりで、ツールなしの会話・`llm_expert`・`chat_to_llm` を直接呼ぶ
+  経路には効かない。説明は `docs/ja/llm-final-reply.md`
 - `send_http_request` にキーワード引数 `allow_redirects`（既定 `True`＝従来どおり追従）を追加した。`False` にするとリダイレクトを
   追従せず、3xx を `aiohttp.ClientResponseError` として送出する（`status` に 3xx、`headers` に `Location`）。
   POST が 301 / 302 / 303 で GET に変わりボディを失ったまま成功扱いになるのを避けたい呼び出し側向け。

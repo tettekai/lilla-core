@@ -80,6 +80,9 @@ concrete providers. Writing one on a resolver does not fail startup; it is ignor
 the chosen concrete provider's `prompt` is used instead (see
 [Per-provider system prompt additions](llm-provider-prompt.md)).
 
+To have the main model rewrite a final reply written by the provider you handed over to,
+set `final_reply_provider` on the concrete provider ([Rewriting the tool loop's final reply](llm-final-reply.md)).
+
 Startup fails (fail-fast) when:
 
 - `script` resolves outside `CONFIG_ROOT` (including via `..` or a symlink pointing out)
