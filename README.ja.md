@@ -40,9 +40,9 @@ python -m lilla_core.bot
 拡張は `lilla_core.core.extension.Extension` をサブクラスし、必要なメソッドだけを
 オーバーライドして、モジュールから `extension = MyExtension()` として公開します。
 
-公式拡張パックとして Google OAuth（`lilla_core.extensions.google_oauth`）と Google Calendar
-（`lilla_core.extensions.google_calendar`）を同梱しています。どちらも `LILLA_EXTENSIONS` に
-並べたときだけ読み込まれます。
+公式拡張パックとして Google OAuth（`lilla_core.extensions.google_oauth`）・Google Calendar
+（`lilla_core.extensions.google_calendar`）・Google Drive / Sheets（`lilla_core.extensions.google_drive`）・
+ローカルのファイル読み書き（`lilla_core.extensions.files`）を同梱しています。どれも `LILLA_EXTENSIONS` に並べたときだけ読み込まれます。
 
 ## 任意の判定ヘルパー（Jev）
 

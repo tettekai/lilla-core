@@ -874,6 +874,23 @@ class TestExecuteToolCall:
         assert callable(called_context["call_tool"])
         assert called_context[llm_tool_loader._TOOL_CALL_DEPTH_KEY] == 1
 
+    async def test_sets_tool_name_as_llm_call_origin(self, llm_tool_loader) -> None:
+        """ツールの実行中は、LLM 使用量の記録の入口として YAML stem が積まれる。"""
+        from lilla_core.core.llm_call_origin import get_llm_call_origin
+
+        seen = []
+
+        async def execute(tool_input, context):
+            seen.append(get_llm_call_origin())
+            return "ok"
+
+        llm_tools = {
+            "llm_expert_x": {"schema": {"function": {"name": "expert"}}, "execute": execute}
+        }
+        await llm_tool_loader.execute_tool_call("expert", {}, llm_tools, {})
+        assert seen[0].tool_name == "llm_expert_x"
+        assert get_llm_call_origin().tool_name is None
+
     async def test_returns_error_dict_when_tool_not_found(self, llm_tool_loader) -> None:
         """ツールが見つからないとき例外を上げずエラー情報を含む dict を返す。"""
         result = await llm_tool_loader.execute_tool_call("unknown_tool", {}, {}, {})
@@ -914,10 +931,10 @@ class TestExecuteToolCall:
         """tool_config のキーが context にマージされて execute に渡される。"""
         mock_execute = AsyncMock(return_value="ok")
         llm_tools = {
-            "llm_calendar_get": {
+            "llm_google_calendar_get": {
                 "schema": {"function": {"name": "calendar_get"}},
                 "execute": mock_execute,
-                "tool_config": {"calendar_ids": ["cal1", "cal2"], "type": "llm_calendar_get"},
+                "tool_config": {"calendar_ids": ["cal1", "cal2"], "type": "llm_google_calendar_get"},
             }
         }
         result = await llm_tool_loader.execute_tool_call(
@@ -936,7 +953,7 @@ class TestExecuteToolCall:
         """
         mock_execute = AsyncMock(return_value="ok")
         llm_tools = {
-            "llm_calendar_get": {
+            "llm_google_calendar_get": {
                 "schema": {"function": {"name": "calendar_get"}},
                 "execute": mock_execute,
                 "tool_config": {"calendar_ids": ["from_config"]},
@@ -1317,19 +1334,19 @@ class TestLoadLlmToolsConfig:
     ) -> None:
         """load_llm_tools が YAML 全体を tool_config として保持する。"""
         schema = {"name": "calendar_get", "description": "テスト", "input_schema": {}}
-        _write_py(tool_root / "calendar", "llm_calendar_get.py", schema)
+        _write_py(tool_root / "calendar", "llm_google_calendar_get.py", schema)
         _write_yaml(
             config_root / "tools",
-            "llm_calendar_get.yaml",
-            "type: llm_calendar_get\ncalendar_ids:\n  - cal1\n  - cal2\n",
+            "llm_google_calendar_get.yaml",
+            "type: llm_google_calendar_get\ncalendar_ids:\n  - cal1\n  - cal2\n",
         )
 
         result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
 
-        assert "llm_calendar_get" in result
-        tool_config = result["llm_calendar_get"]["tool_config"]
+        assert "llm_google_calendar_get" in result
+        tool_config = result["llm_google_calendar_get"]["tool_config"]
         assert tool_config["calendar_ids"] == ["cal1", "cal2"]
-        assert tool_config["type"] == "llm_calendar_get"
+        assert tool_config["type"] == "llm_google_calendar_get"
 
 
 class TestValidateNoRuntimeKeyCollision:
@@ -1368,17 +1385,17 @@ class TestValidateNoRuntimeKeyCollision:
     ) -> None:
         """tool_config が実行時共通キーと衝突する場合、起動時に ValueError を送出する。"""
         schema = {"name": "calendar_get", "description": "テスト", "input_schema": {}}
-        _write_py(tool_root / "calendar", "llm_calendar_get.py", schema)
+        _write_py(tool_root / "calendar", "llm_google_calendar_get.py", schema)
         # llm_tools は _RUNTIME_CONTEXT_KEYS に含まれる衝突キー
         _write_yaml(
             config_root / "tools",
-            "llm_calendar_get.yaml",
-            "type: llm_calendar_get\nllm_tools: broken\n",
+            "llm_google_calendar_get.yaml",
+            "type: llm_google_calendar_get\nllm_tools: broken\n",
         )
 
         with pytest.raises(ValueError) as exc_info:
             llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
-        assert "llm_calendar_get" in str(exc_info.value)
+        assert "llm_google_calendar_get" in str(exc_info.value)
         assert "llm_tools" in str(exc_info.value)
 
     def test_no_error_when_no_collision(
@@ -1386,15 +1403,15 @@ class TestValidateNoRuntimeKeyCollision:
     ) -> None:
         """衝突するキーがなければ ValueError を送出せず正常にロードする。"""
         schema = {"name": "calendar_get", "description": "テスト", "input_schema": {}}
-        _write_py(tool_root / "calendar", "llm_calendar_get.py", schema)
+        _write_py(tool_root / "calendar", "llm_google_calendar_get.py", schema)
         _write_yaml(
             config_root / "tools",
-            "llm_calendar_get.yaml",
-            "type: llm_calendar_get\ncalendar_ids:\n  - cal1\n",
+            "llm_google_calendar_get.yaml",
+            "type: llm_google_calendar_get\ncalendar_ids:\n  - cal1\n",
         )
 
         result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
-        assert "llm_calendar_get" in result
+        assert "llm_google_calendar_get" in result
 
     def test_validate_function_raises_on_collision(
         self, llm_tool_loader, provider_registry
@@ -1483,15 +1500,15 @@ class TestValidateNoRuntimeKeyCollision:
     ) -> None:
         """provider 未登録（コア単独起動）でも load_llm_tools がエラーなく動く。"""
         schema = {"name": "calendar_get", "description": "テスト", "input_schema": {}}
-        _write_py(tool_root / "calendar", "llm_calendar_get.py", schema)
+        _write_py(tool_root / "calendar", "llm_google_calendar_get.py", schema)
         _write_yaml(
             config_root / "tools",
-            "llm_calendar_get.yaml",
-            "type: llm_calendar_get\nobsidian_client: dummy\n",
+            "llm_google_calendar_get.yaml",
+            "type: llm_google_calendar_get\nobsidian_client: dummy\n",
         )
 
         result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
-        assert "llm_calendar_get" in result
+        assert "llm_google_calendar_get" in result
 
 
 class TestGetLlmTools:

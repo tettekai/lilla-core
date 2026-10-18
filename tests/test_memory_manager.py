@@ -321,6 +321,171 @@ class TestLoadConversationHistoryWithTimestamps:
         assert original == {"role": "user", "content": "hello"}
 
 
+_TOKYO = ZoneInfo("Asia/Tokyo")
+
+
+def _tokyo_today_at(hour: int, minute: int, days_ago: int = 0) -> datetime:
+    """`Asia/Tokyo` の今日（から `days_ago` 日前）の HH:MM を aware UTC で返す。"""
+    day = datetime.now(_TOKYO).date() - timedelta(days=days_ago)
+    local = datetime(day.year, day.month, day.day, hour, minute, tzinfo=_TOKYO)
+    return local.astimezone(timezone.utc)
+
+
+class TestHistoryCutoffAlignedToHour:
+    """件数制限が効いたときに履歴の切り出し位置が時の境界に揃うことのテスト。"""
+
+    @pytest.fixture
+    def stored(self, manager, mock_conv_repo) -> list[dict]:
+        """MongoDB に保存済みの会話（時系列順）。テストが追記して使う。
+
+        `load_with_time_since` は本物と同じく「since 以降を時系列順に、件数超過なら
+        直近を残す」ように振る舞わせる。タイムゾーンは `Asia/Tokyo` に固定する。
+        """
+        sys.modules["lilla_core.core.config"].get_config.return_value.ui.timezone = "Asia/Tokyo"
+        docs: list[dict] = []
+
+        async def _load(since: datetime, max_turns: int | None) -> list[dict]:
+            hits = [d for d in docs if d["time"] >= since]
+            if max_turns is not None and len(hits) > max_turns:
+                hits = hits[-max_turns:]
+            return hits
+
+        mock_conv_repo.load_with_time_since.side_effect = _load
+        return docs
+
+    @staticmethod
+    def _add(stored: list[dict], hour: int, minute: int, days_ago: int = 0) -> None:
+        """`stored` に HH:MM の発言を 1 件追記する（内容は `HH:MM`）。"""
+        stored.append({
+            "message": {"role": "user", "content": f"{hour:02d}:{minute:02d}"},
+            "time": _tokyo_today_at(hour, minute, days_ago),
+        })
+
+    @staticmethod
+    async def _load_texts(manager) -> list[str]:
+        """履歴を読み、タイムスタンプ prefix を除いた本文だけを返す。"""
+        result = await manager.load_conversation_history_with_timestamps()
+        return [m["content"].split("] ", 1)[1] for m in result]
+
+    async def test_no_count_limit_returns_all(self, manager, mock_conv_repo, stored) -> None:
+        """件数制限が効かなければ時の境界で切らず、変更前と同じく日数制限内の全件を返す。"""
+        manager._max_history_turns = 4
+        for hm in [(9, 50), (10, 10), (10, 20)]:
+            self._add(stored, *hm)
+        assert await self._load_texts(manager) == ["09:50", "10:10", "10:20"]
+        mock_conv_repo.load_with_time_since.assert_awaited_once()
+
+    @pytest.mark.parametrize("max_turns", [0, -1])
+    async def test_non_positive_max_turns_behaves_as_before(
+        self, manager, mock_conv_repo, stored, max_turns
+    ) -> None:
+        """`max_history_turns` が 0 以下なら時の境界で切らず、変更前と同じ結果を返す。
+
+        変更前はリポジトリが `max_turns` で切った結果をそのまま使っていたので、
+        1 回だけ問い合わせ、その結果どおりの履歴になることを確かめる。
+        """
+        manager._max_history_turns = max_turns
+        for hm in [(9, 50), (10, 10), (10, 20)]:
+            self._add(stored, *hm)
+        since = _tokyo_today_at(0, 0, days_ago=manager._config.memory.history_days - 1)
+        before = [
+            d["message"]["content"]
+            for d in await mock_conv_repo.load_with_time_since.side_effect(since, max_turns)
+        ]
+        mock_conv_repo.load_with_time_since.reset_mock()
+
+        assert await self._load_texts(manager) == before
+        mock_conv_repo.load_with_time_since.assert_awaited_once()
+
+    async def test_cutoff_at_start_of_oldest_candidate_hour(self, manager, stored) -> None:
+        """最も古い候補の時の開始で切る（その時に切られた発言が無い例）。"""
+        manager._max_history_turns = 3
+        for hm in [(9, 50), (10, 20), (10, 40), (11, 5)]:
+            self._add(stored, *hm)
+        # 候補は 10:20 / 10:40 / 11:05、切り落とした 09:50 は 10 時より前
+        assert await self._load_texts(manager) == ["10:20", "10:40", "11:05"]
+
+    async def test_includes_all_messages_from_hour_start(self, manager, stored) -> None:
+        """件数制限で切られた発言も、最も古い候補と同じ時にあれば含める（上限を超える）。"""
+        manager._max_history_turns = 3
+        for hm in [(9, 50), (10, 10), (10, 20), (10, 40), (11, 5)]:
+            self._add(stored, *hm)
+        # 候補は 10:20〜。10 時の開始以降をすべて含めるので 10:10 も入る
+        result = await self._load_texts(manager)
+        assert result == ["10:10", "10:20", "10:40", "11:05"]
+        assert len(result) == manager._max_history_turns + 1
+
+    async def test_head_stays_within_same_hour(self, manager, stored) -> None:
+        """同じ時の中では新しい発言が来ても先頭が動かず、履歴が増えていく。"""
+        manager._max_history_turns = 3
+        for hm in [(9, 10), (9, 40), (9, 50), (10, 5)]:
+            self._add(stored, *hm)
+        # 候補は 09:40〜。9 時の開始以降をすべて含める
+        assert await self._load_texts(manager) == ["09:10", "09:40", "09:50", "10:05"]
+
+        self._add(stored, 10, 20)
+        # 候補は 09:50〜。まだ 9 時なので先頭は動かない
+        assert await self._load_texts(manager) == [
+            "09:10", "09:40", "09:50", "10:05", "10:20",
+        ]
+
+    async def test_head_advances_to_next_hour(self, manager, stored) -> None:
+        """最も古い候補が次の時へ移ると、先頭がその時の開始まで進む。"""
+        manager._max_history_turns = 3
+        for hm in [(9, 10), (9, 40), (9, 50), (10, 5), (10, 20)]:
+            self._add(stored, *hm)
+        assert (await self._load_texts(manager))[0] == "09:10"
+
+        self._add(stored, 10, 30)
+        # 候補は 10:05〜。10 時の開始で切る
+        assert await self._load_texts(manager) == ["10:05", "10:20", "10:30"]
+
+    async def test_history_days_limit_still_applies(self, manager, mock_cfg, stored) -> None:
+        """`history_days` より前の発言は件数に余裕があっても返さない。"""
+        manager._max_history_turns = 10
+        mock_cfg.memory.history_days = 2
+        self._add(stored, 23, 50, days_ago=2)
+        self._add(stored, 0, 10, days_ago=1)
+        self._add(stored, 9, 0)
+        # history_days = 2 は「今日を含む 2 日分」＝昨日 0:00 以降
+        assert await self._load_texts(manager) == ["00:10", "09:00"]
+
+    async def test_messages_dropped_by_history_days_are_not_used(
+        self, manager, mock_cfg, stored
+    ) -> None:
+        """日数制限で落ちた発言は時の境界の基準にも、返す履歴にも使わない。"""
+        manager._max_history_turns = 2
+        mock_cfg.memory.history_days = 1
+        self._add(stored, 23, 30, days_ago=1)
+        self._add(stored, 0, 10)
+        self._add(stored, 0, 20)
+        self._add(stored, 0, 30)
+        # 候補は 00:20〜。0 時の開始以降を含めるが、昨日の 23:30 は入らない
+        assert await self._load_texts(manager) == ["00:10", "00:20", "00:30"]
+
+    async def test_cutoff_uses_configured_timezone(self, manager, stored) -> None:
+        """時の境界は `ui.timezone` の時刻で数える（UTC の時ではない）。
+
+        `Asia/Tokyo` の 10:00 は UTC の 01:00 で、時の境界はどちらでも一致する。
+        30 分ずれた `Asia/Kolkata` で、ローカルの時の境界で切ることを確かめる。
+        """
+        sys.modules["lilla_core.core.config"].get_config.return_value.ui.timezone = (
+            "Asia/Kolkata"
+        )
+        kolkata = ZoneInfo("Asia/Kolkata")
+        day = datetime.now(kolkata).date()
+        manager._max_history_turns = 2
+        for hour, minute in [(9, 50), (10, 10), (10, 40), (10, 50)]:
+            local = datetime(day.year, day.month, day.day, hour, minute, tzinfo=kolkata)
+            stored.append({
+                "message": {"role": "user", "content": f"{hour:02d}:{minute:02d}"},
+                "time": local.astimezone(timezone.utc),
+            })
+        # 候補は 10:40 / 10:50。ローカル 10:00 以降をすべて含めるので 10:10 も入り、
+        # 09:50 は落ちる（UTC の時で数えるとローカル 10:30 で切って 10:10 が落ちる）
+        assert await self._load_texts(manager) == ["10:10", "10:40", "10:50"]
+
+
 class TestBuildSystemPrompt:
     async def test_contains_base_prompt(self, manager, mock_conv_repo, mock_memo_repo, mock_tool_cache_repo, mock_session_memory) -> None:
         """base_prompt が返り値に含まれる。"""
@@ -332,6 +497,12 @@ class TestBuildSystemPrompt:
         result = await manager.build_system_prompt()
         assert "Current time:" in result
         assert ":xx" in result
+
+    async def test_extra_sections_inserted_before_time(self, manager, mock_conv_repo, mock_memo_repo, mock_tool_cache_repo, mock_session_memory) -> None:
+        """`extra_sections` は現在時刻の前に入り、空文字列は読み飛ばす。"""
+        result = await manager.build_system_prompt(extra_sections=["## Extra\n- a", ""])
+        assert "## Extra\n- a\n\nCurrent time:" in result
+        assert "\n\n\n\n" not in result
 
     async def test_contains_weekday_en(self, manager, mock_conv_repo, mock_memo_repo, mock_tool_cache_repo, mock_session_memory) -> None:
         """曜日が英語で含まれる。"""

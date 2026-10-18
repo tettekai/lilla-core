@@ -296,6 +296,19 @@ class TestRunTool:
         assert call_args["now"] is now
         assert call_args["llm_tools"] is llm_tools
 
+    async def test_sets_task_name_as_llm_call_origin(self) -> None:
+        """タスクの実行中は、LLM 使用量の記録の入口としてタスク名が積まれる。"""
+        from lilla_core.core.llm_call_origin import get_llm_call_origin
+
+        seen = []
+        tool = MagicMock()
+        tool.execute = AsyncMock(side_effect=lambda ctx: seen.append(get_llm_call_origin()))
+
+        await task_handler._run_tool("task_daily", tool, MagicMock(), datetime.now(), {})
+
+        assert seen[0].task_name == "task_daily"
+        assert get_llm_call_origin().task_name is None
+
     async def test_extension_context_providers_are_merged(
         self, make_extension, use_extensions
     ) -> None:

@@ -7,6 +7,197 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-18
+
+### Added
+
+- ツールループの最終応答を別プロバイダーで書き直す `llm.providers.<キー>.final_reply_provider` を追加した（#247）。
+  具体プロバイダーに書くと、`run_conversation` のツールループでそのプロバイダーが最終応答（tool_calls なし）を
+  返したとき、その本文を捨て、指定先の具体プロバイダーへツールなしで 1 回だけ問い合わせた結果を最終応答にする。
+  入力は捨てた最終応答を除いたメッセージ列に、口調を揃え事実を変えないよう求める指示を足したもの。書き直し先の
+  `final_reply_provider` は見ない（連鎖しない）。台帳に無い名前・resolver 型を指す場合と、resolver 型のエントリに
+  書いた場合は起動時に落とす。未設定なら従来どおりで、ツールなしの会話・`llm_expert`・`chat_to_llm` を直接呼ぶ
+  経路には効かない。説明は `docs/ja/llm-final-reply.md`
+- `send_http_request` にキーワード引数 `allow_redirects`（既定 `True`＝従来どおり追従）を追加した。`False` にするとリダイレクトを
+  追従せず、3xx を `aiohttp.ClientResponseError` として送出する（`status` に 3xx、`headers` に `Location`）。
+  POST が 301 / 302 / 303 で GET に変わりボディを失ったまま成功扱いになるのを避けたい呼び出し側向け。
+  `stream_http_request` は対象外。
+- LLM のトークン使用量の記録を追加した（#239）。Chat Completions（tools 付きを含む）・Responses API・
+  Ollama ネイティブのどの経路でも、応答の入力・出力・合計トークン数（応答に無ければ不明として残し、推定は
+  しない）と生の `usage`（数値だけ）を、プロバイダー名・モデル名・入口・所要時間とともに MongoDB の
+  `llm_usage` コレクションへ 1 呼び出し 1 件で記録する。メッセージ本文・プロンプト・ツール結果は記録しない。
+  書き込みは非同期で、失敗しても WARNING ログだけで LLM 呼び出しは成功扱いのまま。入口は `contextvars`
+  （新設の `lilla_core.core.llm_call_origin`）で渡し、会話（`conversation:<client_type>`）・定期タスク
+  （`task:<YAML stem>`。`!runtask` / `POST /api/runtask` を含む）・LLM ツール（`tool:<YAML stem>`）・
+  `selftest` / `toolresult` を区別する。公開関数の引数は変えていない。設定は `llm.usage_log`
+  （`enabled` 既定 `true` / `retention_days` 既定 90。各記録の `expire_at` に反映し TTL インデックスで消す）。
+  具体プロバイダーに任意の単価 `input_price_per_million_tokens` / `output_price_per_million_tokens`
+  （100 万トークンあたり。0 以上。resolver 型には書けない）を書くと概算コストも記録・表示する。
+  ダッシュボードに Usage 画面（`#/usage`、`GET /api/usage?days=N`）を足し、日別・プロバイダー別・入口別の
+  集計を出す。Home には直近 24 時間の合計を一行足した（`GET /api/dashboard/status` の `llm_usage`）。
+  説明は `docs/ja/llm-usage.md`
+- LLM が自分でスキルを読み込む組み込みツール `llm_load_skill` を追加した（#227）。`${CONFIG_ROOT}/tools/` に
+  `type: llm_load_skill` の YAML を置き `tools.sets` に含めた場合だけ使える opt-in で、引数は `name`（必須。
+  `!skill` と同じ規則で大文字小文字を区別しない）と `reason`（任意。結果には使わない）。結果は `!skill` と同じ
+  「システムからの動作指示」の形式（追加指示なし）で、キャッシュしない。このツールが LLM に渡される会話では、
+  有効なスキルの名前と説明の一覧（本文は含めない）をシステムプロンプトへ足す。一覧の上限はツール YAML の
+  `max_skills`（既定 50）/ `max_description_chars`（既定 200）/ `max_list_chars`（既定 4000）で変えられ、
+  0 以下や数値でない値は起動時に落とす。説明は `docs/ja/skills.md`
+- 公式拡張パックにローカルのファイル読み書きの拡張 `lilla_core.extensions.files`（`name = "files"`。
+  他の拡張に依存しない）を追加した（#233）。`lilla.yaml` の `extensions.files` にホワイトリストの
+  ディレクトリ（`read_only_dirs` / `writable_dirs`。絶対パスの文字列か `{path, name}`。入れ子にすると
+  最も深いディレクトリで判定する）と `max_read_chars`（既定 100,000 文字）を書く。ホワイトリストが
+  空ならすべて拒否する。LLM ツールは `llm_file_list`（直下の一覧）・`llm_file_read`（UTF-8 テキストの
+  読み取り。BOM は除去、`offset` / `limit` で続きを読む、バイナリ・非 UTF-8 は中身を返さない）・
+  `llm_file_write`（`create` / `overwrite` / `append`。書き込み可能ディレクトリの配下だけ。UTF-8 として読めないファイルには追記しない）・
+  `llm_file_search`（中身のキーワード検索）の 4 つで、YAML は利用者の `${CONFIG_ROOT}/tools` に置く。
+  パスは「ディレクトリの名前/相対パス」の形でやりとりし、`..`・絶対パス・シンボリックリンクで外へ出る
+  アクセスは実体パスで判定して拒否する。想定外の例外は文字列を LLM へ返さず、エラー通知チャンネルへ
+  流す。説明は `docs/ja/files.md`
+- 公式拡張パックに Google Drive / Google Sheets の拡張 `lilla_core.extensions.google_drive`
+  （`name = "google-drive"`、`requires = ("google-oauth",)`）を追加した（#231）。`LILLA_EXTENSIONS` に
+  `google_oauth` より後ろで並べ、`lilla.yaml` の `extensions.google_drive` にアクセスを許すフォルダ ID
+  （`read_only_folders` / `writable_folders`。配下すべてが対象で、最も近いフォルダで判定する。
+  共有ドライブはドライブ ID を書けば対象になる）を書く。ホワイトリストが空ならすべて拒否する。
+  LLM ツールは `llm_google_drive_search_text`（テキストファイルの全文検索）・
+  `llm_google_drive_get_text`（本文の取得）・`llm_google_drive_write_text`（新規作成・上書き。
+  新規作成では作成先フォルダが必須）・`llm_google_sheets_get_range`（スプレッドシートの範囲の
+  読み取り）の 4 つで、YAML は利用者の `${CONFIG_ROOT}/tools` に置く。扱うのは `text/*` の
+  ファイルだけで、それ以外とゴミ箱のファイルは存在しないものとして扱う。スコープは
+  `drive.readonly` と `spreadsheets.readonly` を基本に、書き込み可能フォルダがあれば
+  `write_scope`（`file` 既定で `drive.file`＝この拡張が作ったファイルしか上書きできない /
+  `full` で `drive`）に応じて足す（`file` では、この拡張が作っていないフォルダへの新規作成も
+  拒否される可能性があり、拒否されたときはその旨のエラーを返す）。設定変更で必要なスコープが増えたら次の呼び出しで再認証を求める。
+  本文と Sheets の値は `max_read_chars`（既定 100,000 文字）で切り詰める。説明は `docs/ja/google.md`
+- `send_http_request` に生のボディを送る `body`（str / bytes）引数を追加した（#231）。Content-Type は
+  `headers` で渡し、`data` / `form_data` より優先する。DEBUG ログには中身を出さず長さだけを出す
+
+- `!` コマンドを Discord 以外のクライアントから実行できるようにした（#229）。トランスポート
+  非依存の入口 `lilla_core.handlers.command_handler.dispatch_command(text, ctx)` と、呼び出し元を
+  表すコマンドコンテキスト `lilla_core.commands.context.CommandContext`（`reply` / `reply_error` /
+  `start_conversation` / `mark_failed`、`client_type` / `author_id` / `is_owner` / `attachments` /
+  `discord_message`）を追加した。拡張は `CommandContext` を継承して `deliver_reply` /
+  `deliver_error` / `deliver_conversation` を実装し、認証済みの接続についてのみ `is_owner=True` で
+  `dispatch_command` を呼ぶ（承認判定は行わず、`is_owner` が `False` なら何も実行しない）。
+  戻り値の `CommandResult`（`status` が `ok` / `error`、`replied`、`conversation_started`）で、
+  コマンドが何も返信しなかった場合も完了・失敗を判別できる。未知のコマンド・ハンドラ内の例外は
+  従来どおり `notify_error` に出て結果が `error` になり、例外の文字列は呼び出し元へ渡さない。
+  `tools` / `bot` を省略したときは起動時に `set_command_runtime()` で登録した値を使う
+  （`bot.py` がツールのロード直後に登録する）。説明は `docs/ja/commands.md`
+- `register_command(name, discord_only=True)` で Discord 専用のコマンドを宣言できるようにした
+  （#229。判定は `is_discord_only()`）。Discord 以外から呼ばれると実行せず、
+  `command.handler.discord_only` の文言を `reply_error` で返す。`!selftest` は添付付きで結果を
+  返すため Discord 専用にした
+
+- 引数なし（空白のみを含む）の `!skill` で、呼び出せるスキルの一覧を返すようにした（#224）。
+  LLM は呼ばず、有効なスキルだけを名前の昇順で、説明があれば `` - `名前`: 説明 ``（説明の改行は
+  空白に置き換える）、無ければ `` - `名前` `` の行で並べ、見出しと呼び出し方の案内を添えて同じ
+  チャンネルへ返信する。0 件なら `command.skill.list_empty` の文言を返す。1 メッセージに収まらない
+  一覧は行の境界で 1900 文字以内に分割して続けて送る。これに伴い、以前の使い方案内
+  `command.skill.usage` をカタログから削除し、`command.skill.list_header` / `list_footer` /
+  `list_empty` を足した
+
+- スキル機能を追加した（#222）。名前付きの再利用プロンプトを MongoDB の `skills` コレクション
+  （`name` にユニークインデックス）へ保存し、`!skill <スキル名> [追加指示]` で呼び出す。スキルは
+  ユーザーの発言ではなくシステムからの動作指示と分かるラッパー（ja なら
+  `[システム指示: スキル「<スキル名>」]`・前置き文・本文・`[/システム指示]`。文言は `ui.locale` の
+  カタログ `command.skill.instruction_*` から取る）で囲んで展開され（追加指示は空行を挟んで
+  `追加指示: ` のラベル付きで後ろに続き、空なら付けない。#225）、展開形式は
+  `services/skills.py` の `format_skill_instruction` 1 か所で組み立てる。#225 より前の
+  `---SKILL: <スキル名>---` 〜 `---END_SKILL---` 形式で保存済みの会話履歴は移行しない。展開した内容は
+  そのターンの最新の user メッセージとして通常の会話と同じ流れ（履歴保存・入力中表示・分割送信・
+  同じチャンネルの返答中タスクのキャンセル）で LLM へ渡り、展開後の内容が会話履歴に残る
+  （システムプロンプトには入れない）。スキル名は半角英数字・`_`・`-` のみの 64 文字以内で、大文字
+  小文字を区別せず小文字に正規化して照合する。存在しない・無効なスキルは LLM を呼ばずに元の
+  チャンネルへエラーを返す。オーナー以外からの `!skill` は他のコマンドと同じく承認フローの対象。
+  観測用ダッシュボードに組み込みの **Skills** 画面（`#/skills`。`GET` / `POST /api/skills`、
+  `PATCH` / `DELETE /api/skills/{id}`）を足し、一覧・追加・編集・削除・有効 / 無効の切り替えが
+  できる（規則に合わない名前は 400、重複は 409）。これに伴い `skills` を拡張の予約名
+  （`RESERVED_EXTENSION_NAMES`）に加えたため、`name = "skills"` の拡張はロード時に失敗する
+
+- `llm.response_prefix_strip_patterns`（正規表現のリスト）を追加した（#217）。Discord の通常会話で
+  LLM 応答を分割した各ブロックの先頭から、書いた順にパターンを除去する（先頭にだけマッチさせるため
+  `^` は不要。文中・末尾の一致は残す。除去して空になったブロックは送らない）。省略時の既定は従来の
+  英語月名形式 `[Apr 28 11:22]` に加えて `[HH:MM]` 形式で、モデルが自発的に付けた `[19:14] ` のような
+  prefix も消えるようになった。空リストなら除去しない。不正な正規表現は起動時に失敗する
+
+- PR がマージされたとき、外部の Webhook へ要点を JSON で POST する GitHub Actions workflow
+  `notify-grok-bot-merged.yml` を追加した（#213）。対象は `develop` 向け（主）と `main` 向けの
+  マージで、マージされずに閉じた PR・fork からの PR・`release-prep` PR・`develop` ↔ `main` の
+  同期 / リリース PR（リリース通知は `release.yml` が担当）は通知しない。送り先と認証は
+  レビュー用・リリース用とは別の Secrets `GROK_BOT_CORE_MERGED_WEBHOOK_URL` /
+  `GROK_BOT_CORE_MERGED_WEBHOOK_AUTHORIZATION` で、どちらか一方でも未設定なら警告を出して
+  スキップする（ジョブは失敗しない）。送信の失敗はジョブを失敗させる。payload は
+  `action`（`"merged"` 固定）/ `owner` / `repo` / `repository` / `pr_number` / `title` / `url` /
+  `base` / `head` / `author` / `merged_by` / `merged_at` / `merge_commit_sha` / `labels`（ラベル名の
+  配列）/ `body`（無ければ空文字。4000 文字で切り詰め）/ `body_truncated`（切り詰めたら `true`）
+
+- 具体プロバイダー（`ollama` / `openai_compat`）のエントリに `timeout_seconds`（LLM の応答を待つ上限の
+  秒数。既定 300 秒で、これまでの固定値と同じ）を書けるようにした（#238）。これまで resolver だけが
+  読んでいた項目で、resolver の既定は従来どおり 10 秒。0 以下はどの型でも起動時に落ちる
+
+### Changed
+
+- **BREAKING**: `google-calendar` 拡張の LLM ツールを、提供元を接頭辞に含む名前へ改名した（#242）。
+  ツール名（YAML の `type:`・`tools.sets` に書く名前）は `llm_calendar_get` → `llm_google_calendar_get`、
+  `llm_calendar_create` → `llm_google_calendar_create`、LLM に渡す関数名は `get_calendar_events` →
+  `google_calendar_get_events`、`create_calendar_event` → `google_calendar_create_event`。旧名の互換
+  エイリアスは無く、旧名の `type:` は未知のツールとして扱われる。`${CONFIG_ROOT}/tools/` の YAML の
+  ファイル名と `type:`、`lilla.yaml` の `tools.sets` を書き換えること。`Extension` 契約の変更ではないため
+  `EXTENSION_API_VERSION` は上げていない
+
+- 拡張の `name` の予約名（`RESERVED_EXTENSION_NAMES`）に `usage` を足した（#239）。ダッシュボードの
+  組み込み画面 Usage（`#/usage`）と経路が重なるため。`name = "usage"` の拡張はロード時に落ちる
+
+- `api/llm_client.py` の LLM 送信経路をプロバイダーアダプターに統一した（#238）。Ollama ネイティブ
+  （`/api/chat`）・Chat Completions・Responses API をそれぞれアダプター（リクエストの組み立てと応答の
+  解釈）にし、送信前検査 → Ollama の WOL → HTTP 送信 → 例外ラップは共通の送信関数 1 か所で行う。
+  `type` からアダプターへの対応表も 1 か所にまとめた。`chat_to_llm` / `chat_to_llm_with_tools` /
+  `chat_to_llm_responses` のシグネチャと戻り値の形、送るリクエストの内容は変えていない
+
+- **BREAKING**: コマンドハンドラの第 1 引数を Discord のメッセージからコマンドコンテキスト
+  （`CommandContext`）に変え、シグネチャを `(ctx, arg, tools, bot)` にした（#229）。拡張が
+  `command_packages()` などで登録したコマンドも書き換えが必要で、返信は `message.reply` ではなく
+  `ctx.reply` / `ctx.reply_error`、添付は `ctx.attachments` を使う。ボタン付きメッセージの書き換え
+  など Discord のメッセージそのものが要るコマンドは `discord_only=True` で登録して
+  `ctx.discord_message` を使う。`Extension` のメソッドではないため `EXTENSION_API_VERSION` は
+  上げていない。Discord での各コマンドの返信先・承認フロー・`notify_error` への出力は変わらない
+  - `handle_command(message, content, tools, bot)` は Discord 用のコンテキストを組み立てて
+    `dispatch_command` を呼ぶ薄いラッパーになり、`CommandResult` を返す。`content` が `!` で
+    始まらないと `ValueError` になる（以前は先頭 1 文字を捨てて未知のコマンドとして扱っていた）
+  - `!model` の未定義名、`!skill` の存在しない・無効なスキル、`!` だけの入力は `ctx.reply_error`
+    で返す（Discord では従来どおり元メッセージへの返信）
+  - `!skill` は展開した内容を `ctx.start_conversation` へ渡す（Discord では従来どおり
+    `message_handler.start_conversation` の会話フロー）。スキル一覧の分割送信は Discord 用の
+    コンテキストが行う（1 通目は返信、2 通目以降は同じチャンネルへ送信。従来と同じ）
+  - `!runtask` / `!mongodata` / `!toolresult` の、`notify_error` だけで報告していた入力エラー
+    （`!toolresult` の correlation_id なし・依頼が見つからない場合を含む）は、Discord では
+    従来どおり `notify_error` のみで、結果を `error` にする
+  - `commands.runtask.run_task` は実行できたら `True`、ツールが見つからない・手動実行に
+    非対応・実行中の例外（`notify_error` 済み）なら `False` を返すようにした
+
+- LLM へ渡す会話履歴が `memory.max_history_turns` の件数制限に掛かったとき、切り出し位置を
+  「時の境界」（`ui.timezone` の HH:00）に揃えるようにした（#219）。直近 `max_history_turns` 件の
+  うち最も古い発言が属する時の開始で切り、その時刻以降の発言は件数制限で切られていたものも含めて
+  すべて渡す。これにより同じ時の中では新しい発言が来ても履歴の先頭が動かず、LLM の前綴キャッシュが
+  効きやすくなる（時刻表示が時単位でマスクされているのと揃えた）。そのため返す件数は
+  `max_history_turns` を超えることがあり、`max_history_turns` は上限ではなく「最低でもこの件数まで
+  さかのぼる」目安になる（絶対上限は設けない）。件数制限が効かない場合と `max_history_turns` が 0 以下の
+  場合は従来と同じ結果になる。`memory.history_days` の日数制限（日数制限で落ちた発言は時の境界の
+  基準にも使わない）とタイムスタンプの付与は変わらない
+
+- `google-calendar` 拡張の LLM ツール `llm_calendar_get` / `llm_calendar_create` の戻り値（`data`）を、
+  予定ごとに `calendar`（取得元・作成先の `friendly_name`。`calendars` が空の後方互換モードでは
+  `calendar_1` などの汎用名）・`summary`・`start`・`end`（文字列。終日の `end` は最終日を含む日付）・
+  `all_day` と、値があるときだけ `status`・`location`・`description` に絞った（#236）。
+  `organizer` / `creator` / `attendees` / `htmlLink` / `iCalUID` / `id` などそれ以外の項目は返さない。
+  `primary` カレンダーの予定に入っている本人のメールアドレスが LLM へ渡り、送信ブロックリストで
+  会話が止まっていたため。作成ツールの `memory_entry` にも `htmlLink` を載せない。説明は `docs/ja/google.md`
+  - **BREAKING**: `GoogleCalendarClient.get_events()` の戻り値を、予定の dict のリストから
+    （取得元カレンダー ID, 予定）の組 `CalendarEvent`（`calendar_id` / `event`）のリストに変えた。
+    このメソッドを直接呼んでいる拡張は書き換えが必要。`Extension` 契約の変更ではないため
+    `EXTENSION_API_VERSION` は上げていない
+
 ## [0.6.0] - 2026-10-10
 
 ### Added

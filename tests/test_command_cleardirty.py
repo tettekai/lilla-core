@@ -73,9 +73,13 @@ def _make_bot_with_fetchable_messages(*message_ids: int) -> tuple[MagicMock, dic
     return bot, messages
 
 
-async def _run(msg: MagicMock, bot) -> None:
-    """コマンドハンドラを呼び出す（arg / tools は未使用）。"""
-    await cleardirty.handle_cleardirty(msg, "", {}, bot)
+async def _run(msg: MagicMock, bot):
+    """Discord 用のコンテキストでコマンドハンドラを呼び出し、結果を返す（arg / tools は未使用）。"""
+    from lilla_core.handlers.command_handler import DiscordCommandContext
+
+    ctx = DiscordCommandContext(msg, bot)
+    await cleardirty.handle_cleardirty(ctx, "", {}, bot)
+    return ctx.build_result()
 
 
 class TestHandleCleardirty:

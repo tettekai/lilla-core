@@ -28,6 +28,7 @@ import logging
 import time
 from dataclasses import dataclass
 
+from lilla_core.core.llm_call_origin import llm_call_origin
 from lilla_core.ui.messages import t
 
 logger = logging.getLogger(__name__)
@@ -267,16 +268,17 @@ async def check_llm() -> CheckResult:
     # system_prompt 本文は detail に載せない（私的な内容を含み得るため）
     prompt_info = f"provider={resolved_name} system_prompt_tokens={token_count}"
 
-    # 2. LLM 往復のみタイムアウトの対象にする
+    # 2. LLM 往復のみタイムアウトの対象にする（使用量の記録では入口を selftest に数える）
     try:
-        await asyncio.wait_for(
-            chat_to_llm(
-                LLM_PING_MESSAGE,
-                system_prompt=system_prompt,
-                llm_name=llm_name,
-            ),
-            timeout=LLM_TIMEOUT_SECONDS,
-        )
+        with llm_call_origin(source="selftest"):
+            await asyncio.wait_for(
+                chat_to_llm(
+                    LLM_PING_MESSAGE,
+                    system_prompt=system_prompt,
+                    llm_name=llm_name,
+                ),
+                timeout=LLM_TIMEOUT_SECONDS,
+            )
     except asyncio.TimeoutError:
         return CheckResult(
             name="llm",

@@ -9,4 +9,7 @@ import されることはない。有効化は利用者が `LILLA_EXTENSIONS` �
   コールバック。他の Google API 拡張が継承する `GoogleOAuthClient` を提供する
 - `google_calendar`（`name = "google-calendar"`、`requires = ("google-oauth",)`）:
   Google Calendar のクライアントと LLM ツール
+- `google_drive`（`name = "google-drive"`、`requires = ("google-oauth",)`）:
+  Google Drive のテキストファイルの読み書きと Google Sheets の読み取りのクライアントと
+  LLM ツール（フォルダのホワイトリストで範囲を絞る）
 """

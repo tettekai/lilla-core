@@ -16,8 +16,8 @@ logger = logging.getLogger(__name__)
 
 
 @register_command("disable_tools")
-async def handle_disable_tools(message, arg: str, tools: dict, bot) -> None:
+async def handle_disable_tools(ctx, arg: str, tools: dict, bot) -> None:
     """通常会話のツールを無効化する。"""
     set_tools_disabled(True)
     logger.info("[TOOLS] Disabled tools for normal conversation")
-    await message.reply(t("command.disable_tools.done"))
+    await ctx.reply(t("command.disable_tools.done"))

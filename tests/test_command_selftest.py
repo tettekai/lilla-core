@@ -9,6 +9,7 @@ import pytest
 from lilla_core.services.system_checks import CheckResult
 
 selftest_command = importlib.import_module("lilla_core.commands.selftest")
+command_handler = importlib.import_module("lilla_core.handlers.command_handler")
 system_checks = importlib.import_module("lilla_core.services.system_checks")
 
 
@@ -17,6 +18,11 @@ def _make_message() -> MagicMock:
     msg = MagicMock()
     msg.channel.send = AsyncMock()
     return msg
+
+
+def _ctx(msg: MagicMock):
+    """Discord 用のコマンドコンテキストで包む。"""
+    return command_handler.DiscordCommandContext(msg, MagicMock())
 
 
 def _result(name: str, ok: bool = True, detail: str = "詳細") -> CheckResult:
@@ -57,7 +63,7 @@ class TestHandleSelftest:
         """引数なしでは 4 項目を実行し、LLM 疎通確認は行わない。"""
         msg = _make_message()
 
-        await selftest_command.handle_selftest(msg, "", {"task_a": object()}, MagicMock())
+        await selftest_command.handle_selftest(_ctx(msg), "", {"task_a": object()}, MagicMock())
 
         patched_checks["check_process_alive"].assert_awaited_once()
         patched_checks["check_mongodb"].assert_awaited_once()
@@ -72,7 +78,7 @@ class TestHandleSelftest:
         tools = {"task_a": object()}
         msg = _make_message()
 
-        await selftest_command.handle_selftest(msg, "", tools, MagicMock())
+        await selftest_command.handle_selftest(_ctx(msg), "", tools, MagicMock())
 
         patched_checks["check_task_tools"].assert_awaited_once_with(tools)
 
@@ -80,7 +86,7 @@ class TestHandleSelftest:
         """`full` 指定時は LLM 疎通確認も実行する。"""
         msg = _make_message()
 
-        await selftest_command.handle_selftest(msg, " full ", {}, MagicMock())
+        await selftest_command.handle_selftest(_ctx(msg), " full ", {}, MagicMock())
 
         patched_checks["check_llm"].assert_awaited_once()
         content, _ = _sent(msg)
@@ -90,7 +96,7 @@ class TestHandleSelftest:
         """診断結果は常に呼び出し元チャンネルへ返す。"""
         msg = _make_message()
 
-        await selftest_command.handle_selftest(msg, "", {}, MagicMock())
+        await selftest_command.handle_selftest(_ctx(msg), "", {}, MagicMock())
 
         msg.channel.send.assert_awaited_once()
 
@@ -99,7 +105,7 @@ class TestHandleSelftest:
         patched_checks["check_mongodb"].return_value = _result("mongodb", ok=False)
         msg = _make_message()
 
-        await selftest_command.handle_selftest(msg, "", {}, MagicMock())
+        await selftest_command.handle_selftest(_ctx(msg), "", {}, MagicMock())
 
         content, _ = _sent(msg)
         assert "3/4 成功" in content
@@ -113,7 +119,7 @@ class TestHandleSelftest:
         )
         msg = _make_message()
 
-        await selftest_command.handle_selftest(msg, "", {}, MagicMock())
+        await selftest_command.handle_selftest(_ctx(msg), "", {}, MagicMock())
 
         assert msg.channel.send.call_args[1]["file"].filename == "selftest_result.txt"
         _, detail = _sent(msg)
@@ -129,7 +135,7 @@ class TestHandleSelftest:
         )
         msg = _make_message()
 
-        await selftest_command.handle_selftest(msg, "full", {}, MagicMock())
+        await selftest_command.handle_selftest(_ctx(msg), "full", {}, MagicMock())
 
         for mock in patched_checks.values():
             mock.assert_awaited_once()
@@ -139,3 +145,9 @@ class TestHandleSelftest:
         from lilla_core.commands.registry import get_command_handler
 
         assert get_command_handler("selftest") is selftest_command.handle_selftest
+
+    async def test_registered_as_discord_only(self) -> None:
+        """添付付きで送るため Discord 専用として登録されている。"""
+        from lilla_core.commands.registry import is_discord_only
+
+        assert is_discord_only("selftest")

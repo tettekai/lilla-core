@@ -38,7 +38,7 @@ extension = MyExtension()
 | `tool_roots` | ツールの `.py` を探す追加ディレクトリ |
 | `tool_config_roots` | 拡張が同梱する既定のツール YAML（`llm_*.yaml` / `task_*.yaml`）のディレクトリ。`${CONFIG_ROOT}/tools` に同じ stem の YAML があればそちらが丸ごと勝つ。同梱ツールを止めるにはそこに `enabled: false` の YAML を置く（[ツール契約](tools.md)） |
 | `locale_dirs` | 拡張が同梱する UI 文言カタログ（`{locale}.yaml`）のディレクトリ。カタログのトップレベルキーはその拡張の `name` ただ 1 つでなければならない（[下記](#ロケールカタログ)） |
-| `command_packages` | `@register_command` を探す追加パッケージ |
+| `command_packages` | `@register_command` を探す追加パッケージ（[コマンドの実装と、Discord 以外からの実行](commands.md)） |
 | `dashboard_page` | 観測用ダッシュボードへ足すタブ 1 つ（`DashboardPage(label, group)`）。`group` は `main`（常用ナビ）か `admin`（管理メニュー）。経路は申告せず `name` から導出する（[ダッシュボードへの差し込み](extension-dashboard.md)） |
 | `dashboard_static_dir` | `/static/ext/{name}/` に載せる静的ファイルのディレクトリ。タブを出すなら直下に `page.js` を置く |
 | `dashboard_routes` | セッション認証の内側に足す HTTP ルート（`DashboardRoute`）。パスは `/api/{name}` 配下のみ |

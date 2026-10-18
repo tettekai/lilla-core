@@ -10,6 +10,7 @@ command:
     unknown_title: "Command error"
     unknown: "Unknown command: !{name}\nCurrently supported commands: {supported}"
     error: "An error occurred while processing the command"
+    discord_only: "!{name} can only be run from Discord."
 
   cleardirty:
     not_found: "No history entry to delete was found."
@@ -27,6 +28,18 @@ command:
     status: "Current model: {current}\nAvailable models: {available}\nUse `!model <name>` to switch, `!model reset` to revert to the default"
     not_found: "Model '{name}' was not found. Available models: {available}"
     none: "(none)"
+
+  skill:
+    list_header: "Available skills:"
+    list_footer: "Usage: `!skill <skill name> [additional instructions]`"
+    list_empty: "No skills are available. You can register them on the Skills page of the dashboard."
+    not_found: "Skill '{name}' was not found."
+    disabled: "Skill '{name}' is disabled."
+    # The wrapper used when an expanded skill is passed to the LLM (format_skill_instruction in services/skills.py)
+    instruction_start: "[System instruction: skill \"{name}\"]"
+    instruction_preamble: "The following is not something the user said; it is a behavior instruction from the system. Follow this instruction when responding."
+    instruction_end: "[/System instruction]"
+    instruction_extra: "Additional instructions: {extra}"
 
   mongodata:
     json_parse_title: "!mongodata: JSON parse error"
@@ -113,3 +126,13 @@ task:
 conversation:
   reauth_required: "[Re-authentication required]\n{service} authentication has expired.\nPlease sign in from the link below.\n{url}"
   tool_call_limit: "Reached the tool call limit, so processing was stopped."
+
+tool:
+  # Built-in tool llm_load_skill (builtin_tools/llm_load_skill.py)
+  load_skill:
+    list_header: "## Available skills"
+    list_intro: "You can load the body of the skills below by passing a name to the `{tool}` tool. Check the names and descriptions and load a skill only when you judge it necessary."
+    list_truncated: "{count} more skill(s) are not listed. If you know the name, you can still load it with `{tool}`."
+    not_found: "Skill '{name}' was not found."
+    disabled: "Skill '{name}' is disabled."
+    loaded: "Loaded skill '{name}'."

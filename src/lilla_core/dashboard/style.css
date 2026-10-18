@@ -150,6 +150,15 @@ header h1 {
 .home-status dt { color: var(--text-muted); }
 .home-status dd { margin: 0; }
 
+/* ---- Usage ---- */
+
+.usage-note { color: var(--text-muted); margin: 0 0 8px; }
+.usage-totals { margin-bottom: 16px; }
+.usage-heading { font-size: 1rem; margin: 18px 0 6px; }
+.usage-scroll { overflow-x: auto; }
+.usage-table td:not(:first-child),
+.usage-table th:not(:first-child) { white-space: nowrap; }
+
 /* ---- Sections ---- */
 
 section { padding: 14px 16px; }
@@ -574,3 +583,46 @@ tr.clickable:hover { background: var(--bg-secondary); }
   font-size: 14px;
   font-weight: normal;
 }
+
+/* ---- Skills ---- */
+
+.skill-add-form,
+.skill-edit-form {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.skill-name-input,
+.skill-description-input {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-sizing: border-box;
+  color: var(--text);
+  font-size: 12px;
+  max-width: 100%;
+  padding: 4px 8px;
+}
+
+.skill-name-input { font-family: var(--font-mono); width: 32ch; }
+.skill-description-input { width: calc(120ch + 16px); }
+
+.skill-name-input:focus,
+.skill-description-input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.skill-heading {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.skill-name { color: var(--accent); font-family: var(--font-mono); font-weight: 600; }
+.skill-description { color: var(--text-muted); font-size: 12px; }

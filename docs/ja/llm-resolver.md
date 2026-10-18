@@ -19,6 +19,7 @@ llm:
       url: "https://api.deepseek.com"
       model: "deepseek-flash"
       api_key_env: "DEEPSEEK_API_KEY"
+      # timeout_seconds: 300  # LLM の応答を待つ上限（既定 300 秒）
       extra_params:
         reasoning_effort: low
     deepseek-flash-high:
@@ -63,12 +64,19 @@ Discord・拡張のクライアント・task のどれから呼んでも同じ�
 | `fallback` | 必須 | `llm.providers` にある具体プロバイダー名（resolver 型は不可） |
 | `timeout_seconds` | 任意 | `async def resolve` の待ち時間の上限（秒。既定 10） |
 
+`timeout_seconds` は具体プロバイダーにも書けますが、意味が違います。具体プロバイダーでは
+LLM の応答を待つ上限（秒。既定 300）で、resolver の値は選ばれた具体プロバイダーの送信には
+効きません。どちらも 0 以下は起動時に失敗します。
+
 resolver 型は HTTP を出さないため `url` / `model` / `api_key_env` / `wakeup_file` /
 `extra_params` は書けません。逆に具体プロバイダーは `url` / `model` が必須で、`script` /
 `fallback` は書けません。Ollama の起動待ち（WOL）も具体プロバイダー側だけに掛かります。
 モデルごとのシステムプロンプト追記（`prompt`）も具体プロバイダー側に書きます。resolver に
 書いても起動は失敗せず無視され、選ばれた具体プロバイダーの `prompt` が使われます
 （[プロバイダーごとのシステムプロンプト追記](llm-provider-prompt.md)）。
+
+引き継いだプロバイダーが書いた最終応答をメインのモデルで書き直すには、具体プロバイダー側に
+`final_reply_provider` を書きます（[ツールループの最終応答の書き直し](llm-final-reply.md)）。
 
 次は起動時に失敗します（fail-fast）。
 

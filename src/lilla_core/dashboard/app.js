@@ -4,16 +4,23 @@
 // GET /api/dashboard/nav が正で、組み込みも拡張も同じ形で並ぶ。ハッシュと
 // 画面名の対応表はそのカタログから 1 度だけ組み立てる（二重管理しない）。
 
-// カタログを取れなかったときの退避。組み込み 4 画面だけはカタログ無しでも
+// カタログを取れなかったときの退避。組み込み 6 画面だけはカタログ無しでも
 // 開けるようにして、ナビの取得失敗でダッシュボードごと使えなくならないようにする。
 const FALLBACK_PAGES = [
   { name: 'home', label: 'Home', group: 'main', hash: '#/', module: null },
   { name: 'conversations', label: 'Conversations', group: 'main', hash: '#/conversations', module: null },
   { name: 'memos', label: 'Memos', group: 'main', hash: '#/memos', module: null },
+  { name: 'skills', label: 'Skills', group: 'main', hash: '#/skills', module: null },
+  { name: 'usage', label: 'Usage', group: 'main', hash: '#/usage', module: null },
   { name: 'logs', label: 'Admin', group: 'admin', hash: '#/admin/logs', module: null },
 ];
 
 const DEFAULT_HASH = '#/';
+
+// スキル名の規則（サーバー側の services/skills.py と同じ）。半角英数字・`_`・`-` のみで
+// 64 文字以内。大文字小文字は区別せず、サーバーが小文字に正規化して保存する。
+const SKILL_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const SKILL_NAME_HINT = '名前は半角英数字・アンダースコア・ハイフンのみ、64 文字以内で入力してください';
 const DEFAULT_TAB = 'home';
 
 function dashboardApp() {
@@ -79,12 +86,32 @@ function dashboardApp() {
       error: false,
     },
 
+    // LLM の使用量。data は /api/usage の応答で、days は集計する日数（今日を含む）。
+    usage: {
+      days: 7,
+      data: null,
+      loading: false,
+      error: false,
+    },
+
     memos: {
       items: [],
       loading: false,
       newContent: '',
       editingId: null,
       editContent: '',
+    },
+
+    skills: {
+      items: [],
+      loading: false,
+      newName: '',
+      newDescription: '',
+      newPrompt: '',
+      editingId: null,
+      editName: '',
+      editDescription: '',
+      editPrompt: '',
     },
 
     // ---- 認証 ----
@@ -207,6 +234,10 @@ function dashboardApp() {
         this.fetchConversations(this.conversations.page);
       } else if (tab === 'memos') {
         this.fetchMemos();
+      } else if (tab === 'skills') {
+        this.fetchSkills();
+      } else if (tab === 'usage') {
+        this.fetchUsage();
       } else if (tab === 'home') {
         this.fetchHomeStatus();
       }
@@ -407,6 +438,61 @@ function dashboardApp() {
       if (!logs || !logs.ok || !logs.counts) return '取得できません';
       const count = logs.counts[level] || 0;
       return count === 0 ? 'なし' : `${count} 件`;
+    },
+
+    // 直近 24 時間の LLM 使用量の一行表示。数えられなかったときは「取得できません」。
+    homeUsageSummary() {
+      const usage = this.home.status && this.home.status.llm_usage;
+      if (!usage || !usage.ok || !usage.totals) return '取得できません';
+      const totals = usage.totals;
+      if (!totals.calls) return usage.enabled ? 'なし' : 'なし（記録は無効）';
+      let text = `${this.formatCalls(totals)} / ${this.formatNumber(totals.total_tokens)} トークン`;
+      if (totals.priced_calls) text += ` / 概算 ${this.formatCost(totals)}`;
+      return text;
+    },
+
+    // ---- Usage ----
+
+    async fetchUsage() {
+      this.usage.loading = true;
+      this.usage.error = false;
+      try {
+        const params = new URLSearchParams({ days: String(this.usage.days) });
+        const res = await this.authedFetch('/api/usage?' + params.toString());
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        this.usage.data = await res.json();
+      } catch (e) {
+        console.error('Failed to fetch LLM usage', e);
+        this.usage.data = null;
+        this.usage.error = true;
+      } finally {
+        this.usage.loading = false;
+      }
+    },
+
+    // 呼び出し件数。トークン数が分からなかった呼び出しがあれば内数で添える。
+    formatCalls(row) {
+      if (!row) return '';
+      const calls = `${this.formatNumber(row.calls)} 回`;
+      return row.unknown_calls ? `${calls}（うち不明 ${this.formatNumber(row.unknown_calls)}）` : calls;
+    },
+
+    // 単価を設定したプロバイダーの記録が 1 件も無ければ「-」。設定の無い記録が
+    // 混ざっているときは、その分を含まない目安であることを添える。
+    formatCost(row) {
+      if (!row || !row.priced_calls) return '-';
+      const cost = Number(row.cost || 0);
+      const text = cost.toLocaleString('ja-JP', { maximumFractionDigits: 4 });
+      return row.priced_calls < row.calls ? `${text}（単価設定分のみ）` : text;
+    },
+
+    formatAvgDuration(row) {
+      if (!row || !row.calls) return '-';
+      return `${(row.duration_ms / row.calls / 1000).toFixed(1)} 秒`;
+    },
+
+    formatNumber(value) {
+      return Number(value || 0).toLocaleString('ja-JP');
     },
 
     // ---- Logs ----
@@ -611,6 +697,140 @@ function dashboardApp() {
         }
       } catch (e) {
         console.error('Failed to delete memo', e);
+        alert('削除に失敗しました');
+      }
+    },
+
+    // ---- Skills ----
+
+    isValidSkillName(name) {
+      return SKILL_NAME_RE.test(name);
+    },
+
+    // 失敗時はサーバーの応答本文（名前の規則違反・重複など）を添えて知らせる。
+    async alertSkillFailure(res, action) {
+      let detail = '';
+      try {
+        detail = await res.text();
+      } catch (e) {
+        detail = '';
+      }
+      if (res.status === 409) detail = '同じ名前のスキルが既にあります';
+      alert(action + 'に失敗しました' + (detail ? ': ' + detail : ''));
+    },
+
+    async fetchSkills() {
+      this.skills.loading = true;
+      try {
+        const res = await this.authedFetch('/api/skills');
+        const data = await res.json();
+        this.skills.items = data.items || [];
+      } catch (e) {
+        console.error('Failed to fetch skills', e);
+      } finally {
+        this.skills.loading = false;
+      }
+    },
+
+    async addSkill() {
+      const name = this.skills.newName.trim();
+      const description = this.skills.newDescription.trim();
+      const prompt = this.skills.newPrompt.trim();
+      if (!name || !prompt) return;
+      if (!this.isValidSkillName(name)) {
+        alert(SKILL_NAME_HINT);
+        return;
+      }
+      try {
+        const res = await this.authedFetch('/api/skills', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, description, prompt }),
+        });
+        if (res.ok) {
+          this.skills.newName = '';
+          this.skills.newDescription = '';
+          this.skills.newPrompt = '';
+          await this.fetchSkills();
+        } else {
+          await this.alertSkillFailure(res, '追加');
+        }
+      } catch (e) {
+        console.error('Failed to add skill', e);
+        alert('追加に失敗しました');
+      }
+    },
+
+    async toggleSkill(skill) {
+      try {
+        const res = await this.authedFetch('/api/skills/' + skill._id, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: !skill.enabled }),
+        });
+        if (res.ok) {
+          await this.fetchSkills();
+        } else {
+          await this.alertSkillFailure(res, '更新');
+        }
+      } catch (e) {
+        console.error('Failed to toggle skill', e);
+        alert('更新に失敗しました');
+      }
+    },
+
+    startSkillEdit(skill) {
+      this.skills.editingId = skill._id;
+      this.skills.editName = skill.name;
+      this.skills.editDescription = skill.description || '';
+      this.skills.editPrompt = skill.prompt;
+    },
+
+    cancelSkillEdit() {
+      this.skills.editingId = null;
+      this.skills.editName = '';
+      this.skills.editDescription = '';
+      this.skills.editPrompt = '';
+    },
+
+    async saveSkillEdit(skill) {
+      const name = this.skills.editName.trim();
+      const description = this.skills.editDescription.trim();
+      const prompt = this.skills.editPrompt.trim();
+      if (!name || !prompt) return;
+      if (!this.isValidSkillName(name)) {
+        alert(SKILL_NAME_HINT);
+        return;
+      }
+      try {
+        const res = await this.authedFetch('/api/skills/' + skill._id, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, description, prompt }),
+        });
+        if (res.ok) {
+          this.cancelSkillEdit();
+          await this.fetchSkills();
+        } else {
+          await this.alertSkillFailure(res, '更新');
+        }
+      } catch (e) {
+        console.error('Failed to save skill', e);
+        alert('更新に失敗しました');
+      }
+    },
+
+    async deleteSkill(skill) {
+      if (!window.confirm('スキル「' + skill.name + '」を削除しますか？')) return;
+      try {
+        const res = await this.authedFetch('/api/skills/' + skill._id, { method: 'DELETE' });
+        if (res.ok) {
+          await this.fetchSkills();
+        } else {
+          alert('削除に失敗しました');
+        }
+      } catch (e) {
+        console.error('Failed to delete skill', e);
         alert('削除に失敗しました');
       }
     },

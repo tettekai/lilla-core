@@ -119,23 +119,43 @@ async def send_http_request(
     headers: dict[str, str] | None = None,
     params: dict[str, str] | None = None,
     timeout: int = 300,
+    body: str | bytes | None = None,
+    allow_redirects: bool = True,
 ) -> str:
     """
     非同期HTTPリクエストを送信します。
     プロキシ / 認証を自動適用。
 
-    data を指定すると JSON ボディ、form_data を指定するとフォームエンコードボディで送信します。
-    両方指定した場合は form_data が優先されます。
+    data を指定すると JSON ボディ、form_data を指定するとフォームエンコードボディ、
+    body を指定すると生のボディ（ファイルのアップロードなど。Content-Type は headers で
+    指定する）で送信します。優先順は body → form_data → data です。
     params を指定するとクエリパラメータとして URL に付加されます。
     ボディは POST / PUT / PATCH の場合のみ送信されます。
+
+    allow_redirects は既定で True（aiohttp の既定どおりリダイレクトを追従し、
+    400 以上をエラーとする）。False にするとリダイレクトを追従せず、3xx を非成功として
+    扱い、300 以上で ``aiohttp.ClientResponseError`` を送出する（``status`` に 3xx、
+    ``headers`` に ``Location`` を含む）。POST が 301 / 302 / 303 で GET に変わって
+    ボディを失ったまま成功扱いになるのを避けたい呼び出し側向け。
     """
     proxy, auth = _resolve_proxy(url)
 
     is_body_method = method.upper() in ("POST", "PUT", "PATCH")
+    if not is_body_method:
+        json_body, raw_body = None, None
+    elif body is not None:
+        json_body, raw_body = None, body
+    elif form_data:
+        json_body, raw_body = None, form_data
+    else:
+        json_body, raw_body = data, None
 
     logger.info("%s %s", method.upper(), url)
     if logger.isEnabledFor(logging.DEBUG):
-        if data is not None:
+        if body is not None:
+            # 生のボディはファイルの中身などを含みうるため、長さだけを出す。
+            logger.debug("Request body (raw): %d bytes", len(body))
+        elif data is not None:
             logger.debug("Request body (JSON): %s", _sanitize_request_data_for_log(data))
         elif form_data is not None:
             logger.debug("Request body (form): %s", _mask_secret_keys(form_data))
@@ -144,17 +164,19 @@ async def send_http_request(
         async with session.request(
             method=method.upper(),
             url=url,
-            json=data if is_body_method and not form_data else None,
-            data=form_data if is_body_method and form_data else None,
+            json=json_body,
+            data=raw_body,
             headers=headers,
             params=params,
             proxy=proxy,
             proxy_headers=auth,
             timeout=aiohttp.ClientTimeout(total=timeout),
+            allow_redirects=allow_redirects,
         ) as resp:
             logger.info("Status: %s", resp.status)
             response_text = await resp.text()
-            if resp.status >= 400:
+            error_threshold = 400 if allow_redirects else 300
+            if resp.status >= error_threshold:
                 logger.error(
                     "HTTP error %s %s: %s",
                     resp.status,

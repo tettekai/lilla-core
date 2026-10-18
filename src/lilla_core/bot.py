@@ -37,13 +37,16 @@ from lilla_core.loaders.task_tool_loader import load_all_tools
 from lilla_core.loaders.llm_tool_loader import get_llm_tools, validate_tool_sets
 from lilla_core.repository.conversation_repository import get_conversation_repo
 from lilla_core.repository.user_memo_repository import get_user_memo_repo
+from lilla_core.repository.skill_repository import get_skill_repo
 from lilla_core.repository.tool_cache_repository import get_tool_cache_repo
 from lilla_core.repository.button_actions_repository import get_button_actions_repo
 from lilla_core.repository.pending_tool_calls_repository import get_pending_tool_calls_repo
 from lilla_core.repository.admin_credential_repository import get_admin_credential_repo
 from lilla_core.repository.admin_session_repository import get_admin_session_repo
 from lilla_core.repository.channel_summary_repository import get_channel_summary_repo
+from lilla_core.repository.llm_usage_repository import get_llm_usage_repo
 from lilla_core.handlers import message_handler, interaction_handler, task_handler
+from lilla_core.handlers.command_handler import set_command_runtime
 from lilla_core.handlers.dashboard_server import start_dashboard_server
 from lilla_core.handlers.http_server import start_http_server, stop_http_server
 from lilla_core.services.llm_resolver import validate_llm_resolvers
@@ -62,12 +65,14 @@ _config = get_config()
 _CORE_STARTUP_REPOS = [
     get_conversation_repo,
     get_user_memo_repo,
+    get_skill_repo,
     get_tool_cache_repo,
     get_button_actions_repo,
     get_pending_tool_calls_repo,
     get_admin_credential_repo,
     get_admin_session_repo,
     get_channel_summary_repo,
+    get_llm_usage_repo,
 ]
 
 bot.http.proxy = _config.proxy.resolve_url()
@@ -86,6 +91,8 @@ preload_llm_send_blocklist(_config)
 # コマンド・ツールをロード（起動時に一度だけ）
 load_all_commands()
 tools = load_all_tools()
+# 拡張が Discord 以外のクライアントから `dispatch_command` を呼ぶときの既定値
+set_command_runtime(tools, bot)
 llm_tools = get_llm_tools()
 # `tools.sets` のすべてのセット（未使用のものも）を展開し、未知のセット参照・循環・
 # 未ロードのツール名をここで起動時に検出する（fail-fast）。

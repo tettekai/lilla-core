@@ -42,7 +42,7 @@ Load the module by listing it in `LILLA_EXTENSIONS`
 | `tool_roots` | Extra directories searched for tool `.py` files |
 | `tool_config_roots` | Directories of default tool YAML files (`llm_*.yaml` / `task_*.yaml`) shipped by the extension. A YAML with the same stem in `${CONFIG_ROOT}/tools` replaces it wholesale; put `enabled: false` there to turn a bundled tool off ([Tool contracts](tools.md)) |
 | `locale_dirs` | Directories of UI message catalogs (`{locale}.yaml`) shipped by the extension. The catalog's only top-level key must be the extension's `name` ([below](#locale-catalogs)) |
-| `command_packages` | Extra packages scanned for `@register_command` handlers |
+| `command_packages` | Extra packages scanned for `@register_command` handlers ([Writing commands and running them outside Discord](commands.md)) |
 | `dashboard_page` | One tab on the observability dashboard (`DashboardPage(label, group)`), where `group` is `main` (primary nav) or `admin` (overflow menu). Paths are not declared; they are derived from `name` ([Dashboard contributions](extension-dashboard.md)) |
 | `dashboard_static_dir` | Directory served at `/static/ext/{name}/`. Put `page.js` at its root when the extension contributes a tab |
 | `dashboard_routes` | HTTP routes (`DashboardRoute`) mounted inside session auth. Paths must live under `/api/{name}` |

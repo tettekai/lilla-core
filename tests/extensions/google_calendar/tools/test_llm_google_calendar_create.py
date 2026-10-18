@@ -1,7 +1,8 @@
-"""`lilla_core.extensions.google_calendar` 同梱の `tools/llm_calendar_create.py` のテスト。"""
+"""`lilla_core.extensions.google_calendar` 同梱の `tools/llm_google_calendar_create.py` のテスト。"""
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -12,7 +13,7 @@ import pytest
 from lilla_core.core.exceptions import ReauthenticationRequiredError
 from lilla_core.extensions import google_calendar
 
-_TOOL_PATH = Path(google_calendar.__file__).resolve().parent / "tools" / "llm_calendar_create.py"
+_TOOL_PATH = Path(google_calendar.__file__).resolve().parent / "tools" / "llm_google_calendar_create.py"
 _CLIENT_MODULE = "lilla_core.extensions.google_calendar.client"
 
 
@@ -65,14 +66,14 @@ def with_mocked_modules(mock_cfg, monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture
-def llm_calendar_create(with_mocked_modules):
-    """patch.dict 有効後に llm_calendar_create をロードする。"""
-    sys.modules.pop("llm_calendar_create", None)
-    spec = importlib.util.spec_from_file_location("llm_calendar_create", str(_TOOL_PATH))
+def llm_google_calendar_create(with_mocked_modules):
+    """patch.dict 有効後に llm_google_calendar_create をロードする。"""
+    sys.modules.pop("llm_google_calendar_create", None)
+    spec = importlib.util.spec_from_file_location("llm_google_calendar_create", str(_TOOL_PATH))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     yield module
-    sys.modules.pop("llm_calendar_create", None)
+    sys.modules.pop("llm_google_calendar_create", None)
 
 
 @pytest.fixture(autouse=True)
@@ -86,18 +87,18 @@ def patch_calendar_client(monkeypatch: pytest.MonkeyPatch):
 class TestSchema:
     """SCHEMA の構造テスト。"""
 
-    def test_function_name(self, llm_calendar_create) -> None:
-        """SCHEMA の関数名が create_calendar_event である。"""
-        assert llm_calendar_create.SCHEMA["function"]["name"] == "create_calendar_event"
+    def test_function_name(self, llm_google_calendar_create) -> None:
+        """SCHEMA の関数名が google_calendar_create_event である。"""
+        assert llm_google_calendar_create.SCHEMA["function"]["name"] == "google_calendar_create_event"
 
-    def test_required_parameters(self, llm_calendar_create) -> None:
+    def test_required_parameters(self, llm_google_calendar_create) -> None:
         """calendar / summary / start が required に含まれる。"""
-        required = llm_calendar_create.SCHEMA["function"]["parameters"]["required"]
+        required = llm_google_calendar_create.SCHEMA["function"]["parameters"]["required"]
         assert set(required) == {"calendar", "summary", "start"}
 
-    def test_optional_parameters_exist(self, llm_calendar_create) -> None:
+    def test_optional_parameters_exist(self, llm_google_calendar_create) -> None:
         """end / description / location / all_day が properties に存在する。"""
-        props = llm_calendar_create.SCHEMA["function"]["parameters"]["properties"]
+        props = llm_google_calendar_create.SCHEMA["function"]["parameters"]["properties"]
         assert "end" in props
         assert "description" in props
         assert "location" in props
@@ -107,17 +108,17 @@ class TestSchema:
 class TestBuildSchema:
     """build_schema() のテスト（google_calendar.calendars を参照する）。"""
 
-    def test_injects_friendly_names_as_enum(self, llm_calendar_create) -> None:
+    def test_injects_friendly_names_as_enum(self, llm_google_calendar_create) -> None:
         """google_calendar.calendars の friendly_name 一覧が calendar の enum に注入される。"""
-        schema = llm_calendar_create.build_schema({})
+        schema = llm_google_calendar_create.build_schema({})
         calendar_prop = schema["function"]["parameters"]["properties"]["calendar"]
         assert calendar_prop["enum"] == ["個人のカレンダー"]
 
-    def test_does_not_mutate_module_schema(self, llm_calendar_create) -> None:
+    def test_does_not_mutate_module_schema(self, llm_google_calendar_create) -> None:
         """build_schema 呼び出し後もモジュール側 SCHEMA は変更されないこと。"""
-        original = llm_calendar_create.SCHEMA["function"]["parameters"]["properties"]["calendar"]
+        original = llm_google_calendar_create.SCHEMA["function"]["parameters"]["properties"]["calendar"]
         original_keys = set(original.keys())
-        llm_calendar_create.build_schema({})
+        llm_google_calendar_create.build_schema({})
         assert set(original.keys()) == original_keys
         assert "enum" not in original
 
@@ -130,9 +131,9 @@ class TestBuildSchemaNoCalendars:
         """google_calendar.calendars が空の設定モック。"""
         return _make_cfg([])
 
-    def test_no_enum_when_calendars_empty(self, llm_calendar_create) -> None:
+    def test_no_enum_when_calendars_empty(self, llm_google_calendar_create) -> None:
         """google_calendar.calendars が空なら enum を注入しない。"""
-        schema = llm_calendar_create.build_schema({})
+        schema = llm_google_calendar_create.build_schema({})
         calendar_prop = schema["function"]["parameters"]["properties"]["calendar"]
         assert "enum" not in calendar_prop
 
@@ -141,38 +142,38 @@ class TestExecuteValidation:
     """入力パラメータのバリデーションテスト。"""
 
     async def test_returns_error_when_calendar_missing(
-        self, llm_calendar_create, patch_calendar_client
+        self, llm_google_calendar_create, patch_calendar_client
     ) -> None:
         """calendar が未指定のとき success: False を返す。"""
-        result = await llm_calendar_create.execute({"summary": "予定", "start": "2026-04-20"}, {})
+        result = await llm_google_calendar_create.execute({"summary": "予定", "start": "2026-04-20"}, {})
         assert result["success"] is False
         assert "calendar" in result["error"]
 
     async def test_returns_error_when_summary_missing(
-        self, llm_calendar_create, patch_calendar_client
+        self, llm_google_calendar_create, patch_calendar_client
     ) -> None:
         """summary が未指定のとき success: False を返す。"""
-        result = await llm_calendar_create.execute(
+        result = await llm_google_calendar_create.execute(
             {"calendar": "個人のカレンダー", "start": "2026-04-20"}, {}
         )
         assert result["success"] is False
         assert "summary" in result["error"]
 
     async def test_returns_error_when_start_missing(
-        self, llm_calendar_create, patch_calendar_client
+        self, llm_google_calendar_create, patch_calendar_client
     ) -> None:
         """start が未指定のとき success: False を返す。"""
-        result = await llm_calendar_create.execute(
+        result = await llm_google_calendar_create.execute(
             {"calendar": "個人のカレンダー", "summary": "予定"}, {}
         )
         assert result["success"] is False
         assert "start" in result["error"]
 
     async def test_returns_error_for_unknown_calendar(
-        self, llm_calendar_create, patch_calendar_client
+        self, llm_google_calendar_create, patch_calendar_client
     ) -> None:
         """google_calendar.calendars に存在しない friendly_name を指定すると success: False を返す。"""
-        result = await llm_calendar_create.execute(
+        result = await llm_google_calendar_create.execute(
             {
                 "calendar": "存在しないカレンダー",
                 "summary": "予定",
@@ -185,10 +186,10 @@ class TestExecuteValidation:
         assert "存在しないカレンダー" in result["error"]
 
     async def test_returns_error_when_timed_event_missing_end(
-        self, llm_calendar_create, patch_calendar_client
+        self, llm_google_calendar_create, patch_calendar_client
     ) -> None:
         """時間指定イベント（all_day=false）で end が未指定なら success: False を返す。"""
-        result = await llm_calendar_create.execute(
+        result = await llm_google_calendar_create.execute(
             {
                 "calendar": "個人のカレンダー",
                 "summary": "予定",
@@ -209,10 +210,10 @@ class TestExecuteValidationNoCalendars:
         return _make_cfg([])
 
     async def test_returns_error_when_calendars_empty(
-        self, llm_calendar_create, patch_calendar_client
+        self, llm_google_calendar_create, patch_calendar_client
     ) -> None:
         """google_calendar.calendars が空のとき success: False を返す。"""
-        result = await llm_calendar_create.execute(
+        result = await llm_google_calendar_create.execute(
             {
                 "calendar": "primary",
                 "summary": "予定",
@@ -228,12 +229,12 @@ class TestExecuteValidationNoCalendars:
 class TestExecuteAllDay:
     """終日イベント作成の正常系テスト。"""
 
-    async def test_creates_all_day_event(self, llm_calendar_create, patch_calendar_client) -> None:
+    async def test_creates_all_day_event(self, llm_google_calendar_create, patch_calendar_client) -> None:
         """終日イベントの作成が client.create_event に正しい引数で渡される。"""
         client = _make_client()
         patch_calendar_client.get_google_calendar_client.return_value = client
 
-        result = await llm_calendar_create.execute(
+        result = await llm_google_calendar_create.execute(
             {
                 "calendar": "個人のカレンダー",
                 "summary": "予定",
@@ -255,13 +256,13 @@ class TestExecuteAllDay:
         )
 
     async def test_end_defaults_to_start_when_omitted(
-        self, llm_calendar_create, patch_calendar_client
+        self, llm_google_calendar_create, patch_calendar_client
     ) -> None:
         """終日イベントで end 省略時は start と同じ日が使われる。"""
         client = _make_client()
         patch_calendar_client.get_google_calendar_client.return_value = client
 
-        await llm_calendar_create.execute(
+        await llm_google_calendar_create.execute(
             {
                 "calendar": "個人のカレンダー",
                 "summary": "予定",
@@ -275,13 +276,13 @@ class TestExecuteAllDay:
         assert kwargs["end"] == "2026-04-20"
 
     async def test_resolves_calendar_id_from_friendly_name(
-        self, llm_calendar_create, patch_calendar_client
+        self, llm_google_calendar_create, patch_calendar_client
     ) -> None:
         """calendar の friendly_name が google_calendar.calendars の id に解決される。"""
         client = _make_client()
         patch_calendar_client.get_google_calendar_client.return_value = client
 
-        await llm_calendar_create.execute(
+        await llm_google_calendar_create.execute(
             {
                 "calendar": "個人のカレンダー",
                 "summary": "予定",
@@ -299,13 +300,13 @@ class TestExecuteTimed:
     """時間指定イベント作成のテスト。"""
 
     async def test_creates_timed_event_with_datetime_objects(
-        self, llm_calendar_create, patch_calendar_client
+        self, llm_google_calendar_create, patch_calendar_client
     ) -> None:
         """時間指定イベントは start / end が datetime に変換されて渡される。"""
         client = _make_client()
         patch_calendar_client.get_google_calendar_client.return_value = client
 
-        await llm_calendar_create.execute(
+        await llm_google_calendar_create.execute(
             {
                 "calendar": "個人のカレンダー",
                 "summary": "会議",
@@ -321,13 +322,13 @@ class TestExecuteTimed:
         assert isinstance(kwargs["end"], datetime)
 
     async def test_returns_error_on_invalid_datetime_format(
-        self, llm_calendar_create, patch_calendar_client
+        self, llm_google_calendar_create, patch_calendar_client
     ) -> None:
         """start / end が ISO8601 形式でないとき success: False を返す。"""
         client = _make_client()
         patch_calendar_client.get_google_calendar_client.return_value = client
 
-        result = await llm_calendar_create.execute(
+        result = await llm_google_calendar_create.execute(
             {
                 "calendar": "個人のカレンダー",
                 "summary": "会議",
@@ -344,13 +345,13 @@ class TestExecuteOptionalFields:
     """description / location の受け渡しテスト。"""
 
     async def test_passes_description_and_location(
-        self, llm_calendar_create, patch_calendar_client
+        self, llm_google_calendar_create, patch_calendar_client
     ) -> None:
         """description / location が client.create_event に渡される。"""
         client = _make_client()
         patch_calendar_client.get_google_calendar_client.return_value = client
 
-        await llm_calendar_create.execute(
+        await llm_google_calendar_create.execute(
             {
                 "calendar": "個人のカレンダー",
                 "summary": "予定",
@@ -370,10 +371,10 @@ class TestExecuteOptionalFields:
 class TestExecuteSuccess:
     """成功時のレスポンス内容テスト。"""
 
-    async def test_memory_entry_contains_summary_and_html_link(
-        self, llm_calendar_create, patch_calendar_client
+    async def test_memory_entry_contains_summary_without_html_link(
+        self, llm_google_calendar_create, patch_calendar_client
     ) -> None:
-        """memory_entry に summary と htmlLink が含まれる。"""
+        """memory_entry に summary と書き込み先が含まれ、htmlLink は含まれない。"""
         client = _make_client(
             created_event={
                 "id": "evt1",
@@ -383,7 +384,7 @@ class TestExecuteSuccess:
         )
         patch_calendar_client.get_google_calendar_client.return_value = client
 
-        result = await llm_calendar_create.execute(
+        result = await llm_google_calendar_create.execute(
             {
                 "calendar": "個人のカレンダー",
                 "summary": "予定",
@@ -394,40 +395,99 @@ class TestExecuteSuccess:
         )
 
         assert "予定" in result["memory_entry"]
-        assert "https://calendar.google.com/event?eid=evt1" in result["memory_entry"]
+        assert "個人のカレンダー" in result["memory_entry"]
+        assert "htmlLink" not in result["memory_entry"]
+        assert "https://" not in result["memory_entry"]
 
-    async def test_data_contains_created_event(
-        self, llm_calendar_create, patch_calendar_client
+    async def test_data_is_whitelisted_summary(
+        self, llm_google_calendar_create, patch_calendar_client
     ) -> None:
-        """data に作成されたイベントがそのまま含まれる。"""
-        created = {"id": "evt1", "summary": "予定", "htmlLink": "https://x"}
+        """data は作成した予定の要約（ホワイトリストの項目と friendly_name）だけになる。"""
+        created = {
+            "kind": "calendar#event",
+            "id": "evt1",
+            "status": "confirmed",
+            "htmlLink": "https://www.google.com/calendar/event?eid=ZXZ0MSBvd25lckBleGFtcGxlLmNvbQ",
+            "summary": "会議",
+            "description": "説明",
+            "location": "会議室",
+            "creator": {"email": "owner@example.com", "self": True},
+            "organizer": {"email": "owner@example.com", "self": True},
+            "start": {"dateTime": "2026-04-20T10:00:00+09:00", "timeZone": "Asia/Tokyo"},
+            "end": {"dateTime": "2026-04-20T11:00:00+09:00", "timeZone": "Asia/Tokyo"},
+            "iCalUID": "evt1@google.com",
+        }
         client = _make_client(created_event=created)
         patch_calendar_client.get_google_calendar_client.return_value = client
 
-        result = await llm_calendar_create.execute(
+        result = await llm_google_calendar_create.execute(
             {
                 "calendar": "個人のカレンダー",
-                "summary": "予定",
+                "summary": "会議",
+                "start": "2026-04-20T10:00:00+09:00",
+                "end": "2026-04-20T11:00:00+09:00",
+                "description": "説明",
+                "location": "会議室",
+            },
+            {},
+        )
+
+        assert result["data"] == {
+            "calendar": "個人のカレンダー",
+            "summary": "会議",
+            "start": "2026-04-20T10:00:00+09:00",
+            "end": "2026-04-20T11:00:00+09:00",
+            "all_day": False,
+            "status": "confirmed",
+            "location": "会議室",
+            "description": "説明",
+        }
+        assert "@" not in json.dumps(result, ensure_ascii=False)
+
+    async def test_all_day_data_end_is_inclusive(
+        self, llm_google_calendar_create, patch_calendar_client
+    ) -> None:
+        """終日予定の data の end は、入力と同じく最終日を含む日付になる。"""
+        created = {
+            "summary": "旅行",
+            "start": {"date": "2026-04-20"},
+            "end": {"date": "2026-04-23"},
+            "organizer": {"email": "owner@example.com"},
+        }
+        client = _make_client(created_event=created)
+        patch_calendar_client.get_google_calendar_client.return_value = client
+
+        result = await llm_google_calendar_create.execute(
+            {
+                "calendar": "個人のカレンダー",
+                "summary": "旅行",
                 "start": "2026-04-20",
+                "end": "2026-04-22",
                 "all_day": True,
             },
             {},
         )
 
-        assert result["data"] == created
+        assert result["data"] == {
+            "calendar": "個人のカレンダー",
+            "summary": "旅行",
+            "start": "2026-04-20",
+            "end": "2026-04-22",
+            "all_day": True,
+        }
 
 
 class TestExecuteReauth:
     """再認証フローのテスト。"""
 
     async def test_returns_needs_auth_on_reauth_error(
-        self, llm_calendar_create, patch_calendar_client
+        self, llm_google_calendar_create, patch_calendar_client
     ) -> None:
         """ReauthenticationRequiredError 発生時に needs_auth: True を返す。"""
         client = _make_client(reauth=True)
         patch_calendar_client.get_google_calendar_client.return_value = client
 
-        result = await llm_calendar_create.execute(
+        result = await llm_google_calendar_create.execute(
             {
                 "calendar": "個人のカレンダー",
                 "summary": "予定",

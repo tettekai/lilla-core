@@ -3,6 +3,7 @@ aiohttp の実際の通信はモック、環境変数は .env を読まずテス
 """
 from __future__ import annotations
 
+import logging
 import sys
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -387,6 +388,43 @@ class TestSendHttpRequest:
 
         http_util.aiohttp.ClientTimeout.assert_called_with(total=60)
 
+    async def test_allow_redirects_defaults_to_true(
+        self, http_util, session_mock: tuple[MagicMock, MagicMock]
+    ) -> None:
+        """allow_redirects 未指定ならリダイレクトを追従し、3xx は従来どおりエラーにしない。"""
+        mock_session, mock_resp = session_mock
+        mock_resp.status = 302
+
+        result = await http_util.send_http_request("http://example.com/api")
+
+        assert result == "response body"
+        assert mock_session.request.call_args.kwargs["allow_redirects"] is True
+
+    async def test_allow_redirects_false_raises_on_3xx(
+        self, http_util, session_mock: tuple[MagicMock, MagicMock]
+    ) -> None:
+        """allow_redirects=False では追従せず、3xx で ClientResponseError が送出される。"""
+        import aiohttp
+
+        mock_session, mock_resp = session_mock
+        mock_resp.status = 307
+        mock_resp.headers = {"Location": "http://example.com/new"}
+
+        with pytest.raises(aiohttp.ClientResponseError) as exc_info:
+            await http_util.send_http_request("http://example.com/api", allow_redirects=False)
+
+        assert exc_info.value.status == 307
+        assert exc_info.value.headers["Location"] == "http://example.com/new"
+        assert mock_session.request.call_args.kwargs["allow_redirects"] is False
+
+    async def test_allow_redirects_false_returns_text_on_2xx(
+        self, http_util, session_mock: tuple[MagicMock, MagicMock]
+    ) -> None:
+        """allow_redirects=False でも 2xx は通常どおり本体文字列を返す。"""
+        result = await http_util.send_http_request("http://example.com/api", allow_redirects=False)
+
+        assert result == "response body"
+
     async def test_post_with_form_data_sends_data_not_json(
         self, http_util, session_mock: tuple[MagicMock, MagicMock]
     ) -> None:
@@ -411,6 +449,60 @@ class TestSendHttpRequest:
         )
         assert mock_session.request.call_args.kwargs["data"] == form
         assert mock_session.request.call_args.kwargs["json"] is None
+
+    async def test_post_with_body_sends_raw_body(
+        self, http_util, session_mock: tuple[MagicMock, MagicMock]
+    ) -> None:
+        """body を指定すると生のボディとして data に渡され json は None になる"""
+        mock_session, _ = session_mock
+        await http_util.send_http_request(
+            "http://example.com",
+            method="PATCH",
+            body=b"raw text",
+            headers={"Content-Type": "text/plain"},
+        )
+        kwargs = mock_session.request.call_args.kwargs
+        assert kwargs["data"] == b"raw text"
+        assert kwargs["json"] is None
+        assert kwargs["headers"] == {"Content-Type": "text/plain"}
+
+    async def test_body_takes_priority_over_data_and_form_data(
+        self, http_util, session_mock: tuple[MagicMock, MagicMock]
+    ) -> None:
+        """body・form_data・data が全部指定された場合は body が優先される"""
+        mock_session, _ = session_mock
+        await http_util.send_http_request(
+            "http://example.com",
+            method="POST",
+            data={"json_key": "json_value"},
+            form_data={"form_key": "form_value"},
+            body="raw",
+        )
+        assert mock_session.request.call_args.kwargs["data"] == "raw"
+        assert mock_session.request.call_args.kwargs["json"] is None
+
+    async def test_get_request_ignores_body(
+        self, http_util, session_mock: tuple[MagicMock, MagicMock]
+    ) -> None:
+        """GET では body を指定しても送らない"""
+        mock_session, _ = session_mock
+        await http_util.send_http_request("http://example.com", method="GET", body="raw")
+        assert mock_session.request.call_args.kwargs["data"] is None
+        assert mock_session.request.call_args.kwargs["json"] is None
+
+    async def test_raw_body_is_not_logged(
+        self,
+        http_util,
+        session_mock: tuple[MagicMock, MagicMock],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """DEBUG ログには生のボディの中身を出さず、長さだけを出す"""
+        with caplog.at_level(logging.DEBUG, logger=http_util.__name__):
+            await http_util.send_http_request(
+                "http://example.com", method="POST", body="secret file content"
+            )
+        assert "secret file content" not in caplog.text
+        assert "19 bytes" in caplog.text
 
 
 # ---------------------------------------------------------------------------

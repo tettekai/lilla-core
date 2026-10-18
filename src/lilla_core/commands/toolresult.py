@@ -12,6 +12,7 @@ import re
 from lilla_core.commands.attachment_body import resolve_command_body
 from lilla_core.commands.discord_util import resolve_discord_channel
 from lilla_core.commands.registry import register_command
+from lilla_core.core.llm_call_origin import llm_call_origin
 from lilla_core.services.message_util import resolve_dm_channel
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ _INJECTION_GUARD_PROMPT = (
 
 
 @register_command("toolresult")
-async def handle_toolresult(message, arg: str, tools: dict, bot) -> None:
+async def handle_toolresult(ctx, arg: str, tools: dict, bot) -> None:
     """`!toolresult <correlation_id>` の処理。外部エージェントからの結果を依頼元クライアントへ届ける。
 
     引数は 1 行目が correlation_id、2 行目以降が結果本文::
@@ -53,7 +54,8 @@ async def handle_toolresult(message, arg: str, tools: dict, bot) -> None:
     （`_generate_reply`）。
 
     Args:
-        message: 承認済みの元メッセージ。添付ファイルの BODY 解決に使用する。
+        ctx: コマンドコンテキスト（Discord では承認済みの元メッセージを包む）。添付ファイル
+            （`ctx.attachments`）の BODY 解決と失敗の記録に使用する。
         arg: コマンド名の後ろに続く引数文字列（1 行目が correlation_id、以降が本文）。
         tools: ツールレジストリ（未使用）。
         bot: Discord クライアント。結果の送信に使用する。
@@ -65,12 +67,14 @@ async def handle_toolresult(message, arg: str, tools: dict, bot) -> None:
 
     if not correlation_id:
         logger.warning("!toolresult: correlation_id not specified")
+        ctx.mark_failed()
         return
 
     # 本文の解決は pending レコードを completed にする前に行う。読み取りに失敗した
     # 依頼を消費してしまうと、結果を送り直しても届かなくなるため。
-    result_text = await resolve_command_body(message, rest, bot, "!toolresult")
+    result_text = await resolve_command_body(ctx, rest, bot, "!toolresult")
     if result_text is None:
+        ctx.mark_failed()
         return
     result_text = result_text.strip()
 
@@ -80,6 +84,7 @@ async def handle_toolresult(message, arg: str, tools: dict, bot) -> None:
             "!toolresult: Pending request not found (completed, unregistered, or expired): %s",
             correlation_id,
         )
+        ctx.mark_failed()
         return
 
     logger.info("!toolresult: Delivering result: %s", correlation_id)
@@ -145,7 +150,9 @@ async def _generate_reply(record: dict, result_text: str, client_type: str) -> s
         ),
     }]
 
-    return await chat_to_llm(messages, system_prompt=system_prompt)
+    # 使用量の記録では入口を toolresult に数える
+    with llm_call_origin(source="toolresult"):
+        return await chat_to_llm(messages, system_prompt=system_prompt)
 
 
 def _chunk_text(text: str, size: int = _DISCORD_CHUNK_SIZE) -> list[str]:

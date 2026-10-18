@@ -135,6 +135,7 @@ tools:
 | `task_channel_summary` | task | [部屋のノート（深夜要約）](channel-notes.md) |
 | `task_scheduled_llm` | task | [スケジュール実行で LLM に委譲する通知](scheduled-llm.md) |
 | `llm_expert` | LLM | 専門家サブエージェントへの委譲（後述） |
+| `llm_load_skill` | LLM | [LLM が自分でスキルを読み込む](skills.md#llm-が自分でスキルを読み込む) |
 
 ### `llm_expert`（専門家エージェント）
 

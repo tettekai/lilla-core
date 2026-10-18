@@ -1,7 +1,8 @@
-"""`lilla_core.extensions.google_calendar` 同梱の `tools/llm_calendar_get.py` のテスト。"""
+"""`lilla_core.extensions.google_calendar` 同梱の `tools/llm_google_calendar_get.py` のテスト。"""
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,8 +13,8 @@ import pytest
 from lilla_core.extensions import google_calendar
 
 # ツールモジュールを直接ロード
-_tool_path = Path(google_calendar.__file__).resolve().parent / "tools" / "llm_calendar_get.py"
-_spec = importlib.util.spec_from_file_location("llm_calendar_get", str(_tool_path))
+_tool_path = Path(google_calendar.__file__).resolve().parent / "tools" / "llm_google_calendar_get.py"
+_spec = importlib.util.spec_from_file_location("llm_google_calendar_get", str(_tool_path))
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 execute = _mod.execute
@@ -21,7 +22,10 @@ SCHEMA = _mod.SCHEMA
 
 
 def _make_mock_calendar(events=None, auth_url="https://accounts.google.com/auth"):
-    """GoogleCalendarClient のモックを作成する。"""
+    """GoogleCalendarClient のモックを作成する。
+
+    ``events`` は `get_events` の戻り値と同じ（取得元カレンダー ID, 予定）の組のリスト。
+    """
     client = MagicMock()
     client.get_events = AsyncMock(return_value=events or [])
     client.start_authentication = AsyncMock(return_value=auth_url)
@@ -70,8 +74,8 @@ class TestSchema:
     """SCHEMA の構造テスト。"""
 
     def test_function_name(self) -> None:
-        """SCHEMA の関数名が get_calendar_events である。"""
-        assert SCHEMA["function"]["name"] == "get_calendar_events"
+        """SCHEMA の関数名が google_calendar_get_events である。"""
+        assert SCHEMA["function"]["name"] == "google_calendar_get_events"
 
     def test_date_range_is_required(self) -> None:
         """date_range が required に含まれる。"""
@@ -88,14 +92,32 @@ class TestExecuteSuccess:
     """正常系テスト。"""
 
     async def test_returns_events(self, calendar_stub) -> None:
-        """正常時はイベントリストを data に返す。"""
-        mock_events = [{"id": "1", "summary": "会議", "start": {"dateTime": "2026-04-25T10:00:00"}}]
+        """正常時は要約したイベントのリストを data に返す。"""
+        mock_events = [
+            (
+                "primary",
+                {
+                    "id": "1",
+                    "summary": "会議",
+                    "start": {"dateTime": "2026-04-25T10:00:00+09:00"},
+                    "end": {"dateTime": "2026-04-25T11:00:00+09:00"},
+                },
+            )
+        ]
         calendar_stub.get_google_calendar_client.return_value = _make_mock_calendar(events=mock_events)
 
         result = await execute({"date_range": "today"}, {})
 
         assert result["success"] is True
-        assert result["data"] == mock_events
+        assert result["data"] == [
+            {
+                "calendar": "calendar_1",
+                "summary": "会議",
+                "start": "2026-04-25T10:00:00+09:00",
+                "end": "2026-04-25T11:00:00+09:00",
+                "all_day": False,
+            }
+        ]
         assert result["error"] is None
 
     async def test_needs_auth_false_on_success(self, calendar_stub) -> None:
@@ -109,7 +131,7 @@ class TestExecuteSuccess:
 
     async def test_memory_entry_contains_date_range_and_count(self, calendar_stub) -> None:
         """memory_entry に date_range と件数が含まれる。"""
-        events = [{"id": "1"}, {"id": "2"}]
+        events = [("primary", {"id": "1"}), ("primary", {"id": "2"})]
         calendar_stub.get_google_calendar_client.return_value = _make_mock_calendar(events=events)
 
         result = await execute({"date_range": "last_7_days"}, {})
@@ -127,68 +149,140 @@ class TestExecuteSuccess:
         assert "0件" in result["memory_entry"]
 
 
-class TestExecuteAttendeesStripped:
-    """attendees フィールド除去のテスト。"""
+_OWNER_EMAIL = "owner@example.com"
+_OTHER_EMAIL = "Someone.Else@Example.com"
 
-    async def test_attendees_removed_from_event(self, calendar_stub) -> None:
-        """attendees フィールドが結果から除去される。"""
-        events = [
+
+def _full_api_event(**overrides) -> dict:
+    """Calendar API が返す、メールアドレスやリンクを含んだ予定を作る。"""
+    event = {
+        "kind": "calendar#event",
+        "etag": '"3333"',
+        "id": "evt1",
+        "status": "confirmed",
+        "htmlLink": "https://www.google.com/calendar/event?eid=ZXZ0MSBvd25lckBleGFtcGxlLmNvbQ",
+        "summary": "会議",
+        "description": "議題の確認",
+        "location": "会議室A",
+        "creator": {"email": _OWNER_EMAIL, "self": True},
+        "organizer": {"email": _OTHER_EMAIL, "displayName": "Someone Else"},
+        "start": {"dateTime": "2026-04-25T10:00:00+09:00", "timeZone": "Asia/Tokyo"},
+        "end": {"dateTime": "2026-04-25T11:00:00+09:00", "timeZone": "Asia/Tokyo"},
+        "iCalUID": "evt1@google.com",
+        "attendees": [{"email": _OWNER_EMAIL, "self": True}, {"email": _OTHER_EMAIL}],
+        "hangoutLink": "https://meet.google.com/xxx",
+        "reminders": {"useDefault": True},
+    }
+    event.update(overrides)
+    return event
+
+
+class TestExecuteWhitelist:
+    """戻り値をホワイトリストの項目に絞るテスト。"""
+
+    async def test_only_whitelisted_keys_are_returned(self, calendar_stub, monkeypatch) -> None:
+        """予定ごとにホワイトリストの項目だけを返す。"""
+        calendar_stub.get_google_calendar_client.return_value = _make_mock_calendar(
+            events=[("primary", _full_api_event())]
+        )
+        _stub_google_calendars(monkeypatch, [{"id": "primary", "friendly_name": "個人のカレンダー"}])
+
+        result = await execute({"date_range": "today"}, {})
+
+        assert result["data"] == [
             {
-                "id": "1",
+                "calendar": "個人のカレンダー",
                 "summary": "会議",
-                "attendees": [{"email": "someone@example.com"}],
+                "start": "2026-04-25T10:00:00+09:00",
+                "end": "2026-04-25T11:00:00+09:00",
+                "all_day": False,
+                "status": "confirmed",
+                "location": "会議室A",
+                "description": "議題の確認",
             }
         ]
-        calendar_stub.get_google_calendar_client.return_value = _make_mock_calendar(events=events)
+
+    async def test_no_email_with_primary_calendar(self, calendar_stub, monkeypatch) -> None:
+        """primary を含む設定でも主催者・作成者・参加者のメールアドレスが出ない。"""
+        calendar_stub.get_google_calendar_client.return_value = _make_mock_calendar(
+            events=[
+                ("primary", _full_api_event()),
+                ("family@group.calendar.google.com", _full_api_event(id="evt2")),
+            ]
+        )
+        _stub_google_calendars(monkeypatch, [
+            {"id": "primary", "friendly_name": "個人のカレンダー"},
+            {"id": "family@group.calendar.google.com", "friendly_name": "家族のカレンダー"},
+        ])
 
         result = await execute({"date_range": "today"}, {})
 
-        assert "attendees" not in result["data"][0]
+        dumped = json.dumps(result, ensure_ascii=False).lower()
+        assert _OWNER_EMAIL not in dumped
+        assert _OTHER_EMAIL.lower() not in dumped
+        assert "family@group.calendar.google.com" not in dumped
+        assert "@" not in dumped
+        for event in result["data"]:
+            for key in ("organizer", "creator", "attendees", "htmlLink", "iCalUID", "id"):
+                assert key not in event
 
-    async def test_no_error_when_attendees_missing(self, calendar_stub) -> None:
-        """attendees フィールドが元々ないイベントでもエラーにならない。"""
-        events = [{"id": "1", "summary": "会議"}]
-        calendar_stub.get_google_calendar_client.return_value = _make_mock_calendar(events=events)
+    async def test_no_calendar_id_in_backward_compat_mode(self, calendar_stub) -> None:
+        """calendars が空の後方互換モードでは ID ではなく汎用名を付ける。"""
+        calendar_stub.get_google_calendar_client.return_value = _make_mock_calendar(
+            events=[
+                ("primary", _full_api_event()),
+                ("family@group.calendar.google.com", _full_api_event(id="evt2")),
+            ]
+        )
 
-        result = await execute({"date_range": "today"}, {})
+        result = await execute(
+            {"date_range": "today"},
+            {"calendar_ids": ["primary", "family@group.calendar.google.com"]},
+        )
 
-        assert result["success"] is True
-        assert "attendees" not in result["data"][0]
+        assert [e["calendar"] for e in result["data"]] == ["calendar_1", "calendar_2"]
+        assert "@" not in json.dumps(result, ensure_ascii=False)
 
-    async def test_attendees_removed_with_friendly_name_replacement(
-        self, calendar_stub, monkeypatch
-    ) -> None:
-        """カレンダーID置換と併用してもattendeesが除去される。"""
-        events = [
-            {
-                "id": "1",
-                "organizer": {"email": "family@group.calendar.google.com"},
-                "attendees": [{"email": "someone@example.com"}],
-            }
-        ]
-        mock_calendar = _make_mock_calendar(events=events)
-        calendar_stub.get_google_calendar_client.return_value = mock_calendar
-        _stub_google_calendars(
-            monkeypatch,
-            [{"id": "family@group.calendar.google.com", "friendly_name": "家族のカレンダー"}],
+    async def test_optional_fields_omitted_when_absent(self, calendar_stub) -> None:
+        """location / description / status が無い予定ではキーを付けない。"""
+        calendar_stub.get_google_calendar_client.return_value = _make_mock_calendar(
+            events=[("primary", {"id": "1", "summary": "会議"})]
         )
 
         result = await execute({"date_range": "today"}, {})
 
-        assert "attendees" not in result["data"][0]
-        assert result["data"][0]["organizer"]["email"] == "家族のカレンダー"
+        assert result["success"] is True
+        assert set(result["data"][0]) == {"calendar", "summary", "start", "end", "all_day"}
 
-    async def test_attendees_removed_for_multiple_events(self, calendar_stub) -> None:
-        """複数イベントすべてでattendeesが除去される。"""
-        events = [
-            {"id": "1", "attendees": [{"email": "a@example.com"}]},
-            {"id": "2", "attendees": [{"email": "b@example.com"}]},
-        ]
-        calendar_stub.get_google_calendar_client.return_value = _make_mock_calendar(events=events)
+    async def test_all_day_event_end_is_inclusive(self, calendar_stub) -> None:
+        """終日予定は日付で返し、end は最終日を含む日付にする。"""
+        calendar_stub.get_google_calendar_client.return_value = _make_mock_calendar(
+            events=[
+                (
+                    "primary",
+                    {"summary": "旅行", "start": {"date": "2026-04-20"}, "end": {"date": "2026-04-23"}},
+                )
+            ]
+        )
 
         result = await execute({"date_range": "today"}, {})
 
-        assert all("attendees" not in e for e in result["data"])
+        event = result["data"][0]
+        assert event["all_day"] is True
+        assert event["start"] == "2026-04-20"
+        assert event["end"] == "2026-04-22"
+
+    async def test_input_events_not_mutated(self, calendar_stub) -> None:
+        """要約は入力の予定を破壊的に変更しない。"""
+        api_event = _full_api_event()
+        calendar_stub.get_google_calendar_client.return_value = _make_mock_calendar(
+            events=[("primary", api_event)]
+        )
+
+        await execute({"date_range": "today"}, {})
+
+        assert api_event["organizer"]["email"] == _OTHER_EMAIL
+        assert "attendees" in api_event
 
 
 class TestExecuteCalendarIds:
@@ -243,70 +337,24 @@ class TestExecuteCalendarsFriendlyName:
         kwargs = mock_calendar.get_events.call_args.kwargs
         assert kwargs["calendar_ids"] == ["primary", "family@group.calendar.google.com"]
 
-    async def test_organizer_email_replaced_with_friendly_name(self, calendar_stub, monkeypatch) -> None:
-        """organizer.email のカレンダーIDが friendly_name に置換される。"""
+    async def test_each_event_has_source_friendly_name(self, calendar_stub, monkeypatch) -> None:
+        """各予定に取得元カレンダーの friendly_name が付く。"""
         events = [
-            {
-                "id": "1",
-                "organizer": {"email": "family@group.calendar.google.com"},
-            }
+            ("primary", {"summary": "個人の予定"}),
+            ("family@group.calendar.google.com", {"summary": "家族の予定"}),
         ]
-        mock_calendar = _make_mock_calendar(events=events)
-        calendar_stub.get_google_calendar_client.return_value = mock_calendar
-        _stub_google_calendars(
-            monkeypatch,
-            [{"id": "family@group.calendar.google.com", "friendly_name": "家族のカレンダー"}],
-        )
+        calendar_stub.get_google_calendar_client.return_value = _make_mock_calendar(events=events)
+        _stub_google_calendars(monkeypatch, [
+            {"id": "primary", "friendly_name": "個人のカレンダー"},
+            {"id": "family@group.calendar.google.com", "friendly_name": "家族のカレンダー"},
+        ])
 
         result = await execute({"date_range": "today"}, {})
 
-        assert result["data"][0]["organizer"]["email"] == "家族のカレンダー"
-
-    async def test_creator_email_replaced_with_friendly_name(self, calendar_stub, monkeypatch) -> None:
-        """creator.email のカレンダーIDが friendly_name に置換される。"""
-        events = [
-            {
-                "id": "1",
-                "creator": {"email": "family@group.calendar.google.com"},
-            }
+        assert [(e["calendar"], e["summary"]) for e in result["data"]] == [
+            ("個人のカレンダー", "個人の予定"),
+            ("家族のカレンダー", "家族の予定"),
         ]
-        mock_calendar = _make_mock_calendar(events=events)
-        calendar_stub.get_google_calendar_client.return_value = mock_calendar
-        _stub_google_calendars(
-            monkeypatch,
-            [{"id": "family@group.calendar.google.com", "friendly_name": "家族のカレンダー"}],
-        )
-
-        result = await execute({"date_range": "today"}, {})
-
-        assert result["data"][0]["creator"]["email"] == "家族のカレンダー"
-
-    async def test_primary_id_not_replaced(self, calendar_stub, monkeypatch) -> None:
-        """'primary' は一般名詞のため置換対象外。"""
-        events = [
-            {
-                "id": "1",
-                "organizer": {"email": "primary"},
-            }
-        ]
-        mock_calendar = _make_mock_calendar(events=events)
-        calendar_stub.get_google_calendar_client.return_value = mock_calendar
-        _stub_google_calendars(monkeypatch, [{"id": "primary", "friendly_name": "個人のカレンダー"}])
-
-        result = await execute({"date_range": "today"}, {})
-
-        assert result["data"][0]["organizer"]["email"] == "primary"
-
-    async def test_no_calendars_no_replacement(self, calendar_stub, monkeypatch) -> None:
-        """google.calendars 未設定時は置換が行われない（後方互換）。"""
-        events = [{"id": "1", "organizer": {"email": "family@group.calendar.google.com"}}]
-        mock_calendar = _make_mock_calendar(events=events)
-        calendar_stub.get_google_calendar_client.return_value = mock_calendar
-        _stub_google_calendars(monkeypatch, [])
-
-        result = await execute({"date_range": "today"}, {})
-
-        assert result["data"][0]["organizer"]["email"] == "family@group.calendar.google.com"
 
     async def test_calendars_empty_falls_back_to_calendar_ids(self, calendar_stub, monkeypatch) -> None:
         """google.calendars が空リストのとき context の calendar_ids にフォールバックする。"""
@@ -318,93 +366,6 @@ class TestExecuteCalendarsFriendlyName:
 
         kwargs = mock_calendar.get_events.call_args.kwargs
         assert kwargs["calendar_ids"] == ["primary"]
-
-
-class TestMaskCalendarIdsRobustness:
-    """カレンダーID置換のエッジケース（部分一致・衝突・非破壊）テスト。"""
-
-    async def test_id_that_is_substring_of_another_id_not_mistakenly_replaced(
-        self, calendar_stub, monkeypatch
-    ) -> None:
-        """あるIDが別IDの部分文字列でも、完全一致した値だけが置換される。"""
-        events = [
-            {"id": "1", "organizer": {"email": "a@group.calendar.google.com"}},
-            {"id": "2", "organizer": {"email": "xa@group.calendar.google.com"}},
-        ]
-        calendar_stub.get_google_calendar_client.return_value = _make_mock_calendar(events=events)
-        _stub_google_calendars(monkeypatch, [
-            {"id": "a@group.calendar.google.com", "friendly_name": "カレンダーA"},
-            {"id": "xa@group.calendar.google.com", "friendly_name": "カレンダーXA"},
-        ])
-
-        result = await execute({"date_range": "today"}, {})
-
-        # 部分文字列 "a@..." が "xa@..." の一部を誤って置換しないこと。
-        assert result["data"][0]["organizer"]["email"] == "カレンダーA"
-        assert result["data"][1]["organizer"]["email"] == "カレンダーXA"
-
-    async def test_friendly_name_matching_another_id_not_double_replaced(
-        self, calendar_stub, monkeypatch
-    ) -> None:
-        """friendly_name が別のIDと一致しても再置換（多重置換）されない。"""
-        events = [{"id": "1", "organizer": {"email": "first@group.calendar.google.com"}}]
-        calendar_stub.get_google_calendar_client.return_value = _make_mock_calendar(events=events)
-        # 1つ目の friendly_name が 2つ目の id と同じ文字列。
-        _stub_google_calendars(monkeypatch, [
-            {"id": "first@group.calendar.google.com", "friendly_name": "second@group.calendar.google.com"},
-            {"id": "second@group.calendar.google.com", "friendly_name": "誤置換されるべきでない"},
-        ])
-
-        result = await execute({"date_range": "today"}, {})
-
-        # 1回の走査で置換するため、置換結果がさらに置換されることはない。
-        assert result["data"][0]["organizer"]["email"] == "second@group.calendar.google.com"
-
-    async def test_partial_occurrence_in_free_text_not_replaced(self, calendar_stub, monkeypatch) -> None:
-        """summary など自由記述に含まれる部分文字列は置換されない（完全一致のみ）。"""
-        events = [
-            {
-                "id": "1",
-                "summary": "family@group.calendar.google.com への招待",
-                "organizer": {"email": "family@group.calendar.google.com"},
-            }
-        ]
-        calendar_stub.get_google_calendar_client.return_value = _make_mock_calendar(events=events)
-        _stub_google_calendars(
-            monkeypatch,
-            [{"id": "family@group.calendar.google.com", "friendly_name": "家族のカレンダー"}],
-        )
-
-        result = await execute({"date_range": "today"}, {})
-
-        # フィールド値が完全一致する organizer.email のみ置換される。
-        assert result["data"][0]["organizer"]["email"] == "家族のカレンダー"
-        assert result["data"][0]["summary"] == "family@group.calendar.google.com への招待"
-
-    async def test_masking_does_not_mutate_input_events(self, calendar_stub, monkeypatch) -> None:
-        """置換処理は入力の events を破壊的に変更しない。"""
-        events = [{"id": "1", "organizer": {"email": "family@group.calendar.google.com"}}]
-        calendar_stub.get_google_calendar_client.return_value = _make_mock_calendar(events=events)
-        _stub_google_calendars(
-            monkeypatch,
-            [{"id": "family@group.calendar.google.com", "friendly_name": "家族のカレンダー"}],
-        )
-
-        await execute({"date_range": "today"}, {})
-
-        # 元の events オブジェクトは変更されていない。
-        assert events[0]["organizer"]["email"] == "family@group.calendar.google.com"
-
-    async def test_stripping_does_not_mutate_input_events(self, calendar_stub) -> None:
-        """attendees 除去は入力の events を破壊的に変更しない。"""
-        events = [{"id": "1", "attendees": [{"email": "someone@example.com"}]}]
-        calendar_stub.get_google_calendar_client.return_value = _make_mock_calendar(events=events)
-
-        result = await execute({"date_range": "today"}, {})
-
-        # 戻り値からは除去され、元の events には残っている。
-        assert "attendees" not in result["data"][0]
-        assert "attendees" in events[0]
 
 
 class TestExecuteParameters:

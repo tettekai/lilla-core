@@ -141,6 +141,7 @@ default; each one is opt-in, enabled only when you put its YAML under
 | `task_channel_summary` | task | [Channel notes (nightly summary)](channel-notes.md) |
 | `task_scheduled_llm` | task | [Scheduled notifications delegated to the LLM](scheduled-llm.md) |
 | `llm_expert` | LLM | Delegation to an expert sub-agent (see below) |
+| `llm_load_skill` | LLM | [Letting the LLM load skills itself](skills.md#letting-the-llm-load-skills-itself) |
 
 ### `llm_expert` (expert agent)
 

@@ -4,7 +4,7 @@
 > differ, the Japanese version is authoritative.
 
 At startup the core brings up an HTTP dashboard for reading conversation history, user
-memos and logs. There is no enable/disable flag — if the bot runs, the terminal is open.
+memos, skills and logs. There is no enable/disable flag — if the bot runs, the terminal is open.
 It is configured under `dashboard:` in `lilla.yaml`; omit the section for the defaults.
 
 ```yaml
@@ -36,10 +36,15 @@ dashboard:
 >   `http://<host>:8765` directly over a LAN needs `false`, otherwise login succeeds but
 >   the browser never sends the cookie back.
 
+## Skills
+
+Skills (`#/skills`) lists the skills called with `!skill` and lets you add, edit, delete
+and enable / disable them. See [Skills](skills.md) for the naming rules and how to call them.
+
 ## Home
 
 Home (`#/`) does not repeat the other lists; it only shows the current state. Each time it
-opens it calls `GET /api/dashboard/status` (login required) and shows two things:
+opens it calls `GET /api/dashboard/status` (login required) and shows three things:
 
 - Liveness: that the dashboard itself responds, and whether a ping to MongoDB succeeds.
   It does not run the full self-test that includes the LLM check (`!selftest full`).
@@ -47,8 +52,16 @@ opens it calls `GET /api/dashboard/status` (login required) and shows two things
   `logs` collection). Zero is shown as "none". No message text, logger names or stack
   traces are returned. If logs are not stored in MongoDB, the counts are always "none".
 
+- The number of LLM calls and total tokens in the last 24 hours (plus the estimated cost
+  if prices are configured). The detailed breakdown is on the Usage page.
+
 When MongoDB cannot be reached the page still loads; the affected items show as
 "no response" / "unavailable".
+
+## Usage
+
+Usage (`#/usage`) aggregates LLM token usage by day, provider and entry point. See
+[Recording LLM token usage](llm-usage.md) for the settings and what is recorded.
 
 Only `/oauth/{extension name}` sits outside the auth middleware, for public GETs a
 browser makes without a session (OAuth redirect targets and the like). An upstream access

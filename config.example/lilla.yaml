@@ -43,12 +43,26 @@ llm:
   default: grok
   # 1 回の会話で tool_calls を繰り返す上限回数（既定: 10）
   max_tool_call_iterations: 10
+  # 分割した LLM 応答ブロックの先頭から順に除去する正規表現（先頭にだけマッチ。`^` は不要）。
+  # 省略時は下の 2 つ（英語月名形式と [HH:MM] 形式）。[] なら除去しない。不正な正規表現は起動時に失敗する
+  # response_prefix_strip_patterns:
+  #   - '\[(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2} \d{2}:\d{2}\]\s*'
+  #   - '\[\d{1,2}:\d{2}\]\s*'
+  # LLM のトークン使用量の記録（MongoDB の llm_usage コレクション。ダッシュボードの Usage 画面で集計する）。
+  # 節ごと省略すると「記録する・90 日保持」。メッセージ本文やプロンプトは記録しない
+  usage_log:
+    enabled: true        # false で記録を止める（既存の記録は保持期間まで残る）
+    retention_days: 90   # 保持日数（1 以上）。変更後に書いた記録から効く
   providers:
     grok:
       type: openai_compat
       url: "https://api.x.ai/v1"
       model: "grok-4.3"
       api_key_env: "GROK_API_KEY"
+      # 任意: 概算コストの表示に使う 100 万トークンあたりの単価（入力・出力。通貨は自由）。
+      # 書いたプロバイダーだけ Usage 画面に概算コストが出る。請求額とは一致しない目安
+      # input_price_per_million_tokens: 1.25
+      # output_price_per_million_tokens: 2.5
 
 paths:
   tool_root: /tmp/lilla-tools
@@ -79,7 +93,8 @@ bot:
   max_image_attachment_size_mb: 8
 
 memory:
-  # LLM へ渡す会話履歴の最大件数（既定: 30）
+  # LLM へ渡す会話履歴をさかのぼる件数の目安（既定: 30）。件数制限が効くときは
+  # 最も古い候補が属する時の開始（HH:00）以降をすべて含めるため、この件数を超えることがある
   max_history_turns: 30
   # 会話履歴を MongoDB に残す時間（既定: 72）。0 なら期限なしで残す
   conversation_ttl_hours: 72
@@ -99,6 +114,7 @@ tools:
     # 例:
     # main:
     #   - llm_current_datetime
+    #   - llm_load_skill   # LLM が自分でスキルを読み込む（docs/ja/skills.md）
     #   - $search
     # search:          # main 以外のセット名は自由（半角英数字と - _ のみ）
     #   - llm_conversation_get

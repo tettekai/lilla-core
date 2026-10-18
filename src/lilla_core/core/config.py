@@ -39,6 +39,12 @@ _apply_dotenv_to_os_environ()
 #: `LlmProviderConfig.type` のうち、実際に LLM へ HTTP を出す具体プロバイダーの種別。
 CONCRETE_LLM_PROVIDER_TYPES = ("ollama", "openai_compat")
 
+#: 具体プロバイダーの `timeout_seconds` の既定値（LLM の応答を待つ上限の秒数）
+LLM_REQUEST_TIMEOUT_SECONDS = 300.0
+
+#: resolver の `timeout_seconds` の既定値（`async def resolve` を待つ上限の秒数）
+RESOLVER_TIMEOUT_SECONDS = 10.0
+
 
 class LlmProviderConfig(BaseModel):
     """LLMプロバイダーの設定モデル。
@@ -69,8 +75,18 @@ class LlmProviderConfig(BaseModel):
     script: str | None = None
     # `resolve` が具体名を返せなかったときに使う具体プロバイダー名
     fallback: str | None = None
-    # `async def resolve` の待ち時間の上限（秒）。超えたら `fallback` へ落とす
-    timeout_seconds: float = 10.0
+    # 待ち時間の上限（秒）。具体プロバイダーでは LLM の応答待ち（既定 300 秒）、
+    # resolver では `async def resolve` の待ち時間（既定 10 秒。超えたら `fallback` へ落とす）。
+    # 未指定なら `type` に応じた既定値をバリデータが入れる
+    timeout_seconds: float | None = None
+    # 具体プロバイダーのみ。概算コストの表示に使う単価（100 万トークンあたり。通貨は
+    # 利用者が決める）。未指定ならコストを出さない
+    input_price_per_million_tokens: float | None = None
+    output_price_per_million_tokens: float | None = None
+    # 具体プロバイダーのみ。`run_conversation` のツールループでこのプロバイダーが最終応答
+    # （tool_calls なし）を返したとき、その本文を捨てて書き直しに使う具体プロバイダー名。
+    # 書き直し先の `final_reply_provider` は見ない（連鎖しない）。未指定なら書き直さない
+    final_reply_provider: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -94,6 +110,11 @@ class LlmProviderConfig(BaseModel):
         `model` / `api_key_env` / `wakeup_file` / `extra_params` を持たない。
         `prompt` は具体プロバイダーでのみ source spec の形を検証し、resolver では
         書かれていても検証せず無視する（resolver は送信しないため追記の持ち主にしない）。
+        `timeout_seconds` は正の数に限り、未指定なら `type` に応じた既定値
+        （具体プロバイダー 300 秒・resolver 10 秒）を入れる。
+        単価（`input_price_per_million_tokens` / `output_price_per_million_tokens`）は
+        具体プロバイダーだけが持ち、0 以上に限る。
+        `final_reply_provider` も具体プロバイダーだけが持つ（指す先の検証は `LlmConfig`）。
         """
         if self.type == "resolver":
             missing = [name for name in ("script", "fallback") if not getattr(self, name)]
@@ -103,7 +124,15 @@ class LlmProviderConfig(BaseModel):
                 )
             unexpected = [
                 name
-                for name in ("url", "model", "api_key_env", "wakeup_file")
+                for name in (
+                    "url",
+                    "model",
+                    "api_key_env",
+                    "wakeup_file",
+                    "input_price_per_million_tokens",
+                    "output_price_per_million_tokens",
+                    "final_reply_provider",
+                )
                 if getattr(self, name) is not None
             ]
             if self.extra_params:
@@ -112,8 +141,6 @@ class LlmProviderConfig(BaseModel):
                 raise ValueError(
                     "llm provider of type 'resolver' must not set: " + ", ".join(unexpected)
                 )
-            if self.timeout_seconds <= 0:
-                raise ValueError("llm provider timeout_seconds must be positive")
         else:
             missing = [name for name in ("url", "model") if not getattr(self, name)]
             if missing:
@@ -127,6 +154,16 @@ class LlmProviderConfig(BaseModel):
                 )
             if self.prompt is not None:
                 _validate_provider_prompt_spec(self.prompt)
+            for name in ("input_price_per_million_tokens", "output_price_per_million_tokens"):
+                price = getattr(self, name)
+                if price is not None and price < 0:
+                    raise ValueError(f"llm provider {name} must not be negative")
+        if self.timeout_seconds is None:
+            self.timeout_seconds = (
+                RESOLVER_TIMEOUT_SECONDS if self.type == "resolver" else LLM_REQUEST_TIMEOUT_SECONDS
+            )
+        elif self.timeout_seconds <= 0:
+            raise ValueError("llm provider timeout_seconds must be positive")
         return self
 
 
@@ -338,6 +375,8 @@ class BotConfig(BaseModel):
 class MemoryConfig(BaseModel):
     """lilla.yaml の `memory:` セクション。"""
 
+    # LLM へ渡す会話履歴をさかのぼる件数の目安。件数制限が効くときは最も古い候補が
+    # 属する時の開始（HH:00）以降をすべて含めるため、この件数を超えることがある。
     max_history_turns: int = 30
     conversation_ttl_hours: int = 72
     history_days: int = 2
@@ -554,6 +593,30 @@ class UiConfig(BaseModel):
 # 同名のプロバイダーがあると切り替えと解除の区別が付かなくなる。
 RESERVED_LLM_PROVIDER_NAMES: frozenset[str] = frozenset({"reset"})
 
+# `llm.response_prefix_strip_patterns` を省略（または null）したときの既定。
+# 履歴読み込み時にシステムが付ける `[Apr 28 11:22] ` 形式と、モデルが自発的に付けがちな
+# `[19:14] ` 形式。先頭限定でマッチさせるのはコード側（`services/message_splitter.py`）。
+DEFAULT_RESPONSE_PREFIX_STRIP_PATTERNS: tuple[str, ...] = (
+    r"\[(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2} \d{2}:\d{2}\]\s*",
+    r"\[\d{1,2}:\d{2}\]\s*",
+)
+
+
+#: `llm.usage_log.retention_days` の既定値（日）
+DEFAULT_LLM_USAGE_RETENTION_DAYS = 90
+
+
+class LlmUsageLogConfig(BaseModel):
+    """lilla.yaml の `llm.usage_log:` セクション（LLM のトークン使用量の記録）。
+
+    全項目に既定があり、節そのものを省略すると記録は有効・保持 90 日になる。
+    """
+
+    # 使用量を `llm_usage` コレクションへ記録するか
+    enabled: bool = True
+    # 記録の保持日数。各記録の `expire_at` に反映し、TTL インデックスが消す
+    retention_days: int = Field(default=DEFAULT_LLM_USAGE_RETENTION_DAYS, ge=1)
+
 
 class LlmConfig(BaseModel):
     """lilla.yaml の `llm:` セクション。"""
@@ -561,9 +624,44 @@ class LlmConfig(BaseModel):
     default: str = "ollama-gemma3"
     providers: dict[str, LlmProviderConfig] = {}
     max_tool_call_iterations: int = 10
+    # トークン使用量の記録（`services/llm_usage.py`）
+    usage_log: LlmUsageLogConfig = Field(default_factory=LlmUsageLogConfig)
     # LLM へ送る直前の拒否リスト（JSON の文字列配列）の絶対パス。未指定なら検査しない。
     # 実体は `core/llm_send_guard.py` が読む。
     send_blocklist_path: str | None = None
+    # LLM 応答を分割した各ブロックの先頭から順に除去する正規表現。空リストなら除去しない。
+    response_prefix_strip_patterns: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_RESPONSE_PREFIX_STRIP_PATTERNS)
+    )
+
+    @field_validator("usage_log", mode="before")
+    @classmethod
+    def _default_usage_log(cls, value: Any) -> Any:
+        """`usage_log:` とキーだけ書いて値が空（null）の場合も、省略と同じく既定にする。"""
+        if value is None:
+            return {}
+        return value
+
+    @field_validator("response_prefix_strip_patterns", mode="before")
+    @classmethod
+    def _default_response_prefix_strip_patterns(cls, value: Any) -> Any:
+        """キーだけ書いて値が空（null）の場合も、省略と同じく既定のパターンにする。"""
+        if value is None:
+            return list(DEFAULT_RESPONSE_PREFIX_STRIP_PATTERNS)
+        return value
+
+    @field_validator("response_prefix_strip_patterns")
+    @classmethod
+    def _validate_response_prefix_strip_patterns(cls, value: list[str]) -> list[str]:
+        """各パターンが正規表現としてコンパイルできることを起動時に検証する。"""
+        for index, pattern in enumerate(value):
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(
+                    f"llm.response_prefix_strip_patterns[{index}] is not a valid regular expression: {exc}"
+                ) from exc
+        return value
 
     @field_validator("send_blocklist_path")
     @classmethod
@@ -586,8 +684,9 @@ class LlmConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_default_provider_exists(self) -> "LlmConfig":
-        """`default` が `providers` のキーに存在すること、resolver の `fallback` が
-        台帳にある具体プロバイダー（resolver 以外）を指すことを検証する。
+        """`default` が `providers` のキーに存在すること、resolver の `fallback` と
+        具体プロバイダーの `final_reply_provider` が台帳にある具体プロバイダー
+        （resolver 以外）を指すことを検証する。
 
         `llm:` セクション自体を省略した場合もクラスデフォルト
         （`default="ollama-gemma3"`, `providers={}`）に対してこの検証が走り、
@@ -609,6 +708,19 @@ class LlmConfig(BaseModel):
             )
         for name, provider in self.providers.items():
             if provider.type != "resolver":
+                if provider.final_reply_provider is None:
+                    continue
+                target = self.providers.get(provider.final_reply_provider)
+                if target is None:
+                    raise ValueError(
+                        f"llm.providers.{name}.final_reply_provider "
+                        f"'{provider.final_reply_provider}' is not defined in llm.providers"
+                    )
+                if target.type == "resolver":
+                    raise ValueError(
+                        f"llm.providers.{name}.final_reply_provider "
+                        f"'{provider.final_reply_provider}' must be a concrete provider, not a resolver"
+                    )
                 continue
             target = self.providers.get(provider.fallback)
             if target is None:

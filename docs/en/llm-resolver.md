@@ -20,6 +20,7 @@ llm:
       url: "https://api.deepseek.com"
       model: "deepseek-flash"
       api_key_env: "DEEPSEEK_API_KEY"
+      # timeout_seconds: 300  # upper bound for waiting on the LLM response (default 300 s)
       extra_params:
         reasoning_effort: low
     deepseek-flash-high:
@@ -66,6 +67,11 @@ expansion.
 | `fallback` | Yes | A concrete provider name in `llm.providers` (not a resolver) |
 | `timeout_seconds` | No | Upper bound in seconds for an `async def resolve` (default 10) |
 
+Concrete providers also accept `timeout_seconds`, with a different meaning: there it is the
+upper bound in seconds for waiting on the LLM response (default 300). A resolver's value does
+not apply to the request sent to the chosen concrete provider. Zero or negative values fail
+startup for both.
+
 A resolver makes no HTTP calls, so `url` / `model` / `api_key_env` / `wakeup_file` /
 `extra_params` are not allowed on it. Conversely, concrete providers require `url`
 / `model` and may not set `script` / `fallback`. The Ollama wake-up (WOL) applies
@@ -73,6 +79,9 @@ only to concrete providers. Per-model system prompt additions (`prompt`) also go
 concrete providers. Writing one on a resolver does not fail startup; it is ignored, and
 the chosen concrete provider's `prompt` is used instead (see
 [Per-provider system prompt additions](llm-provider-prompt.md)).
+
+To have the main model rewrite a final reply written by the provider you handed over to,
+set `final_reply_provider` on the concrete provider ([Rewriting the tool loop's final reply](llm-final-reply.md)).
 
 Startup fails (fail-fast) when:
 

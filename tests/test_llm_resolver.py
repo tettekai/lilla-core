@@ -135,6 +135,34 @@ class TestProviderConfigValidation:
         with pytest.raises(ValidationError, match=field):
             config_mod.LlmProviderConfig(**data)
 
+    @pytest.mark.parametrize(
+        ("data", "expected"),
+        [
+            ({"type": "openai_compat", "url": "u", "model": "m"}, 300.0),
+            ({"type": "ollama", "url": "u", "model": "m"}, 300.0),
+            ({"type": "resolver", "script": "x.py", "fallback": "high"}, 10.0),
+            ({"type": "openai_compat", "url": "u", "model": "m", "timeout_seconds": 600}, 600.0),
+            ({"type": "resolver", "script": "x.py", "fallback": "high", "timeout_seconds": 3}, 3.0),
+        ],
+    )
+    def test_timeout_seconds_default_depends_on_type(self, modules, data, expected):
+        """`timeout_seconds` は未指定なら具体プロバイダー 300 秒・resolver 10 秒になる。"""
+        config_mod, _ = modules
+        assert config_mod.LlmProviderConfig(**data).timeout_seconds == expected
+
+    @pytest.mark.parametrize("provider_type", ["openai_compat", "ollama", "resolver"])
+    @pytest.mark.parametrize("value", [0, -1])
+    def test_timeout_seconds_must_be_positive(self, modules, provider_type, value):
+        """`timeout_seconds` に 0 以下を書くと、どの型でも起動時に落ちる。"""
+        config_mod, _ = modules
+        data = (
+            {"type": "resolver", "script": "x.py", "fallback": "high"}
+            if provider_type == "resolver"
+            else {"type": provider_type, "url": "u", "model": "m"}
+        )
+        with pytest.raises(ValidationError, match="timeout_seconds must be positive"):
+            config_mod.LlmProviderConfig(**data, timeout_seconds=value)
+
     def test_resolver_rejects_url(self, modules):
         """resolver は HTTP を出さないので `url` を持てない。"""
         config_mod, _ = modules
@@ -204,6 +232,55 @@ class TestProviderConfigValidation:
             config_mod.resolve_llm_resolver_script_path("${config_root}/sub/r.py", config_root)
             == path.resolve()
         )
+
+
+class TestFinalReplyProviderConfig:
+    """具体プロバイダーの `final_reply_provider`（最終応答の書き直し先）の設定検証。"""
+
+    @staticmethod
+    def _concrete(**kwargs) -> dict:
+        """具体プロバイダーのエントリを返す。"""
+        return {"type": "openai_compat", "url": "https://example.invalid", "model": "m", **kwargs}
+
+    def test_concrete_target_is_accepted(self, modules):
+        """台帳にある具体プロバイダーを指せば通る。"""
+        config_mod, _ = modules
+        llm = config_mod.LlmConfig(
+            default="local",
+            providers={"local": self._concrete(final_reply_provider="main"), "main": self._concrete()},
+        )
+        assert llm.providers["local"].final_reply_provider == "main"
+        assert llm.providers["main"].final_reply_provider is None
+
+    def test_resolver_target_fails(self, modules):
+        """resolver を指すと起動時に落ちる。"""
+        config_mod, _ = modules
+        with pytest.raises(ValidationError, match="final_reply_provider 'router' must be a concrete"):
+            config_mod.LlmConfig(
+                default="local",
+                providers={
+                    "local": self._concrete(final_reply_provider="router"),
+                    "main": self._concrete(),
+                    "router": {"type": "resolver", "script": "x.py", "fallback": "main"},
+                },
+            )
+
+    def test_unknown_target_fails(self, modules):
+        """台帳に無い名前を指すと起動時に落ちる。"""
+        config_mod, _ = modules
+        with pytest.raises(ValidationError, match="final_reply_provider 'missing' is not defined"):
+            config_mod.LlmConfig(
+                default="local",
+                providers={"local": self._concrete(final_reply_provider="missing")},
+            )
+
+    def test_resolver_must_not_set(self, modules):
+        """resolver 自身には書けない。"""
+        config_mod, _ = modules
+        with pytest.raises(ValidationError, match="must not set: final_reply_provider"):
+            config_mod.LlmProviderConfig(
+                type="resolver", script="x.py", fallback="main", final_reply_provider="main"
+            )
 
 
 class TestProviderPromptConfig:

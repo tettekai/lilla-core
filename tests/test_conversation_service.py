@@ -16,6 +16,8 @@ def mock_cfg() -> MagicMock:
     """conversation_service が参照する AppConfig モック。"""
     cfg = MagicMock()
     cfg.llm.max_tool_call_iterations = 3
+    cfg.llm.default = "default-llm"
+    cfg.llm.providers = {}
     cfg.media_reset_minutes = 5
     cfg.media_default = ""
     cfg.media_base_url = ""
@@ -325,6 +327,30 @@ class TestLlmResolverPerToolCall:
 
 
 class TestRunConversation:
+    async def test_sets_conversation_as_llm_call_origin(
+        self, conversation_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """LLM 呼び出し中はクライアント種別とチャンネルが入口として積まれ、外側のタスク名は残る。"""
+        from lilla_core.core.llm_call_origin import get_llm_call_origin, llm_call_origin
+
+        seen = []
+
+        async def chat(*args, **kwargs):
+            seen.append(get_llm_call_origin())
+            return "ok"
+
+        monkeypatch.setattr(conversation_service, "chat_to_llm", chat)
+
+        with llm_call_origin(task_name="task_daily"):
+            await conversation_service.run_conversation(
+                {}, client_type="discord", discord_channel_id=99
+            )
+
+        assert seen[0].client_type == "discord"
+        assert seen[0].discord_channel_id == 99
+        assert seen[0].task_name == "task_daily"
+        assert get_llm_call_origin().client_type is None
+
     async def test_fallback_to_chat_to_llm_when_no_tools(
         self, conversation_service, mock_memory_manager_instance, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -791,6 +817,152 @@ class TestRunConversation:
 # ---------------------------------------------------------------------------
 # TestMetaActionsIntegration
 # ---------------------------------------------------------------------------
+
+
+class TestFinalReplyProvider:
+    """`final_reply_provider` による最終応答の書き直しのテスト。"""
+
+    @staticmethod
+    def _tool_response() -> dict:
+        """ツールを 1 回呼ぶ応答を返す。"""
+        return {
+            "content": None,
+            "finish_reason": "tool_calls",
+            "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "test_tool", "arguments": "{}"}}
+            ],
+            "raw_message": {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1"}]},
+        }
+
+    @staticmethod
+    def _text_response(content: str) -> dict:
+        """tool_calls なしの応答を返す。"""
+        return {
+            "content": content,
+            "finish_reason": "stop",
+            "tool_calls": None,
+            "raw_message": {"role": "assistant", "content": content},
+        }
+
+    @staticmethod
+    def _provider(final_reply_provider: str | None = None) -> MagicMock:
+        """`final_reply_provider` だけを持つ具体プロバイダー設定のモックを返す。"""
+        provider = MagicMock()
+        provider.final_reply_provider = final_reply_provider
+        return provider
+
+    @pytest.fixture
+    def setup_loop(self, conversation_service, mock_cfg: MagicMock, monkeypatch: pytest.MonkeyPatch):
+        """ツール 1 回 → 最終応答の順に返す LLM と、プロバイダー台帳を用意する。"""
+
+        def _setup(responses: list[dict], **providers: MagicMock) -> AsyncMock:
+            mock_cfg.llm.providers = providers
+            mock_chat = AsyncMock(side_effect=responses)
+            monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
+            monkeypatch.setattr(conversation_service, "resolve_llm_name", AsyncMock(return_value="local"))
+            return mock_chat
+
+        return _setup
+
+    async def test_final_reply_is_rewritten_by_configured_provider(
+        self, conversation_service, setup_loop
+    ) -> None:
+        """最終応答の本文は捨て、指定先にツールなしで 1 回問い合わせた結果を返す。"""
+        mock_chat = setup_loop(
+            [self._tool_response(), self._text_response("local draft"), self._text_response("rewritten")],
+            local=self._provider("main"),
+            main=self._provider(),
+        )
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(fake_tools)
+
+        assert result == "rewritten"
+        assert mock_chat.await_count == 3
+        rewrite_call = mock_chat.await_args_list[2]
+        assert rewrite_call.kwargs["llm_name"] == "main"
+        assert rewrite_call.kwargs["tools"] is None
+        assert rewrite_call.kwargs["system_prompt"] == "test system prompt"
+
+    async def test_rewrite_input_excludes_discarded_reply(
+        self, conversation_service, setup_loop
+    ) -> None:
+        """書き直しの入力は捨てた最終応答を含まず、ツール結果と指示で終わる。"""
+        mock_chat = setup_loop(
+            [self._tool_response(), self._text_response("local draft"), self._text_response("rewritten")],
+            local=self._provider("main"),
+            main=self._provider(),
+        )
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        await conversation_service.run_conversation(fake_tools)
+
+        rewrite_messages = mock_chat.await_args_list[2].args[0]
+        assert all("local draft" not in str(m.get("content")) for m in rewrite_messages)
+        assert rewrite_messages[-2]["role"] == "tool"
+        assert rewrite_messages[-1] == {
+            "role": "user",
+            "content": conversation_service._FINAL_REPLY_REWRITE_INSTRUCTION,
+        }
+
+    async def test_rewrite_does_not_chain(self, conversation_service, setup_loop) -> None:
+        """書き直し先の `final_reply_provider` は見ず、問い合わせは 1 回で閉じる。"""
+        mock_chat = setup_loop(
+            [self._tool_response(), self._text_response("local draft"), self._text_response("rewritten")],
+            local=self._provider("main"),
+            main=self._provider("other"),
+            other=self._provider(),
+        )
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(fake_tools)
+
+        assert result == "rewritten"
+        assert mock_chat.await_count == 3
+
+    async def test_meta_actions_apply_to_rewritten_reply(
+        self, conversation_service, setup_loop
+    ) -> None:
+        """META ブロックの処理は書き直し後の本文に対して行う。"""
+        rewritten = 'rewritten\n---META---\n{"actions": []}\n---END_META---'
+        setup_loop(
+            [self._tool_response(), self._text_response("local draft"), self._text_response(rewritten)],
+            local=self._provider("main"),
+            main=self._provider(),
+        )
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(fake_tools)
+
+        assert result.strip() == "rewritten"
+
+    async def test_unset_keeps_original_reply(self, conversation_service, setup_loop) -> None:
+        """未設定なら最終応答をそのまま返し、追加の問い合わせはしない。"""
+        mock_chat = setup_loop(
+            [self._tool_response(), self._text_response("local reply")],
+            local=self._provider(),
+        )
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(fake_tools)
+
+        assert result == "local reply"
+        assert mock_chat.await_count == 2
+
+    async def test_no_tools_conversation_is_not_rewritten(
+        self, conversation_service, mock_cfg: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ツールなしの会話（chat_to_llm 経路）では書き直さない。"""
+        mock_cfg.llm.providers = {"local": self._provider("main"), "main": self._provider()}
+        monkeypatch.setattr(conversation_service, "resolve_llm_name", AsyncMock(return_value="local"))
+        mock_with_tools = AsyncMock()
+        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_with_tools)
+        monkeypatch.setattr(conversation_service, "chat_to_llm", AsyncMock(return_value="plain reply"))
+
+        result = await conversation_service.run_conversation({})
+
+        assert result == "plain reply"
+        mock_with_tools.assert_not_awaited()
 
 
 class TestMetaActionsIntegration:
@@ -1435,3 +1607,111 @@ class TestSystemPromptChannelContext:
 
         kwargs = mock_memory_manager_instance.build_system_prompt.await_args.kwargs
         assert kwargs["discord_channel_id"] is None
+
+
+class TestSkillListInjection:
+    """`llm_load_skill` を LLM に渡す会話でだけスキル一覧の節を足すことを検証する。"""
+
+    @pytest.fixture
+    def tools(self) -> dict:
+        """スキル読み込みツール（stem は利用者が決める名前）と別のツール。"""
+        return {
+            "my_skill_loader": {
+                "schema": {"type": "function", "function": {"name": "my_skill_loader"}},
+                "execute": AsyncMock(),
+                "tool_config": {"type": "llm_load_skill", "max_skills": 7},
+            },
+            "other_tool": {
+                "schema": {"type": "function", "function": {"name": "other_tool"}},
+                "execute": AsyncMock(),
+                "tool_config": {"type": "other_tool"},
+            },
+        }
+
+    @pytest.fixture
+    def section_builder(
+        self, conversation_service, monkeypatch: pytest.MonkeyPatch
+    ) -> AsyncMock:
+        """一覧の組み立てと LLM 呼び出し・ツールの絞り込みを差し替える。"""
+        from lilla_core.builtin_tools import llm_load_skill
+
+        builder = AsyncMock(return_value="SKILL-SECTION")
+        monkeypatch.setattr(llm_load_skill, "build_skill_list_section", builder)
+        monkeypatch.setattr(
+            conversation_service,
+            "build_tools_param",
+            lambda tools, client_type="discord", allowed_names=None: [
+                entry["schema"]
+                for name, entry in tools.items()
+                if allowed_names is None or name in allowed_names
+            ],
+        )
+        monkeypatch.setattr(conversation_service, "chat_to_llm", AsyncMock(return_value="ok"))
+        monkeypatch.setattr(
+            conversation_service,
+            "chat_to_llm_with_tools",
+            AsyncMock(return_value={
+                "content": "ok", "tool_calls": None, "finish_reason": "stop",
+                "raw_message": {"role": "assistant", "content": "ok"},
+            }),
+        )
+        monkeypatch.setattr(conversation_service, "is_tools_disabled", lambda: False)
+        return builder
+
+    def _extra_sections(self, mock_memory_manager_instance: MagicMock) -> list[str]:
+        return mock_memory_manager_instance.build_system_prompt.await_args.kwargs[
+            "extra_sections"
+        ]
+
+    async def test_injected_when_tool_is_passed(
+        self, conversation_service, mock_memory_manager_instance, section_builder, tools
+    ) -> None:
+        """渡すツールに含まれれば、その stem と YAML の設定で一覧を組み立てて足す。"""
+        await conversation_service.run_conversation(tools)
+
+        section_builder.assert_awaited_once_with(
+            "my_skill_loader", tools["my_skill_loader"]["tool_config"]
+        )
+        assert self._extra_sections(mock_memory_manager_instance) == ["SKILL-SECTION"]
+
+    async def test_not_injected_when_outside_set(
+        self, conversation_service, mock_memory_manager_instance, section_builder, tools
+    ) -> None:
+        """セットに含まれないなら足さない。"""
+        await conversation_service.run_conversation(tools, allowed_tool_names=["other_tool"])
+
+        section_builder.assert_not_awaited()
+        assert self._extra_sections(mock_memory_manager_instance) == [""]
+
+    async def test_not_injected_without_tools(
+        self, conversation_service, mock_memory_manager_instance, section_builder, tools
+    ) -> None:
+        """ツールなし（空の許可リスト・空のレジストリ）で LLM を呼ぶなら足さない。"""
+        await conversation_service.run_conversation(tools, allowed_tool_names=[])
+        await conversation_service.run_conversation({})
+
+        section_builder.assert_not_awaited()
+        assert self._extra_sections(mock_memory_manager_instance) == [""]
+
+    async def test_not_injected_when_tools_disabled(
+        self, conversation_service, mock_memory_manager_instance, section_builder, tools,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`!disable_tools` 中は足さない。"""
+        monkeypatch.setattr(conversation_service, "is_tools_disabled", lambda: True)
+
+        await conversation_service.run_conversation(tools)
+
+        section_builder.assert_not_awaited()
+        assert self._extra_sections(mock_memory_manager_instance) == [""]
+
+    async def test_main_set_is_resolved_before_prompt(
+        self, conversation_service, mock_memory_manager_instance, section_builder, tools,
+        mock_llm_tool_loader: MagicMock,
+    ) -> None:
+        """許可リスト省略時は `main` セットの展開結果で判定する。"""
+        mock_llm_tool_loader.resolve_available_tools.side_effect = lambda e, t: ["other_tool"]
+
+        await conversation_service.run_conversation(tools)
+
+        section_builder.assert_not_awaited()

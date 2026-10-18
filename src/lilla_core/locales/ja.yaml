@@ -10,6 +10,7 @@ command:
     unknown_title: "コマンド処理エラー"
     unknown: "未知のコマンドです: !{name}\n現在サポートしているコマンド: {supported}"
     error: "コマンド処理中にエラーが発生しました"
+    discord_only: "!{name} は Discord からのみ実行できます。"
 
   cleardirty:
     not_found: "削除対象の履歴が見つかりません。"
@@ -27,6 +28,18 @@ command:
     status: "現在のモデル: {current}\n利用可能なモデル: {available}\n`!model <名前>` で切り替え、`!model reset` で既定に戻します"
     not_found: "モデル '{name}' は見つかりません。利用可能なモデル: {available}"
     none: "（なし）"
+
+  skill:
+    list_header: "利用できるスキル:"
+    list_footer: "呼び出し方: `!skill <スキル名> [追加指示]`"
+    list_empty: "利用できるスキルはありません。ダッシュボードのスキルページから登録できます。"
+    not_found: "スキル '{name}' は見つかりません。"
+    disabled: "スキル '{name}' は無効になっています。"
+    # 以下は展開したスキルを LLM へ渡すときのラッパー（services/skills.py の format_skill_instruction）
+    instruction_start: "[システム指示: スキル「{name}」]"
+    instruction_preamble: "以下はユーザーの発言ではなく、システムからの動作指示です。この指示に従って応答してください。"
+    instruction_end: "[/システム指示]"
+    instruction_extra: "追加指示: {extra}"
 
   mongodata:
     json_parse_title: "!mongodata: JSONパースエラー"
@@ -113,3 +126,13 @@ task:
 conversation:
   reauth_required: "【再認証が必要です】\n{service} の認証が切れています。\n以下のリンクからログインしてください。\n{url}"
   tool_call_limit: "ツール呼び出しの上限に達しました。処理を中断しました。"
+
+tool:
+  # 組み込みツール llm_load_skill（builtin_tools/llm_load_skill.py）
+  load_skill:
+    list_header: "## 利用できるスキル"
+    list_intro: "以下のスキルは `{tool}` ツールに名前を指定すると本文を読み込めます。一覧の名前と説明を見て、必要と判断したときだけ読み込んでください。"
+    list_truncated: "ほか {count} 件は一覧に載せていません。名前が分かれば `{tool}` で読み込めます。"
+    not_found: "スキル '{name}' は見つかりません。"
+    disabled: "スキル '{name}' は無効になっています。"
+    loaded: "スキル '{name}' を読み込みました。"

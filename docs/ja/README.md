@@ -18,16 +18,22 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [タイムゾーン](timezone.md) — `ui.timezone`
 - [LLM プロバイダーの回しごと選択](llm-resolver.md) — `llm.providers` の `type: resolver`
 - [プロバイダーごとのシステムプロンプト追記](llm-provider-prompt.md) — `llm.providers.<キー>.prompt`
+- [ツールループの最終応答の書き直し](llm-final-reply.md) — `llm.providers.<キー>.final_reply_provider`
 - [LLM 送信前の拒否リスト](llm-send-guard.md) — `llm.send_blocklist_path`
+- [LLM 応答の先頭 prefix の除去](llm-response-prefix.md) — `llm.response_prefix_strip_patterns`
+- [LLM のトークン使用量の記録](llm-usage.md) — `llm.usage_log` と、ダッシュボードの Usage 画面
 - [観測用ダッシュボード](dashboard.md) — 公開面への注意を含む
+- [スキル](skills.md) — `!skill` と、ダッシュボードの Skills 画面
 - [共有 HTTP サーバー](http-server.md) — `http:`、Bearer トークン、拡張からのルート追加
 - [ツール契約](tools.md) — LLM ツール・task ツール・組み込みツール
 - [判定ヘルパー（Jev）](jev.md) — 任意の `lilla_core.tool_support.jev`
-- [Google OAuth / Google Calendar（公式拡張パック）](google.md) — `lilla_core.extensions` の同梱拡張
+- [Google OAuth / Calendar / Drive（公式拡張パック）](google.md) — `lilla_core.extensions` の同梱拡張
+- [ローカルのファイル読み書き（公式拡張パック）](files.md) — `lilla_core.extensions.files`
 
 ## 拡張
 
 - [拡張の基本](extensions.md) — メソッド表、衝突ルール、ロケールカタログ、依存、互換性
+- [コマンドの実装と、Discord 以外からの実行](commands.md) — `CommandContext` と `dispatch_command`
 - [設定の合成](extension-config.md) — `config_model()` / `env_fields()` / `get_section()`
 - [ダッシュボードへの差し込み](extension-dashboard.md)
 - [拡張のテストの書き方](extension-testing.md) — `lilla_core.testing`
