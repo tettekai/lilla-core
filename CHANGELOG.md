@@ -7,6 +7,8 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-18
+
 ### Added
 
 - ツールループの最終応答を別プロバイダーで書き直す `llm.providers.<キー>.final_reply_provider` を追加した（#247）。
