@@ -169,6 +169,22 @@ class TestProviderConfigValidation:
         with pytest.raises(ValidationError, match="url"):
             config_mod.LlmProviderConfig(type="resolver", script="x.py", fallback="high", url="u")
 
+    @pytest.mark.parametrize(
+        "data",
+        [
+            {"type": "ollama", "url": "u", "model": "m"},
+            {"type": "resolver", "script": "x.py", "fallback": "high"},
+        ],
+    )
+    def test_removed_wol_fields_are_ignored(self, modules, data):
+        """廃止した `wakeup_file` / `wol_sleep_seconds` が残っていても落とさず無視する。"""
+        config_mod, _ = modules
+        provider = config_mod.LlmProviderConfig(
+            **data, wakeup_file="/tmp/wake", wol_sleep_seconds=30
+        )
+        assert not hasattr(provider, "wakeup_file")
+        assert not hasattr(provider, "wol_sleep_seconds")
+
     def test_fallback_must_exist(self, modules, config_root):
         """`fallback` が台帳に無ければ落ちる。"""
         config_mod, _ = modules

@@ -1,10 +1,8 @@
-import asyncio
 import json
 import logging
 import os
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, NoReturn, Protocol
 
 from lilla_core.core.config import get_config, resolve_llm_provider_prompt_spec
@@ -142,23 +140,6 @@ def _resolve_api_key(provider) -> str:
     return os.environ.get(provider.api_key_env, "")
 
 
-async def _wake_ollama_if_needed(provider) -> None:
-    """Ollama のヘルスチェックを行い、応答しなければ WOL を試みる。
-
-    `/api/version` への疎通確認に失敗した場合、wakeup_file が設定されていれば
-    それを touch して `wol_sleep_seconds` 秒だけ起動を待つ。未設定の場合は
-    警告ログを出して WOL をスキップする。
-    """
-    try:
-        await send_http_request(f"{provider.url}/api/version", method="GET", timeout=3)
-    except Exception:
-        if provider.wakeup_file:
-            Path(provider.wakeup_file).touch(exist_ok=True)
-            await asyncio.sleep(provider.wol_sleep_seconds)
-        else:
-            logger.warning("wakeup_file is not configured. Skipping WOL")
-
-
 @dataclass(frozen=True)
 class LLMRequest:
     """アダプターが組み立てた 1 回分の送信内容。
@@ -191,12 +172,9 @@ class LLMResult:
 class LLMProviderAdapter(Protocol):
     """1 つの API 形式（エンドポイントと入出力の形）を表すプロバイダーアダプター。
 
-    送信前検査・WOL・HTTP 送信・例外ラップは共通の送信関数（`_send`）が行い、
+    送信前検査・HTTP 送信・例外ラップは共通の送信関数（`_send`）が行い、
     アダプターはリクエストの組み立てと応答の解釈だけを受け持つ。
     """
-
-    #: 送信前に Ollama の起動確認（WOL）を行うか
-    wakes_ollama: bool
 
     def build_request(
         self,
@@ -262,8 +240,6 @@ class OllamaNativeAdapter:
     展開する。認証ヘッダーは付けない。
     """
 
-    wakes_ollama = True
-
     def build_request(
         self,
         provider,
@@ -303,11 +279,10 @@ class ChatCompletionsAdapter:
     読まず、空のキーで `Authorization` ヘッダーを付ける（Ollama の OpenAI 互換エンドポイント）。
     """
 
-    def __init__(self, path: str, *, use_api_key: bool, wakes_ollama: bool = False) -> None:
-        """エンドポイントのパスと、API キー・WOL の扱いを受け取る。"""
+    def __init__(self, path: str, *, use_api_key: bool) -> None:
+        """エンドポイントのパスと、API キーの扱いを受け取る。"""
         self.path = path
         self.use_api_key = use_api_key
-        self.wakes_ollama = wakes_ollama
 
     def build_request(
         self,
@@ -359,8 +334,6 @@ class ResponsesAdapter:
     会話履歴は `input` に、システムプロンプトは `instructions` に渡す。Chat Completions と
     違い、`system_prompt` が無ければ既定のシステムプロンプトは補わない。
     """
-
-    wakes_ollama = False
 
     def build_request(
         self,
@@ -425,9 +398,7 @@ _ADAPTERS: dict[str, dict[str, LLMProviderAdapter]] = {
     "ollama": {
         "chat": OllamaNativeAdapter(),
         # tools 付きは Ollama の OpenAI 互換エンドポイントを使う
-        "tools": ChatCompletionsAdapter(
-            "/v1/chat/completions", use_api_key=False, wakes_ollama=True
-        ),
+        "tools": ChatCompletionsAdapter("/v1/chat/completions", use_api_key=False),
     },
     "openai_compat": {
         "chat": _CHAT_COMPLETIONS,
@@ -464,9 +435,9 @@ async def _send(
     provider_name: str,
     api: str,
 ) -> LLMResult:
-    """送信前検査 → （必要なら）WOL → HTTP 送信 → 応答解釈 → 例外ラップ を順に行う。
+    """送信前検査 → HTTP 送信 → 応答解釈 → 例外ラップ を順に行う。
 
-    送信を止める回は WOL もしないよう、検査を最初に済ませる。タイムアウトはプロバイダー
+    送信を止める回は何も送らないよう、検査を最初に済ませる。タイムアウトはプロバイダー
     設定の `timeout_seconds`（具体プロバイダーの既定 300 秒）を使う。検査の例外
     （`LLMError` のサブクラス）はそのまま、送信と解釈の失敗は `LLMError` にラップして送出する。
 
@@ -474,8 +445,6 @@ async def _send(
     `record_llm_usage()` で記録する（記録の失敗は結果に影響しない）。
     """
     ensure_llm_request_allowed(request.body)
-    if adapter.wakes_ollama:
-        await _wake_ollama_if_needed(provider)
     started = time.monotonic()
     try:
         reply = await send_http_request(

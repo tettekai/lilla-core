@@ -58,9 +58,6 @@ class LlmProviderConfig(BaseModel):
     type: Literal["ollama", "openai_compat", "resolver"]
     url: str | None = None
     model: str | None = None
-    # ollama タイプのみ
-    wakeup_file: str | None = None
-    wol_sleep_seconds: int = 30
     # openai_compat タイプのみ
     api_key_env: str | None = None
     # プロバイダー固有の追加パラメータ（POSTボディのトップレベルに展開される）
@@ -107,7 +104,7 @@ class LlmProviderConfig(BaseModel):
 
         具体プロバイダーは `url` / `model` が必須で `script` / `fallback` を持たない。
         resolver は `script` / `fallback` が必須で、HTTP を出さないため `url` /
-        `model` / `api_key_env` / `wakeup_file` / `extra_params` を持たない。
+        `model` / `api_key_env` / `extra_params` を持たない。
         `prompt` は具体プロバイダーでのみ source spec の形を検証し、resolver では
         書かれていても検証せず無視する（resolver は送信しないため追記の持ち主にしない）。
         `timeout_seconds` は正の数に限り、未指定なら `type` に応じた既定値
@@ -128,7 +125,6 @@ class LlmProviderConfig(BaseModel):
                     "url",
                     "model",
                     "api_key_env",
-                    "wakeup_file",
                     "input_price_per_million_tokens",
                     "output_price_per_million_tokens",
                     "final_reply_provider",
