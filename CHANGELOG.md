@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+### Removed
+
+- Ollama の起動確認（WOL）処理と、`llm.providers.<キー>.wakeup_file` / `wol_sleep_seconds` 設定を削除した（#256）。
+  `type: ollama` のプロバイダーへ送る前に `/api/version` へ疎通確認を送らなくなり、本来のエンドポイントへの
+  1 回だけを送る。ホストの起動が必要なら利用側で用意する。設定に `wakeup_file` / `wol_sleep_seconds` が
+  残っていても起動は失敗せず、無視される
+
 ## [0.7.0] - 2026-10-18
 
 ### Added

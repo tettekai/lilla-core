@@ -45,7 +45,7 @@ nothing, so the core never depends on the presence of extensions.
 ## Features
 
 - Runs as a Discord bot out of the box (works with no extensions)
-- Switch between multiple LLM providers via config: Ollama (with Wake-on-LAN support)
+- Switch between multiple LLM providers via config: Ollama
   and OpenAI-compatible APIs
 - tool_call loop, plus management of conversation history, user memos, and session
   memory
