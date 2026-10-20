@@ -7,6 +7,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `llm.providers.<キー>.final_reply_provider` の書き直しで、書き直し先にも元のツールループと同じツールを渡すようにした（#259）。
+  書き直し先がツールを呼べば実行し、そのまま書き直し先でツールループを続ける（以降は resolver で再判定せず、
+  書き直し先の `final_reply_provider` も見ない）。往復回数は元のツールループと通算で `llm.max_tool_call_iterations`
+  まで。書き直しの指示文（user メッセージ）は足さなくなり、捨てた最終応答を除いたメッセージ列をそのまま渡す。
+  書き直し先がツールを呼ばなければ、従来どおり問い合わせ 1 回で最終応答になる
+
 ### Removed
 
 - Ollama の起動確認（WOL）処理と、`llm.providers.<キー>.wakeup_file` / `wol_sleep_seconds` 設定を削除した（#256）。
