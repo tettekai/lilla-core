@@ -141,16 +141,6 @@ async def _build_skill_list_section(tools_param: list, llm_tools: dict) -> str:
     return ""
 
 
-# 最終応答の書き直し（`final_reply_provider`）で、捨てた最終応答の代わりに末尾へ足す指示。
-# 書き直し先は会話の言語・システムプロンプトの口調に従い、ツール結果の事実は変えない。
-_FINAL_REPLY_REWRITE_INSTRUCTION = (
-    "Based on the conversation and tool results above, write the final reply to the user now. "
-    "Write it in your usual voice and tone as defined in the system prompt, in the same language "
-    "as the conversation. Do not change any numbers, dates, names, URLs, file paths, or other facts "
-    "from the tool results. Do not mention that this reply is being rewritten."
-)
-
-
 def _final_reply_provider_for(provider_name: str | None) -> str | None:
     """最終応答を返した具体プロバイダーの `final_reply_provider` を返す。
 
@@ -161,27 +151,6 @@ def _final_reply_provider_for(provider_name: str | None) -> str | None:
     if provider is None:
         return None
     return provider.final_reply_provider
-
-
-async def _rewrite_final_reply(
-    messages: list[dict], system_prompt: str, rewrite_provider: str
-) -> str:
-    """ツールループの最終応答を `rewrite_provider` でツールなしに 1 回だけ書き直す。
-
-    `messages` は捨てた最終応答を含まないメッセージ列で、末尾に書き直しの指示を
-    user メッセージとして足して送る（呼び出し元の `messages` は変えない）。
-    書き直し先の `final_reply_provider` は見ないため、経路はこの 1 回で閉じる。
-    tool_calls を含む履歴をそのまま送れるよう、`chat_to_llm` ではなく
-    `chat_to_llm_with_tools` を tools なしで呼ぶ。
-    """
-    rewrite_messages = [
-        *messages,
-        {"role": "user", "content": _FINAL_REPLY_REWRITE_INSTRUCTION},
-    ]
-    response = await chat_to_llm_with_tools(
-        rewrite_messages, system_prompt=system_prompt, tools=None, llm_name=rewrite_provider
-    )
-    return response["content"] or ""
 
 
 # `build_tool_context` は `core/extension.py` に実体があり、LLM ツールと task ツールの
@@ -234,8 +203,11 @@ async def run_conversation(
         選んだ具体プロバイダー名を文脈に載せる。
         会話開始フックの `ConversationContext.llm_name` は展開前のキーのまま。
         ツールループで最終応答（tool_calls なし）を返した具体プロバイダーに
-        `final_reply_provider` があれば、その本文は捨て、指定先へツールなしで 1 回だけ
-        問い合わせた結果を最終応答にする（ツールなしの会話では書き直さない）。
+        `final_reply_provider` があれば、その本文は捨て、以降の LLM 呼び出しを指定先に
+        固定してツールループを続ける（同じツールとシステムプロンプトを渡し、resolver の
+        再判定も指定先の `final_reply_provider` も見ない）。指定先が tool_calls の無い
+        応答を返したらそれを最終応答にする。往復回数は元のツールループと通算で上限まで
+        （ツールなしの会話では書き直さない）。
     inject_user_content : str | list, optional
         履歴の末尾に user メッセージとして追加する一時プロンプト。
         ハートビートなど MongoDB に保存しないが LLM には渡したい場合に使う。
@@ -395,14 +367,20 @@ async def _run_conversation(
     # resolver へ渡す、この回しで既に呼んだツール名（出現順・重複あり）と前回の選択
     called_tool_names: list[str] = []
     resolved_name: str | None = None
+    # `final_reply_provider` で書き直しに入ったあとの固定プロバイダー。以降は resolver で
+    # 再判定せず、書き直しの判定もしない（書き直しは 1 段で閉じる）
+    forced_provider: str | None = None
 
     while iteration < max_iterations:
-        resolved_name = await resolve_llm_name(
-            llm_key,
-            called_tool_names=tuple(called_tool_names),
-            previous_provider=resolved_name,
-            **resolve_kwargs,
-        )
+        if forced_provider is not None:
+            resolved_name = forced_provider
+        else:
+            resolved_name = await resolve_llm_name(
+                llm_key,
+                called_tool_names=tuple(called_tool_names),
+                previous_provider=resolved_name,
+                **resolve_kwargs,
+            )
         response = await chat_to_llm_with_tools(
             messages, system_prompt=system_prompt, tools=tools_param, llm_name=resolved_name
         )
@@ -457,17 +435,20 @@ async def _run_conversation(
                 })
             iteration += 1
         else:
-            content = response["content"] or ""
             # 最終応答を返したプロバイダーに `final_reply_provider` があれば、その本文は捨てて
-            # 指定先に書き直させる（ツールループのこの箇所だけ。ツールなしの会話には効かない）
-            rewrite_provider = _final_reply_provider_for(resolved_name)
-            if rewrite_provider is not None:
-                logger.info(
-                    "Rewriting final reply from provider '%s' with provider '%s'",
-                    resolved_name,
-                    rewrite_provider,
-                )
-                content = await _rewrite_final_reply(messages, system_prompt, rewrite_provider)
+            # （`messages` には足さない）以降を指定先に任せる。指定先には同じツールを渡すため、
+            # ツールを呼べばこのループのまま実行して続ける（ツールなしの会話には効かない）
+            if forced_provider is None:
+                rewrite_provider = _final_reply_provider_for(resolved_name)
+                if rewrite_provider is not None:
+                    logger.info(
+                        "Rewriting final reply from provider '%s' with provider '%s'",
+                        resolved_name,
+                        rewrite_provider,
+                    )
+                    forced_provider = rewrite_provider
+                    continue
+            content = response["content"] or ""
             reply = _apply_meta_actions(content)
             if pending_reauth_notices:
                 return reply + "\n\n" + "\n\n".join(pending_reauth_notices)

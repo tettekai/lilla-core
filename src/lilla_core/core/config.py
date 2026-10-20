@@ -81,7 +81,8 @@ class LlmProviderConfig(BaseModel):
     input_price_per_million_tokens: float | None = None
     output_price_per_million_tokens: float | None = None
     # 具体プロバイダーのみ。`run_conversation` のツールループでこのプロバイダーが最終応答
-    # （tool_calls なし）を返したとき、その本文を捨てて書き直しに使う具体プロバイダー名。
+    # （tool_calls なし）を返したとき、その本文を捨てて以降の応答を任せる具体プロバイダー名。
+    # 書き直し先には同じツールを渡し、ツールを呼べばそのままツールループを続ける。
     # 書き直し先の `final_reply_provider` は見ない（連鎖しない）。未指定なら書き直さない
     final_reply_provider: str | None = None
 
