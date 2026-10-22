@@ -2,21 +2,21 @@ name: Notify Grok Bot merged
 
 # PR がマージされたら、外部の自動化（Grok Bot）へ Webhook でマージされた PR の要点を
 # JSON で通知する。GitHub 標準の Webhook は Authorization ヘッダーを付けられないため、
-# notify-grok-bot-review.yml / release.yml と同じく Actions から POST する。
+# release.yml と同じく Actions から POST する。
 #
 # 対象: base が develop（主な対象）または main の PR が「マージされた」とき。
 # 次のものは通知しない。
 #   - マージされずに閉じた PR
 #   - fork からの PR（Secrets が渡されないため）
 #   - release-prep PR（release-prep ラベル、または head が release-prep/ で始まる。
-#     notify-grok-bot-review.yml と同じ除外）
+#     Grok Bot のレビュー用ルーティンと同じ除外）
 #   - develop -> main / main -> develop の同期・リリース PR（develop -> main の
 #     リリース PR は release.yml が専用の通知を送るため、二重通知にしない）
 # この workflow が動くのは、このファイルがその base ブランチに載ってから
 # （main 向けは次のリリースで main に入ってから効く）。
 #
 # Webhook の URL / Authorization（secrets.GROK_BOT_CORE_MERGED_WEBHOOK_URL /
-# secrets.GROK_BOT_CORE_MERGED_WEBHOOK_AUTHORIZATION）はレビュー用・リリース用とは
+# secrets.GROK_BOT_CORE_MERGED_WEBHOOK_AUTHORIZATION）はリリース用などとは
 # 別のシークレットに分ける。どちらか一方でも未設定なら WARNING ログを出して通知を
 # スキップし、ジョブは失敗させない。Dependabot 起点のイベントは Actions の Secrets を
 # 読めないため、Dependabot の PR のマージも通知するなら Dependabot の Secrets にも

@@ -16,9 +16,9 @@ name: Release PR
 # 既に develop → main の open PR があれば新規作成せずスキップする（ログに残すのみ。
 # 更新はしない。人が確認中の PR 本文を上書きしないため）。
 #
-# develop → main の PR は notify-grok-bot-review.yml の既存の develop↔main スキップ
-# （base=main かつ head=develop）でレビュー対象外になる。base/head の組だけで判定して
-# いるため author は問わず、このワークフローが作る PR にもそのまま効く。
+# develop → main の PR は Grok Bot のレビュー用ルーティンの develop↔main スキップ
+# （base=main かつ head=develop）でレビュー対象外になる。base/head の組だけで判定する
+# ため author は問わず、このワークフローが作る PR にもそのまま効く。
 #
 # この PR には release ラベルを付ける（release-prep とは別ラベル）。release.yml が
 # このラベルの有無でマージ後の draft Release 作成対象を判定する。
