@@ -427,7 +427,43 @@ class TestSendPaths:
             extra_params=kw.get("extra_params", {}),
             prompt=None,
             timeout_seconds=kw.get("timeout_seconds", 300.0),
+            keep_alive=kw.get("keep_alive"),
         )
+
+    async def test_ollama_native_keep_alive_at_top_level(self, env) -> None:
+        cfg, send, *_ = env
+        cfg.get_llm_provider.return_value = self._provider("ollama", keep_alive="30m")
+        send.return_value = json.dumps({"message": {"content": "ok"}})
+        await llm_client.chat_to_llm("hi")
+        data = send.await_args.kwargs["data"]
+        assert data["keep_alive"] == "30m"
+        assert "keep_alive" not in data["options"]
+
+    async def test_ollama_with_tools_keep_alive_at_top_level(self, env) -> None:
+        cfg, send, *_ = env
+        cfg.get_llm_provider.return_value = self._provider("ollama", keep_alive=-1)
+        await llm_client.chat_to_llm_with_tools([{"role": "user", "content": "hi"}])
+        assert send.await_args.args == ("https://llm.example/v1/v1/chat/completions",)
+        assert send.await_args.kwargs["data"]["keep_alive"] == -1
+
+    async def test_ollama_without_keep_alive_omits_it(self, env) -> None:
+        cfg, send, *_ = env
+        cfg.get_llm_provider.return_value = self._provider("ollama")
+        send.return_value = json.dumps({"message": {"content": "ok"}})
+        await llm_client.chat_to_llm("hi")
+        assert "keep_alive" not in send.await_args.kwargs["data"]
+        send.return_value = self.CHAT_BODY
+        await llm_client.chat_to_llm_with_tools([{"role": "user", "content": "hi"}])
+        assert "keep_alive" not in send.await_args.kwargs["data"]
+
+    async def test_openai_compat_never_sends_keep_alive(self, env) -> None:
+        # 設定の検証で弾かれる値でも、openai_compat の経路は keep_alive を見ない
+        cfg, send, *_ = env
+        cfg.get_llm_provider.return_value = self._provider(keep_alive="30m")
+        await llm_client.chat_to_llm("hi")
+        assert "keep_alive" not in send.await_args.kwargs["data"]
+        await llm_client.chat_to_llm_with_tools([{"role": "user", "content": "hi"}])
+        assert "keep_alive" not in send.await_args.kwargs["data"]
 
     async def test_ollama_native_request_and_response(self, env) -> None:
         cfg, send, guard, order = env

@@ -10,7 +10,16 @@ from zoneinfo import ZoneInfo
 
 import yaml
 from dotenv import dotenv_values, load_dotenv
-from pydantic import BaseModel, ConfigDict, Field, create_model, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StrictStr,
+    create_model,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from lilla_core.utils.resource_loader import SourceSpec, load_text_resources
@@ -85,6 +94,10 @@ class LlmProviderConfig(BaseModel):
     # 書き直し先には同じツールを渡し、ツールを呼べばそのままツールループを続ける。
     # 書き直し先の `final_reply_provider` は見ない（連鎖しない）。未指定なら書き直さない
     final_reply_provider: str | None = None
+    # ollama タイプのみ。モデルをメモリに載せておく時間（`"30m"` などの文字列か秒数の整数。
+    # `-1` は無期限、`0` は即時アンロード）。リクエストのトップレベルに付ける。
+    # 書式は検証しない（不正な書式は Ollama 側のエラー）。未指定なら送らない
+    keep_alive: StrictStr | StrictInt | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -113,7 +126,12 @@ class LlmProviderConfig(BaseModel):
         単価（`input_price_per_million_tokens` / `output_price_per_million_tokens`）は
         具体プロバイダーだけが持ち、0 以上に限る。
         `final_reply_provider` も具体プロバイダーだけが持つ（指す先の検証は `LlmConfig`）。
+        `keep_alive` は `ollama` だけが持つ（`openai_compat` / `resolver` に書けば落とす）。
         """
+        if self.keep_alive is not None and self.type != "ollama":
+            raise ValueError(
+                f"llm provider of type '{self.type}' must not set: keep_alive"
+            )
         if self.type == "resolver":
             missing = [name for name in ("script", "fallback") if not getattr(self, name)]
             if missing:

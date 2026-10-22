@@ -7,6 +7,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- `type: ollama` のプロバイダーに `llm.providers.<キー>.keep_alive` を追加した（#261）。文字列（`30m` など）か
+  整数（秒。`-1` は無期限、`0` は即時アンロード）で、設定するとそのプロバイダーへの呼び出し（tools なしの
+  `/api/chat`、tools 付きの `/v1/chat/completions`）のボディのトップレベルに付く。未指定なら送らない。
+  `openai_compat` / `resolver` に書いた場合と、文字列・整数以外（`bool` など）の値は起動時に失敗する
+
 ### Changed
 
 - `llm.providers.<キー>.final_reply_provider` の書き直しで、書き直し先にも元のツールループと同じツールを渡すようにした（#259）。
