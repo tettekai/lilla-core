@@ -233,11 +233,17 @@ def _bearer_headers(api_key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key}"}
 
 
+def _add_keep_alive(body: dict[str, Any], provider) -> None:
+    """プロバイダーに `keep_alive` が設定されていれば、ボディのトップレベルへ付ける。"""
+    if provider.keep_alive is not None:
+        body["keep_alive"] = provider.keep_alive
+
+
 class OllamaNativeAdapter:
     """Ollama ネイティブの `/api/chat`（tools なし）。
 
     `extra_params` はボディのトップレベルではなく `options`（既定 `temperature: 0.7`）へ
-    展開する。認証ヘッダーは付けない。
+    展開する。`keep_alive` が設定されていればトップレベルに付ける。認証ヘッダーは付けない。
     """
 
     def build_request(
@@ -250,15 +256,14 @@ class OllamaNativeAdapter:
         tools: list | None,
     ) -> LLMRequest:
         """`/api/chat` 向けのボディを組み立てる（tools は使わない）。"""
-        return LLMRequest(
-            url=f"{provider.url}/api/chat",
-            body={
-                "model": provider.model,
-                "messages": _ensure_system_prompt(messages, system_prompt, provider_prompt),
-                "stream": False,
-                "options": {"temperature": 0.7, **provider.extra_params},
-            },
-        )
+        body: dict[str, Any] = {
+            "model": provider.model,
+            "messages": _ensure_system_prompt(messages, system_prompt, provider_prompt),
+            "stream": False,
+            "options": {"temperature": 0.7, **provider.extra_params},
+        }
+        _add_keep_alive(body, provider)
+        return LLMRequest(url=f"{provider.url}/api/chat", body=body)
 
     def parse_response(self, response: Any) -> LLMResult:
         """`message` から content を取り出す（空なら `reasoning_content` へフォールバック）。"""
@@ -277,12 +282,15 @@ class ChatCompletionsAdapter:
 
     `path` はプロバイダーの `url` に続けるパス。`use_api_key` が偽なら `api_key_env` を
     読まず、空のキーで `Authorization` ヘッダーを付ける（Ollama の OpenAI 互換エンドポイント）。
+    `send_keep_alive` が真ならプロバイダーの `keep_alive` をトップレベルに付ける（Ollama の
+    OpenAI 互換エンドポイントだけが受け付けるため、`openai_compat` には付けない）。
     """
 
-    def __init__(self, path: str, *, use_api_key: bool) -> None:
-        """エンドポイントのパスと、API キーの扱いを受け取る。"""
+    def __init__(self, path: str, *, use_api_key: bool, send_keep_alive: bool = False) -> None:
+        """エンドポイントのパスと、API キー・`keep_alive` の扱いを受け取る。"""
         self.path = path
         self.use_api_key = use_api_key
+        self.send_keep_alive = send_keep_alive
 
     def build_request(
         self,
@@ -300,6 +308,8 @@ class ChatCompletionsAdapter:
             "stream": False,
             **provider.extra_params,
         }
+        if self.send_keep_alive:
+            _add_keep_alive(body, provider)
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
@@ -398,7 +408,9 @@ _ADAPTERS: dict[str, dict[str, LLMProviderAdapter]] = {
     "ollama": {
         "chat": OllamaNativeAdapter(),
         # tools 付きは Ollama の OpenAI 互換エンドポイントを使う
-        "tools": ChatCompletionsAdapter("/v1/chat/completions", use_api_key=False),
+        "tools": ChatCompletionsAdapter(
+            "/v1/chat/completions", use_api_key=False, send_keep_alive=True
+        ),
     },
     "openai_compat": {
         "chat": _CHAT_COMPLETIONS,

@@ -19,6 +19,7 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [LLM プロバイダーの回しごと選択](llm-resolver.md) — `llm.providers` の `type: resolver`
 - [プロバイダーごとのシステムプロンプト追記](llm-provider-prompt.md) — `llm.providers.<キー>.prompt`
 - [ツールループの最終応答の書き直し](llm-final-reply.md) — `llm.providers.<キー>.final_reply_provider`
+- [Ollama のモデルを載せておく時間](llm-keep-alive.md) — `llm.providers.<キー>.keep_alive`
 - [LLM 送信前の拒否リスト](llm-send-guard.md) — `llm.send_blocklist_path`
 - [LLM 応答の先頭 prefix の除去](llm-response-prefix.md) — `llm.response_prefix_strip_patterns`
 - [LLM のトークン使用量の記録](llm-usage.md) — `llm.usage_log` と、ダッシュボードの Usage 画面
