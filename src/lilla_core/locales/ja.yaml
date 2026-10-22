@@ -128,6 +128,9 @@ conversation:
   tool_call_limit: "ツール呼び出しの上限に達しました。処理を中断しました。"
 
 tool:
+  # 組み込みツール llm_expert（builtin_tools/llm_expert.py）
+  llm_expert:
+    tool_call_limit: "（処理が長くなったため、専門家エージェント内で処理を中断しました）"
   # 組み込みツール llm_load_skill（builtin_tools/llm_load_skill.py）
   load_skill:
     list_header: "## 利用できるスキル"

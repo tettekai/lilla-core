@@ -16,6 +16,14 @@
 
 ### Changed
 
+- LLM のツール呼び出しループを `services/tool_loop.py` の `run_tool_loop()` に共通化し、通常会話と組み込みツール
+  `llm_expert` の両方がこれを使うようにした（#254）。拡張が自前のエージェント的なツールを作るときにも使える。
+  これにより `llm_expert` の挙動が会話側に揃う: ツール呼び出しを `finish_reason` ではなく `tool_calls` の有無で
+  判定し、引数の JSON が壊れた呼び出しはツール全体を失敗させずにエラー内容を LLM へ返して続ける。上限到達時の
+  中断の文言は `ui.locale` のカタログ（`tool.llm_expert.tool_call_limit`）から出す。`needs_auth` での打ち切り・
+  固定のプロバイダー・戻り値の形は変わらず、resolver の再判定と `final_reply_provider` による書き直しは引き続き
+  会話の経路だけで動く。`build_tool_message_content` の実体は `services/tool_loop.py` へ移した
+  （`services/conversation_service.py` からも従来どおり import できる）
 - `llm.providers.<キー>.final_reply_provider` の書き直しで、書き直し先にも元のツールループと同じツールを渡すようにした（#259）。
   書き直し先がツールを呼べば実行し、そのまま書き直し先でツールループを続ける（以降は resolver で再判定せず、
   書き直し先の `final_reply_provider` も見ない）。往復回数は元のツールループと通算で `llm.max_tool_call_iterations`
