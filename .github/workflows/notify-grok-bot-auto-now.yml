@@ -3,7 +3,7 @@ name: Notify Grok Bot auto-now
 # Ping Grok Bot's "lilla auto-now" routine when the auto-now label is added
 # to an Issue. GitHub native webhooks cannot set the Authorization header
 # Grok Bot requires, so Actions POSTs instead (same pattern as
-# notify-grok-bot-review.yml). Grok Bot removes the auto-now label itself,
+# release.yml). Grok Bot removes the auto-now label itself,
 # so this workflow never touches labels.
 on:
   issues:
