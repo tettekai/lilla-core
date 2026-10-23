@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+_TOOL_LOOP_MODULE = "lilla_core.services.tool_loop"
+
 # ---------------------------------------------------------------------------
 # フィクスチャ
 # ---------------------------------------------------------------------------
@@ -100,10 +102,21 @@ def conversation_service(with_mocked_modules, mock_cfg: MagicMock):
     """patch.dict 有効後に conversation_service をロードする。"""
     import importlib
     sys.modules.pop("lilla_core.services.conversation_service", None)
+    sys.modules.pop(_TOOL_LOOP_MODULE, None)
     cs = importlib.import_module("lilla_core.services.conversation_service")
     cs._config = mock_cfg
     yield cs
     sys.modules.pop("lilla_core.services.conversation_service", None)
+    sys.modules.pop(_TOOL_LOOP_MODULE, None)
+
+
+def _tool_loop():
+    """conversation_service と同じ patch.dict の下で読み込んだ tool_loop モジュールを返す。
+
+    LLM 呼び出しとツール実行はツールループの共通部品（`services/tool_loop.py`）が行うため、
+    それらの差し替えはこのモジュールに対して行う。
+    """
+    return sys.modules[_TOOL_LOOP_MODULE]
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +160,7 @@ class TestLlmResolverExpansion:
             "content": "done", "tool_calls": None, "finish_reason": "stop",
             "raw_message": {"role": "assistant", "content": "done"},
         })
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_with_tools)
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_with_tools)
 
         await conversation_service.run_conversation({"t": {"name": "t"}}, llm_name="router")
 
@@ -219,7 +232,7 @@ class TestLlmResolverPerToolCall:
     def _setup(self, conversation_service, monkeypatch, responses, choose):
         """LLM 応答の列と、resolver キーのときだけ `choose(kwargs)` を呼ぶ偽の展開を仕込む。"""
         mock_with_tools = AsyncMock(side_effect=responses)
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_with_tools)
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_with_tools)
         script = MagicMock(side_effect=choose)
 
         async def fake_resolve(name, **kwargs):
@@ -230,7 +243,7 @@ class TestLlmResolverPerToolCall:
 
         monkeypatch.setattr(conversation_service, "resolve_llm_name", fake_resolve)
         monkeypatch.setattr(
-            conversation_service,
+            _tool_loop(),
             "execute_tool_call",
             AsyncMock(return_value={
                 "success": True, "tool_name": "x", "memory_entry": "RESULT-BODY", "data": None, "error": None,
@@ -370,7 +383,7 @@ class TestRunConversation:
         mock_chat = AsyncMock(return_value="no tools reply")
         mock_with_tools = AsyncMock()
         monkeypatch.setattr(conversation_service, "chat_to_llm", mock_chat)
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_with_tools)
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_with_tools)
 
         result = await conversation_service.run_conversation(
             {"tool_a": {"schema": {}}}, client_type="task", allowed_tool_names=[]
@@ -416,7 +429,7 @@ class TestRunConversation:
         mock_chat = AsyncMock(return_value="no tools reply")
         mock_with_tools = AsyncMock()
         monkeypatch.setattr(conversation_service, "chat_to_llm", mock_chat)
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_with_tools)
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_with_tools)
 
         result = await conversation_service.run_conversation({"main_tool": {}})
 
@@ -517,8 +530,8 @@ class TestRunConversation:
             "raw_message": {"role": "assistant", "content": "完了しました"},
         }
         mock_chat = AsyncMock(side_effect=[tool_response, text_response])
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
-        monkeypatch.setattr(conversation_service, "execute_tool_call", AsyncMock(return_value={
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", AsyncMock(return_value={
             "success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None
         }))
 
@@ -550,11 +563,11 @@ class TestRunConversation:
             "raw_message": {"role": "assistant", "content": "完了しました"},
         }
         mock_chat = AsyncMock(side_effect=[tool_response, text_response])
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
         mock_execute_tool_call = AsyncMock(return_value={
             "success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None
         })
-        monkeypatch.setattr(conversation_service, "execute_tool_call", mock_execute_tool_call)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", mock_execute_tool_call)
 
         fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
         result = await conversation_service.run_conversation(fake_tools)
@@ -585,9 +598,9 @@ class TestRunConversation:
             "raw_message": {"role": "assistant", "content": "エラーを確認しました"},
         }
         mock_chat = AsyncMock(side_effect=[tool_response, text_response])
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
         mock_execute_tool_call = AsyncMock()
-        monkeypatch.setattr(conversation_service, "execute_tool_call", mock_execute_tool_call)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", mock_execute_tool_call)
 
         fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
         result = await conversation_service.run_conversation(fake_tools)
@@ -621,11 +634,11 @@ class TestRunConversation:
             "raw_message": {"role": "assistant", "content": "完了しました"},
         }
         mock_chat = AsyncMock(side_effect=[tool_response, text_response])
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
         mock_execute_tool_call = AsyncMock(return_value={
             "success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None
         })
-        monkeypatch.setattr(conversation_service, "execute_tool_call", mock_execute_tool_call)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", mock_execute_tool_call)
 
         async def notifier(line: str) -> None:
             pass
@@ -661,11 +674,11 @@ class TestRunConversation:
             "raw_message": {"role": "assistant", "content": "完了しました"},
         }
         mock_chat = AsyncMock(side_effect=[tool_response, text_response])
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
         mock_execute_tool_call = AsyncMock(return_value={
             "success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None
         })
-        monkeypatch.setattr(conversation_service, "execute_tool_call", mock_execute_tool_call)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", mock_execute_tool_call)
 
         fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
         await conversation_service.run_conversation(fake_tools, client_type="lilla-client")
@@ -690,8 +703,8 @@ class TestRunConversation:
             "raw_message": {"role": "assistant", "content": None, "tool_calls": []},
         }
         mock_chat = AsyncMock(return_value=tool_response)
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
-        monkeypatch.setattr(conversation_service, "execute_tool_call", AsyncMock(return_value={
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", AsyncMock(return_value={
             "success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None
         }))
 
@@ -720,8 +733,8 @@ class TestRunConversation:
             "raw_message": {"role": "assistant", "content": None, "tool_calls": []},
         }
         mock_chat = AsyncMock(return_value=tool_response)
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
-        monkeypatch.setattr(conversation_service, "execute_tool_call", AsyncMock(return_value={
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", AsyncMock(return_value={
             "success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None
         }))
 
@@ -761,8 +774,8 @@ class TestRunConversation:
             "raw_message": {"role": "assistant", "content": "完了"},
         }
         mock_chat = AsyncMock(side_effect=[tool_response, text_response])
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
-        monkeypatch.setattr(conversation_service, "execute_tool_call", AsyncMock(return_value={
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", AsyncMock(return_value={
             "success": True, "tool_name": "test_tool", "memory_entry": None,
             "data": {"timestamp": dt, "value": 42}, "error": None,
         }))
@@ -803,8 +816,8 @@ class TestRunConversation:
             "raw_message": {"role": "assistant", "content": "完了！"},
         }
         mock_chat = AsyncMock(side_effect=[tool_response, text_response])
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
-        monkeypatch.setattr(conversation_service, "execute_tool_call", AsyncMock(return_value={
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", AsyncMock(return_value={
             "success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None
         }))
 
@@ -858,7 +871,7 @@ class TestFinalReplyProvider:
         def _setup(responses: list[dict], **providers: MagicMock) -> AsyncMock:
             mock_cfg.llm.providers = providers
             mock_chat = AsyncMock(side_effect=responses)
-            monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
+            monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
             monkeypatch.setattr(conversation_service, "resolve_llm_name", AsyncMock(return_value="local"))
             return mock_chat
 
@@ -1092,7 +1105,7 @@ class TestFinalReplyProvider:
         mock_cfg.llm.providers = {"local": self._provider("main"), "main": self._provider()}
         monkeypatch.setattr(conversation_service, "resolve_llm_name", AsyncMock(return_value="local"))
         mock_with_tools = AsyncMock()
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_with_tools)
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_with_tools)
         monkeypatch.setattr(conversation_service, "chat_to_llm", AsyncMock(return_value="plain reply"))
 
         result = await conversation_service.run_conversation({})
@@ -1142,8 +1155,8 @@ class TestMetaActionsIntegration:
             "raw_message": {"role": "assistant", "content": "完了しました。"},
         }
         mock_chat = AsyncMock(side_effect=[tool_response, text_response])
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
-        monkeypatch.setattr(conversation_service, "execute_tool_call", AsyncMock(return_value={
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", AsyncMock(return_value={
             "success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None
         }))
 
@@ -1321,8 +1334,8 @@ class TestMetaActionsIntegration:
             "raw_message": {"role": "assistant", "content": "完了。"},
         }
         mock_chat = AsyncMock(side_effect=[tool_response, text_response])
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
-        monkeypatch.setattr(conversation_service, "execute_tool_call", AsyncMock(return_value={
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", AsyncMock(return_value={
             "success": True,
             "tool_name": "test_tool",
             "memory_entry": None,
@@ -1360,8 +1373,8 @@ class TestMetaActionsIntegration:
             "raw_message": {"role": "assistant", "content": None, "tool_calls": []},
         }
         mock_chat = AsyncMock(return_value=tool_response)
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
-        monkeypatch.setattr(conversation_service, "execute_tool_call", AsyncMock(return_value={
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", AsyncMock(return_value={
             "success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None
         }))
 
@@ -1500,7 +1513,7 @@ class TestClientTypeDispatch:
             "raw_message": {"role": "assistant", "content": "tool loop reply"},
         })
         monkeypatch.setattr(conversation_service, "chat_to_llm", without_tools)
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", with_tools)
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", with_tools)
         return {"without_tools": without_tools, "with_tools": with_tools}
 
     def _set_tools_disabled(
@@ -1784,7 +1797,7 @@ class TestSkillListInjection:
         )
         monkeypatch.setattr(conversation_service, "chat_to_llm", AsyncMock(return_value="ok"))
         monkeypatch.setattr(
-            conversation_service,
+            _tool_loop(),
             "chat_to_llm_with_tools",
             AsyncMock(return_value={
                 "content": "ok", "tool_calls": None, "finish_reason": "stop",

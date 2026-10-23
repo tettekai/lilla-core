@@ -161,6 +161,11 @@ available_tools: [llm_health_get]   # tool set references such as `$main` work t
 Combining `api: responses` with `grok_tools` makes a single call that uses the Responses
 API's built-in tools (`api: responses` together with `available_tools` is not supported).
 If the expert needs re-authentication, it aborts and passes that request up as it is.
+The tool call loop runs on the same shared component as regular conversations, so a call
+whose argument JSON is broken gets the error returned to the LLM and the loop continues.
+When the number of round trips reaches `llm.max_tool_call_iterations`, it returns an abort
+message in the `ui.locale` language instead of an error. Re-evaluation of resolver-type
+providers and rewriting by `final_reply_provider` do not happen inside the expert.
 
 Enabling the sample (`${CONFIG_ROOT}/tools/llm_current_datetime.yaml`):
 

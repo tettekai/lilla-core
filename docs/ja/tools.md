@@ -155,6 +155,10 @@ available_tools: [llm_health_get]   # `$main` などのツールセット参照�
 `api: responses` と `grok_tools` を組み合わせると、Responses API の組み込みツールを使った
 単発呼び出しになります（`api: responses` と `available_tools` の併用は未対応です）。
 専門家の中で再認証が必要になった場合は、処理を中断してその要求をそのまま伝えます。
+ツール呼び出しのループは通常会話と共通の部品で回るため、引数の JSON が壊れた呼び出しは
+エラー内容を LLM へ返して続けます。往復回数が `llm.max_tool_call_iterations` に達したときは
+エラーにせず、`ui.locale` の言語の中断の文言を返します。resolver 型のプロバイダーの再判定と
+`final_reply_provider` による書き直しは、専門家の中では行いません。
 
 サンプルを有効化する例（`${CONFIG_ROOT}/tools/llm_current_datetime.yaml`）:
 

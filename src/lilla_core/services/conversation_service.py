@@ -5,10 +5,8 @@ Discord・WebSocket など複数のエントリポイントから再利用する
 """
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import datetime
 from typing import Any
 
 from lilla_core.core.config import get_config
@@ -19,19 +17,19 @@ from lilla_core.core.extension import (
 )
 from lilla_core.core.llm_call_origin import llm_call_origin
 from lilla_core.core.runtime_state import is_tools_disabled
-from lilla_core.api.llm_client import chat_to_llm, chat_to_llm_with_tools
+from lilla_core.api.llm_client import chat_to_llm
 from lilla_core.loaders.llm_tool_loader import (
     MAIN_TOOLSET_TOKEN,
     build_tools_param,
-    execute_tool_call,
     resolve_available_tools,
 )
 from lilla_core.services.llm_resolver import content_has_image, resolve_llm_name
 from lilla_core.services.memory_manager import get_memory_manager
 from lilla_core.services.message_util import extract_meta_block, prepend_timestamp_prefix
 from lilla_core.services.session_memory_manager import get_session_memory_manager
+from lilla_core.services.tool_loop import build_tool_message_content, run_tool_loop
 from lilla_core.ui.messages import t
-from lilla_core.utils.datetime_utils import ensure_utc, local_now
+from lilla_core.utils.datetime_utils import local_now
 
 logger = logging.getLogger(__name__)
 
@@ -100,25 +98,6 @@ def _apply_meta_actions(reply: str) -> str:
             logger.warning("Failed to apply META action %r: %s", action_type, e)
     return cleaned
 
-def build_tool_message_content(result: dict) -> str:
-    """tool 実行結果から、LLM へ返す tool メッセージの content 文字列を構築する。
-
-    `data` を優先し、未設定なら `memory_entry` にフォールバックする。文字列以外は
-    JSON シリアライズする。datetime は naive を UTC とみなしローカルタイムゾーンの
-    ISO8601 文字列に変換する。
-    """
-    tool_content = result.get("data") or result.get("memory_entry") or ""
-    if not isinstance(tool_content, str):
-        def _default(obj):
-            if isinstance(obj, datetime):
-                return ensure_utc(obj).astimezone().isoformat()
-            raise TypeError(
-                f"Object of type {type(obj).__name__} is not JSON serializable"
-            )
-        tool_content = json.dumps(tool_content, ensure_ascii=False, default=_default)
-    return tool_content
-
-
 async def _build_skill_list_section(tools_param: list, llm_tools: dict) -> str:
     """LLM に渡すツールに `llm_load_skill` があれば、有効なスキル一覧の節を返す。
 
@@ -153,8 +132,8 @@ def _final_reply_provider_for(provider_name: str | None) -> str | None:
     return provider.final_reply_provider
 
 
-# `build_tool_context` は `core/extension.py` に実体があり、LLM ツールと task ツールの
-# 両方で共有する。ここから import できる名前は互換のため残している。
+# `build_tool_context` は `core/extension.py`、`build_tool_message_content` は
+# `services/tool_loop.py` に実体がある。ここから import できる名前は互換のため残している。
 __all__ = ["build_tool_context", "build_tool_message_content", "run_conversation"]
 
 
@@ -362,96 +341,65 @@ async def _run_conversation(
         context["discord_channel_id"] = discord_channel_id
     if tool_call_notifier is not None:
         context["_tool_call_notifier"] = tool_call_notifier
-    iteration = 0
-    pending_reauth_notices: list[str] = []
-    # resolver へ渡す、この回しで既に呼んだツール名（出現順・重複あり）と前回の選択
-    called_tool_names: list[str] = []
-    resolved_name: str | None = None
-    # `final_reply_provider` で書き直しに入ったあとの固定プロバイダー。以降は resolver で
-    # 再判定せず、書き直しの判定もしない（書き直しは 1 段で閉じる）
-    forced_provider: str | None = None
 
-    while iteration < max_iterations:
-        if forced_provider is not None:
-            resolved_name = forced_provider
-        else:
-            resolved_name = await resolve_llm_name(
-                llm_key,
-                called_tool_names=tuple(called_tool_names),
-                previous_provider=resolved_name,
-                **resolve_kwargs,
-            )
-        response = await chat_to_llm_with_tools(
-            messages, system_prompt=system_prompt, tools=tools_param, llm_name=resolved_name
+    async def _select_provider(
+        called_tool_names: tuple[str, ...], previous_provider: str | None
+    ) -> str | None:
+        """resolver キーなら、この回しで既に呼んだツール名と前回の選択を添えて展開する。"""
+        return await resolve_llm_name(
+            llm_key,
+            called_tool_names=called_tool_names,
+            previous_provider=previous_provider,
+            **resolve_kwargs,
         )
 
-        if response["tool_calls"]:
-            messages.append(response["raw_message"])
-            for tc in response["tool_calls"]:
-                arguments = tc["function"]["arguments"]
-                if isinstance(arguments, str):
-                    try:
-                        arguments = json.loads(arguments)
-                    except json.JSONDecodeError as e:
-                        logger.warning(
-                            "Failed to parse tool call arguments as JSON (%s): %s",
-                            tc["function"]["name"],
-                            e,
-                        )
-                        error_message = f"引数の JSON が壊れています: {e}"
-                        result = {
-                            "success": False,
-                            "tool_name": tc["function"]["name"],
-                            "memory_entry": error_message,
-                            "data": None,
-                            "error": error_message,
-                        }
-                        tool_content = build_tool_message_content(result)
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "content": tool_content,
-                        })
-                        continue
-                called_tool_names.append(tc["function"]["name"])
-                result = await execute_tool_call(
-                    tc["function"]["name"],
-                    arguments,
-                    llm_tools,
-                    context,
-                )
-                if result.get("needs_auth"):
-                    for item in result.get("needs_auth_list", []):
-                        auth_service = item.get("auth_service", "")
-                        auth_url = item.get("auth_url", "")
-                        pending_reauth_notices.append(
-                            t("conversation.reauth_required", service=auth_service, url=auth_url)
-                        )
-                tool_content = build_tool_message_content(result)
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": tool_content,
-                })
-            iteration += 1
-        else:
-            # 最終応答を返したプロバイダーに `final_reply_provider` があれば、その本文は捨てて
-            # （`messages` には足さない）以降を指定先に任せる。指定先には同じツールを渡すため、
-            # ツールを呼べばこのループのまま実行して続ける（ツールなしの会話には効かない）
-            if forced_provider is None:
-                rewrite_provider = _final_reply_provider_for(resolved_name)
-                if rewrite_provider is not None:
-                    logger.info(
-                        "Rewriting final reply from provider '%s' with provider '%s'",
-                        resolved_name,
-                        rewrite_provider,
-                    )
-                    forced_provider = rewrite_provider
-                    continue
-            content = response["content"] or ""
-            reply = _apply_meta_actions(content)
-            if pending_reauth_notices:
-                return reply + "\n\n" + "\n\n".join(pending_reauth_notices)
-            return reply
+    loop_result = await run_tool_loop(
+        messages,
+        system_prompt=system_prompt,
+        tools=tools_param,
+        llm_tools=llm_tools,
+        context=context,
+        max_iterations=max_iterations,
+        select_provider=_select_provider,
+    )
+    needs_auth_list = list(loop_result.needs_auth_list)
 
-    return t("conversation.tool_call_limit")
+    # 最終応答を返したプロバイダーに `final_reply_provider` があれば、その本文は捨てて
+    # （`messages` には足されていない）以降を指定先に任せる。指定先には同じツールを渡すため、
+    # ツールを呼べば同じメッセージ列のまま実行して続ける。往復回数は元のループと通算で
+    # 上限まで。指定先では resolver で再判定せず、指定先の `final_reply_provider` も見ない
+    # （書き直しは 1 段で閉じる。ツールなしの会話には効かない）
+    if not loop_result.limit_reached:
+        rewrite_provider = _final_reply_provider_for(loop_result.provider)
+        if rewrite_provider is not None:
+            logger.info(
+                "Rewriting final reply from provider '%s' with provider '%s'",
+                loop_result.provider,
+                rewrite_provider,
+            )
+            loop_result = await run_tool_loop(
+                messages,
+                system_prompt=system_prompt,
+                tools=tools_param,
+                llm_tools=llm_tools,
+                context=context,
+                max_iterations=max_iterations - loop_result.iterations,
+                llm_name=rewrite_provider,
+            )
+            needs_auth_list.extend(loop_result.needs_auth_list)
+
+    if loop_result.limit_reached:
+        return t("conversation.tool_call_limit")
+
+    reply = _apply_meta_actions(loop_result.content or "")
+    pending_reauth_notices = [
+        t(
+            "conversation.reauth_required",
+            service=item.get("auth_service", ""),
+            url=item.get("auth_url", ""),
+        )
+        for item in needs_auth_list
+    ]
+    if pending_reauth_notices:
+        return reply + "\n\n" + "\n\n".join(pending_reauth_notices)
+    return reply
