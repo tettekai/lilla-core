@@ -199,8 +199,9 @@ class TestLLMExpertExecute:
         mock_llm_client: MagicMock,
         mock_loader: MagicMock,
     ) -> None:
-        """ループ上限到達時はエラーではなく success: True + 中断テキストを返す。"""
+        """`on_tool_call_limit: message` の上限到達時はエラーではなく success: True + 中断テキストを返す。"""
         mock_cfg.llm.max_tool_call_iterations = 2
+        mock_cfg.llm.on_tool_call_limit = "message"
         mock_llm_client.chat_to_llm_with_tools.return_value = _tool_call_response()
         mock_loader.execute_tool_call.return_value = {
             "success": True,
@@ -218,6 +219,37 @@ class TestLLMExpertExecute:
         assert result["needs_auth"] is False
         assert "中断" in result["data"]
         assert mock_llm_client.chat_to_llm_with_tools.await_count == 2
+
+    async def test_max_iterations_returns_summary_without_tools(
+        self,
+        llm_expert,
+        mock_cfg: MagicMock,
+        mock_llm_client: MagicMock,
+        mock_loader: MagicMock,
+    ) -> None:
+        """`on_tool_call_limit: summarize` の上限到達時は、専門家のプロバイダーでツールなしのまとめを返す。"""
+        mock_cfg.llm.max_tool_call_iterations = 2
+        mock_cfg.llm.on_tool_call_limit = "summarize"
+        mock_cfg.llm.providers = {"grok": MagicMock(final_reply_provider="main")}
+        mock_llm_client.chat_to_llm_with_tools.side_effect = [
+            _tool_call_response(),
+            _tool_call_response(),
+            {"content": "expert summary", "tool_calls": None, "finish_reason": "stop",
+             "raw_message": {"role": "assistant", "content": "expert summary"}},
+        ]
+        mock_loader.execute_tool_call.return_value = {
+            "success": True, "tool_name": "llm_health_get", "memory_entry": "ok",
+            "needs_auth": False, "needs_auth_list": [], "data": "ok", "error": None,
+        }
+
+        result = await llm_expert.execute({"prompt": "x"}, _base_context())
+
+        assert result["success"] is True
+        assert result["data"] == "expert summary"
+        summary_call = mock_llm_client.chat_to_llm_with_tools.await_args_list[-1]
+        assert summary_call.kwargs["tools"] is None
+        # 専門家の応答はユーザーへの最終応答ではないため `final_reply_provider` は見ない
+        assert summary_call.kwargs["llm_name"] == "grok"
 
     async def test_passes_resolved_tools_to_build_tools_param(
         self, llm_expert, mock_llm_client: MagicMock, mock_loader: MagicMock
@@ -617,6 +649,7 @@ class TestLLMExpertToolLoop:
         from lilla_core.ui.messages import t
 
         mock_cfg.llm.max_tool_call_iterations = 1
+        mock_cfg.llm.on_tool_call_limit = "message"
         mock_llm_client.chat_to_llm_with_tools.return_value = _tool_call_response()
         mock_loader.execute_tool_call.return_value = {
             "success": True, "tool_name": "llm_health_get", "memory_entry": "ok",

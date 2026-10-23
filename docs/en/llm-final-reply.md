@@ -47,7 +47,8 @@ time of day, and so on) is decided by your [resolver script](llm-resolver.md).
   original provider is never used again.
 - The number of tool call iterations is counted together with the original tool loop, up
   to `llm.max_tool_call_iterations` (or the limit passed by the caller). When the limit is
-  reached, the same abort message as the normal tool loop is returned.
+  reached, the [summary for the tool call limit](tool-call-limit.md) is returned just like
+  in the normal tool loop (the rewrite target writes it; rewrites are not stacked).
 - The target's own `final_reply_provider` is not consulted. The rewrite is a single step
   and never chains.
 - META blocks (such as `set_session_memory`) are processed on the rewritten text.
@@ -58,7 +59,9 @@ The rewrite does not happen on these paths:
 
 - Conversations without tools (no tools, during `!disable_tools`, an empty allow list, etc.)
 - The inner loop of `llm_expert`, and tasks or commands that call `chat_to_llm` directly
-- Turns aborted because the tool call iteration limit was reached
+- Turns aborted because the tool call iteration limit was reached (with
+  `llm.on_tool_call_limit: summarize`, the summary is written by the last provider's
+  `final_reply_provider` target if it has one)
 
 ## Configuration
 

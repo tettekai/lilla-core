@@ -163,8 +163,11 @@ API's built-in tools (`api: responses` together with `available_tools` is not su
 If the expert needs re-authentication, it aborts and passes that request up as it is.
 The tool call loop runs on the same shared component as regular conversations, so a call
 whose argument JSON is broken gets the error returned to the LLM and the loop continues.
-When the number of round trips reaches `llm.max_tool_call_iterations`, it returns an abort
-message in the `ui.locale` language instead of an error. Re-evaluation of resolver-type
+When the number of round trips reaches `llm.max_tool_call_iterations`, it does not return an
+error; following `llm.on_tool_call_limit`, it returns a summary of the work so far written by
+the expert's provider without tools (or, with `message` or when no summary could be obtained,
+an abort message in the `ui.locale` language; see
+[Summary when the tool call limit is reached](tool-call-limit.md)). Re-evaluation of resolver-type
 providers and rewriting by `final_reply_provider` do not happen inside the expert.
 
 Enabling the sample (`${CONFIG_ROOT}/tools/llm_current_datetime.yaml`):

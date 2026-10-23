@@ -639,6 +639,10 @@ class LlmConfig(BaseModel):
     default: str = "ollama-gemma3"
     providers: dict[str, LlmProviderConfig] = {}
     max_tool_call_iterations: int = 10
+    # ツール呼び出しの往復が上限に達したときの扱い（`services/tool_loop.py`）。
+    # `summarize` はツールなしで 1 回だけ LLM を呼んでここまでの結果をまとめさせ、
+    # `message` は固定文言（`conversation.tool_call_limit` など）だけを返す
+    on_tool_call_limit: Literal["summarize", "message"] = "summarize"
     # トークン使用量の記録（`services/llm_usage.py`）
     usage_log: LlmUsageLogConfig = Field(default_factory=LlmUsageLogConfig)
     # LLM へ送る直前の拒否リスト（JSON の文字列配列）の絶対パス。未指定なら検査しない。

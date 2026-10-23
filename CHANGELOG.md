@@ -13,8 +13,21 @@
   整数（秒。`-1` は無期限、`0` は即時アンロード）で、設定するとそのプロバイダーへの呼び出し（tools なしの
   `/api/chat`、tools 付きの `/v1/chat/completions`）のボディのトップレベルに付く。未指定なら送らない。
   `openai_compat` / `resolver` に書いた場合と、文字列・整数以外（`bool` など）の値は起動時に失敗する
+- `llm.on_tool_call_limit`（`summarize` / `message`。**既定 `summarize`**）を追加した（#255）。ツール呼び出しの往復が
+  上限に達したとき、ツールなしのまとめを返すか（`summarize`）、従来の固定文言だけを返すか（`message`）を選ぶ。
+  それ以外の値は起動時に失敗する
 
 ### Changed
+
+- ツール呼び出しの往復が上限（`llm.max_tool_call_iterations`・定期タスクの `max_tool_call_iterations`）に達したとき、
+  既定では固定文言の代わりに、ツールなしで LLM を 1 回だけ呼んでここまでの結果をまとめさせた本文を返すようにした（#255）。
+  指示文で、冒頭での打ち切りの伝達・分かったこと / できたこと / できていないことの区別・未完了を完了と書かないこと・
+  続きを依頼できる旨を求め、本文の後ろに固定文言は付けない。META アクションの適用と再認証案内の付け足しは通常の
+  最終応答と同じ。まとめは最後のループの具体プロバイダーが書き、`final_reply_provider` があれば指定先が書く（書き直しは
+  重ねない。`llm_expert` の中では専門家のプロバイダーのまま）。まとめの呼び出しが失敗した・応答が空なら従来の固定文言を
+  返す。共通部品 `services/tool_loop.py` で行うため通常会話と `llm_expert` の両方に効く。上限に達した回は LLM の呼び出しが
+  1 回増える。従来の挙動に戻すには `llm.on_tool_call_limit: message` を書く。`run_tool_loop()` に任意引数
+  `summarize_with_final_reply_provider` を足し、上限到達時は `ToolLoopResult.content` にまとめが入る（得られなければ None）
 
 - LLM のツール呼び出しループを `services/tool_loop.py` の `run_tool_loop()` に共通化し、通常会話と組み込みツール
   `llm_expert` の両方がこれを使うようにした（#254）。拡張が自前のエージェント的なツールを作るときにも使える。

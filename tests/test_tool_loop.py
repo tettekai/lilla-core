@@ -50,6 +50,33 @@ def tool_loop(mock_llm_client: MagicMock, mock_loader: MagicMock):
         sys.modules.pop(_MODULE_NAME, None)
 
 
+@pytest.fixture
+def llm_config(tool_loop, monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """tool_loop が `get_config()` で読む設定のモック（`llm` 節だけを使う）。"""
+    cfg = MagicMock()
+    cfg.llm.on_tool_call_limit = "summarize"
+    cfg.llm.default = "default-llm"
+    cfg.llm.providers = {}
+    monkeypatch.setattr(tool_loop, "get_config", lambda: cfg)
+    return cfg
+
+
+@pytest.fixture
+def set_limit_mode(llm_config: MagicMock):
+    """`llm.on_tool_call_limit` を差し替える関数を返す。"""
+
+    def _set(mode: str) -> None:
+        llm_config.llm.on_tool_call_limit = mode
+
+    return _set
+
+
+def _provider(final_reply_provider: str | None = None) -> MagicMock:
+    provider = MagicMock()
+    provider.final_reply_provider = final_reply_provider
+    return provider
+
+
 def _ok_result(data: str = "RESULT") -> dict:
     return {
         "success": True, "tool_name": "t", "memory_entry": None,
@@ -186,9 +213,10 @@ class TestRunToolLoop:
         assert result.called_tool_names == ["ok"]
 
     async def test_limit_reached(
-        self, tool_loop, mock_llm_client: MagicMock, mock_loader: MagicMock
+        self, tool_loop, mock_llm_client: MagicMock, mock_loader: MagicMock, set_limit_mode
     ) -> None:
-        """上限回数だけ往復して最終応答が無ければ limit_reached を立てる。"""
+        """上限回数だけ往復して最終応答が無ければ limit_reached を立てる（`message` ならまとめない）。"""
+        set_limit_mode("message")
         mock_llm_client.chat_to_llm_with_tools.return_value = _tool_response(("t", "{}"))
 
         result = await _run(tool_loop, max_iterations=2)
@@ -199,9 +227,10 @@ class TestRunToolLoop:
         assert mock_llm_client.chat_to_llm_with_tools.await_count == 2
 
     async def test_zero_iterations_reaches_limit_without_calling_llm(
-        self, tool_loop, mock_llm_client: MagicMock
+        self, tool_loop, mock_llm_client: MagicMock, set_limit_mode
     ) -> None:
         """上限 0 なら LLM を呼ばずに上限到達として返す。"""
+        set_limit_mode("message")
         result = await _run(tool_loop, max_iterations=0)
 
         assert result.limit_reached is True
@@ -262,6 +291,145 @@ class TestRunToolLoop:
             c.kwargs["llm_name"] for c in mock_llm_client.chat_to_llm_with_tools.await_args_list
         ] == ["p1", "p2", "p3"]
         assert result.provider == "p3"
+
+
+# ---------------------------------------------------------------------------
+# TestLimitSummary
+# ---------------------------------------------------------------------------
+
+
+class TestLimitSummary:
+    """上限に達したときの、ツールなしのまとめのテスト。"""
+
+    async def test_summarizes_once_without_tools(
+        self, tool_loop, mock_llm_client: MagicMock, llm_config: MagicMock
+    ) -> None:
+        """上限に達したら最後のプロバイダーでツールなしに 1 回だけ呼び、本文を content に入れる。"""
+        mock_llm_client.chat_to_llm_with_tools.side_effect = [
+            _tool_response(("t", "{}")),
+            _tool_response(("t", "{}")),
+            _final_response("summary"),
+        ]
+        messages = [{"role": "user", "content": "hi"}]
+
+        result = await _run(tool_loop, messages, max_iterations=2, llm_name="p1")
+
+        assert result.limit_reached is True
+        assert result.content == "summary"
+        assert result.provider == "p1"
+        calls = mock_llm_client.chat_to_llm_with_tools.await_args_list
+        assert len(calls) == 3
+        summary_call = calls[-1]
+        assert summary_call.kwargs == {"system_prompt": "SP", "tools": None, "llm_name": "p1"}
+        sent = summary_call.args[0]
+        assert sent[:-1] == messages
+        assert sent[-1] == {"role": "user", "content": tool_loop.LIMIT_SUMMARY_INSTRUCTION}
+        # 呼び出し元の messages には指示を足さない
+        assert messages[-1]["role"] == "tool"
+
+    def test_instruction_covers_required_points(self, tool_loop) -> None:
+        """指示文に、冒頭での打ち切りの伝達・3 区分のまとめ・未完了を完了と書かないこと・続きの案内が入る。"""
+        text = tool_loop.LIMIT_SUMMARY_INSTRUCTION
+        assert "cannot use any more tools" in text
+        assert "very beginning" in text and "tool call limit" in text
+        assert "what you found out" in text
+        assert "what you have done" in text
+        assert "what is not done yet" in text
+        assert "Never describe unfinished work as completed" in text
+        assert "continue" in text
+
+    async def test_uses_final_reply_provider_of_last_provider(
+        self, tool_loop, mock_llm_client: MagicMock, llm_config: MagicMock
+    ) -> None:
+        """最後のプロバイダーに `final_reply_provider` があれば指定先がまとめを書く（連鎖しない）。"""
+        llm_config.llm.providers = {"p1": _provider("p2"), "p2": _provider("p3")}
+        mock_llm_client.chat_to_llm_with_tools.side_effect = [
+            _tool_response(("t", "{}")),
+            _final_response("summary"),
+        ]
+
+        result = await _run(tool_loop, max_iterations=1, llm_name="p1")
+
+        assert result.content == "summary"
+        assert result.provider == "p2"
+        assert mock_llm_client.chat_to_llm_with_tools.await_args.kwargs["llm_name"] == "p2"
+
+    async def test_default_provider_is_used_for_lookup_when_name_is_none(
+        self, tool_loop, mock_llm_client: MagicMock, llm_config: MagicMock
+    ) -> None:
+        """プロバイダー名が None なら `llm.default` の `final_reply_provider` を見る。"""
+        llm_config.llm.providers = {"default-llm": _provider("p2")}
+        mock_llm_client.chat_to_llm_with_tools.side_effect = [
+            _tool_response(("t", "{}")),
+            _final_response("summary"),
+        ]
+
+        await _run(tool_loop, max_iterations=1)
+
+        assert mock_llm_client.chat_to_llm_with_tools.await_args.kwargs["llm_name"] == "p2"
+
+    async def test_final_reply_provider_can_be_ignored(
+        self, tool_loop, mock_llm_client: MagicMock, llm_config: MagicMock
+    ) -> None:
+        """`summarize_with_final_reply_provider=False` なら最後のプロバイダーのまま書かせる。"""
+        llm_config.llm.providers = {"p1": _provider("p2")}
+        mock_llm_client.chat_to_llm_with_tools.side_effect = [
+            _tool_response(("t", "{}")),
+            _final_response("summary"),
+        ]
+
+        result = await _run(
+            tool_loop, max_iterations=1, llm_name="p1", summarize_with_final_reply_provider=False
+        )
+
+        assert result.provider == "p1"
+        assert mock_llm_client.chat_to_llm_with_tools.await_args.kwargs["llm_name"] == "p1"
+
+    @pytest.mark.parametrize("last", [
+        _final_response(""),
+        _final_response("  \n"),
+        _final_response(None),
+        RuntimeError("boom"),
+    ])
+    async def test_failure_or_empty_leaves_content_none(
+        self, tool_loop, mock_llm_client: MagicMock, llm_config: MagicMock, last, caplog
+    ) -> None:
+        """まとめの呼び出しが失敗した・応答が空なら WARNING を出して content は None のまま。"""
+        mock_llm_client.chat_to_llm_with_tools.side_effect = [_tool_response(("t", "{}")), last]
+
+        with caplog.at_level("WARNING", logger=_MODULE_NAME):
+            result = await _run(tool_loop, max_iterations=1, llm_name="p1")
+
+        assert result.limit_reached is True
+        assert result.content is None
+        assert result.provider == "p1"
+        assert any(r.levelname == "WARNING" for r in caplog.records)
+
+    async def test_send_guard_errors_are_propagated(
+        self, tool_loop, mock_llm_client: MagicMock, llm_config: MagicMock
+    ) -> None:
+        """送信前検査で止めた例外は握りつぶさず、通常の LLM 呼び出しと同じく呼び出し元へ伝える。"""
+        from lilla_core.core.exceptions import LlmSendBlockedError
+
+        mock_llm_client.chat_to_llm_with_tools.side_effect = [
+            _tool_response(("t", "{}")),
+            LlmSendBlockedError("blocked"),
+        ]
+
+        with pytest.raises(LlmSendBlockedError):
+            await _run(tool_loop, max_iterations=1)
+
+    async def test_needs_auth_stop_does_not_summarize(
+        self, tool_loop, mock_llm_client: MagicMock, mock_loader: MagicMock, llm_config: MagicMock
+    ) -> None:
+        """`needs_auth` での打ち切りは上限到達ではないため、まとめを書かせない。"""
+        mock_llm_client.chat_to_llm_with_tools.return_value = _tool_response(("t", "{}"))
+        mock_loader.execute_tool_call.side_effect = [_auth_result("a")]
+
+        result = await _run(tool_loop, stop_on_needs_auth=True)
+
+        assert result.content is None
+        assert mock_llm_client.chat_to_llm_with_tools.await_count == 1
 
 
 # ---------------------------------------------------------------------------
