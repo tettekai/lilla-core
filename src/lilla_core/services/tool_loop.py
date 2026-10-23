@@ -9,6 +9,9 @@ LLM を呼ぶ → `tool_calls` を実行して結果を `tool` メッセージ�
 `needs_auth` を検出したときに打ち切るか）は引数で渡す。resolver の再判定・
 `final_reply_provider` による書き直し・META アクションの適用・再認証案内の付け足しは
 呼び出し元の責任で、ここには入れない。
+
+往復回数が上限に達したときの「打ち切り時のまとめ」（`llm.on_tool_call_limit: summarize`）
+だけはここで行う。会話と専門家ツールのどちらで上限に達しても同じ挙動にするため。
 """
 from __future__ import annotations
 
@@ -20,6 +23,8 @@ from datetime import datetime
 from typing import Any
 
 from lilla_core.api.llm_client import chat_to_llm_with_tools
+from lilla_core.core.config import get_config
+from lilla_core.core.exceptions import LlmSendBlockedError, LlmSendGuardUnavailableError
 from lilla_core.loaders.llm_tool_loader import execute_tool_call
 from lilla_core.utils.datetime_utils import ensure_utc
 
@@ -29,6 +34,20 @@ logger = logging.getLogger(__name__)
 # 引数はこのループで既に実行したツール名（出現順・重複あり）と、前回選んだプロバイダー名
 # （最初は None）。
 ProviderSelector = Callable[[tuple[str, ...], str | None], Awaitable[str | None]]
+
+# ツール呼び出しの上限に達したとき、ツールなしで 1 回だけ LLM を呼ぶ際に末尾へ足す指示。
+# 打ち切りの伝達は固定文言を後ろに付けず、LLM 自身に普段の口調で書かせる。
+LIMIT_SUMMARY_INSTRUCTION = (
+    "The tool call limit for this request has been reached, so processing was stopped partway "
+    "through. You cannot use any more tools. Write your reply to the user now, in your usual voice "
+    "and tone as defined in the system prompt, in the same language as the conversation. "
+    "At the very beginning of the reply, you must tell the user that processing stopped partway "
+    "because the tool call limit was reached. Then briefly summarize, keeping them clearly "
+    "separate: what you found out, what you have done, and what is not done yet. "
+    "Never describe unfinished work as completed. Do not change any numbers, dates, names, URLs, "
+    "file paths, or other facts from the tool results. End by mentioning that you can continue "
+    "the remaining work if the user asks you to."
+)
 
 
 def build_tool_message_content(result: dict) -> str:
@@ -57,11 +76,13 @@ class ToolLoopResult:
     Attributes
     ----------
     content : str | None
-        最終応答（tool_calls なし）の本文。上限到達・`needs_auth` での打ち切り時は None。
+        最終応答（tool_calls なし）の本文。上限に達したときは打ち切り時のまとめの本文で、
+        まとめを書かせなかった・得られなかった場合と `needs_auth` での打ち切り時は None。
     provider : str | None
-        最後に LLM を呼んだプロバイダー名（最終応答を返したプロバイダー）。
+        最後に LLM を呼んだプロバイダー名（最終応答、または打ち切り時のまとめを返した
+        プロバイダー）。
     limit_reached : bool
-        最終応答の前に往復回数の上限に達したか。
+        最終応答の前に往復回数の上限に達したか（まとめを返したときも True）。
     stopped_on_needs_auth : bool
         `stop_on_needs_auth=True` で `needs_auth` を検出して打ち切ったか。
     needs_auth_list : list[dict]
@@ -110,6 +131,60 @@ def _parse_arguments(tc: dict) -> tuple[Any, dict | None]:
         }
 
 
+def _summary_provider_for(provider: str | None, use_final_reply_provider: bool) -> str | None:
+    """打ち切り時のまとめを書かせるプロバイダー名を返す。
+
+    最後のループで使った具体プロバイダー（`None` なら `llm.default`）に
+    `final_reply_provider` があれば、まとめは最終応答にあたるため指定先を返す。
+    `use_final_reply_provider` が False（すでに書き直し先で回しているとき）なら見ない。
+    """
+    if not use_final_reply_provider:
+        return provider
+    llm_config = get_config().llm
+    entry = llm_config.providers.get(provider or llm_config.default)
+    rewrite_provider = entry.final_reply_provider if entry is not None else None
+    return rewrite_provider or provider
+
+
+async def summarize_on_limit(
+    messages: list[dict], *, system_prompt: str, llm_name: str | None
+) -> str | None:
+    """ツール呼び出しの上限に達したとき、ツールなしで 1 回だけ LLM にまとめを書かせる。
+
+    `messages` の末尾に `LIMIT_SUMMARY_INSTRUCTION` を user メッセージとして足して送る
+    （呼び出し元の `messages` は変えない）。tool_calls を含む履歴をそのまま送れるよう、
+    `chat_to_llm_with_tools` を tools なしで呼ぶ。ここで書いた本文の書き直しはしない。
+
+    Returns
+    -------
+    str | None
+        まとめの本文。呼び出しが失敗した・応答が空なら WARNING ログを出して None
+        （呼び出し元は固定文言へ戻す）。送信前検査で止めた例外だけは、通常の LLM 呼び出しと
+        同じく呼び出し元へ伝える。
+    """
+    summary_messages = [*messages, {"role": "user", "content": LIMIT_SUMMARY_INSTRUCTION}]
+    try:
+        response = await chat_to_llm_with_tools(
+            summary_messages, system_prompt=system_prompt, tools=None, llm_name=llm_name
+        )
+    except (LlmSendBlockedError, LlmSendGuardUnavailableError):
+        raise
+    except Exception as e:
+        logger.warning(
+            "Failed to summarize after reaching the tool call limit (provider: %s): %s",
+            llm_name,
+            e,
+        )
+        return None
+    content = response.get("content")
+    if not isinstance(content, str) or not content.strip():
+        logger.warning(
+            "Summary after reaching the tool call limit was empty (provider: %s)", llm_name
+        )
+        return None
+    return content
+
+
 async def run_tool_loop(
     messages: list[dict],
     *,
@@ -121,6 +196,7 @@ async def run_tool_loop(
     llm_name: str | None = None,
     select_provider: ProviderSelector | None = None,
     stop_on_needs_auth: bool = False,
+    summarize_with_final_reply_provider: bool = True,
 ) -> ToolLoopResult:
     """LLM のツール呼び出しループを最終応答か上限まで回す。
 
@@ -150,6 +226,13 @@ async def run_tool_loop(
     stop_on_needs_auth : bool
         True なら `needs_auth` の結果が出た時点で、残りの呼び出しを実行せずに打ち切る。
         False なら続けて、`needs_auth_list` を集めるだけにする。
+    summarize_with_final_reply_provider : bool
+        上限に達してまとめを書かせるとき、最後のプロバイダーの `final_reply_provider` を
+        見るか。すでに書き直し先で回しているループでは False を渡し、書き直しを重ねない。
+
+    上限に達したときは、`llm.on_tool_call_limit` が `summarize`（既定）なら
+    `summarize_on_limit` でツールなしのまとめを 1 回だけ書かせて `content` に入れる。
+    `message` なら、またはまとめを得られなければ `content` は None のまま返す。
 
     Returns
     -------
@@ -197,4 +280,12 @@ async def run_tool_loop(
         result.iterations += 1
 
     result.limit_reached = True
+    if get_config().llm.on_tool_call_limit != "message":
+        summary_provider = _summary_provider_for(provider, summarize_with_final_reply_provider)
+        logger.info("Tool call limit reached; summarizing with provider '%s'", summary_provider)
+        result.content = await summarize_on_limit(
+            messages, system_prompt=system_prompt, llm_name=summary_provider
+        )
+        if result.content is not None:
+            result.provider = summary_provider
     return result

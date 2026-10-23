@@ -83,7 +83,9 @@ async def execute(input: dict, context: dict) -> dict:
     dict
         標準のツール戻り値。Expert 内で `needs_auth` が発生した場合は
         即座にループを中断して伝播させる。ループ上限到達時はエラーにせず
-        `success: True` で中断メッセージを返す。
+        `success: True` で、ツールなしで書かせたここまでのまとめを返す
+        （`llm.on_tool_call_limit: message` のとき、またはまとめを得られなかったときは
+        中断メッセージ）。
     """
     tool_name = "llm_expert"
 
@@ -138,7 +140,10 @@ async def execute(input: dict, context: dict) -> dict:
     )
 
     # ループは会話と共通の部品を使う。プロバイダーは YAML の指定に固定し、resolver の
-    # 再判定も `final_reply_provider` による書き直しも行わない（どちらも会話の経路だけ）
+    # 再判定も `final_reply_provider` による書き直しも行わない（どちらも会話の経路だけ）。
+    # 上限に達したときのまとめは共通部品が会話と同じ規則で書かせるが、書き手は専門家の
+    # プロバイダーのまま（専門家の応答はユーザーへの最終応答ではないため、
+    # `final_reply_provider` は見ない）
     loop_result = await run_tool_loop(
         messages,
         system_prompt=system_prompt,
@@ -148,6 +153,7 @@ async def execute(input: dict, context: dict) -> dict:
         max_iterations=get_config().llm.max_tool_call_iterations,
         llm_name=llm_name,
         stop_on_needs_auth=True,
+        summarize_with_final_reply_provider=False,
     )
 
     if loop_result.stopped_on_needs_auth:
@@ -165,8 +171,11 @@ async def execute(input: dict, context: dict) -> dict:
             "error": "認証が必要です",
         }
 
+    # 上限に達しても、ツールループがツールなしのまとめを書かせていればそれを返す
+    # （`llm.on_tool_call_limit: message`、またはまとめを得られなければ固定文言）
     if loop_result.limit_reached:
         logger.warning("Expert tool call limit reached")
-        return tool_success(tool_name, None, t("tool.llm_expert.tool_call_limit"))
+        if loop_result.content is None:
+            return tool_success(tool_name, None, t("tool.llm_expert.tool_call_limit"))
 
     return tool_success(tool_name, None, loop_result.content or "")

@@ -208,8 +208,11 @@ async def run_conversation(
         いずれの場合も、続けて `supported_client_type` で絞る。
     max_tool_call_iterations : int | None, optional
         この回だけ使うツール呼び出しの往復上限。None なら
-        `llm.max_tool_call_iterations` を使う。上限に達したときの扱い
-        （例外にせず中断文言を返す）はどちらでも同じ。
+        `llm.max_tool_call_iterations` を使う。上限に達したときの扱いはどちらでも同じで、
+        例外にはしない。`llm.on_tool_call_limit` が `summarize`（既定）ならツールなしで
+        1 回だけ LLM を呼んだまとめ（最後のプロバイダーに `final_reply_provider` があれば
+        指定先が書く。書き直し先で上限に達したときは書き直し先が書く）を最終応答として返し、
+        `message` またはまとめを得られなければ `conversation.tool_call_limit` の文言を返す。
 
     Returns
     -------
@@ -385,10 +388,14 @@ async def _run_conversation(
                 context=context,
                 max_iterations=max_iterations - loop_result.iterations,
                 llm_name=rewrite_provider,
+                summarize_with_final_reply_provider=False,
             )
             needs_auth_list.extend(loop_result.needs_auth_list)
 
-    if loop_result.limit_reached:
+    # 上限に達しても、ツールループがツールなしのまとめを書かせていればそれを最終応答として
+    # 扱う（META アクションの適用・再認証案内の付け足しも同じ）。まとめを書かせない設定、
+    # またはまとめを得られなかったときだけ固定文言を返す
+    if loop_result.limit_reached and loop_result.content is None:
         return t("conversation.tool_call_limit")
 
     reply = _apply_meta_actions(loop_result.content or "")

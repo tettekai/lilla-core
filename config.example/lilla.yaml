@@ -43,6 +43,12 @@ llm:
   default: grok
   # 1 回の会話で tool_calls を繰り返す上限回数（既定: 10）
   max_tool_call_iterations: 10
+  # 上の上限に達したときの扱い（既定: summarize）。
+  #   summarize … ツールなしで LLM を 1 回だけ呼び、打ち切ったこと・ここまでに分かったこと・
+  #               できたこと・まだできていないことを普段の口調でまとめさせて返す
+  #               （失敗・空の応答なら message と同じ固定文言に戻る）
+  #   message   … 「ツール呼び出しの上限に達しました。処理を中断しました。」などの固定文言だけを返す
+  # on_tool_call_limit: summarize
   # 分割した LLM 応答ブロックの先頭から順に除去する正規表現（先頭にだけマッチ。`^` は不要）。
   # 省略時は下の 2 つ（英語月名形式と [HH:MM] 形式）。[] なら除去しない。不正な正規表現は起動時に失敗する
   # response_prefix_strip_patterns:
