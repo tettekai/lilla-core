@@ -42,6 +42,11 @@
 - `async def execute(tool_input: dict, context: dict) -> dict` も定義する必要があり、
   標準の結果 dict（`success` / `tool_name` / `data` / `error` など。ヘルパーは
   `tool_support/tool_result.py` を参照）を返します。
+- LLM が tool メッセージとして受け取るのは、成功時は `data`（無ければ `memory_entry`）です。
+  失敗時（`success: False`）は `error` も含め、`memory_entry` と `error` が異なれば
+  `"{memory_entry}: {error}"`、同じか `memory_entry` が無ければ `error` だけになります
+  （`data` があれば次の行に続けます）。LLM が自分で入力を直せるよう、どこが不正でどう直せば
+  よいかは `error` に書いてください。失敗結果はツール名と `error` が WARNING ログにも出ます。
 - YAML の `type` が `self` の場合、ローダーは `TOOL_ROOT` 配下の検索を行わず、
   YAML と同じディレクトリ・同名の `.py` をそのままロードします。
 - YAML の `type` にドットが含まれる場合（`type: lilla_google_calendar.tools.calendar_get`）は

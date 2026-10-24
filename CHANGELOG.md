@@ -31,6 +31,12 @@
 
 ### Changed
 
+- ツールが失敗結果（`success: False`）を返したとき、`error` の詳細も LLM への tool メッセージに含めるようにした（#258）。
+  これまでは `data` → `memory_entry` しか見なかったため、`tool_error()` に渡したエラー詳細が LLM に届かず
+  （`memory_entry` が `None` のツールでは空文字になっていた）、LLM が失敗理由を推測するしかなかった。`memory_entry` と
+  `error` が異なれば `"{memory_entry}: {error}"`、同じか `memory_entry` が無ければ `error` だけを載せ、失敗時に `data` が
+  あれば次の行に続ける。成功時は変わらない。あわせて、ツールループ（会話・`llm_expert` 共通の `services/tool_loop.py`）で
+  失敗結果を受け取ったら、ツール名と `error` を WARNING ログに出す
 - ツール呼び出しの往復が上限（`llm.max_tool_call_iterations`・定期タスクの `max_tool_call_iterations`）に達したとき、
   既定では固定文言の代わりに、ツールなしで LLM を 1 回だけ呼んでここまでの結果をまとめさせた本文を返すようにした（#255）。
   指示文で、冒頭での打ち切りの伝達・分かったこと / できたこと / できていないことの区別・未完了を完了と書かないこと・

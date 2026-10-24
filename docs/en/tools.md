@@ -45,6 +45,12 @@ tool YAML, bundled or not.
 - It must also define `async def execute(tool_input: dict, context: dict) -> dict`,
   returning the standard result dict (`success` / `tool_name` / `data` / `error`, etc. —
   see `tool_support/tool_result.py` for the helper constructors).
+- What the LLM receives as the tool message is `data` (or `memory_entry` if there is no
+  `data`) on success. On failure (`success: False`) it also includes `error`: when
+  `memory_entry` and `error` differ it is `"{memory_entry}: {error}"`, otherwise just
+  `error` (with any `data` following on the next line). Put the details the LLM needs to fix its
+  input (what is wrong and how to fix it) in `error`. A failure result is also logged
+  at WARNING level with the tool name and `error`.
 - If the YAML's `type` is `self`, the loader skips searching `TOOL_ROOT` and instead
   loads the `.py` file next to the YAML with the same stem.
 - If the YAML's `type` contains a dot (`type: lilla_google_calendar.tools.calendar_get`),
