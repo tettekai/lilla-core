@@ -21,6 +21,7 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [ツールループの最終応答の書き直し](llm-final-reply.md) — `llm.providers.<キー>.final_reply_provider`
 - [ツール呼び出しの上限に達したときのまとめ](tool-call-limit.md) — `llm.on_tool_call_limit`
 - [Ollama のモデルを載せておく時間](llm-keep-alive.md) — `llm.providers.<キー>.keep_alive`
+- [LLM 呼び出しの自動再試行](llm-retry.md) — `llm.providers.<キー>.max_retries` など
 - [LLM 送信前の拒否リスト](llm-send-guard.md) — `llm.send_blocklist_path`
 - [LLM 応答の先頭 prefix の除去](llm-response-prefix.md) — `llm.response_prefix_strip_patterns`
 - [LLM のトークン使用量の記録](llm-usage.md) — `llm.usage_log` と、ダッシュボードの Usage 画面

@@ -69,7 +69,7 @@ LLM の応答を待つ上限（秒。既定 300）で、resolver の値は選ば
 効きません。どちらも 0 以下は起動時に失敗します。
 
 resolver 型は HTTP を出さないため `url` / `model` / `api_key_env` /
-`extra_params` / `keep_alive` は書けません。逆に具体プロバイダーは `url` / `model` が必須で、`script` /
+`extra_params` / `keep_alive` と再試行の設定（`max_retries` など。[LLM 呼び出しの自動再試行](llm-retry.md)）は書けません。逆に具体プロバイダーは `url` / `model` が必須で、`script` /
 `fallback` は書けません。モデルごとのシステムプロンプト追記（`prompt`）も具体プロバイダー側に書きます。resolver に
 書いても起動は失敗せず無視され、選ばれた具体プロバイダーの `prompt` が使われます
 （[プロバイダーごとのシステムプロンプト追記](llm-provider-prompt.md)）。

@@ -260,6 +260,29 @@ class TestSendHttpRequest:
 
         assert "internal error detail" in caplog.text
 
+    async def test_error_log_level_can_be_lowered(
+        self,
+        http_util,
+        session_mock: tuple[MagicMock, MagicMock],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """`http_error_log_level` を渡すと HTTP エラーをそのレベルで記録する（再試行の途中用）。"""
+        import aiohttp
+        import logging
+
+        _, mock_resp = session_mock
+        mock_resp.status = 503
+        mock_resp.text = AsyncMock(return_value="busy")
+
+        with caplog.at_level(logging.DEBUG, logger=http_util.logger.name):
+            with pytest.raises(aiohttp.ClientResponseError):
+                await http_util.send_http_request(
+                    "http://example.com/api", http_error_log_level=logging.WARNING
+                )
+
+        records = [r for r in caplog.records if "HTTP error" in r.getMessage()]
+        assert [r.levelno for r in records] == [logging.WARNING]
+
     async def test_error_status_logs_masked_secret_keys(
         self,
         http_util,

@@ -23,6 +23,7 @@ The index of the lilla-core user documentation.
 - [Rewriting the tool loop's final reply](llm-final-reply.md) — `llm.providers.<key>.final_reply_provider`
 - [Summary when the tool call limit is reached](tool-call-limit.md) — `llm.on_tool_call_limit`
 - [How long Ollama keeps a model loaded](llm-keep-alive.md) — `llm.providers.<key>.keep_alive`
+- [Automatic retries for LLM calls](llm-retry.md) — `llm.providers.<key>.max_retries` and related keys
 - [LLM send blocklist](llm-send-guard.md) — `llm.send_blocklist_path`
 - [Stripping prefixes from LLM responses](llm-response-prefix.md) — `llm.response_prefix_strip_patterns`
 - [Recording LLM token usage](llm-usage.md) — `llm.usage_log` and the dashboard's Usage page
