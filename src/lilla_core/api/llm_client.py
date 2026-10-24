@@ -1,9 +1,15 @@
+import asyncio
 import json
 import logging
 import os
+import random
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, NoReturn, Protocol
+
+import aiohttp
 
 from lilla_core.core.config import get_config, resolve_llm_provider_prompt_spec
 from lilla_core.core.exceptions import LLMError
@@ -439,6 +445,126 @@ def _select_adapter(provider, api: str) -> LLMProviderAdapter:
     return adapter
 
 
+#: 一時的な失敗とみなして再試行する HTTP ステータス
+_RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+
+async def _sleep(seconds: float) -> None:
+    """再試行の前に待つ（テストで差し替えられるよう関数に分けている）。"""
+    await asyncio.sleep(seconds)
+
+
+def _parse_retry_after(headers: Any) -> float | None:
+    """応答ヘッダーの `Retry-After` を待つ秒数に変換する（無い・読めなければ None）。
+
+    秒数（`120`）と HTTP 日付（`Wed, 21 Oct 2026 07:28:00 GMT`）の両方を受け付ける。
+    過去の日付は 0 秒として扱う。
+    """
+    if not headers:
+        return None
+    value = headers.get("Retry-After")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    value = value.strip()
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            when = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        seconds = (when - datetime.now(timezone.utc)).total_seconds()
+    if seconds != seconds:  # NaN
+        return None
+    return max(seconds, 0.0)
+
+
+def _describe_failure(error: Exception) -> str:
+    """ログ用に失敗の種類を短く表す（HTTP エラーはステータス、それ以外は例外の型名）。"""
+    if isinstance(error, aiohttp.ClientResponseError):
+        return f"HTTP {error.status}"
+    return type(error).__name__
+
+
+def _retry_wait(error: Exception, provider, retry_number: int, provider_name: str) -> float | None:
+    """失敗が再試行の対象なら、次の試行の前に待つ秒数を返す（対象外なら None）。
+
+    対象は HTTP 429 / 500 / 502 / 503 / 504 と接続エラー（接続できない・途中で切れた）で、
+    全体のタイムアウトは `retry_on_timeout` が真のときだけ。それ以外の 4xx・応答の解釈失敗・
+    送信前検査の拒否は対象外。待ち時間は `Retry-After` があればそれを使い、
+    `retry_max_wait_seconds` を超える指定なら再試行しない。無ければ
+    `retry_backoff_seconds` × 2^(retry_number-1) に最大 5 割のジッターを足し、上限で切る。
+    """
+    if isinstance(error, aiohttp.ClientResponseError):
+        if error.status not in _RETRYABLE_STATUSES:
+            return None
+        retry_after = _parse_retry_after(error.headers)
+        if retry_after is not None:
+            if retry_after > provider.retry_max_wait_seconds:
+                logger.warning(
+                    "LLM provider '%s' asked to retry after %.1fs, which exceeds "
+                    "retry_max_wait_seconds (%.1fs); not retrying",
+                    provider_name, retry_after, provider.retry_max_wait_seconds,
+                )
+                return None
+            return retry_after
+    elif isinstance(error, TimeoutError):
+        # aiohttp の ServerTimeoutError も TimeoutError なので、接続エラーより先に判定する
+        if not provider.retry_on_timeout:
+            return None
+    elif not isinstance(error, (aiohttp.ClientConnectionError, aiohttp.ClientPayloadError)):
+        return None
+    base = provider.retry_backoff_seconds * 2 ** (retry_number - 1)
+    return min(base * random.uniform(1.0, 1.5), provider.retry_max_wait_seconds)
+
+
+async def _post_with_retries(provider, request: LLMRequest, provider_name: str) -> tuple[str, float]:
+    """HTTP 送信を一時的な失敗のときだけ `max_retries` 回まで送り直す。
+
+    再試行の残りがある試行の HTTP エラーは WARNING で記録し、最後の試行だけ従来どおり
+    ERROR にする（`max_retries: 0` なら従来と同じ記録になる）。再試行するたびに WARNING を、
+    諦めたときに（従来の ERROR が出ない場合）ERROR を出し、最後の例外をそのまま送出する。
+
+    Returns:
+        `(応答本文, 成功した試行の開始時刻（time.monotonic）)`。
+    """
+    max_retries = provider.max_retries
+    attempt = 0
+    while True:
+        attempt += 1
+        is_last = attempt > max_retries
+        started = time.monotonic()
+        try:
+            reply = await send_http_request(
+                request.url,
+                method="POST",
+                data=request.body,
+                headers=request.headers,
+                timeout=provider.timeout_seconds,
+                http_error_log_level=logging.ERROR if is_last else logging.WARNING,
+            )
+            return reply, started
+        except Exception as e:
+            wait = None if is_last else _retry_wait(e, provider, attempt, provider_name)
+            if wait is None:
+                logged_as_error = is_last and isinstance(e, aiohttp.ClientResponseError)
+                if attempt > 1 or (
+                    isinstance(e, aiohttp.ClientResponseError) and not logged_as_error
+                ):
+                    logger.error(
+                        "LLM request to provider '%s' failed after %d attempt(s): %s",
+                        provider_name, attempt, _describe_failure(e),
+                    )
+                raise
+            logger.warning(
+                "LLM request to provider '%s' failed (%s); retrying in %.1fs (attempt %d of %d)",
+                provider_name, _describe_failure(e), wait, attempt + 1, max_retries + 1,
+            )
+            await _sleep(wait)
+
+
 async def _send(
     adapter: LLMProviderAdapter,
     provider,
@@ -447,25 +573,20 @@ async def _send(
     provider_name: str,
     api: str,
 ) -> LLMResult:
-    """送信前検査 → HTTP 送信 → 応答解釈 → 例外ラップ を順に行う。
+    """送信前検査 → HTTP 送信（一時的な失敗なら再試行）→ 応答解釈 → 例外ラップ を順に行う。
 
-    送信を止める回は何も送らないよう、検査を最初に済ませる。タイムアウトはプロバイダー
-    設定の `timeout_seconds`（具体プロバイダーの既定 300 秒）を使う。検査の例外
-    （`LLMError` のサブクラス）はそのまま、送信と解釈の失敗は `LLMError` にラップして送出する。
+    送信を止める回は何も送らないよう、検査を最初に 1 回だけ済ませる（再試行のたびには
+    繰り返さない）。タイムアウトはプロバイダー設定の `timeout_seconds`（具体プロバイダーの
+    既定 300 秒）を 1 回の試行ごとに使う。再試行の条件と回数は `_post_with_retries` を参照。
+    検査の例外（`LLMError` のサブクラス）はそのまま、送信と解釈の失敗は `LLMError` に
+    ラップして送出する。
 
-    応答を解釈できたら、HTTP 送信から解釈までの所要時間と使用量を
-    `record_llm_usage()` で記録する（記録の失敗は結果に影響しない）。
+    応答を解釈できたら、成功した試行の HTTP 送信から解釈までの所要時間と使用量を
+    `record_llm_usage()` で 1 回だけ記録する（記録の失敗は結果に影響しない）。
     """
     ensure_llm_request_allowed(request.body)
-    started = time.monotonic()
     try:
-        reply = await send_http_request(
-            request.url,
-            method="POST",
-            data=request.body,
-            headers=request.headers,
-            timeout=provider.timeout_seconds,
-        )
+        reply, started = await _post_with_retries(provider, request, provider_name)
         result = adapter.parse_response(json.loads(reply))
     except Exception as e:
         _raise_llm_error(e)

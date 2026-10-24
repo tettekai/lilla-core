@@ -14,6 +14,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StrictBool,
     StrictInt,
     StrictStr,
     create_model,
@@ -53,6 +54,23 @@ LLM_REQUEST_TIMEOUT_SECONDS = 300.0
 
 #: resolver の `timeout_seconds` の既定値（`async def resolve` を待つ上限の秒数）
 RESOLVER_TIMEOUT_SECONDS = 10.0
+
+#: 具体プロバイダーの `max_retries` の既定値（一時的な失敗で送り直す回数）
+LLM_MAX_RETRIES = 2
+
+#: 具体プロバイダーの `retry_backoff_seconds` の既定値（1 回目の再試行の前に待つ基準の秒数）
+LLM_RETRY_BACKOFF_SECONDS = 1.0
+
+#: 具体プロバイダーの `retry_max_wait_seconds` の既定値（1 回の再試行の前に待つ上限の秒数）
+LLM_RETRY_MAX_WAIT_SECONDS = 30.0
+
+#: 再試行の設定項目（具体プロバイダーだけが持つ）
+_LLM_RETRY_FIELDS = (
+    "max_retries",
+    "retry_backoff_seconds",
+    "retry_max_wait_seconds",
+    "retry_on_timeout",
+)
 
 
 class LlmProviderConfig(BaseModel):
@@ -98,6 +116,18 @@ class LlmProviderConfig(BaseModel):
     # `-1` は無期限、`0` は即時アンロード）。リクエストのトップレベルに付ける。
     # 書式は検証しない（不正な書式は Ollama 側のエラー）。未指定なら送らない
     keep_alive: StrictStr | StrictInt | None = None
+    # 具体プロバイダーのみ。一時的な失敗（HTTP 429 / 500 / 502 / 503 / 504・接続エラー）の
+    # とき、同じプロバイダーへ同じリクエストを送り直す回数（0 以上。既定 2。0 で再試行しない）
+    max_retries: StrictInt | None = None
+    # 具体プロバイダーのみ。再試行の前に待つ基準の秒数（正の数。既定 1 秒）。n 回目の再試行の
+    # 前は基準 × 2^(n-1) にジッターを足して待つ（応答に `Retry-After` があればそちらを使う）
+    retry_backoff_seconds: float | None = None
+    # 具体プロバイダーのみ。1 回の再試行の前に待つ上限の秒数（正の数。既定 30 秒）。
+    # `Retry-After` がこれを超える回は再試行せずに失敗させる
+    retry_max_wait_seconds: float | None = None
+    # 具体プロバイダーのみ。`timeout_seconds` を超えた回も再試行するか（既定 false。
+    # 上流で最初のリクエストも処理されて料金が二重にかかりうるため）
+    retry_on_timeout: StrictBool | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -127,6 +157,9 @@ class LlmProviderConfig(BaseModel):
         具体プロバイダーだけが持ち、0 以上に限る。
         `final_reply_provider` も具体プロバイダーだけが持つ（指す先の検証は `LlmConfig`）。
         `keep_alive` は `ollama` だけが持つ（`openai_compat` / `resolver` に書けば落とす）。
+        再試行の設定（`max_retries` / `retry_backoff_seconds` / `retry_max_wait_seconds` /
+        `retry_on_timeout`）も具体プロバイダーだけが持ち、未指定なら既定値（2 回・1 秒・
+        30 秒・false）を入れる。`max_retries` は 0 以上、秒数は正の数に限る。
         """
         if self.keep_alive is not None and self.type != "ollama":
             raise ValueError(
@@ -147,6 +180,7 @@ class LlmProviderConfig(BaseModel):
                     "input_price_per_million_tokens",
                     "output_price_per_million_tokens",
                     "final_reply_provider",
+                    *_LLM_RETRY_FIELDS,
                 )
                 if getattr(self, name) is not None
             ]
@@ -173,6 +207,7 @@ class LlmProviderConfig(BaseModel):
                 price = getattr(self, name)
                 if price is not None and price < 0:
                     raise ValueError(f"llm provider {name} must not be negative")
+            self._apply_retry_defaults()
         if self.timeout_seconds is None:
             self.timeout_seconds = (
                 RESOLVER_TIMEOUT_SECONDS if self.type == "resolver" else LLM_REQUEST_TIMEOUT_SECONDS
@@ -180,6 +215,28 @@ class LlmProviderConfig(BaseModel):
         elif self.timeout_seconds <= 0:
             raise ValueError("llm provider timeout_seconds must be positive")
         return self
+
+    def _apply_retry_defaults(self) -> None:
+        """具体プロバイダーの再試行の設定を検証し、未指定の項目へ既定値を入れる。
+
+        Raises:
+            ValueError: `max_retries` が負、または秒数が正でない場合。
+        """
+        if self.max_retries is None:
+            self.max_retries = LLM_MAX_RETRIES
+        elif self.max_retries < 0:
+            raise ValueError("llm provider max_retries must not be negative")
+        for name, default in (
+            ("retry_backoff_seconds", LLM_RETRY_BACKOFF_SECONDS),
+            ("retry_max_wait_seconds", LLM_RETRY_MAX_WAIT_SECONDS),
+        ):
+            value = getattr(self, name)
+            if value is None:
+                setattr(self, name, default)
+            elif value <= 0:
+                raise ValueError(f"llm provider {name} must be positive")
+        if self.retry_on_timeout is None:
+            self.retry_on_timeout = False
 
 
 def _validate_provider_prompt_spec(spec: SourceSpec) -> None:

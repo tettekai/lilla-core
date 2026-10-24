@@ -69,6 +69,12 @@ llm:
       # 書いたプロバイダーだけ Usage 画面に概算コストが出る。請求額とは一致しない目安
       # input_price_per_million_tokens: 1.25
       # output_price_per_million_tokens: 2.5
+      # 任意: 一時的な失敗（HTTP 429 / 500 / 502 / 503 / 504・接続エラー）のとき、同じプロバイダーへ
+      # 送り直す設定。既定は下の値（2 回まで再試行する）。max_retries: 0 で再試行しない
+      # max_retries: 2
+      # retry_backoff_seconds: 1      # 再試行の前に待つ基準の秒数（回ごとに倍＋ジッター）
+      # retry_max_wait_seconds: 30    # 1 回の待ちの上限。Retry-After がこれを超えたら再試行しない
+      # retry_on_timeout: false       # timeout_seconds を超えた回も再試行するか（料金が二重になりうる）
 
 paths:
   tool_root: /tmp/lilla-tools

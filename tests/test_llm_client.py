@@ -36,6 +36,7 @@ _PROVIDER = MagicMock(
     model="test-model",
     api_key_env=None,
     extra_params={},
+    max_retries=0,
 )
 
 
@@ -206,6 +207,7 @@ class TestSendGuard:
             model="test-model",
             api_key_env=extra.pop("api_key_env", None),
             extra_params=extra.get("extra_params", {}),
+            max_retries=0,
         )
 
     @pytest.mark.parametrize(
@@ -301,6 +303,7 @@ class TestProviderPrompt:
             model="test-model",
             api_key_env=None,
             extra_params={},
+            max_retries=0,
             prompt=prompt,
             fallback=kw.get("fallback"),
         )
@@ -428,6 +431,7 @@ class TestSendPaths:
             prompt=None,
             timeout_seconds=kw.get("timeout_seconds", 300.0),
             keep_alive=kw.get("keep_alive"),
+            max_retries=kw.get("max_retries", 0),
         )
 
     async def test_ollama_native_keep_alive_at_top_level(self, env) -> None:
@@ -774,6 +778,7 @@ class TestUsageRecording:
             model="m1",
             api_key_env=None,
             extra_params={},
+            max_retries=0,
             prompt=None,
             timeout_seconds=300.0,
             **kw,
@@ -896,3 +901,240 @@ class TestUsageRecordingFailure:
             mock_get_config.return_value.llm.default = "main"
             assert await llm_client.chat_to_llm("hi") == "ok"
         assert any("Failed to record LLM usage" in r.message for r in caplog.records)
+
+
+class TestRetry:
+    """一時的な失敗での同じプロバイダーへの再試行（#253）。"""
+
+    OK_BODY = json.dumps({
+        "choices": [{"message": {"content": "ok"}}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+    })
+
+    @pytest.fixture
+    def env(self):
+        """設定・送信・送信前検査・記録・待ち時間をモックする。"""
+        send = AsyncMock()
+        guard = MagicMock()
+        record = MagicMock()
+        sleep = AsyncMock()
+        with (
+            patch.object(llm_client, "get_config") as mock_get_config,
+            patch.object(llm_client, "send_http_request", new=send),
+            patch.object(llm_client, "ensure_llm_request_allowed", new=guard),
+            patch.object(llm_client, "record_llm_usage", new=record),
+            patch.object(llm_client, "_sleep", new=sleep),
+        ):
+            cfg = mock_get_config.return_value
+            cfg.system_prompt = "SYSTEM"
+            cfg.llm.default = "main"
+            yield cfg, send, guard, record, sleep
+
+    @staticmethod
+    def _provider(provider_type="openai_compat", **kw):
+        return MagicMock(
+            type=provider_type,
+            url="https://llm.example/v1",
+            model="m1",
+            api_key_env=None,
+            extra_params={},
+            prompt=None,
+            timeout_seconds=300.0,
+            keep_alive=None,
+            max_retries=kw.get("max_retries", 2),
+            retry_backoff_seconds=kw.get("retry_backoff_seconds", 1.0),
+            retry_max_wait_seconds=kw.get("retry_max_wait_seconds", 30.0),
+            retry_on_timeout=kw.get("retry_on_timeout", False),
+        )
+
+    @staticmethod
+    def _http_error(status, headers=None):
+        import aiohttp
+
+        return aiohttp.ClientResponseError(
+            MagicMock(), (), status=status, message="upstream", headers=headers
+        )
+
+    @pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+    async def test_retryable_status_is_retried_until_success(self, env, status, caplog) -> None:
+        cfg, send, guard, record, sleep = env
+        cfg.get_llm_provider.return_value = self._provider()
+        send.side_effect = [self._http_error(status), self._http_error(status), self.OK_BODY]
+        with caplog.at_level(logging.WARNING, logger=llm_client.logger.name):
+            assert await llm_client.chat_to_llm("hi", llm_name="grok") == "ok"
+        assert send.await_count == 3
+        guard.assert_called_once()
+        record.assert_called_once()
+        assert sleep.await_count == 2
+        retries = [r for r in caplog.records if "retrying in" in r.getMessage()]
+        assert len(retries) == 2
+        assert all(r.levelno == logging.WARNING for r in retries)
+        assert f"HTTP {status}" in retries[0].getMessage()
+        assert "'grok'" in retries[0].getMessage()
+        assert "attempt 2 of 3" in retries[0].getMessage()
+        assert "attempt 3 of 3" in retries[1].getMessage()
+
+    @pytest.mark.parametrize("call", ["chat", "tools", "responses"])
+    async def test_all_paths_retry(self, env, call) -> None:
+        cfg, send, *_ = env
+        cfg.get_llm_provider.return_value = self._provider(
+            "ollama" if call == "chat" else "openai_compat"
+        )
+        body = json.dumps({
+            "message": {"content": "ok"},
+            "choices": [{"message": {"content": "ok"}}],
+            "output": [],
+        })
+        send.side_effect = [self._http_error(503), body]
+        msgs = [{"role": "user", "content": "hi"}]
+        if call == "chat":
+            await llm_client.chat_to_llm(msgs)
+        elif call == "tools":
+            await llm_client.chat_to_llm_with_tools(msgs)
+        else:
+            await llm_client.chat_to_llm_responses(msgs)
+        assert send.await_count == 2
+
+    async def test_connection_error_is_retried(self, env) -> None:
+        import aiohttp
+
+        cfg, send, *_ = env
+        cfg.get_llm_provider.return_value = self._provider()
+        send.side_effect = [aiohttp.ServerDisconnectedError(), self.OK_BODY]
+        assert await llm_client.chat_to_llm("hi") == "ok"
+        assert send.await_count == 2
+
+    async def test_exhausted_retries_raise_llm_error(self, env, caplog) -> None:
+        cfg, send, _, record, sleep = env
+        cfg.get_llm_provider.return_value = self._provider(max_retries=2)
+        send.side_effect = [self._http_error(503)] * 3
+        with caplog.at_level(logging.WARNING, logger=llm_client.logger.name):
+            with pytest.raises(llm_client.LLMError, match="^LLM call error: ") as exc_info:
+                await llm_client.chat_to_llm("hi", llm_name="grok")
+        assert exc_info.value.__cause__.status == 503
+        assert send.await_count == 3
+        assert sleep.await_count == 2
+        record.assert_not_called()
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert any("failed after 3 attempt(s)" in r.getMessage() for r in errors)
+
+    @pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
+    async def test_other_4xx_is_not_retried(self, env, status, caplog) -> None:
+        cfg, send, _, _, sleep = env
+        cfg.get_llm_provider.return_value = self._provider()
+        send.side_effect = self._http_error(status)
+        with caplog.at_level(logging.WARNING, logger=llm_client.logger.name):
+            with pytest.raises(llm_client.LLMError):
+                await llm_client.chat_to_llm("hi")
+        assert send.await_count == 1
+        sleep.assert_not_awaited()
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert any(f"HTTP {status}" in r.getMessage() for r in errors)
+
+    async def test_parse_failure_is_not_retried(self, env) -> None:
+        cfg, send, _, _, sleep = env
+        cfg.get_llm_provider.return_value = self._provider()
+        send.return_value = "not json"
+        with pytest.raises(llm_client.LLMError):
+            await llm_client.chat_to_llm("hi")
+        assert send.await_count == 1
+        sleep.assert_not_awaited()
+
+    async def test_blocked_send_is_not_retried(self, env) -> None:
+        cfg, send, guard, _, sleep = env
+        cfg.get_llm_provider.return_value = self._provider()
+        guard.side_effect = llm_client.LLMError("blocked")
+        with pytest.raises(llm_client.LLMError, match="blocked"):
+            await llm_client.chat_to_llm("hi")
+        send.assert_not_awaited()
+        guard.assert_called_once()
+        sleep.assert_not_awaited()
+
+    async def test_timeout_is_not_retried_by_default(self, env) -> None:
+        cfg, send, _, _, sleep = env
+        cfg.get_llm_provider.return_value = self._provider()
+        send.side_effect = TimeoutError()
+        with pytest.raises(llm_client.LLMError):
+            await llm_client.chat_to_llm("hi")
+        assert send.await_count == 1
+        sleep.assert_not_awaited()
+
+    async def test_timeout_is_retried_when_enabled(self, env) -> None:
+        cfg, send, *_ = env
+        cfg.get_llm_provider.return_value = self._provider(retry_on_timeout=True)
+        send.side_effect = [TimeoutError(), self.OK_BODY]
+        assert await llm_client.chat_to_llm("hi") == "ok"
+        assert send.await_count == 2
+
+    async def test_retry_after_seconds_is_used(self, env) -> None:
+        cfg, send, _, _, sleep = env
+        cfg.get_llm_provider.return_value = self._provider()
+        send.side_effect = [self._http_error(429, {"Retry-After": "7"}), self.OK_BODY]
+        assert await llm_client.chat_to_llm("hi") == "ok"
+        sleep.assert_awaited_once_with(7.0)
+
+    async def test_retry_after_http_date_is_used(self, env) -> None:
+        from datetime import datetime, timedelta, timezone
+        from email.utils import format_datetime
+
+        cfg, send, _, _, sleep = env
+        cfg.get_llm_provider.return_value = self._provider()
+        when = format_datetime(datetime.now(timezone.utc) + timedelta(seconds=20), usegmt=True)
+        send.side_effect = [self._http_error(503, {"Retry-After": when}), self.OK_BODY]
+        assert await llm_client.chat_to_llm("hi") == "ok"
+        waited = sleep.await_args.args[0]
+        assert 15 <= waited <= 20
+
+    async def test_retry_after_over_limit_fails_without_retry(self, env, caplog) -> None:
+        cfg, send, _, _, sleep = env
+        cfg.get_llm_provider.return_value = self._provider(retry_max_wait_seconds=10.0)
+        send.side_effect = [self._http_error(429, {"Retry-After": "60"}), self.OK_BODY]
+        with caplog.at_level(logging.WARNING, logger=llm_client.logger.name):
+            with pytest.raises(llm_client.LLMError):
+                await llm_client.chat_to_llm("hi")
+        assert send.await_count == 1
+        sleep.assert_not_awaited()
+        assert "exceeds retry_max_wait_seconds" in caplog.text
+
+    async def test_backoff_grows_with_jitter_and_is_capped(self, env) -> None:
+        cfg, send, _, _, sleep = env
+        cfg.get_llm_provider.return_value = self._provider(
+            max_retries=3, retry_backoff_seconds=2.0, retry_max_wait_seconds=5.0
+        )
+        send.side_effect = [self._http_error(500)] * 3 + [self.OK_BODY]
+        assert await llm_client.chat_to_llm("hi") == "ok"
+        waits = [c.args[0] for c in sleep.await_args_list]
+        assert 2.0 <= waits[0] <= 3.0
+        assert 4.0 <= waits[1] <= 5.0
+        assert waits[2] == 5.0
+
+    async def test_max_retries_zero_sends_once(self, env) -> None:
+        import logging as _logging
+
+        cfg, send, _, _, sleep = env
+        cfg.get_llm_provider.return_value = self._provider(max_retries=0)
+        send.side_effect = self._http_error(503)
+        with pytest.raises(llm_client.LLMError):
+            await llm_client.chat_to_llm("hi")
+        assert send.await_count == 1
+        sleep.assert_not_awaited()
+        assert send.await_args.kwargs["http_error_log_level"] == _logging.ERROR
+
+    async def test_intermediate_http_errors_are_logged_as_warning(self, env) -> None:
+        cfg, send, *_ = env
+        cfg.get_llm_provider.return_value = self._provider(max_retries=1)
+        send.side_effect = [self._http_error(503), self._http_error(503)]
+        with pytest.raises(llm_client.LLMError):
+            await llm_client.chat_to_llm("hi")
+        levels = [c.kwargs["http_error_log_level"] for c in send.await_args_list]
+        assert levels == [logging.WARNING, logging.ERROR]
+
+    async def test_usage_is_recorded_once_for_successful_attempt(self, env) -> None:
+        cfg, send, _, record, _ = env
+        cfg.get_llm_provider.return_value = self._provider()
+        send.side_effect = [self._http_error(503), self.OK_BODY]
+        await llm_client.chat_to_llm("hi", llm_name="grok")
+        record.assert_called_once()
+        kwargs = record.call_args.kwargs
+        assert kwargs["provider_name"] == "grok"
+        assert kwargs["usage"].input_tokens == 1

@@ -9,6 +9,18 @@
 
 ### Added
 
+- LLM 呼び出しが一時的に失敗したとき（HTTP `429` / `500` / `502` / `503` / `504`・接続エラー）、同じ具体プロバイダーへ
+  同じリクエストを自動で送り直すようにした（#253）。**既定で有効**（2 回まで）で、Chat Completions・Responses API・
+  Ollama ネイティブのすべての経路に効く。具体プロバイダーごとに `llm.providers.<キー>.max_retries`（既定 `2`。`0` で従来どおり
+  再試行しない）・`retry_backoff_seconds`（既定 `1`。指数バックオフ＋ジッターの基準秒数）・`retry_max_wait_seconds`（既定 `30`。
+  1 回の待ちの上限で、`Retry-After` がこれを超えたら再試行せずに失敗させる）・`retry_on_timeout`（既定 `false`。料金の二重計上を
+  避けるため、タイムアウトは既定で再試行しない）を書ける。それ以外の `4xx`・応答の解釈失敗・送信前検査の拒否は再試行しない。
+  送信前検査は最初の 1 回だけ行う。再試行のたびに WARNING ログを出し、最終的な失敗は従来どおり `LLMError` になる。使用量は
+  成功した 1 回分だけを記録する。`type: resolver` に書くと起動時に失敗する。再試行の残りがある試行の HTTP エラーは ERROR では
+  なく WARNING で記録する（最後の試行は従来どおり ERROR）
+- `send_http_request()` に任意引数 `http_error_log_level`（既定 `logging.ERROR`）を追加した（#253）。HTTP エラーを記録するログ
+  レベルを呼び出し側で下げられる
+
 - `type: ollama` のプロバイダーに `llm.providers.<キー>.keep_alive` を追加した（#261）。文字列（`30m` など）か
   整数（秒。`-1` は無期限、`0` は即時アンロード）で、設定するとそのプロバイダーへの呼び出し（tools なしの
   `/api/chat`、tools 付きの `/v1/chat/completions`）のボディのトップレベルに付く。未指定なら送らない。
