@@ -339,7 +339,7 @@ jobs:
       # 効かせつつ、Claude が起動する前に依存を入れておくことで、Claude 自身の
       # ターンから pip install を追い出す（起動直後に pytest / mypy が使える）
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
           cache: 'pip'
