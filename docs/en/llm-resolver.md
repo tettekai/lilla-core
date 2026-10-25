@@ -72,10 +72,9 @@ upper bound in seconds for waiting on the LLM response (default 300). A resolver
 not apply to the request sent to the chosen concrete provider. Zero or negative values fail
 startup for both.
 
-A resolver makes no HTTP calls, so `url` / `model` / `api_key_env` / `wakeup_file` /
-`extra_params` are not allowed on it. Conversely, concrete providers require `url`
-/ `model` and may not set `script` / `fallback`. The Ollama wake-up (WOL) applies
-only to concrete providers. Per-model system prompt additions (`prompt`) also go on
+A resolver makes no HTTP calls, so `url` / `model` / `api_key_env` /
+`extra_params` / `keep_alive` and the retry settings (`max_retries` and so on; see [Automatic retries for LLM calls](llm-retry.md)) are not allowed on it. Conversely, concrete providers require `url`
+/ `model` and may not set `script` / `fallback`. Per-model system prompt additions (`prompt`) also go on
 concrete providers. Writing one on a resolver does not fail startup; it is ignored, and
 the chosen concrete provider's `prompt` is used instead (see
 [Per-provider system prompt additions](llm-provider-prompt.md)).

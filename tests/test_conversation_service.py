@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+_TOOL_LOOP_MODULE = "lilla_core.services.tool_loop"
+
 # ---------------------------------------------------------------------------
 # フィクスチャ
 # ---------------------------------------------------------------------------
@@ -100,10 +102,21 @@ def conversation_service(with_mocked_modules, mock_cfg: MagicMock):
     """patch.dict 有効後に conversation_service をロードする。"""
     import importlib
     sys.modules.pop("lilla_core.services.conversation_service", None)
+    sys.modules.pop(_TOOL_LOOP_MODULE, None)
     cs = importlib.import_module("lilla_core.services.conversation_service")
     cs._config = mock_cfg
     yield cs
     sys.modules.pop("lilla_core.services.conversation_service", None)
+    sys.modules.pop(_TOOL_LOOP_MODULE, None)
+
+
+def _tool_loop():
+    """conversation_service と同じ patch.dict の下で読み込んだ tool_loop モジュールを返す。
+
+    LLM 呼び出しとツール実行はツールループの共通部品（`services/tool_loop.py`）が行うため、
+    それらの差し替えはこのモジュールに対して行う。
+    """
+    return sys.modules[_TOOL_LOOP_MODULE]
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +160,7 @@ class TestLlmResolverExpansion:
             "content": "done", "tool_calls": None, "finish_reason": "stop",
             "raw_message": {"role": "assistant", "content": "done"},
         })
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_with_tools)
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_with_tools)
 
         await conversation_service.run_conversation({"t": {"name": "t"}}, llm_name="router")
 
@@ -219,7 +232,7 @@ class TestLlmResolverPerToolCall:
     def _setup(self, conversation_service, monkeypatch, responses, choose):
         """LLM 応答の列と、resolver キーのときだけ `choose(kwargs)` を呼ぶ偽の展開を仕込む。"""
         mock_with_tools = AsyncMock(side_effect=responses)
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_with_tools)
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_with_tools)
         script = MagicMock(side_effect=choose)
 
         async def fake_resolve(name, **kwargs):
@@ -230,7 +243,7 @@ class TestLlmResolverPerToolCall:
 
         monkeypatch.setattr(conversation_service, "resolve_llm_name", fake_resolve)
         monkeypatch.setattr(
-            conversation_service,
+            _tool_loop(),
             "execute_tool_call",
             AsyncMock(return_value={
                 "success": True, "tool_name": "x", "memory_entry": "RESULT-BODY", "data": None, "error": None,
@@ -370,7 +383,7 @@ class TestRunConversation:
         mock_chat = AsyncMock(return_value="no tools reply")
         mock_with_tools = AsyncMock()
         monkeypatch.setattr(conversation_service, "chat_to_llm", mock_chat)
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_with_tools)
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_with_tools)
 
         result = await conversation_service.run_conversation(
             {"tool_a": {"schema": {}}}, client_type="task", allowed_tool_names=[]
@@ -416,7 +429,7 @@ class TestRunConversation:
         mock_chat = AsyncMock(return_value="no tools reply")
         mock_with_tools = AsyncMock()
         monkeypatch.setattr(conversation_service, "chat_to_llm", mock_chat)
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_with_tools)
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_with_tools)
 
         result = await conversation_service.run_conversation({"main_tool": {}})
 
@@ -517,8 +530,8 @@ class TestRunConversation:
             "raw_message": {"role": "assistant", "content": "完了しました"},
         }
         mock_chat = AsyncMock(side_effect=[tool_response, text_response])
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
-        monkeypatch.setattr(conversation_service, "execute_tool_call", AsyncMock(return_value={
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", AsyncMock(return_value={
             "success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None
         }))
 
@@ -550,11 +563,11 @@ class TestRunConversation:
             "raw_message": {"role": "assistant", "content": "完了しました"},
         }
         mock_chat = AsyncMock(side_effect=[tool_response, text_response])
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
         mock_execute_tool_call = AsyncMock(return_value={
             "success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None
         })
-        monkeypatch.setattr(conversation_service, "execute_tool_call", mock_execute_tool_call)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", mock_execute_tool_call)
 
         fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
         result = await conversation_service.run_conversation(fake_tools)
@@ -585,9 +598,9 @@ class TestRunConversation:
             "raw_message": {"role": "assistant", "content": "エラーを確認しました"},
         }
         mock_chat = AsyncMock(side_effect=[tool_response, text_response])
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
         mock_execute_tool_call = AsyncMock()
-        monkeypatch.setattr(conversation_service, "execute_tool_call", mock_execute_tool_call)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", mock_execute_tool_call)
 
         fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
         result = await conversation_service.run_conversation(fake_tools)
@@ -621,11 +634,11 @@ class TestRunConversation:
             "raw_message": {"role": "assistant", "content": "完了しました"},
         }
         mock_chat = AsyncMock(side_effect=[tool_response, text_response])
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
         mock_execute_tool_call = AsyncMock(return_value={
             "success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None
         })
-        monkeypatch.setattr(conversation_service, "execute_tool_call", mock_execute_tool_call)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", mock_execute_tool_call)
 
         async def notifier(line: str) -> None:
             pass
@@ -661,11 +674,11 @@ class TestRunConversation:
             "raw_message": {"role": "assistant", "content": "完了しました"},
         }
         mock_chat = AsyncMock(side_effect=[tool_response, text_response])
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
         mock_execute_tool_call = AsyncMock(return_value={
             "success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None
         })
-        monkeypatch.setattr(conversation_service, "execute_tool_call", mock_execute_tool_call)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", mock_execute_tool_call)
 
         fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
         await conversation_service.run_conversation(fake_tools, client_type="lilla-client")
@@ -676,7 +689,8 @@ class TestRunConversation:
     async def test_max_iterations_returns_abort_message(
         self, conversation_service, mock_memory_manager_instance, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """tool_calls が max_iterations 回続いたとき上限メッセージを返す。"""
+        """`on_tool_call_limit: message` で tool_calls が max_iterations 回続いたとき上限メッセージを返す。"""
+        conversation_service._config.llm.on_tool_call_limit = "message"
         tool_response = {
             "content": None,
             "finish_reason": "tool_calls",
@@ -690,8 +704,8 @@ class TestRunConversation:
             "raw_message": {"role": "assistant", "content": None, "tool_calls": []},
         }
         mock_chat = AsyncMock(return_value=tool_response)
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
-        monkeypatch.setattr(conversation_service, "execute_tool_call", AsyncMock(return_value={
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", AsyncMock(return_value={
             "success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None
         }))
 
@@ -707,6 +721,7 @@ class TestRunConversation:
         limit: int,
     ) -> None:
         """`max_tool_call_iterations` を渡したときはグローバル（3）ではなくその回数で止まる。"""
+        conversation_service._config.llm.on_tool_call_limit = "message"
         tool_response = {
             "content": None,
             "finish_reason": "tool_calls",
@@ -720,8 +735,8 @@ class TestRunConversation:
             "raw_message": {"role": "assistant", "content": None, "tool_calls": []},
         }
         mock_chat = AsyncMock(return_value=tool_response)
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
-        monkeypatch.setattr(conversation_service, "execute_tool_call", AsyncMock(return_value={
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", AsyncMock(return_value={
             "success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None
         }))
 
@@ -732,6 +747,168 @@ class TestRunConversation:
 
         assert result == "ツール呼び出しの上限に達しました。処理を中断しました。"
         assert mock_chat.call_count == limit
+
+
+class TestToolCallLimitSummary:
+    """ツール呼び出しの上限に達したときの、ツールなしのまとめのテスト。"""
+
+    @staticmethod
+    def _tool_response() -> dict:
+        """ツールを 1 回呼ぶ応答を返す。"""
+        return {
+            "content": None,
+            "finish_reason": "tool_calls",
+            "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "test_tool", "arguments": "{}"}}
+            ],
+            "raw_message": {"role": "assistant", "content": None, "tool_calls": [{"id": "call_1"}]},
+        }
+
+    @staticmethod
+    def _text_response(content: str | None) -> dict:
+        """tool_calls なしの応答を返す。"""
+        return {
+            "content": content,
+            "finish_reason": "stop",
+            "tool_calls": None,
+            "raw_message": {"role": "assistant", "content": content},
+        }
+
+    @staticmethod
+    def _provider(final_reply_provider: str | None = None) -> MagicMock:
+        """`final_reply_provider` だけを持つ具体プロバイダー設定のモックを返す。"""
+        provider = MagicMock()
+        provider.final_reply_provider = final_reply_provider
+        return provider
+
+    @pytest.fixture
+    def setup_loop(self, conversation_service, mock_cfg: MagicMock, monkeypatch: pytest.MonkeyPatch):
+        """LLM の応答列・ツール結果・プロバイダー台帳を用意する（上限は 3）。"""
+
+        def _setup(responses: list, tool_result: dict | None = None, **providers: MagicMock) -> AsyncMock:
+            mock_cfg.llm.on_tool_call_limit = "summarize"
+            mock_cfg.llm.providers = providers
+            mock_chat = AsyncMock(side_effect=responses)
+            monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
+            monkeypatch.setattr(_tool_loop(), "execute_tool_call", AsyncMock(return_value=tool_result or {
+                "success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None
+            }))
+            monkeypatch.setattr(conversation_service, "resolve_llm_name", AsyncMock(return_value="local"))
+            return mock_chat
+
+        return _setup
+
+    async def test_summary_without_tools_is_returned_without_fixed_text(
+        self, conversation_service, setup_loop
+    ) -> None:
+        """上限に達したらツールなしで 1 回だけ呼び、その本文だけを返す（固定文言は付けない）。"""
+        mock_chat = setup_loop([self._tool_response()] * 3 + [self._text_response("partial summary")])
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(fake_tools)
+
+        assert result == "partial summary"
+        assert conversation_service.t("conversation.tool_call_limit") not in result
+        assert mock_chat.await_count == 4
+        summary_call = mock_chat.await_args_list[-1]
+        assert summary_call.kwargs["tools"] is None
+        assert summary_call.kwargs["llm_name"] == "local"
+        last = summary_call.args[0][-1]
+        assert last == {"role": "user", "content": _tool_loop().LIMIT_SUMMARY_INSTRUCTION}
+        assert summary_call.args[0][-2]["role"] == "tool"
+
+    async def test_summary_applies_meta_actions_and_reauth_notices(
+        self, conversation_service, setup_loop, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """まとめにも META アクションの適用と再認証案内の付け足しを通常どおり行う。"""
+        fake_session = MagicMock()
+        monkeypatch.setattr(conversation_service, "get_session_memory_manager", lambda: fake_session)
+        reply = 'summary\n---META---\n{"actions": [{"type": "set_session_memory", "value": "memo"}]}\n---END_META---'
+        setup_loop(
+            [self._tool_response()] * 3 + [self._text_response(reply)],
+            tool_result={
+                "success": False, "tool_name": "test_tool", "memory_entry": None, "data": None,
+                "error": "auth", "needs_auth": True,
+                "needs_auth_list": [{"auth_service": "svc", "auth_url": "https://auth"}],
+            },
+        )
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(fake_tools)
+
+        assert result.startswith("summary")
+        assert "---META---" not in result
+        assert "https://auth" in result
+        fake_session.set.assert_called_once_with("memo")
+
+    async def test_summary_is_written_by_final_reply_provider(
+        self, conversation_service, setup_loop
+    ) -> None:
+        """最後のプロバイダーに `final_reply_provider` があれば、まとめは指定先が書く（連鎖しない）。"""
+        mock_chat = setup_loop(
+            [self._tool_response()] * 3 + [self._text_response("summary by main")],
+            local=self._provider("main"),
+            main=self._provider("other"),
+        )
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(fake_tools)
+
+        assert result == "summary by main"
+        assert [c.kwargs["llm_name"] for c in mock_chat.await_args_list] == [
+            "local", "local", "local", "main"
+        ]
+
+    async def test_summary_after_rewrite_is_written_by_rewrite_target(
+        self, conversation_service, setup_loop
+    ) -> None:
+        """書き直し先で上限に達したら、まとめは書き直し先が書き、その `final_reply_provider` は見ない。"""
+        mock_chat = setup_loop(
+            [
+                self._tool_response(),
+                self._text_response("local draft"),
+                self._tool_response(),
+                self._tool_response(),
+                self._text_response("summary by main"),
+            ],
+            local=self._provider("main"),
+            main=self._provider("other"),
+        )
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(fake_tools)
+
+        assert result == "summary by main"
+        assert [c.kwargs["llm_name"] for c in mock_chat.await_args_list] == [
+            "local", "local", "main", "main", "main"
+        ]
+        assert mock_chat.await_args_list[-1].kwargs["tools"] is None
+
+    @pytest.mark.parametrize("summary", ["", "   ", None, RuntimeError("boom")])
+    async def test_failed_or_empty_summary_falls_back_to_fixed_text(
+        self, conversation_service, setup_loop, summary
+    ) -> None:
+        """まとめの呼び出しが失敗した・応答が空なら、例外にせず固定文言を返す。"""
+        last = summary if isinstance(summary, Exception) else self._text_response(summary)
+        setup_loop([self._tool_response()] * 3 + [last])
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(fake_tools)
+
+        assert result == conversation_service.t("conversation.tool_call_limit")
+
+    async def test_message_mode_does_not_summarize(
+        self, conversation_service, setup_loop, mock_cfg: MagicMock
+    ) -> None:
+        """`on_tool_call_limit: message` なら、まとめを書かせず固定文言を返す。"""
+        mock_chat = setup_loop([self._tool_response()] * 3 + [self._text_response("never")])
+        mock_cfg.llm.on_tool_call_limit = "message"
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(fake_tools)
+
+        assert result == conversation_service.t("conversation.tool_call_limit")
+        assert mock_chat.await_count == 3
 
     async def test_tool_data_with_datetime_is_serialized(
         self, conversation_service, mock_memory_manager_instance, monkeypatch: pytest.MonkeyPatch
@@ -761,8 +938,8 @@ class TestRunConversation:
             "raw_message": {"role": "assistant", "content": "完了"},
         }
         mock_chat = AsyncMock(side_effect=[tool_response, text_response])
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
-        monkeypatch.setattr(conversation_service, "execute_tool_call", AsyncMock(return_value={
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", AsyncMock(return_value={
             "success": True, "tool_name": "test_tool", "memory_entry": None,
             "data": {"timestamp": dt, "value": 42}, "error": None,
         }))
@@ -803,8 +980,8 @@ class TestRunConversation:
             "raw_message": {"role": "assistant", "content": "完了！"},
         }
         mock_chat = AsyncMock(side_effect=[tool_response, text_response])
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
-        monkeypatch.setattr(conversation_service, "execute_tool_call", AsyncMock(return_value={
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", AsyncMock(return_value={
             "success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None
         }))
 
@@ -858,7 +1035,7 @@ class TestFinalReplyProvider:
         def _setup(responses: list[dict], **providers: MagicMock) -> AsyncMock:
             mock_cfg.llm.providers = providers
             mock_chat = AsyncMock(side_effect=responses)
-            monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
+            monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
             monkeypatch.setattr(conversation_service, "resolve_llm_name", AsyncMock(return_value="local"))
             return mock_chat
 
@@ -867,7 +1044,7 @@ class TestFinalReplyProvider:
     async def test_final_reply_is_rewritten_by_configured_provider(
         self, conversation_service, setup_loop
     ) -> None:
-        """最終応答の本文は捨て、指定先にツールなしで 1 回問い合わせた結果を返す。"""
+        """最終応答の本文は捨て、指定先に同じツールとシステムプロンプトで問い合わせた結果を返す。"""
         mock_chat = setup_loop(
             [self._tool_response(), self._text_response("local draft"), self._text_response("rewritten")],
             local=self._provider("main"),
@@ -881,13 +1058,14 @@ class TestFinalReplyProvider:
         assert mock_chat.await_count == 3
         rewrite_call = mock_chat.await_args_list[2]
         assert rewrite_call.kwargs["llm_name"] == "main"
-        assert rewrite_call.kwargs["tools"] is None
+        assert rewrite_call.kwargs["tools"] == mock_chat.await_args_list[0].kwargs["tools"]
+        assert rewrite_call.kwargs["tools"]
         assert rewrite_call.kwargs["system_prompt"] == "test system prompt"
 
     async def test_rewrite_input_excludes_discarded_reply(
         self, conversation_service, setup_loop
     ) -> None:
-        """書き直しの入力は捨てた最終応答を含まず、ツール結果と指示で終わる。"""
+        """書き直しの入力は捨てた最終応答を含まず、指示も足さずにツール結果で終わる。"""
         mock_chat = setup_loop(
             [self._tool_response(), self._text_response("local draft"), self._text_response("rewritten")],
             local=self._provider("main"),
@@ -899,14 +1077,11 @@ class TestFinalReplyProvider:
 
         rewrite_messages = mock_chat.await_args_list[2].args[0]
         assert all("local draft" not in str(m.get("content")) for m in rewrite_messages)
-        assert rewrite_messages[-2]["role"] == "tool"
-        assert rewrite_messages[-1] == {
-            "role": "user",
-            "content": conversation_service._FINAL_REPLY_REWRITE_INSTRUCTION,
-        }
+        assert rewrite_messages[-1]["role"] == "tool"
+        assert not hasattr(conversation_service, "_FINAL_REPLY_REWRITE_INSTRUCTION")
 
     async def test_rewrite_does_not_chain(self, conversation_service, setup_loop) -> None:
-        """書き直し先の `final_reply_provider` は見ず、問い合わせは 1 回で閉じる。"""
+        """書き直し先の `final_reply_provider` は見ず、書き直しは連鎖しない。"""
         mock_chat = setup_loop(
             [self._tool_response(), self._text_response("local draft"), self._text_response("rewritten")],
             local=self._provider("main"),
@@ -919,6 +1094,145 @@ class TestFinalReplyProvider:
 
         assert result == "rewritten"
         assert mock_chat.await_count == 3
+
+    async def test_rewrite_target_tool_calls_are_executed(
+        self, conversation_service, setup_loop, mock_llm_tool_loader: MagicMock
+    ) -> None:
+        """書き直し先が tool_calls を返すとツールを実行し、結果を加えて書き直し先へ問い合わせ続ける。"""
+        mock_chat = setup_loop(
+            [
+                self._tool_response(),
+                self._text_response("local draft"),
+                self._tool_response(),
+                self._text_response("rewritten"),
+            ],
+            local=self._provider("main"),
+            main=self._provider(),
+        )
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(fake_tools)
+
+        assert result == "rewritten"
+        assert mock_chat.await_count == 4
+        assert mock_llm_tool_loader.execute_tool_call.await_count == 2
+        last_call = mock_chat.await_args_list[3]
+        assert last_call.kwargs["llm_name"] == "main"
+        last_messages = last_call.args[0]
+        assert last_messages[-1]["role"] == "tool"
+        assert last_messages[-2]["role"] == "assistant"
+        assert all("local draft" not in str(m.get("content")) for m in last_messages)
+
+    async def test_resolver_is_not_consulted_after_rewrite_starts(
+        self, conversation_service, setup_loop
+    ) -> None:
+        """書き直しに入ったあとは resolver で再判定せず、最後まで書き直し先が担当する。"""
+        mock_chat = setup_loop(
+            [
+                self._tool_response(),
+                self._text_response("local draft"),
+                self._tool_response(),
+                self._tool_response(),
+                self._text_response("rewritten"),
+            ],
+            local=self._provider("main"),
+            main=self._provider(),
+        )
+        conversation_service._config.llm.max_tool_call_iterations = 5
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(fake_tools)
+
+        assert result == "rewritten"
+        assert conversation_service.resolve_llm_name.await_count == 2
+        assert [c.kwargs["llm_name"] for c in mock_chat.await_args_list] == [
+            "local", "local", "main", "main", "main"
+        ]
+
+    async def test_rewrite_target_does_not_chain_after_tool_calls(
+        self, conversation_service, setup_loop
+    ) -> None:
+        """書き直し先でツールを呼んだあとも、書き直し先の `final_reply_provider` は見ない。"""
+        mock_chat = setup_loop(
+            [
+                self._tool_response(),
+                self._text_response("local draft"),
+                self._tool_response(),
+                self._text_response("rewritten"),
+            ],
+            local=self._provider("main"),
+            main=self._provider("other"),
+            other=self._provider(),
+        )
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(fake_tools)
+
+        assert result == "rewritten"
+        assert "other" not in [c.kwargs["llm_name"] for c in mock_chat.await_args_list]
+
+    async def test_iteration_limit_counts_across_rewrite(
+        self, conversation_service, setup_loop
+    ) -> None:
+        """往復回数は元のツールループと通算で上限までで、達したら中断の文言を返す。"""
+        # 上限 3: 元のループで 1 回・書き直し先で 2 回ツールを呼んだところで打ち切る
+        conversation_service._config.llm.on_tool_call_limit = "message"
+        mock_chat = setup_loop(
+            [
+                self._tool_response(),
+                self._text_response("local draft"),
+                self._tool_response(),
+                self._tool_response(),
+                self._text_response("never reached"),
+            ],
+            local=self._provider("main"),
+            main=self._provider(),
+        )
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(fake_tools)
+
+        assert result == conversation_service.t("conversation.tool_call_limit")
+        assert mock_chat.await_count == 4
+
+    async def test_rewrite_target_tool_handling_matches_main_loop(
+        self, conversation_service, setup_loop, mock_llm_tool_loader: MagicMock
+    ) -> None:
+        """書き直し先でも、壊れた引数 JSON・再認証の案内・通知は既存のループと同じに扱う。"""
+        broken = self._tool_response()
+        broken["tool_calls"] = [
+            {"id": "bad", "type": "function", "function": {"name": "test_tool", "arguments": "{oops"}},
+            {"id": "good", "type": "function", "function": {"name": "test_tool", "arguments": "{}"}},
+        ]
+        mock_chat = setup_loop(
+            [self._tool_response(), self._text_response("local draft"), broken, self._text_response("rewritten")],
+            local=self._provider("main"),
+            main=self._provider(),
+        )
+        mock_llm_tool_loader.execute_tool_call.side_effect = [
+            {"success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None},
+            {
+                "success": False,
+                "tool_name": "test_tool",
+                "memory_entry": "auth",
+                "data": None,
+                "error": "auth",
+                "needs_auth": True,
+                "needs_auth_list": [{"auth_service": "svc", "auth_url": "https://auth.example.invalid"}],
+            },
+        ]
+        notifier = AsyncMock()
+
+        fake_tools = {"test_tool": {"schema": {}, "execute": AsyncMock()}}
+        result = await conversation_service.run_conversation(fake_tools, tool_call_notifier=notifier)
+
+        assert result.startswith("rewritten\n\n")
+        assert "https://auth.example.invalid" in result
+        last_messages = mock_chat.await_args_list[3].args[0]
+        bad_result = next(m for m in last_messages if m.get("tool_call_id") == "bad")
+        assert "JSON" in bad_result["content"]
+        rewrite_context = mock_llm_tool_loader.execute_tool_call.await_args_list[1].args[3]
+        assert rewrite_context["_tool_call_notifier"] is notifier
 
     async def test_meta_actions_apply_to_rewritten_reply(
         self, conversation_service, setup_loop
@@ -956,7 +1270,7 @@ class TestFinalReplyProvider:
         mock_cfg.llm.providers = {"local": self._provider("main"), "main": self._provider()}
         monkeypatch.setattr(conversation_service, "resolve_llm_name", AsyncMock(return_value="local"))
         mock_with_tools = AsyncMock()
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_with_tools)
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_with_tools)
         monkeypatch.setattr(conversation_service, "chat_to_llm", AsyncMock(return_value="plain reply"))
 
         result = await conversation_service.run_conversation({})
@@ -1006,8 +1320,8 @@ class TestMetaActionsIntegration:
             "raw_message": {"role": "assistant", "content": "完了しました。"},
         }
         mock_chat = AsyncMock(side_effect=[tool_response, text_response])
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
-        monkeypatch.setattr(conversation_service, "execute_tool_call", AsyncMock(return_value={
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", AsyncMock(return_value={
             "success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None
         }))
 
@@ -1185,8 +1499,8 @@ class TestMetaActionsIntegration:
             "raw_message": {"role": "assistant", "content": "完了。"},
         }
         mock_chat = AsyncMock(side_effect=[tool_response, text_response])
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
-        monkeypatch.setattr(conversation_service, "execute_tool_call", AsyncMock(return_value={
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", AsyncMock(return_value={
             "success": True,
             "tool_name": "test_tool",
             "memory_entry": None,
@@ -1224,8 +1538,8 @@ class TestMetaActionsIntegration:
             "raw_message": {"role": "assistant", "content": None, "tool_calls": []},
         }
         mock_chat = AsyncMock(return_value=tool_response)
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", mock_chat)
-        monkeypatch.setattr(conversation_service, "execute_tool_call", AsyncMock(return_value={
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
+        monkeypatch.setattr(_tool_loop(), "execute_tool_call", AsyncMock(return_value={
             "success": True, "tool_name": "test_tool", "memory_entry": "ok", "data": None, "error": None
         }))
 
@@ -1364,7 +1678,7 @@ class TestClientTypeDispatch:
             "raw_message": {"role": "assistant", "content": "tool loop reply"},
         })
         monkeypatch.setattr(conversation_service, "chat_to_llm", without_tools)
-        monkeypatch.setattr(conversation_service, "chat_to_llm_with_tools", with_tools)
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", with_tools)
         return {"without_tools": without_tools, "with_tools": with_tools}
 
     def _set_tools_disabled(
@@ -1648,7 +1962,7 @@ class TestSkillListInjection:
         )
         monkeypatch.setattr(conversation_service, "chat_to_llm", AsyncMock(return_value="ok"))
         monkeypatch.setattr(
-            conversation_service,
+            _tool_loop(),
             "chat_to_llm_with_tools",
             AsyncMock(return_value={
                 "content": "ok", "tool_calls": None, "finish_reason": "stop",

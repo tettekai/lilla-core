@@ -33,14 +33,23 @@ time of day, and so on) is decided by your [resolver script](llm-resolver.md).
 - In the tool loop of `run_conversation`, when the concrete provider that returned the
   response without tool_calls (the final reply) has `final_reply_provider`, that final
   reply text is discarded.
-- The specified provider is asked once, without tools, and its result becomes the final
-  reply. The same system prompt is used (if the target has a `prompt`, its addition is
-  appended as usual).
+- From then on, the specified provider handles the reply. It is called with the same
+  tools and system prompt as the original tool loop (if the target has a `prompt`, its
+  addition is appended as usual).
 - The input is the message list without the discarded final reply (conversation history,
-  tool calls, tool results), followed by a user message instructing it to write in its
-  usual tone, in the same language as the conversation, without changing facts from the
-  tool results such as numbers, dates, names, URLs, or paths.
-- The target's own `final_reply_provider` is not consulted. The rewrite is a single call
+  tool calls, tool results), as is. No rewrite instruction is added.
+- When the target returns a response without tool_calls, that becomes the final reply. If
+  it does not call any tools, this takes a single call.
+- When the target calls tools, they are executed the same way as in the original tool loop
+  (including the error result for broken argument JSON, re-authentication notices, and
+  tool call notifications), and the target is called again with the tool results added.
+  During this, the [resolver script](llm-resolver.md) is not consulted again, and the
+  original provider is never used again.
+- The number of tool call iterations is counted together with the original tool loop, up
+  to `llm.max_tool_call_iterations` (or the limit passed by the caller). When the limit is
+  reached, the [summary for the tool call limit](tool-call-limit.md) is returned just like
+  in the normal tool loop (the rewrite target writes it; rewrites are not stacked).
+- The target's own `final_reply_provider` is not consulted. The rewrite is a single step
   and never chains.
 - META blocks (such as `set_session_memory`) are processed on the rewritten text.
 - If the rewrite call fails, it is handled like any other LLM call failure (the discarded
@@ -50,7 +59,9 @@ The rewrite does not happen on these paths:
 
 - Conversations without tools (no tools, during `!disable_tools`, an empty allow list, etc.)
 - The inner loop of `llm_expert`, and tasks or commands that call `chat_to_llm` directly
-- Turns aborted because the tool call iteration limit was reached
+- Turns aborted because the tool call iteration limit was reached (with
+  `llm.on_tool_call_limit: summarize`, the summary is written by the last provider's
+  `final_reply_provider` target if it has one)
 
 ## Configuration
 
@@ -61,5 +72,5 @@ The rewrite does not happen on these paths:
   - setting `final_reply_provider` on a resolver entry
 - If unset, no rewrite happens (unchanged behavior).
 
-The rewrite adds one LLM call. It is also recorded as one entry for the target provider in
-[LLM token usage](llm-usage.md).
+The rewrite adds one LLM call (more if the target calls tools). Each call is recorded as
+one entry for the target provider in [LLM token usage](llm-usage.md).

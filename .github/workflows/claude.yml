@@ -350,7 +350,7 @@ jobs:
 
       - name: Run Claude Code
         id: claude
-        uses: anthropics/claude-code-action@1d6de8cb0c237e7c15e9e1bdf973826ebae490cc # v1.0.248
+        uses: anthropics/claude-code-action@374f254f5efaf968abfe15d399fd90972e8138b9 # v1.0.251
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # New work branches and PRs start from develop, not the default branch (main).
@@ -426,8 +426,8 @@ jobs:
   # Claude often stops at a Compare link, and GITHUB_TOKEN is not permitted to
   # create PRs (createPullRequest) for Actions-triggered runs. Instead, ask Grok
   # Bot's dedicated PR-create webhook to open the PR (author becomes the repo
-  # owner, and notify-grok-bot-review keeps working as-is). This uses its own
-  # secrets, separate from the review-notification GROK_BOT_WEBHOOK_* ones.
+  # owner, so Grok Bot's review routine picks it up from the PR events as usual).
+  # This uses its own dedicated secrets.
   # Only for Issue-originated runs (not comments on an existing PR).
   #
   # Claude 本体とは別ジョブにしてある。同一ジョブに置くと、注入された Claude から

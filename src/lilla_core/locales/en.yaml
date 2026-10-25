@@ -128,6 +128,9 @@ conversation:
   tool_call_limit: "Reached the tool call limit, so processing was stopped."
 
 tool:
+  # Built-in tool llm_expert (builtin_tools/llm_expert.py)
+  llm_expert:
+    tool_call_limit: "(Processing took too long, so it was stopped inside the expert agent.)"
   # Built-in tool llm_load_skill (builtin_tools/llm_load_skill.py)
   load_skill:
     list_header: "## Available skills"

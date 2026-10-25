@@ -9,6 +9,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 _MODULE_NAME = "lilla_core.builtin_tools.llm_expert"
+# ツールループの共通部品。差し替えた llm_client / llm_tool_loader を掴ませるため、
+# llm_expert と一緒に読み直す
+_TOOL_LOOP_MODULE = "lilla_core.services.tool_loop"
 
 
 # ---------------------------------------------------------------------------
@@ -48,16 +51,6 @@ def mock_loader() -> MagicMock:
 
 
 @pytest.fixture
-def mock_conv_service() -> MagicMock:
-    """services.conversation_service モック。"""
-    mock = MagicMock()
-    mock.build_tool_message_content = MagicMock(
-        side_effect=lambda r: str(r.get("data") or r.get("memory_entry") or "")
-    )
-    return mock
-
-
-@pytest.fixture
 def mock_load_prompt() -> MagicMock:
     """load_text_resources の差し替え用モック。"""
     return MagicMock(return_value="EXPERT SYSTEM PROMPT")
@@ -68,7 +61,6 @@ def with_mocked_modules(
     mock_cfg: MagicMock,
     mock_llm_client: MagicMock,
     mock_loader: MagicMock,
-    mock_conv_service: MagicMock,
 ):
     """依存モジュールを patch.dict で差し替える。"""
     with patch.dict(
@@ -77,7 +69,6 @@ def with_mocked_modules(
             "lilla_core.core.config": MagicMock(get_config=lambda: mock_cfg),
             "lilla_core.api.llm_client": mock_llm_client,
             "lilla_core.loaders.llm_tool_loader": mock_loader,
-            "lilla_core.services.conversation_service": mock_conv_service,
         },
     ):
         yield
@@ -89,10 +80,12 @@ def llm_expert(with_mocked_modules, mock_load_prompt: MagicMock):
     # utils.resource_loader は実モジュールを使い、ロード後に load_text_resources を差し替える
     # （sys.modules を MagicMock で汚すと他テストが影響を受けるため）
     sys.modules.pop(_MODULE_NAME, None)
+    sys.modules.pop(_TOOL_LOOP_MODULE, None)
     module = importlib.import_module(_MODULE_NAME)
     module.load_text_resources = mock_load_prompt
     yield module
     sys.modules.pop(_MODULE_NAME, None)
+    sys.modules.pop(_TOOL_LOOP_MODULE, None)
 
 
 def _stop_response(text: str = "expert reply") -> dict:
@@ -206,8 +199,9 @@ class TestLLMExpertExecute:
         mock_llm_client: MagicMock,
         mock_loader: MagicMock,
     ) -> None:
-        """ループ上限到達時はエラーではなく success: True + 中断テキストを返す。"""
+        """`on_tool_call_limit: message` の上限到達時はエラーではなく success: True + 中断テキストを返す。"""
         mock_cfg.llm.max_tool_call_iterations = 2
+        mock_cfg.llm.on_tool_call_limit = "message"
         mock_llm_client.chat_to_llm_with_tools.return_value = _tool_call_response()
         mock_loader.execute_tool_call.return_value = {
             "success": True,
@@ -225,6 +219,37 @@ class TestLLMExpertExecute:
         assert result["needs_auth"] is False
         assert "中断" in result["data"]
         assert mock_llm_client.chat_to_llm_with_tools.await_count == 2
+
+    async def test_max_iterations_returns_summary_without_tools(
+        self,
+        llm_expert,
+        mock_cfg: MagicMock,
+        mock_llm_client: MagicMock,
+        mock_loader: MagicMock,
+    ) -> None:
+        """`on_tool_call_limit: summarize` の上限到達時は、専門家のプロバイダーでツールなしのまとめを返す。"""
+        mock_cfg.llm.max_tool_call_iterations = 2
+        mock_cfg.llm.on_tool_call_limit = "summarize"
+        mock_cfg.llm.providers = {"grok": MagicMock(final_reply_provider="main")}
+        mock_llm_client.chat_to_llm_with_tools.side_effect = [
+            _tool_call_response(),
+            _tool_call_response(),
+            {"content": "expert summary", "tool_calls": None, "finish_reason": "stop",
+             "raw_message": {"role": "assistant", "content": "expert summary"}},
+        ]
+        mock_loader.execute_tool_call.return_value = {
+            "success": True, "tool_name": "llm_health_get", "memory_entry": "ok",
+            "needs_auth": False, "needs_auth_list": [], "data": "ok", "error": None,
+        }
+
+        result = await llm_expert.execute({"prompt": "x"}, _base_context())
+
+        assert result["success"] is True
+        assert result["data"] == "expert summary"
+        summary_call = mock_llm_client.chat_to_llm_with_tools.await_args_list[-1]
+        assert summary_call.kwargs["tools"] is None
+        # 専門家の応答はユーザーへの最終応答ではないため `final_reply_provider` は見ない
+        assert summary_call.kwargs["llm_name"] == "grok"
 
     async def test_passes_resolved_tools_to_build_tools_param(
         self, llm_expert, mock_llm_client: MagicMock, mock_loader: MagicMock
@@ -350,7 +375,6 @@ def llm_expert_with_real_loader(
     monkeypatch: pytest.MonkeyPatch,
     mock_cfg: MagicMock,
     mock_llm_client: MagicMock,
-    mock_conv_service: MagicMock,
     mock_load_prompt: MagicMock,
 ):
     """本物のコアの llm_tool_loader（resolve_available_tools / build_tools_param）で llm_expert をロードする。
@@ -367,14 +391,15 @@ def llm_expert_with_real_loader(
             "lilla_core.core.config": MagicMock(get_config=lambda: mock_cfg),
             "lilla_core.api.llm_client": mock_llm_client,
             "lilla_core.loaders.llm_tool_loader": real_loader,
-            "lilla_core.services.conversation_service": mock_conv_service,
         },
     ):
         sys.modules.pop(_MODULE_NAME, None)
+        sys.modules.pop(_TOOL_LOOP_MODULE, None)
         module = importlib.import_module(_MODULE_NAME)
         module.load_text_resources = mock_load_prompt
         yield module
         sys.modules.pop(_MODULE_NAME, None)
+        sys.modules.pop(_TOOL_LOOP_MODULE, None)
 
 
 def _llm_tools(*names: str) -> dict:
@@ -568,3 +593,131 @@ class TestLLMExpertLoading:
         function = result["llm_health_expert"]["schema"]["function"]
         assert function["name"] == "llm_health_expert"
         assert function["description"] == "健康の専門家"
+
+
+# ---------------------------------------------------------------------------
+# TestLLMExpertToolLoop — 会話と共通のツールループを使うこと
+# ---------------------------------------------------------------------------
+
+
+class TestLLMExpertToolLoop:
+    async def test_broken_arguments_json_is_returned_to_llm_and_loop_continues(
+        self, llm_expert, mock_llm_client: MagicMock, mock_loader: MagicMock
+    ) -> None:
+        """引数 JSON が壊れていても落ちず、エラー内容を tool メッセージで返して続ける。"""
+        mock_llm_client.chat_to_llm_with_tools.side_effect = [
+            _tool_call_response(args="{broken"),
+            _stop_response("引数を直しました"),
+        ]
+
+        result = await llm_expert.execute({"prompt": "x"}, _base_context())
+
+        assert result["success"] is True
+        assert result["data"] == "引数を直しました"
+        mock_loader.execute_tool_call.assert_not_called()
+        second_messages = mock_llm_client.chat_to_llm_with_tools.await_args_list[1].args[0]
+        tool_message = second_messages[-1]
+        assert tool_message["role"] == "tool"
+        assert tool_message["tool_call_id"] == "call_1"
+        assert "JSON" in tool_message["content"]
+
+    async def test_tool_calls_dispatched_even_when_finish_reason_is_stop(
+        self, llm_expert, mock_llm_client: MagicMock, mock_loader: MagicMock
+    ) -> None:
+        """ツール呼び出しは finish_reason ではなく tool_calls の有無で判定する。"""
+        response = _tool_call_response()
+        response["finish_reason"] = "stop"
+        mock_llm_client.chat_to_llm_with_tools.side_effect = [response, _stop_response("done")]
+        mock_loader.execute_tool_call.return_value = {
+            "success": True, "tool_name": "llm_health_get", "memory_entry": "ok",
+            "needs_auth": False, "needs_auth_list": [], "data": "ok", "error": None,
+        }
+
+        result = await llm_expert.execute({"prompt": "x"}, _base_context())
+
+        assert result["data"] == "done"
+        assert mock_loader.execute_tool_call.await_count == 1
+
+    async def test_tool_call_limit_text_comes_from_locale_catalog(
+        self,
+        llm_expert,
+        mock_cfg: MagicMock,
+        mock_llm_client: MagicMock,
+        mock_loader: MagicMock,
+    ) -> None:
+        """上限到達時の文言はロケールのカタログ（tool.llm_expert.tool_call_limit）から出る。"""
+        from lilla_core.ui.messages import t
+
+        mock_cfg.llm.max_tool_call_iterations = 1
+        mock_cfg.llm.on_tool_call_limit = "message"
+        mock_llm_client.chat_to_llm_with_tools.return_value = _tool_call_response()
+        mock_loader.execute_tool_call.return_value = {
+            "success": True, "tool_name": "llm_health_get", "memory_entry": "ok",
+            "needs_auth": False, "needs_auth_list": [], "data": "ok", "error": None,
+        }
+
+        result = await llm_expert.execute({"prompt": "x"}, _base_context())
+
+        assert result["data"] == t("tool.llm_expert.tool_call_limit")
+        assert result["data"] != "tool.llm_expert.tool_call_limit"
+
+    async def test_needs_auth_skips_remaining_tool_calls(
+        self, llm_expert, mock_llm_client: MagicMock, mock_loader: MagicMock
+    ) -> None:
+        """needs_auth を検出したら、同じ応答の残りのツール呼び出しも実行しない。"""
+        response = _tool_call_response()
+        response["tool_calls"].append(
+            {"id": "call_2", "type": "function", "function": {"name": "llm_health_get", "arguments": "{}"}}
+        )
+        mock_llm_client.chat_to_llm_with_tools.return_value = response
+        mock_loader.execute_tool_call.return_value = {
+            "success": False, "tool_name": "llm_health_get", "memory_entry": None,
+            "needs_auth": True, "needs_auth_list": [], "data": None, "error": "認証が必要です",
+        }
+
+        result = await llm_expert.execute({"prompt": "x"}, _base_context())
+
+        assert result == {
+            "success": False,
+            "tool_name": "llm_expert",
+            "memory_entry": None,
+            "needs_auth": True,
+            "needs_auth_list": [],
+            "data": None,
+            "error": "認証が必要です",
+        }
+        assert mock_loader.execute_tool_call.await_count == 1
+
+    async def test_resolver_and_final_reply_provider_are_not_applied(
+        self,
+        llm_expert,
+        mock_cfg: MagicMock,
+        mock_llm_client: MagicMock,
+        mock_loader: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Expert の中では resolver の再判定も final_reply_provider による書き直しも動かない。"""
+        import lilla_core.services.llm_resolver as llm_resolver
+
+        resolve = AsyncMock(side_effect=AssertionError("resolver must not be called"))
+        monkeypatch.setattr(llm_resolver, "resolve_llm_name", resolve)
+        provider = MagicMock()
+        provider.final_reply_provider = "rewriter"
+        mock_cfg.llm.providers = {"grok": provider}
+        mock_llm_client.chat_to_llm_with_tools.side_effect = [
+            _tool_call_response(),
+            _stop_response("Expert の回答"),
+        ]
+        mock_loader.execute_tool_call.return_value = {
+            "success": True, "tool_name": "llm_health_get", "memory_entry": "ok",
+            "needs_auth": False, "needs_auth_list": [], "data": "ok", "error": None,
+        }
+
+        result = await llm_expert.execute({"prompt": "x"}, _base_context())
+
+        assert result["data"] == "Expert の回答"
+        assert mock_llm_client.chat_to_llm_with_tools.await_count == 2
+        assert [
+            c.kwargs["llm_name"] for c in mock_llm_client.chat_to_llm_with_tools.await_args_list
+        ] == ["grok", "grok"]
+        resolve.assert_not_called()

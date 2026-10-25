@@ -121,6 +121,7 @@ async def send_http_request(
     timeout: int = 300,
     body: str | bytes | None = None,
     allow_redirects: bool = True,
+    http_error_log_level: int = logging.ERROR,
 ) -> str:
     """
     非同期HTTPリクエストを送信します。
@@ -137,6 +138,10 @@ async def send_http_request(
     扱い、300 以上で ``aiohttp.ClientResponseError`` を送出する（``status`` に 3xx、
     ``headers`` に ``Location`` を含む）。POST が 301 / 302 / 303 で GET に変わって
     ボディを失ったまま成功扱いになるのを避けたい呼び出し側向け。
+
+    http_error_log_level は HTTP エラー（上記のしきい値以上のステータス）を記録する
+    ログレベル（既定 ERROR）。失敗しても送り直す呼び出し側（LLM 送信の再試行など）が、
+    途中の失敗を WARNING に下げるために使う。
     """
     proxy, auth = _resolve_proxy(url)
 
@@ -177,7 +182,8 @@ async def send_http_request(
             response_text = await resp.text()
             error_threshold = 400 if allow_redirects else 300
             if resp.status >= error_threshold:
-                logger.error(
+                logger.log(
+                    http_error_log_level,
                     "HTTP error %s %s: %s",
                     resp.status,
                     url,

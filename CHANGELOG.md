@@ -7,6 +7,69 @@
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-25
+
+### Added
+
+- LLM 呼び出しが一時的に失敗したとき（HTTP `429` / `500` / `502` / `503` / `504`・接続エラー）、同じ具体プロバイダーへ
+  同じリクエストを自動で送り直すようにした（#253）。**既定で有効**（2 回まで）で、Chat Completions・Responses API・
+  Ollama ネイティブのすべての経路に効く。具体プロバイダーごとに `llm.providers.<キー>.max_retries`（既定 `2`。`0` で従来どおり
+  再試行しない）・`retry_backoff_seconds`（既定 `1`。指数バックオフ＋ジッターの基準秒数）・`retry_max_wait_seconds`（既定 `30`。
+  1 回の待ちの上限で、`Retry-After` がこれを超えたら再試行せずに失敗させる）・`retry_on_timeout`（既定 `false`。料金の二重計上を
+  避けるため、タイムアウトは既定で再試行しない）を書ける。それ以外の `4xx`・応答の解釈失敗・送信前検査の拒否は再試行しない。
+  送信前検査は最初の 1 回だけ行う。再試行のたびに WARNING ログを出し、最終的な失敗は従来どおり `LLMError` になる。使用量は
+  成功した 1 回分だけを記録する。`type: resolver` に書くと起動時に失敗する。再試行の残りがある試行の HTTP エラーは ERROR では
+  なく WARNING で記録する（最後の試行は従来どおり ERROR）
+- `send_http_request()` に任意引数 `http_error_log_level`（既定 `logging.ERROR`）を追加した（#253）。HTTP エラーを記録するログ
+  レベルを呼び出し側で下げられる
+
+- `type: ollama` のプロバイダーに `llm.providers.<キー>.keep_alive` を追加した（#261）。文字列（`30m` など）か
+  整数（秒。`-1` は無期限、`0` は即時アンロード）で、設定するとそのプロバイダーへの呼び出し（tools なしの
+  `/api/chat`、tools 付きの `/v1/chat/completions`）のボディのトップレベルに付く。未指定なら送らない。
+  `openai_compat` / `resolver` に書いた場合と、文字列・整数以外（`bool` など）の値は起動時に失敗する
+- `llm.on_tool_call_limit`（`summarize` / `message`。**既定 `summarize`**）を追加した（#255）。ツール呼び出しの往復が
+  上限に達したとき、ツールなしのまとめを返すか（`summarize`）、従来の固定文言だけを返すか（`message`）を選ぶ。
+  それ以外の値は起動時に失敗する
+
+### Changed
+
+- ツールが失敗結果（`success: False`）を返したとき、`error` の詳細も LLM への tool メッセージに含めるようにした（#258）。
+  これまでは `data` → `memory_entry` しか見なかったため、`tool_error()` に渡したエラー詳細が LLM に届かず
+  （`memory_entry` が `None` のツールでは空文字になっていた）、LLM が失敗理由を推測するしかなかった。`memory_entry` と
+  `error` が異なれば `"{memory_entry}: {error}"`、同じか `memory_entry` が無ければ `error` だけを載せ、失敗時に `data` が
+  あれば次の行に続ける。成功時は変わらない。あわせて、ツールループ（会話・`llm_expert` 共通の `services/tool_loop.py`）で
+  失敗結果を受け取ったら、ツール名と `error` を WARNING ログに出す
+- ツール呼び出しの往復が上限（`llm.max_tool_call_iterations`・定期タスクの `max_tool_call_iterations`）に達したとき、
+  既定では固定文言の代わりに、ツールなしで LLM を 1 回だけ呼んでここまでの結果をまとめさせた本文を返すようにした（#255）。
+  指示文で、冒頭での打ち切りの伝達・分かったこと / できたこと / できていないことの区別・未完了を完了と書かないこと・
+  続きを依頼できる旨を求め、本文の後ろに固定文言は付けない。META アクションの適用と再認証案内の付け足しは通常の
+  最終応答と同じ。まとめは最後のループの具体プロバイダーが書き、`final_reply_provider` があれば指定先が書く（書き直しは
+  重ねない。`llm_expert` の中では専門家のプロバイダーのまま）。まとめの呼び出しが失敗した・応答が空なら従来の固定文言を
+  返す。共通部品 `services/tool_loop.py` で行うため通常会話と `llm_expert` の両方に効く。上限に達した回は LLM の呼び出しが
+  1 回増える。従来の挙動に戻すには `llm.on_tool_call_limit: message` を書く。`run_tool_loop()` に任意引数
+  `summarize_with_final_reply_provider` を足し、上限到達時は `ToolLoopResult.content` にまとめが入る（得られなければ None）
+
+- LLM のツール呼び出しループを `services/tool_loop.py` の `run_tool_loop()` に共通化し、通常会話と組み込みツール
+  `llm_expert` の両方がこれを使うようにした（#254）。拡張が自前のエージェント的なツールを作るときにも使える。
+  これにより `llm_expert` の挙動が会話側に揃う: ツール呼び出しを `finish_reason` ではなく `tool_calls` の有無で
+  判定し、引数の JSON が壊れた呼び出しはツール全体を失敗させずにエラー内容を LLM へ返して続ける。上限到達時の
+  中断の文言は `ui.locale` のカタログ（`tool.llm_expert.tool_call_limit`）から出す。`needs_auth` での打ち切り・
+  固定のプロバイダー・戻り値の形は変わらず、resolver の再判定と `final_reply_provider` による書き直しは引き続き
+  会話の経路だけで動く。`build_tool_message_content` の実体は `services/tool_loop.py` へ移した
+  （`services/conversation_service.py` からも従来どおり import できる）
+- `llm.providers.<キー>.final_reply_provider` の書き直しで、書き直し先にも元のツールループと同じツールを渡すようにした（#259）。
+  書き直し先がツールを呼べば実行し、そのまま書き直し先でツールループを続ける（以降は resolver で再判定せず、
+  書き直し先の `final_reply_provider` も見ない）。往復回数は元のツールループと通算で `llm.max_tool_call_iterations`
+  まで。書き直しの指示文（user メッセージ）は足さなくなり、捨てた最終応答を除いたメッセージ列をそのまま渡す。
+  書き直し先がツールを呼ばなければ、従来どおり問い合わせ 1 回で最終応答になる
+
+### Removed
+
+- Ollama の起動確認（WOL）処理と、`llm.providers.<キー>.wakeup_file` / `wol_sleep_seconds` 設定を削除した（#256）。
+  `type: ollama` のプロバイダーへ送る前に `/api/version` へ疎通確認を送らなくなり、本来のエンドポイントへの
+  1 回だけを送る。ホストの起動が必要なら利用側で用意する。設定に `wakeup_file` / `wol_sleep_seconds` が
+  残っていても起動は失敗せず、無視される
+
 ## [0.7.0] - 2026-10-18
 
 ### Added

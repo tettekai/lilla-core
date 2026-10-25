@@ -40,8 +40,10 @@ like with the same `type` but different `schedule` / `target` / `prompt`.
 - `max_tool_call_iterations` … optional. The tool-call round-trip limit for this task
   only (a positive integer). If omitted, `llm.max_tool_call_iterations` (default 10) is
   used. Startup fails for non-integers, `true` / `false`, or values below 1. Hitting the
-  limit does not raise; the task returns the abort message, which is sent to `target`
-  like any other reply (it is not `NO_NOTIFICATION`)
+  limit does not raise; following `llm.on_tool_call_limit`, the task returns a summary
+  written without tools (the default) or the abort message (see
+  [Summary when the tool call limit is reached](tool-call-limit.md)), and unless it is
+  `NO_NOTIFICATION`, it is sent to `target` like any other reply
 
 ## The tool allow-list (`available_tools`)
 

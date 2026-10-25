@@ -23,18 +23,17 @@ YAML 側で以下を指定する:
 """
 from __future__ import annotations
 
-import json
 import logging
 
 from lilla_core.core.config import get_config
-from lilla_core.api.llm_client import chat_to_llm_responses, chat_to_llm_with_tools
+from lilla_core.api.llm_client import chat_to_llm_responses
 from lilla_core.loaders.llm_tool_loader import (
     build_tools_param,
-    execute_tool_call,
     resolve_available_tools,
 )
-from lilla_core.services.conversation_service import build_tool_message_content
+from lilla_core.services.tool_loop import run_tool_loop
 from lilla_core.tool_support.tool_result import tool_error, tool_success
+from lilla_core.ui.messages import t
 from lilla_core.utils.resource_loader import load_text_resources
 
 logger = logging.getLogger(__name__)
@@ -84,7 +83,9 @@ async def execute(input: dict, context: dict) -> dict:
     dict
         標準のツール戻り値。Expert 内で `needs_auth` が発生した場合は
         即座にループを中断して伝播させる。ループ上限到達時はエラーにせず
-        `success: True` で中断メッセージを返す。
+        `success: True` で、ツールなしで書かせたここまでのまとめを返す
+        （`llm.on_tool_call_limit: message` のとき、またはまとめを得られなかったときは
+        中断メッセージ）。
     """
     tool_name = "llm_expert"
 
@@ -138,52 +139,43 @@ async def execute(input: dict, context: dict) -> dict:
         allowed_names=allowed_names,
     )
 
-    max_iterations = get_config().llm.max_tool_call_iterations
-    iteration = 0
-
-    while iteration < max_iterations:
-        response = await chat_to_llm_with_tools(
-            messages, system_prompt=system_prompt, tools=tools_param, llm_name=llm_name
-        )
-
-        if response["finish_reason"] != "tool_calls":
-            return tool_success(tool_name, None, response["content"] or "")
-
-        messages.append(response["raw_message"])
-        for tc in response["tool_calls"]:
-            arguments = tc["function"]["arguments"]
-            if isinstance(arguments, str):
-                arguments = json.loads(arguments)
-            result = await execute_tool_call(
-                tc["function"]["name"],
-                arguments,
-                llm_tools,
-                context,
-            )
-            if result.get("needs_auth"):
-                logger.info(
-                    "Aborting because needs_auth was detected inside Expert: %s",
-                    result.get("needs_auth_list"),
-                )
-                return {
-                    "success": False,
-                    "tool_name": tool_name,
-                    "memory_entry": None,
-                    "needs_auth": True,
-                    "needs_auth_list": result.get("needs_auth_list", []),
-                    "data": None,
-                    "error": "認証が必要です",
-                }
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc["id"],
-                "content": build_tool_message_content(result),
-            })
-        iteration += 1
-
-    logger.warning("Expert tool call limit reached")
-    return tool_success(
-        tool_name,
-        None,
-        "（処理が長くなったため、専門家エージェント内で処理を中断しました）",
+    # ループは会話と共通の部品を使う。プロバイダーは YAML の指定に固定し、resolver の
+    # 再判定も `final_reply_provider` による書き直しも行わない（どちらも会話の経路だけ）。
+    # 上限に達したときのまとめは共通部品が会話と同じ規則で書かせるが、書き手は専門家の
+    # プロバイダーのまま（専門家の応答はユーザーへの最終応答ではないため、
+    # `final_reply_provider` は見ない）
+    loop_result = await run_tool_loop(
+        messages,
+        system_prompt=system_prompt,
+        tools=tools_param,
+        llm_tools=llm_tools,
+        context=context,
+        max_iterations=get_config().llm.max_tool_call_iterations,
+        llm_name=llm_name,
+        stop_on_needs_auth=True,
+        summarize_with_final_reply_provider=False,
     )
+
+    if loop_result.stopped_on_needs_auth:
+        logger.info(
+            "Aborting because needs_auth was detected inside Expert: %s",
+            loop_result.needs_auth_list,
+        )
+        return {
+            "success": False,
+            "tool_name": tool_name,
+            "memory_entry": None,
+            "needs_auth": True,
+            "needs_auth_list": loop_result.needs_auth_list,
+            "data": None,
+            "error": "認証が必要です",
+        }
+
+    # 上限に達しても、ツールループがツールなしのまとめを書かせていればそれを返す
+    # （`llm.on_tool_call_limit: message`、またはまとめを得られなければ固定文言）
+    if loop_result.limit_reached:
+        logger.warning("Expert tool call limit reached")
+        if loop_result.content is None:
+            return tool_success(tool_name, None, t("tool.llm_expert.tool_call_limit"))
+
+    return tool_success(tool_name, None, loop_result.content or "")

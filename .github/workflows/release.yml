@@ -14,8 +14,8 @@ name: Release
 # Webhook 通知に使う（再実行や手動再送でも二重に draft を作らないため）。
 #
 # Webhook の URL / Authorization（secrets.GROK_BOT_RELEASE_WEBHOOK_URL /
-# secrets.GROK_BOT_RELEASE_WEBHOOK_AUTHORIZATION）は notify-grok-bot-review.yml の
-# レビュー用 Webhook とは別のシークレットに分ける（リリース専用ルーティン向け）。
+# secrets.GROK_BOT_RELEASE_WEBHOOK_AUTHORIZATION）は他の通知とは別の
+# シークレットに分ける（リリース専用ルーティン向け）。
 # 未設定の場合は draft 作成（または既存 draft の検出）までは成功させ、通知だけを
 # WARNING ログでスキップする（ジョブは失敗させない）。
 #

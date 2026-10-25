@@ -10,7 +10,17 @@ from zoneinfo import ZoneInfo
 
 import yaml
 from dotenv import dotenv_values, load_dotenv
-from pydantic import BaseModel, ConfigDict, Field, create_model, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    create_model,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from lilla_core.utils.resource_loader import SourceSpec, load_text_resources
@@ -45,6 +55,23 @@ LLM_REQUEST_TIMEOUT_SECONDS = 300.0
 #: resolver の `timeout_seconds` の既定値（`async def resolve` を待つ上限の秒数）
 RESOLVER_TIMEOUT_SECONDS = 10.0
 
+#: 具体プロバイダーの `max_retries` の既定値（一時的な失敗で送り直す回数）
+LLM_MAX_RETRIES = 2
+
+#: 具体プロバイダーの `retry_backoff_seconds` の既定値（1 回目の再試行の前に待つ基準の秒数）
+LLM_RETRY_BACKOFF_SECONDS = 1.0
+
+#: 具体プロバイダーの `retry_max_wait_seconds` の既定値（1 回の再試行の前に待つ上限の秒数）
+LLM_RETRY_MAX_WAIT_SECONDS = 30.0
+
+#: 再試行の設定項目（具体プロバイダーだけが持つ）
+_LLM_RETRY_FIELDS = (
+    "max_retries",
+    "retry_backoff_seconds",
+    "retry_max_wait_seconds",
+    "retry_on_timeout",
+)
+
 
 class LlmProviderConfig(BaseModel):
     """LLMプロバイダーの設定モデル。
@@ -58,9 +85,6 @@ class LlmProviderConfig(BaseModel):
     type: Literal["ollama", "openai_compat", "resolver"]
     url: str | None = None
     model: str | None = None
-    # ollama タイプのみ
-    wakeup_file: str | None = None
-    wol_sleep_seconds: int = 30
     # openai_compat タイプのみ
     api_key_env: str | None = None
     # プロバイダー固有の追加パラメータ（POSTボディのトップレベルに展開される）
@@ -84,9 +108,26 @@ class LlmProviderConfig(BaseModel):
     input_price_per_million_tokens: float | None = None
     output_price_per_million_tokens: float | None = None
     # 具体プロバイダーのみ。`run_conversation` のツールループでこのプロバイダーが最終応答
-    # （tool_calls なし）を返したとき、その本文を捨てて書き直しに使う具体プロバイダー名。
+    # （tool_calls なし）を返したとき、その本文を捨てて以降の応答を任せる具体プロバイダー名。
+    # 書き直し先には同じツールを渡し、ツールを呼べばそのままツールループを続ける。
     # 書き直し先の `final_reply_provider` は見ない（連鎖しない）。未指定なら書き直さない
     final_reply_provider: str | None = None
+    # ollama タイプのみ。モデルをメモリに載せておく時間（`"30m"` などの文字列か秒数の整数。
+    # `-1` は無期限、`0` は即時アンロード）。リクエストのトップレベルに付ける。
+    # 書式は検証しない（不正な書式は Ollama 側のエラー）。未指定なら送らない
+    keep_alive: StrictStr | StrictInt | None = None
+    # 具体プロバイダーのみ。一時的な失敗（HTTP 429 / 500 / 502 / 503 / 504・接続エラー）の
+    # とき、同じプロバイダーへ同じリクエストを送り直す回数（0 以上。既定 2。0 で再試行しない）
+    max_retries: StrictInt | None = None
+    # 具体プロバイダーのみ。再試行の前に待つ基準の秒数（正の数。既定 1 秒）。n 回目の再試行の
+    # 前は基準 × 2^(n-1) にジッターを足して待つ（応答に `Retry-After` があればそちらを使う）
+    retry_backoff_seconds: float | None = None
+    # 具体プロバイダーのみ。1 回の再試行の前に待つ上限の秒数（正の数。既定 30 秒）。
+    # `Retry-After` がこれを超える回は再試行せずに失敗させる
+    retry_max_wait_seconds: float | None = None
+    # 具体プロバイダーのみ。`timeout_seconds` を超えた回も再試行するか（既定 false。
+    # 上流で最初のリクエストも処理されて料金が二重にかかりうるため）
+    retry_on_timeout: StrictBool | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -107,7 +148,7 @@ class LlmProviderConfig(BaseModel):
 
         具体プロバイダーは `url` / `model` が必須で `script` / `fallback` を持たない。
         resolver は `script` / `fallback` が必須で、HTTP を出さないため `url` /
-        `model` / `api_key_env` / `wakeup_file` / `extra_params` を持たない。
+        `model` / `api_key_env` / `extra_params` を持たない。
         `prompt` は具体プロバイダーでのみ source spec の形を検証し、resolver では
         書かれていても検証せず無視する（resolver は送信しないため追記の持ち主にしない）。
         `timeout_seconds` は正の数に限り、未指定なら `type` に応じた既定値
@@ -115,7 +156,15 @@ class LlmProviderConfig(BaseModel):
         単価（`input_price_per_million_tokens` / `output_price_per_million_tokens`）は
         具体プロバイダーだけが持ち、0 以上に限る。
         `final_reply_provider` も具体プロバイダーだけが持つ（指す先の検証は `LlmConfig`）。
+        `keep_alive` は `ollama` だけが持つ（`openai_compat` / `resolver` に書けば落とす）。
+        再試行の設定（`max_retries` / `retry_backoff_seconds` / `retry_max_wait_seconds` /
+        `retry_on_timeout`）も具体プロバイダーだけが持ち、未指定なら既定値（2 回・1 秒・
+        30 秒・false）を入れる。`max_retries` は 0 以上、秒数は正の数に限る。
         """
+        if self.keep_alive is not None and self.type != "ollama":
+            raise ValueError(
+                f"llm provider of type '{self.type}' must not set: keep_alive"
+            )
         if self.type == "resolver":
             missing = [name for name in ("script", "fallback") if not getattr(self, name)]
             if missing:
@@ -128,10 +177,10 @@ class LlmProviderConfig(BaseModel):
                     "url",
                     "model",
                     "api_key_env",
-                    "wakeup_file",
                     "input_price_per_million_tokens",
                     "output_price_per_million_tokens",
                     "final_reply_provider",
+                    *_LLM_RETRY_FIELDS,
                 )
                 if getattr(self, name) is not None
             ]
@@ -158,6 +207,7 @@ class LlmProviderConfig(BaseModel):
                 price = getattr(self, name)
                 if price is not None and price < 0:
                     raise ValueError(f"llm provider {name} must not be negative")
+            self._apply_retry_defaults()
         if self.timeout_seconds is None:
             self.timeout_seconds = (
                 RESOLVER_TIMEOUT_SECONDS if self.type == "resolver" else LLM_REQUEST_TIMEOUT_SECONDS
@@ -165,6 +215,28 @@ class LlmProviderConfig(BaseModel):
         elif self.timeout_seconds <= 0:
             raise ValueError("llm provider timeout_seconds must be positive")
         return self
+
+    def _apply_retry_defaults(self) -> None:
+        """具体プロバイダーの再試行の設定を検証し、未指定の項目へ既定値を入れる。
+
+        Raises:
+            ValueError: `max_retries` が負、または秒数が正でない場合。
+        """
+        if self.max_retries is None:
+            self.max_retries = LLM_MAX_RETRIES
+        elif self.max_retries < 0:
+            raise ValueError("llm provider max_retries must not be negative")
+        for name, default in (
+            ("retry_backoff_seconds", LLM_RETRY_BACKOFF_SECONDS),
+            ("retry_max_wait_seconds", LLM_RETRY_MAX_WAIT_SECONDS),
+        ):
+            value = getattr(self, name)
+            if value is None:
+                setattr(self, name, default)
+            elif value <= 0:
+                raise ValueError(f"llm provider {name} must be positive")
+        if self.retry_on_timeout is None:
+            self.retry_on_timeout = False
 
 
 def _validate_provider_prompt_spec(spec: SourceSpec) -> None:
@@ -624,6 +696,10 @@ class LlmConfig(BaseModel):
     default: str = "ollama-gemma3"
     providers: dict[str, LlmProviderConfig] = {}
     max_tool_call_iterations: int = 10
+    # ツール呼び出しの往復が上限に達したときの扱い（`services/tool_loop.py`）。
+    # `summarize` はツールなしで 1 回だけ LLM を呼んでここまでの結果をまとめさせ、
+    # `message` は固定文言（`conversation.tool_call_limit` など）だけを返す
+    on_tool_call_limit: Literal["summarize", "message"] = "summarize"
     # トークン使用量の記録（`services/llm_usage.py`）
     usage_log: LlmUsageLogConfig = Field(default_factory=LlmUsageLogConfig)
     # LLM へ送る直前の拒否リスト（JSON の文字列配列）の絶対パス。未指定なら検査しない。

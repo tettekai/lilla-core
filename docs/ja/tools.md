@@ -42,6 +42,11 @@
 - `async def execute(tool_input: dict, context: dict) -> dict` も定義する必要があり、
   標準の結果 dict（`success` / `tool_name` / `data` / `error` など。ヘルパーは
   `tool_support/tool_result.py` を参照）を返します。
+- LLM が tool メッセージとして受け取るのは、成功時は `data`（無ければ `memory_entry`）です。
+  失敗時（`success: False`）は `error` も含め、`memory_entry` と `error` が異なれば
+  `"{memory_entry}: {error}"`、同じか `memory_entry` が無ければ `error` だけになります
+  （`data` があれば次の行に続けます）。LLM が自分で入力を直せるよう、どこが不正でどう直せば
+  よいかは `error` に書いてください。失敗結果はツール名と `error` が WARNING ログにも出ます。
 - YAML の `type` が `self` の場合、ローダーは `TOOL_ROOT` 配下の検索を行わず、
   YAML と同じディレクトリ・同名の `.py` をそのままロードします。
 - YAML の `type` にドットが含まれる場合（`type: lilla_google_calendar.tools.calendar_get`）は
@@ -155,6 +160,12 @@ available_tools: [llm_health_get]   # `$main` などのツールセット参照�
 `api: responses` と `grok_tools` を組み合わせると、Responses API の組み込みツールを使った
 単発呼び出しになります（`api: responses` と `available_tools` の併用は未対応です）。
 専門家の中で再認証が必要になった場合は、処理を中断してその要求をそのまま伝えます。
+ツール呼び出しのループは通常会話と共通の部品で回るため、引数の JSON が壊れた呼び出しは
+エラー内容を LLM へ返して続けます。往復回数が `llm.max_tool_call_iterations` に達したときは
+エラーにせず、`llm.on_tool_call_limit` に従って専門家のプロバイダーがツールなしで書いた
+ここまでのまとめ（`message` のとき、またはまとめを得られなかったときは `ui.locale` の言語の
+中断の文言）を返します（[上限に達したときのまとめ](tool-call-limit.md)）。resolver 型のプロバイダーの再判定と
+`final_reply_provider` による書き直しは、専門家の中では行いません。
 
 サンプルを有効化する例（`${CONFIG_ROOT}/tools/llm_current_datetime.yaml`）:
 

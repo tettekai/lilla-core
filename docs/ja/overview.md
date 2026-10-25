@@ -39,7 +39,7 @@ lilla-core は拡張を 1 つも読み込まない状態でも Discord bot と�
 ## 主な機能
 
 - Discord bot としてそのまま起動できる（拡張なしでも動作）
-- Ollama（WakeOnLAN 対応）・OpenAI 互換 API の複数 LLM プロバイダを設定で切り替え可能
+- Ollama・OpenAI 互換 API の複数 LLM プロバイダを設定で切り替え可能
 - tool_call ループ、会話履歴・ユーザーメモ・セッションメモリの管理
 - `!` コマンドのプラグイン的な追加（`commands/` にファイルを置くだけ）
 - APScheduler による定期タスク（`task_*.yaml`）

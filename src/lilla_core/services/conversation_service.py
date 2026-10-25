@@ -5,10 +5,8 @@ Discord・WebSocket など複数のエントリポイントから再利用する
 """
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import datetime
 from typing import Any
 
 from lilla_core.core.config import get_config
@@ -19,19 +17,19 @@ from lilla_core.core.extension import (
 )
 from lilla_core.core.llm_call_origin import llm_call_origin
 from lilla_core.core.runtime_state import is_tools_disabled
-from lilla_core.api.llm_client import chat_to_llm, chat_to_llm_with_tools
+from lilla_core.api.llm_client import chat_to_llm
 from lilla_core.loaders.llm_tool_loader import (
     MAIN_TOOLSET_TOKEN,
     build_tools_param,
-    execute_tool_call,
     resolve_available_tools,
 )
 from lilla_core.services.llm_resolver import content_has_image, resolve_llm_name
 from lilla_core.services.memory_manager import get_memory_manager
 from lilla_core.services.message_util import extract_meta_block, prepend_timestamp_prefix
 from lilla_core.services.session_memory_manager import get_session_memory_manager
+from lilla_core.services.tool_loop import build_tool_message_content, run_tool_loop
 from lilla_core.ui.messages import t
-from lilla_core.utils.datetime_utils import ensure_utc, local_now
+from lilla_core.utils.datetime_utils import local_now
 
 logger = logging.getLogger(__name__)
 
@@ -100,25 +98,6 @@ def _apply_meta_actions(reply: str) -> str:
             logger.warning("Failed to apply META action %r: %s", action_type, e)
     return cleaned
 
-def build_tool_message_content(result: dict) -> str:
-    """tool 実行結果から、LLM へ返す tool メッセージの content 文字列を構築する。
-
-    `data` を優先し、未設定なら `memory_entry` にフォールバックする。文字列以外は
-    JSON シリアライズする。datetime は naive を UTC とみなしローカルタイムゾーンの
-    ISO8601 文字列に変換する。
-    """
-    tool_content = result.get("data") or result.get("memory_entry") or ""
-    if not isinstance(tool_content, str):
-        def _default(obj):
-            if isinstance(obj, datetime):
-                return ensure_utc(obj).astimezone().isoformat()
-            raise TypeError(
-                f"Object of type {type(obj).__name__} is not JSON serializable"
-            )
-        tool_content = json.dumps(tool_content, ensure_ascii=False, default=_default)
-    return tool_content
-
-
 async def _build_skill_list_section(tools_param: list, llm_tools: dict) -> str:
     """LLM に渡すツールに `llm_load_skill` があれば、有効なスキル一覧の節を返す。
 
@@ -141,16 +120,6 @@ async def _build_skill_list_section(tools_param: list, llm_tools: dict) -> str:
     return ""
 
 
-# 最終応答の書き直し（`final_reply_provider`）で、捨てた最終応答の代わりに末尾へ足す指示。
-# 書き直し先は会話の言語・システムプロンプトの口調に従い、ツール結果の事実は変えない。
-_FINAL_REPLY_REWRITE_INSTRUCTION = (
-    "Based on the conversation and tool results above, write the final reply to the user now. "
-    "Write it in your usual voice and tone as defined in the system prompt, in the same language "
-    "as the conversation. Do not change any numbers, dates, names, URLs, file paths, or other facts "
-    "from the tool results. Do not mention that this reply is being rewritten."
-)
-
-
 def _final_reply_provider_for(provider_name: str | None) -> str | None:
     """最終応答を返した具体プロバイダーの `final_reply_provider` を返す。
 
@@ -163,29 +132,8 @@ def _final_reply_provider_for(provider_name: str | None) -> str | None:
     return provider.final_reply_provider
 
 
-async def _rewrite_final_reply(
-    messages: list[dict], system_prompt: str, rewrite_provider: str
-) -> str:
-    """ツールループの最終応答を `rewrite_provider` でツールなしに 1 回だけ書き直す。
-
-    `messages` は捨てた最終応答を含まないメッセージ列で、末尾に書き直しの指示を
-    user メッセージとして足して送る（呼び出し元の `messages` は変えない）。
-    書き直し先の `final_reply_provider` は見ないため、経路はこの 1 回で閉じる。
-    tool_calls を含む履歴をそのまま送れるよう、`chat_to_llm` ではなく
-    `chat_to_llm_with_tools` を tools なしで呼ぶ。
-    """
-    rewrite_messages = [
-        *messages,
-        {"role": "user", "content": _FINAL_REPLY_REWRITE_INSTRUCTION},
-    ]
-    response = await chat_to_llm_with_tools(
-        rewrite_messages, system_prompt=system_prompt, tools=None, llm_name=rewrite_provider
-    )
-    return response["content"] or ""
-
-
-# `build_tool_context` は `core/extension.py` に実体があり、LLM ツールと task ツールの
-# 両方で共有する。ここから import できる名前は互換のため残している。
+# `build_tool_context` は `core/extension.py`、`build_tool_message_content` は
+# `services/tool_loop.py` に実体がある。ここから import できる名前は互換のため残している。
 __all__ = ["build_tool_context", "build_tool_message_content", "run_conversation"]
 
 
@@ -234,8 +182,11 @@ async def run_conversation(
         選んだ具体プロバイダー名を文脈に載せる。
         会話開始フックの `ConversationContext.llm_name` は展開前のキーのまま。
         ツールループで最終応答（tool_calls なし）を返した具体プロバイダーに
-        `final_reply_provider` があれば、その本文は捨て、指定先へツールなしで 1 回だけ
-        問い合わせた結果を最終応答にする（ツールなしの会話では書き直さない）。
+        `final_reply_provider` があれば、その本文は捨て、以降の LLM 呼び出しを指定先に
+        固定してツールループを続ける（同じツールとシステムプロンプトを渡し、resolver の
+        再判定も指定先の `final_reply_provider` も見ない）。指定先が tool_calls の無い
+        応答を返したらそれを最終応答にする。往復回数は元のツールループと通算で上限まで
+        （ツールなしの会話では書き直さない）。
     inject_user_content : str | list, optional
         履歴の末尾に user メッセージとして追加する一時プロンプト。
         ハートビートなど MongoDB に保存しないが LLM には渡したい場合に使う。
@@ -257,8 +208,11 @@ async def run_conversation(
         いずれの場合も、続けて `supported_client_type` で絞る。
     max_tool_call_iterations : int | None, optional
         この回だけ使うツール呼び出しの往復上限。None なら
-        `llm.max_tool_call_iterations` を使う。上限に達したときの扱い
-        （例外にせず中断文言を返す）はどちらでも同じ。
+        `llm.max_tool_call_iterations` を使う。上限に達したときの扱いはどちらでも同じで、
+        例外にはしない。`llm.on_tool_call_limit` が `summarize`（既定）ならツールなしで
+        1 回だけ LLM を呼んだまとめ（最後のプロバイダーに `final_reply_provider` があれば
+        指定先が書く。書き直し先で上限に達したときは書き直し先が書く）を最終応答として返し、
+        `message` またはまとめを得られなければ `conversation.tool_call_limit` の文言を返す。
 
     Returns
     -------
@@ -390,87 +344,69 @@ async def _run_conversation(
         context["discord_channel_id"] = discord_channel_id
     if tool_call_notifier is not None:
         context["_tool_call_notifier"] = tool_call_notifier
-    iteration = 0
-    pending_reauth_notices: list[str] = []
-    # resolver へ渡す、この回しで既に呼んだツール名（出現順・重複あり）と前回の選択
-    called_tool_names: list[str] = []
-    resolved_name: str | None = None
 
-    while iteration < max_iterations:
-        resolved_name = await resolve_llm_name(
+    async def _select_provider(
+        called_tool_names: tuple[str, ...], previous_provider: str | None
+    ) -> str | None:
+        """resolver キーなら、この回しで既に呼んだツール名と前回の選択を添えて展開する。"""
+        return await resolve_llm_name(
             llm_key,
-            called_tool_names=tuple(called_tool_names),
-            previous_provider=resolved_name,
+            called_tool_names=called_tool_names,
+            previous_provider=previous_provider,
             **resolve_kwargs,
         )
-        response = await chat_to_llm_with_tools(
-            messages, system_prompt=system_prompt, tools=tools_param, llm_name=resolved_name
+
+    loop_result = await run_tool_loop(
+        messages,
+        system_prompt=system_prompt,
+        tools=tools_param,
+        llm_tools=llm_tools,
+        context=context,
+        max_iterations=max_iterations,
+        select_provider=_select_provider,
+    )
+    needs_auth_list = list(loop_result.needs_auth_list)
+
+    # 最終応答を返したプロバイダーに `final_reply_provider` があれば、その本文は捨てて
+    # （`messages` には足されていない）以降を指定先に任せる。指定先には同じツールを渡すため、
+    # ツールを呼べば同じメッセージ列のまま実行して続ける。往復回数は元のループと通算で
+    # 上限まで。指定先では resolver で再判定せず、指定先の `final_reply_provider` も見ない
+    # （書き直しは 1 段で閉じる。ツールなしの会話には効かない）
+    if not loop_result.limit_reached:
+        rewrite_provider = _final_reply_provider_for(loop_result.provider)
+        if rewrite_provider is not None:
+            logger.info(
+                "Rewriting final reply from provider '%s' with provider '%s'",
+                loop_result.provider,
+                rewrite_provider,
+            )
+            loop_result = await run_tool_loop(
+                messages,
+                system_prompt=system_prompt,
+                tools=tools_param,
+                llm_tools=llm_tools,
+                context=context,
+                max_iterations=max_iterations - loop_result.iterations,
+                llm_name=rewrite_provider,
+                summarize_with_final_reply_provider=False,
+            )
+            needs_auth_list.extend(loop_result.needs_auth_list)
+
+    # 上限に達しても、ツールループがツールなしのまとめを書かせていればそれを最終応答として
+    # 扱う（META アクションの適用・再認証案内の付け足しも同じ）。まとめを書かせない設定、
+    # またはまとめを得られなかったときだけ固定文言を返す
+    if loop_result.limit_reached and loop_result.content is None:
+        return t("conversation.tool_call_limit")
+
+    reply = _apply_meta_actions(loop_result.content or "")
+    pending_reauth_notices = [
+        t(
+            "conversation.reauth_required",
+            service=item.get("auth_service", ""),
+            url=item.get("auth_url", ""),
         )
-
-        if response["tool_calls"]:
-            messages.append(response["raw_message"])
-            for tc in response["tool_calls"]:
-                arguments = tc["function"]["arguments"]
-                if isinstance(arguments, str):
-                    try:
-                        arguments = json.loads(arguments)
-                    except json.JSONDecodeError as e:
-                        logger.warning(
-                            "Failed to parse tool call arguments as JSON (%s): %s",
-                            tc["function"]["name"],
-                            e,
-                        )
-                        error_message = f"引数の JSON が壊れています: {e}"
-                        result = {
-                            "success": False,
-                            "tool_name": tc["function"]["name"],
-                            "memory_entry": error_message,
-                            "data": None,
-                            "error": error_message,
-                        }
-                        tool_content = build_tool_message_content(result)
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "content": tool_content,
-                        })
-                        continue
-                called_tool_names.append(tc["function"]["name"])
-                result = await execute_tool_call(
-                    tc["function"]["name"],
-                    arguments,
-                    llm_tools,
-                    context,
-                )
-                if result.get("needs_auth"):
-                    for item in result.get("needs_auth_list", []):
-                        auth_service = item.get("auth_service", "")
-                        auth_url = item.get("auth_url", "")
-                        pending_reauth_notices.append(
-                            t("conversation.reauth_required", service=auth_service, url=auth_url)
-                        )
-                tool_content = build_tool_message_content(result)
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": tool_content,
-                })
-            iteration += 1
-        else:
-            content = response["content"] or ""
-            # 最終応答を返したプロバイダーに `final_reply_provider` があれば、その本文は捨てて
-            # 指定先に書き直させる（ツールループのこの箇所だけ。ツールなしの会話には効かない）
-            rewrite_provider = _final_reply_provider_for(resolved_name)
-            if rewrite_provider is not None:
-                logger.info(
-                    "Rewriting final reply from provider '%s' with provider '%s'",
-                    resolved_name,
-                    rewrite_provider,
-                )
-                content = await _rewrite_final_reply(messages, system_prompt, rewrite_provider)
-            reply = _apply_meta_actions(content)
-            if pending_reauth_notices:
-                return reply + "\n\n" + "\n\n".join(pending_reauth_notices)
-            return reply
-
-    return t("conversation.tool_call_limit")
+        for item in needs_auth_list
+    ]
+    if pending_reauth_notices:
+        return reply + "\n\n" + "\n\n".join(pending_reauth_notices)
+    return reply

@@ -43,6 +43,12 @@ llm:
   default: grok
   # 1 回の会話で tool_calls を繰り返す上限回数（既定: 10）
   max_tool_call_iterations: 10
+  # 上の上限に達したときの扱い（既定: summarize）。
+  #   summarize … ツールなしで LLM を 1 回だけ呼び、打ち切ったこと・ここまでに分かったこと・
+  #               できたこと・まだできていないことを普段の口調でまとめさせて返す
+  #               （失敗・空の応答なら message と同じ固定文言に戻る）
+  #   message   … 「ツール呼び出しの上限に達しました。処理を中断しました。」などの固定文言だけを返す
+  # on_tool_call_limit: summarize
   # 分割した LLM 応答ブロックの先頭から順に除去する正規表現（先頭にだけマッチ。`^` は不要）。
   # 省略時は下の 2 つ（英語月名形式と [HH:MM] 形式）。[] なら除去しない。不正な正規表現は起動時に失敗する
   # response_prefix_strip_patterns:
@@ -63,6 +69,12 @@ llm:
       # 書いたプロバイダーだけ Usage 画面に概算コストが出る。請求額とは一致しない目安
       # input_price_per_million_tokens: 1.25
       # output_price_per_million_tokens: 2.5
+      # 任意: 一時的な失敗（HTTP 429 / 500 / 502 / 503 / 504・接続エラー）のとき、同じプロバイダーへ
+      # 送り直す設定。既定は下の値（2 回まで再試行する）。max_retries: 0 で再試行しない
+      # max_retries: 2
+      # retry_backoff_seconds: 1      # 再試行の前に待つ基準の秒数（回ごとに倍＋ジッター）
+      # retry_max_wait_seconds: 30    # 1 回の待ちの上限。Retry-After がこれを超えたら再試行しない
+      # retry_on_timeout: false       # timeout_seconds を超えた回も再試行するか（料金が二重になりうる）
 
 paths:
   tool_root: /tmp/lilla-tools
