@@ -22,6 +22,19 @@ name: Release prep
 # 別ステップとして行う（ラベル作成は issues:write、PR へのラベル付与は
 # pull-requests:write）ため、Issues 権限は不要）を使う。
 # 未設定の場合はこのジョブが失敗する。
+#
+# docs/ja の同期: 各 PR は docs/en だけを更新するため（CLAUDE.md の開発ルール参照）、
+# PR 作成とラベル付与のあとに、docs/ja を docs/en へ同期する Claude Code Routine を
+# webhook で起動する（呼び出し方は notify-run-claude.yml と同じ）。ペイロードには
+# repository・リリースするバージョン（vX.Y.Z）・前回のリリースタグ（origin/main から
+# 辿れる最新の v* タグ）・ベースブランチ（develop）を載せる。Routine は develop から
+# 作業ブランチを切り、前回のリリースタグから develop までの docs/en の差分を docs/ja へ
+# 反映して、release-prep の PR とは別の develop 向け PR を開く（Routine 本体の設定は
+# リポジトリ外）。Release PR（develop → main）をマージする前にその PR をマージする。
+# 前回のリリースタグ以降に docs/en の変更が無ければ起動しない。
+# 必要な secret は DOCS_JA_SYNC_ROUTINE_URL / DOCS_JA_SYNC_ROUTINE_TOKEN（run-claude
+# とは別）。未設定なら警告を出して起動をスキップし、release-prep 自体は失敗させない。
+# 起動に失敗した場合はジョブが失敗になるが、PR の作成は完了済み。
 on:
   workflow_dispatch:
     inputs:
@@ -116,3 +129,57 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh pr edit "${{ steps.create_pr.outputs.pr_url }}" --add-label release-prep
+
+      - name: Fire docs/ja sync Routine
+        # docs/ja の同期は release-prep の PR とは別の PR にするため、PR 作成後に
+        # Claude Code Routine を起動するだけにとどめる（ここでは docs/ja に触れない）。
+        env:
+          ROUTINE_URL: ${{ secrets.DOCS_JA_SYNC_ROUTINE_URL }}
+          ROUTINE_TOKEN: ${{ secrets.DOCS_JA_SYNC_ROUTINE_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          BASE_BRANCH: develop
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ROUTINE_URL}" ] || [ -z "${ROUTINE_TOKEN}" ]; then
+            echo "::warning::DOCS_JA_SYNC_ROUTINE_URL or DOCS_JA_SYNC_ROUTINE_TOKEN is not set; skipping docs/ja sync"
+            exit 0
+          fi
+
+          # 前回のリリースタグは origin/main から辿れる最新の v* タグ。
+          # actions/checkout の fetch-depth: 0 でタグも取得済み。
+          previous_tag=$(git describe --tags --abbrev=0 --match 'v*' origin/main 2>/dev/null || true)
+          if [ -z "${previous_tag}" ]; then
+            echo "::warning::no v* tag reachable from origin/main; skipping docs/ja sync"
+            exit 0
+          fi
+
+          if git diff --quiet "${previous_tag}" "origin/${BASE_BRANCH}" -- docs/en; then
+            echo "docs/en has no changes since ${previous_tag}; skipping docs/ja sync"
+            exit 0
+          fi
+
+          text="<routine-fire-payload>
+          repository: ${REPOSITORY}
+          release_version: v${VERSION}
+          previous_release_tag: ${previous_tag}
+          base_branch: ${BASE_BRANCH}
+          </routine-fire-payload>"
+
+          jq -n --arg text "${text}" '{text: $text}' > /tmp/docs-ja-sync-payload.json
+
+          http_code=$(curl -sS -o /tmp/docs-ja-sync-response.json -w '%{http_code}' \
+            -X POST "${ROUTINE_URL}" \
+            -H "Authorization: Bearer ${ROUTINE_TOKEN}" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "Content-Type: application/json" \
+            --data-binary @/tmp/docs-ja-sync-payload.json)
+
+          echo "HTTP status: ${http_code}"
+          cat /tmp/docs-ja-sync-response.json
+
+          if [ "${http_code}" -lt 200 ] || [ "${http_code}" -ge 300 ]; then
+            echo "::error::docs/ja sync Routine fire failed with HTTP ${http_code}" >&2
+            exit 1
+          fi

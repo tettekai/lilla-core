@@ -65,6 +65,12 @@ lilla-core は拡張が一切登録されていない状態でも Discord bot �
   - 詳細はディレクトリで言語を分ける: `docs/ja/`（正）と `docs/en/`（英訳）。同じファイル名
     （ステム）で対にし、同じフォルダに `*.ja.md` を並べない。ロゴなど言語に依らない資産は
     `docs/` 直下に置く
+  - `docs/` だけは更新の流れが上と異なる: 各 PR では `docs/en/` だけを更新し、`docs/ja/` は
+    更新しなくてよい（ページの新設・削除・目次の更新も `docs/en/` 側だけでよい）。`docs/ja/` は
+    リリース準備（`.github/workflows/release-prep.yml`）が起動する Claude Code Routine が、前回の
+    リリースタグ以降の `docs/en/` の差分を翻訳して別 PR で一括同期する。そのため `develop` 上では
+    `docs/en/` と `docs/ja/` がずれていてよく、日英がそろっているのは `main` へのリリース時点を
+    前提とする（README は対象外で、従来どおり同じ PR で日英とも更新する）
   - 目次は `docs/ja/README.md` / `docs/en/README.md`。ページを足したら目次にも相対リンクで
     足す。README から docs へ張るのはこの目次だけ（個別ページへ直リンクしない）
   - `README.md` は PyPI の説明文にそのまま載り相対パスが切れるため、README（日英とも）からの
