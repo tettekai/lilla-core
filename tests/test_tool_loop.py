@@ -452,6 +452,94 @@ class TestBuildToolMessageContent:
         assert '"名前": "x"' in content
         assert dt.astimezone().isoformat() in content
 
+    def test_failure_includes_error_detail(self, tool_loop) -> None:
+        """失敗時は memory_entry と error を両方含める。"""
+        from lilla_core.tool_support.tool_result import tool_error
+
+        content = tool_loop.build_tool_message_content(tool_error("t", "X 失敗", "詳細"))
+
+        assert content == "X 失敗: 詳細"
+
+    def test_failure_without_memory_entry_uses_error_only(self, tool_loop) -> None:
+        """memory_entry が無い失敗結果は error だけを返す。"""
+        from lilla_core.tool_support.tool_result import tool_error
+
+        assert tool_loop.build_tool_message_content(tool_error("t", None, "詳細")) == "詳細"
+
+    def test_failure_does_not_repeat_same_text(self, tool_loop) -> None:
+        """memory_entry と error が同じなら 1 回だけ載せる（needs_auth など）。"""
+        from lilla_core.tool_support.tool_result import tool_needs_auth
+
+        result = tool_needs_auth("t", "https://auth", "再認証してください")
+
+        assert tool_loop.build_tool_message_content(result) == "再認証してください"
+
+    def test_failure_keeps_data_after_error(self, tool_loop) -> None:
+        """失敗時に data があれば捨てず、エラー文の次の行に続ける。"""
+        content = tool_loop.build_tool_message_content(
+            {"success": False, "memory_entry": "M", "error": "E", "data": {"k": 1}}
+        )
+
+        assert content == 'M: E\n{"k": 1}'
+
+    def test_failure_without_error_falls_back_to_previous_behavior(self, tool_loop) -> None:
+        """失敗でも error が無ければ従来どおり data → memory_entry の順で使う。"""
+        result = {"success": False, "memory_entry": "M", "error": None, "data": None}
+
+        assert tool_loop.build_tool_message_content(result) == "M"
+
+    def test_success_ignores_error(self, tool_loop) -> None:
+        """成功時は従来どおりで、error があっても載せない。"""
+        result = {"success": True, "memory_entry": "M", "error": "E", "data": "D"}
+
+        assert tool_loop.build_tool_message_content(result) == "D"
+
+
+# ---------------------------------------------------------------------------
+# TestToolFailureInLoop
+# ---------------------------------------------------------------------------
+
+
+class TestToolFailureInLoop:
+    async def test_failure_result_is_sent_with_error_and_logged(
+        self, tool_loop, mock_llm_client: MagicMock, mock_loader: MagicMock, caplog
+    ) -> None:
+        """失敗結果の error を tool メッセージに含め、ツール名と error を WARNING ログに出す。"""
+        from lilla_core.tool_support.tool_result import tool_error
+
+        mock_llm_client.chat_to_llm_with_tools.side_effect = [
+            _tool_response(("diary_draft_set", "{}")),
+            _final_response("ok"),
+        ]
+        mock_loader.execute_tool_call.return_value = tool_error(
+            "diary_draft_set", "diary_draft_set 失敗", "欠けている箇所: 見出し"
+        )
+        messages: list[dict] = []
+
+        with caplog.at_level("WARNING", logger=_MODULE_NAME):
+            await _run(tool_loop, messages)
+
+        assert messages[1]["content"] == "diary_draft_set 失敗: 欠けている箇所: 見出し"
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any(
+            "diary_draft_set" in r.getMessage() and "欠けている箇所: 見出し" in r.getMessage()
+            for r in warnings
+        )
+
+    async def test_success_result_is_not_logged_as_warning(
+        self, tool_loop, mock_llm_client: MagicMock, caplog
+    ) -> None:
+        """成功結果では WARNING ログを出さない。"""
+        mock_llm_client.chat_to_llm_with_tools.side_effect = [
+            _tool_response(("t", "{}")),
+            _final_response("ok"),
+        ]
+
+        with caplog.at_level("WARNING", logger=_MODULE_NAME):
+            await _run(tool_loop)
+
+        assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
 
 # ---------------------------------------------------------------------------
 # TestLlmExpertLimitCatalog

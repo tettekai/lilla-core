@@ -56,17 +56,49 @@ def build_tool_message_content(result: dict) -> str:
     `data` を優先し、未設定なら `memory_entry` にフォールバックする。文字列以外は
     JSON シリアライズする。datetime は naive を UTC とみなしローカルタイムゾーンの
     ISO8601 文字列に変換する。
+
+    失敗時（`success` が False）で `error` があるときは、LLM が自分で入力を直せるよう
+    `error` も含める。`memory_entry` と `error` が両方あって異なれば
+    `"{memory_entry}: {error}"`、同じか `memory_entry` が無ければ `error` だけにする。
+    失敗時にも `data` があれば捨てず、このエラー文の次の行に続ける。成功時は従来どおり。
     """
-    tool_content = result.get("data") or result.get("memory_entry") or ""
-    if not isinstance(tool_content, str):
-        def _default(obj):
-            if isinstance(obj, datetime):
-                return ensure_utc(obj).astimezone().isoformat()
-            raise TypeError(
-                f"Object of type {type(obj).__name__} is not JSON serializable"
-            )
-        tool_content = json.dumps(tool_content, ensure_ascii=False, default=_default)
-    return tool_content
+    data = result.get("data")
+    if result.get("success") is False and result.get("error"):
+        error_text = _build_error_text(result.get("memory_entry"), result.get("error"))
+        if not data:
+            return error_text
+        return f"{error_text}\n{_serialize_tool_content(data)}"
+    return _serialize_tool_content(data or result.get("memory_entry") or "")
+
+
+def _build_error_text(memory_entry: Any, error: Any) -> str:
+    """失敗時に tool メッセージへ載せるエラー文を組み立てる。
+
+    `memory_entry` が空、または `error` と同じ文字列なら `error` だけを返し、
+    同じ文を重ねない。
+    """
+    error_text = str(error)
+    if not memory_entry or str(memory_entry) == error_text:
+        return error_text
+    return f"{memory_entry}: {error_text}"
+
+
+def _serialize_tool_content(tool_content: Any) -> str:
+    """tool メッセージの content を文字列にする。
+
+    文字列はそのまま返し、それ以外は JSON シリアライズする（datetime は naive を UTC と
+    みなしローカルタイムゾーンの ISO8601 文字列にする）。
+    """
+    if isinstance(tool_content, str):
+        return tool_content
+
+    def _default(obj):
+        if isinstance(obj, datetime):
+            return ensure_utc(obj).astimezone().isoformat()
+        raise TypeError(
+            f"Object of type {type(obj).__name__} is not JSON serializable"
+        )
+    return json.dumps(tool_content, ensure_ascii=False, default=_default)
 
 
 @dataclass
@@ -202,6 +234,8 @@ async def run_tool_loop(
 
     ツール呼び出しかどうかは `finish_reason` ではなく `tool_calls` の有無で判定する。
     引数 JSON が壊れた呼び出しは実行せず、エラー内容を `tool` メッセージで返して続ける。
+    ツールが失敗結果（`success: False`）を返したときは、ツール名と `error` を WARNING ログに
+    出し、`error` を含めた `tool` メッセージで返して続ける（`build_tool_message_content`）。
     `messages` は呼び出し元のリストをそのまま伸ばす（assistant の tool_calls と tool の結果を
     足す。最終応答は足さない）ため、呼び出し元は同じリストで続きを回せる。
 
@@ -267,6 +301,13 @@ async def run_tool_loop(
                     llm_tools,
                     context,
                 )
+                if tool_result.get("success") is False:
+                    # 例外を出さず失敗結果を返すだけのツールはここでしかログに残らない
+                    logger.warning(
+                        "Tool returned a failure result (%s): %s",
+                        tc["function"]["name"],
+                        tool_result.get("error"),
+                    )
                 if tool_result.get("needs_auth"):
                     result.needs_auth_list.extend(tool_result.get("needs_auth_list", []))
                     if stop_on_needs_auth:
