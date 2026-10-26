@@ -22,6 +22,21 @@ name: Release prep
 # 別ステップとして行う（ラベル作成は issues:write、PR へのラベル付与は
 # pull-requests:write）ため、Issues 権限は不要）を使う。
 # 未設定の場合はこのジョブが失敗する。
+#
+# docs/en の同期: 各 PR は docs/ja だけを更新するため（CLAUDE.md の開発ルール参照）、
+# PR 作成とラベル付与のあとに、docs/ja の変更を docs/en へ翻訳・同期する Claude Code
+# Routine を webhook で起動する（呼び出し方は notify-run-claude.yml と同じ）。ペイロードには
+# repository・リリースするバージョン（vX.Y.Z）・前回のリリースタグ（origin/main から
+# 辿れる最新の v* タグ）・ベースブランチ（develop）を載せる。Routine は develop から
+# 作業ブランチを切り、前回のリリースタグから develop までの docs/ja の差分を docs/en へ
+# 反映して、release-prep の PR とは別の develop 向け PR を開く（Routine 本体の設定は
+# リポジトリ外）。Release PR（develop → main）をマージする前にその PR をマージする。
+# 前回のリリースタグ以降に docs/ja の変更が無ければ起動しない。
+# 必要な secret は DOCS_EN_SYNC_ROUTINE_URL / DOCS_EN_SYNC_ROUTINE_TOKEN（run-claude
+# とは別）。未設定なら警告を出して起動をスキップし、release-prep 自体は失敗させない。
+# 起動に失敗した場合はジョブが失敗になるが、PR の作成は完了済み。
+# 起動・スキップ・失敗のいずれでも、結果を release-prep の PR にコメントする
+# （スキップしたことに気づかないまま Release PR をマージしないようにするため）。
 on:
   workflow_dispatch:
     inputs:
@@ -116,3 +131,90 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh pr edit "${{ steps.create_pr.outputs.pr_url }}" --add-label release-prep
+
+      - name: Fire docs/en sync Routine
+        id: fire_docs_sync
+        # docs/en の同期は release-prep の PR とは別の PR にするため、PR 作成後に
+        # Claude Code Routine を起動するだけにとどめる（ここでは docs/en に触れない）。
+        # 結果は status（fired / skipped）と message に出し、次のステップが PR へ書く。
+        env:
+          ROUTINE_URL: ${{ secrets.DOCS_EN_SYNC_ROUTINE_URL }}
+          ROUTINE_TOKEN: ${{ secrets.DOCS_EN_SYNC_ROUTINE_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+          BASE_BRANCH: develop
+        run: |
+          set -euo pipefail
+
+          skip() {
+            echo "::warning::$1"
+            echo "status=skipped" >> "${GITHUB_OUTPUT}"
+            echo "message=$2" >> "${GITHUB_OUTPUT}"
+            exit 0
+          }
+
+          if [ -z "${ROUTINE_URL}" ] || [ -z "${ROUTINE_TOKEN}" ]; then
+            skip "DOCS_EN_SYNC_ROUTINE_URL or DOCS_EN_SYNC_ROUTINE_TOKEN is not set; skipping docs/en sync" \
+              "Secrets（DOCS_EN_SYNC_ROUTINE_URL / DOCS_EN_SYNC_ROUTINE_TOKEN）が未設定のため、docs/en の同期を起動しませんでした。Release PR をマージする前に docs/en を手動でそろえてください。"
+          fi
+
+          # 前回のリリースタグは origin/main から辿れる最新の v* タグ。
+          # actions/checkout の fetch-depth: 0 でタグも取得済み。
+          previous_tag=$(git describe --tags --abbrev=0 --match 'v*' origin/main 2>/dev/null || true)
+          if [ -z "${previous_tag}" ]; then
+            skip "no v* tag reachable from origin/main; skipping docs/en sync" \
+              "origin/main から辿れる v* タグが無いため、docs/en の同期を起動しませんでした。Release PR をマージする前に docs/en を手動でそろえてください。"
+          fi
+
+          if git diff --quiet "${previous_tag}" "origin/${BASE_BRANCH}" -- docs/ja; then
+            echo "docs/ja has no changes since ${previous_tag}; skipping docs/en sync"
+            echo "status=skipped" >> "${GITHUB_OUTPUT}"
+            echo "message=${previous_tag} 以降に docs/ja の変更が無いため、docs/en の同期は不要です。" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          text="<routine-fire-payload>
+          repository: ${REPOSITORY}
+          release_version: v${VERSION}
+          previous_release_tag: ${previous_tag}
+          base_branch: ${BASE_BRANCH}
+          </routine-fire-payload>"
+
+          jq -n --arg text "${text}" '{text: $text}' > /tmp/docs-en-sync-payload.json
+
+          http_code=$(curl -sS -o /tmp/docs-en-sync-response.json -w '%{http_code}' \
+            -X POST "${ROUTINE_URL}" \
+            -H "Authorization: Bearer ${ROUTINE_TOKEN}" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "Content-Type: application/json" \
+            --data-binary @/tmp/docs-en-sync-payload.json)
+
+          echo "HTTP status: ${http_code}"
+          cat /tmp/docs-en-sync-response.json
+
+          if [ "${http_code}" -lt 200 ] || [ "${http_code}" -ge 300 ]; then
+            echo "::error::docs/en sync Routine fire failed with HTTP ${http_code}" >&2
+            exit 1
+          fi
+
+          echo "status=fired" >> "${GITHUB_OUTPUT}"
+          echo "message=${previous_tag} 以降の docs/ja の変更を docs/en へ同期する Routine を起動しました。同期 PR（develop 向け）を Release PR より先にマージしてください。" >> "${GITHUB_OUTPUT}"
+
+      - name: Comment docs/en sync result on pull request
+        # 起動ステップが実行された場合だけ（成功でも失敗でも）結果を PR に残す。
+        # それより前のステップで止まった場合は起動ステップ自体が skipped になる。
+        if: >-
+          always() &&
+          steps.create_pr.outputs.pr_url != '' &&
+          steps.fire_docs_sync.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ steps.create_pr.outputs.pr_url }}
+          OUTCOME: ${{ steps.fire_docs_sync.outcome }}
+          MESSAGE: ${{ steps.fire_docs_sync.outputs.message }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "${OUTCOME}" != "success" ]; then
+            MESSAGE="docs/en の同期 Routine の起動に失敗しました（${RUN_URL}）。Release PR をマージする前に再起動するか、docs/en を手動でそろえてください。"
+          fi
+          gh pr comment "${PR_URL}" --body "docs/en 同期: ${MESSAGE}"
