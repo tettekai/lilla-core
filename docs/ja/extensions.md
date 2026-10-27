@@ -33,6 +33,7 @@ extension = MyExtension()
 | `setup` | `bot.start()` の前に await される起動処理（HTTP サーバー等）。引数は `SetupContext` 1 つ（`tools` / `llm_tools` / `bot` / `config`）で、フィールドの追加は既存の拡張を壊さない |
 | `result_deliveries` | `!toolresult` の配送先を `client_type` ごとに指定 |
 | `client_prompt_providers` | `client_type` ごとのシステムプロンプト追記。形は `{client_type: [プロバイダ, ...]}` の加算式で、複数の拡張が同じ `client_type` に足せる。コアがロード順に空行区切りで連結する |
+| `default_prompt` | この拡張のデフォルトのプロンプトを言語ごとに返す（`{"ja": ..., "en": ...}`。`ja` 必須。既定は `None`）。`client_type` によらず（`task` を除く）システムプロンプトへ入り、MongoDB の `extension_overrides` で拡張ごとに上書きできる（[拡張のデフォルトプロンプトと上書き](extension-prompt.md)） |
 | `conversation_start_hooks` | 会話処理開始前に await される非同期フック。形は `{client_type: [フック, ...]}` でプロンプトと同じく加算式。各フックは `ConversationContext`（`client_type` / `client_state` / `discord_channel_id` / `llm_name`）1 つを受け取る |
 | `tool_context_providers` | ツール実行 context への値の注入 |
 | `tool_roots` | ツールの `.py` を探す追加ディレクトリ |
@@ -162,5 +163,6 @@ class MyExtension(Extension):
 ## 関連ページ
 
 - [設定の合成](extension-config.md)
+- [拡張のデフォルトプロンプトと上書き](extension-prompt.md)
 - [ダッシュボードへの差し込み](extension-dashboard.md)
 - [拡張のテストの書き方](extension-testing.md)

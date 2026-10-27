@@ -38,6 +38,7 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [拡張の基本](extensions.md) — メソッド表、衝突ルール、ロケールカタログ、依存、互換性
 - [コマンドの実装と、Discord 以外からの実行](commands.md) — `CommandContext` と `dispatch_command`
 - [設定の合成](extension-config.md) — `config_model()` / `env_fields()` / `get_section()`
+- [拡張のデフォルトプロンプトと上書き](extension-prompt.md) — `default_prompt()` と `extension_overrides`
 - [ダッシュボードへの差し込み](extension-dashboard.md)
 - [拡張のテストの書き方](extension-testing.md) — `lilla_core.testing`
 
