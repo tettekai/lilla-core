@@ -24,7 +24,7 @@ dependencies = [
   "python-dotenv==1.2.4",
   "apscheduler==3.11.3",
   "pydantic==2.14.1",
-  "pydantic-settings==2.16.0",
+  "pydantic-settings==2.16.1",
   "pymongo==4.19.0",
   "tiktoken==0.14.0",
   "bcrypt==5.0.0",
