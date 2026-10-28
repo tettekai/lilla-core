@@ -18,6 +18,20 @@
   プロンプトを上書きできるようにした（#281）。ドキュメントの `prompt`（文字列）がデフォルトの全文を置き換え、空文字は
   「注入しない」を意味する。`prompt` が文字列でない場合と読み込みに失敗した場合は WARNING ログを出してデフォルトを使う。
   上書きは言語を区別せず、キャッシュもしない（組み立てのたびに読む）。書き込み API・ダッシュボードの編集画面はまだ無い
+- `extension_overrides` の拡張ごとのドキュメントの `tasks` キー（`{"<ツール名>": {"schedule": "<crontab>", "enabled": false}}`）で、
+  拡張が `tool_config_roots()` で同梱したタスクの実行スケジュールと定期実行の有効・無効を、タスクごと・項目ごとに上書きできるようにした
+  （#284）。上書きは起動時にスケジューラへジョブを登録するときに読む（キャッシュしない）。`enabled: false` はジョブを登録しないだけで、
+  ツール YAML の `enabled: false` と違いツールはロードされ `!runtask` で実行できる。不正な値・拡張が同梱していないツール名・読み込みの
+  失敗は、拡張名とツール名を含む WARNING ログを出してデフォルトにフォールバックする（起動は止めない）。コア組み込みのタスクは対象外。
+  稼働中のスケジューラへ再起動なしで反映する非同期関数 `handlers/task_handler.py` の `apply_task_overrides(extension_name, task_name=None)`
+  を追加したが、本番のコードから呼ぶ箇所はまだ無いため、現時点で上書きを変えたら再起動が必要
+- `loaders/tool_paths.py` に、拡張が同梱したツール YAML の stem と拡張名の対応を返す `resolve_tool_config_owners()` を追加し、
+  `load_all_tools()` の各エントリに同梱した拡張の名前（`extension`。無ければ `None`）を入れるようにした（#284）
+
+### Changed
+
+- `handlers/task_handler.py` の `start_scheduler()` を非同期関数にした（#284。起動時に MongoDB の上書きを読むため）。
+  呼び出し側は `await` が必要
 
 ## [0.7.1] - 2026-10-25
 

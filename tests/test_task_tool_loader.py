@@ -104,7 +104,7 @@ class TestBuildToolEntry:
     def test_returns_all_keys(self, task_tool_loader) -> None:
         instance = MagicMock()
         entry = task_tool_loader._build_tool_entry(instance, "task_foo", {})
-        assert set(entry.keys()) == {"instance", "description", "category", "trigger", "scheduled"}
+        assert set(entry.keys()) == {"instance", "description", "category", "trigger", "scheduled", "extension"}
 
     def test_instance_is_stored(self, task_tool_loader) -> None:
         instance = MagicMock()
@@ -131,6 +131,12 @@ class TestBuildToolEntry:
         instance = MagicMock(spec=[])  # 属性アクセスで AttributeError になるスペック
         entry = task_tool_loader._build_tool_entry(instance, "task_foo", {})
         assert entry["description"] == ""
+
+    def test_extension_defaults_to_none(self, task_tool_loader) -> None:
+        """拡張名を渡さなければ None、渡せばその値。"""
+        instance = MagicMock()
+        assert task_tool_loader._build_tool_entry(instance, "task_foo", {})["extension"] is None
+        assert task_tool_loader._build_tool_entry(instance, "task_foo", {}, "pack")["extension"] == "pack"
 
     def test_default_category_when_missing(self, task_tool_loader) -> None:
         """category 属性がない instance → 'unknown' がデフォルト"""
@@ -177,6 +183,36 @@ class TestLoadToolConfigsBundled:
         paths = [p for p, _ in task_tool_loader._load_tool_configs(tmp_path)]
 
         assert paths == [str(tmp_path / "tools" / "task_on.yaml")]
+
+
+class TestLoadAllToolsExtensionOwner:
+    """`load_all_tools()` の各エントリが同梱した拡張の名前を持つこと。"""
+
+    def test_entry_has_owning_extension(
+        self, task_tool_loader, tmp_path: Path, make_extension, use_extensions,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """同梱分（利用者が置き換えたものを含む）は拡張名、利用者だけの YAML は None。"""
+        pack = tmp_path / "pack"
+        pack.mkdir()
+        (pack / "task_a.yaml").write_text("type: task_x\n")
+        (pack / "task_b.yaml").write_text("type: task_x\n")
+        (tmp_path / "tools").mkdir()
+        (tmp_path / "tools" / "task_b.yaml").write_text("type: task_x\n")
+        (tmp_path / "tools" / "task_user.yaml").write_text("type: task_x\n")
+        tool_root = tmp_path / "roots"
+        tool_root.mkdir()
+        (tool_root / "task_x.py").touch()
+        use_extensions(make_extension("pack", tool_config_roots=[pack]))
+        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path, **kw: _make_tool_class())
+
+        result = task_tool_loader.load_all_tools(
+            tool_roots=[tool_root], config_root=tmp_path, class_map={}
+        )
+
+        assert result["task_a"]["extension"] == "pack"
+        assert result["task_b"]["extension"] == "pack"
+        assert result["task_user"]["extension"] is None
 
 
 class TestLoadToolConfigs:
@@ -471,7 +507,7 @@ class TestLoadAllTools:
             tool_roots=[tool_root], config_root=config_root, class_map={}
         )
         entry = result["task_tool"]
-        assert set(entry.keys()) == {"instance", "description", "category", "trigger", "scheduled"}
+        assert set(entry.keys()) == {"instance", "description", "category", "trigger", "scheduled", "extension"}
 
     def test_does_not_mutate_global_tool_class_map(
         self,

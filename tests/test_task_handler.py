@@ -29,8 +29,12 @@ def app_timezone(monkeypatch):
 def _reset_scheduler():
     """各テストの前後でグローバルスケジューラをリセットする。"""
     task_handler._scheduler = None
+    task_handler._task_jobs.clear()
+    task_handler._applied_schedules.clear()
     yield
     task_handler._scheduler = None
+    task_handler._task_jobs.clear()
+    task_handler._applied_schedules.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -48,14 +52,14 @@ class TestStartScheduler:
         }
 
     @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
-    def test_registers_scheduled_jobs(self, mock_scheduler_cls) -> None:
+    async def test_registers_scheduled_jobs(self, mock_scheduler_cls) -> None:
         """スケジュール設定済みタスクが add_job で登録されること。"""
         mock_scheduler = MagicMock()
         mock_scheduler_cls.return_value = mock_scheduler
         tools = self._make_tools()
         bot = MagicMock()
 
-        task_handler.start_scheduler(tools, bot)
+        await task_handler.start_scheduler(tools, bot)
 
         mock_scheduler_cls.assert_called_once_with(
             timezone=local_timezone(),
@@ -67,17 +71,17 @@ class TestStartScheduler:
         mock_scheduler.start.assert_called_once()
 
     @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
-    def test_scheduler_uses_configured_timezone(self, mock_scheduler_cls, app_timezone) -> None:
+    async def test_scheduler_uses_configured_timezone(self, mock_scheduler_cls, app_timezone) -> None:
         """スケジューラのタイムゾーンが `ui.timezone` の解決結果になること。"""
         app_timezone("UTC")
         mock_scheduler_cls.return_value = MagicMock()
 
-        task_handler.start_scheduler(self._make_tools(), MagicMock())
+        await task_handler.start_scheduler(self._make_tools(), MagicMock())
 
         assert mock_scheduler_cls.call_args[1]["timezone"] == ZoneInfo("UTC")
 
     @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
-    def test_cron_trigger_uses_configured_timezone(self, mock_scheduler_cls, app_timezone) -> None:
+    async def test_cron_trigger_uses_configured_timezone(self, mock_scheduler_cls, app_timezone) -> None:
         """crontab 式も同じタイムゾーンで解釈されること。
 
         `CronTrigger` はインスタンスとして渡すとスケジューラの timezone を
@@ -87,51 +91,51 @@ class TestStartScheduler:
         mock_scheduler = MagicMock()
         mock_scheduler_cls.return_value = mock_scheduler
 
-        task_handler.start_scheduler(self._make_tools(), MagicMock())
+        await task_handler.start_scheduler(self._make_tools(), MagicMock())
 
         trigger = mock_scheduler.add_job.call_args[0][1]
         assert trigger.timezone == ZoneInfo("Asia/Tokyo")
 
     @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
-    def test_skips_unscheduled_tools(self, mock_scheduler_cls) -> None:
+    async def test_skips_unscheduled_tools(self, mock_scheduler_cls) -> None:
         """scheduled=False のツールはスキップされること。"""
         mock_scheduler = MagicMock()
         mock_scheduler_cls.return_value = mock_scheduler
         tools = self._make_tools(scheduled=False)
         bot = MagicMock()
 
-        task_handler.start_scheduler(tools, bot)
+        await task_handler.start_scheduler(tools, bot)
 
         mock_scheduler.add_job.assert_not_called()
         mock_scheduler.start.assert_called_once()
 
     @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
-    def test_idempotent(self, mock_scheduler_cls) -> None:
+    async def test_idempotent(self, mock_scheduler_cls) -> None:
         """2回呼んでもスケジューラは1つしか作られないこと。"""
         mock_scheduler = MagicMock()
         mock_scheduler_cls.return_value = mock_scheduler
         tools = self._make_tools()
         bot = MagicMock()
 
-        task_handler.start_scheduler(tools, bot)
-        task_handler.start_scheduler(tools, bot)
+        await task_handler.start_scheduler(tools, bot)
+        await task_handler.start_scheduler(tools, bot)
 
         mock_scheduler_cls.assert_called_once()
 
     @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
-    def test_skips_tool_without_schedule(self, mock_scheduler_cls) -> None:
+    async def test_skips_tool_without_schedule(self, mock_scheduler_cls) -> None:
         """scheduleが空のツールはスキップされること。"""
         mock_scheduler = MagicMock()
         mock_scheduler_cls.return_value = mock_scheduler
         tools = self._make_tools(schedule="")
         bot = MagicMock()
 
-        task_handler.start_scheduler(tools, bot)
+        await task_handler.start_scheduler(tools, bot)
 
         mock_scheduler.add_job.assert_not_called()
 
     @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
-    def test_registers_multiple_scheduled_tools(self, mock_scheduler_cls) -> None:
+    async def test_registers_multiple_scheduled_tools(self, mock_scheduler_cls) -> None:
         """複数のスケジュール済みタスクが全て登録されること。"""
         mock_scheduler = MagicMock()
         mock_scheduler_cls.return_value = mock_scheduler
@@ -146,13 +150,13 @@ class TestStartScheduler:
         }
         bot = MagicMock()
 
-        task_handler.start_scheduler(tools, bot)
+        await task_handler.start_scheduler(tools, bot)
 
         assert mock_scheduler.add_job.call_count == 2
 
     @patch("lilla_core.handlers.task_handler.CronTrigger.from_crontab")
     @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
-    def test_invalid_cron_is_skipped_and_scheduler_still_starts(
+    async def test_invalid_cron_is_skipped_and_scheduler_still_starts(
         self, mock_scheduler_cls, mock_from_crontab, caplog: pytest.LogCaptureFixture
     ) -> None:
         """不正な cron は WARNING でスキップし、それでもスケジューラは start する。"""
@@ -163,7 +167,7 @@ class TestStartScheduler:
         bot = MagicMock()
 
         with caplog.at_level("WARNING"):
-            task_handler.start_scheduler(tools, bot)
+            await task_handler.start_scheduler(tools, bot)
 
         mock_scheduler.add_job.assert_not_called()
         mock_scheduler.start.assert_called_once()
@@ -171,7 +175,7 @@ class TestStartScheduler:
 
     @patch("lilla_core.handlers.task_handler.CronTrigger.from_crontab")
     @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
-    def test_valid_cron_registered_when_mixed_with_invalid(
+    async def test_valid_cron_registered_when_mixed_with_invalid(
         self, mock_scheduler_cls, mock_from_crontab
     ) -> None:
         """不正な cron と正当な cron が混在するとき、正当な方だけ登録されること。"""
@@ -190,7 +194,7 @@ class TestStartScheduler:
         }
         bot = MagicMock()
 
-        task_handler.start_scheduler(tools, bot)
+        await task_handler.start_scheduler(tools, bot)
 
         mock_scheduler.add_job.assert_called_once()
         assert mock_scheduler.add_job.call_args[1]["id"] == "good_tool"
@@ -204,11 +208,11 @@ class TestStartScheduler:
 
 class TestStopScheduler:
     @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
-    def test_shuts_down_running_scheduler(self, mock_scheduler_cls) -> None:
+    async def test_shuts_down_running_scheduler(self, mock_scheduler_cls) -> None:
         """起動中のスケジューラを shutdown(wait=False) で停止すること。"""
         mock_scheduler = MagicMock()
         mock_scheduler_cls.return_value = mock_scheduler
-        task_handler.start_scheduler(self._make_tools(), MagicMock())
+        await task_handler.start_scheduler(self._make_tools(), MagicMock())
 
         task_handler.stop_scheduler()
 
@@ -221,13 +225,13 @@ class TestStopScheduler:
         assert task_handler._scheduler is None
 
     @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
-    def test_allows_restart_after_stop(self, mock_scheduler_cls) -> None:
+    async def test_allows_restart_after_stop(self, mock_scheduler_cls) -> None:
         """停止後は start_scheduler で再度スケジューラを作れること。"""
         mock_scheduler_cls.side_effect = [MagicMock(), MagicMock()]
-        task_handler.start_scheduler(self._make_tools(), MagicMock())
+        await task_handler.start_scheduler(self._make_tools(), MagicMock())
         task_handler.stop_scheduler()
 
-        task_handler.start_scheduler(self._make_tools(), MagicMock())
+        await task_handler.start_scheduler(self._make_tools(), MagicMock())
 
         assert mock_scheduler_cls.call_count == 2
 
@@ -362,3 +366,232 @@ class TestRunTool:
         mock_notify_error.assert_called_once_with(
             bot, "[TASK] crash_tool の実行中にエラーが発生しました", error
         )
+
+
+# ---------------------------------------------------------------------------
+# TestTaskOverrides
+# ---------------------------------------------------------------------------
+
+
+class TestTaskOverrides:
+    """`extension_overrides` の `tasks` による上書きと、稼働中のスケジューラへの反映。
+
+    実物の `BackgroundScheduler` を起動し、ジョブのトリガーと次回実行時刻を見る
+    （cron は遠い時刻にしてあり、テスト中にジョブは走らない）。
+    """
+
+    DEFAULT = "0 7 * * *"
+
+    @pytest.fixture
+    def repo(self, monkeypatch):
+        """上書きのリポジトリをモックへ差し替え、返すドキュメントを `docs` で変えられるようにする。"""
+        repo = MagicMock()
+        repo.docs = {}
+
+        async def _find(names):
+            return {name: doc for name, doc in repo.docs.items() if name in names}
+
+        repo.find_by_extensions = AsyncMock(side_effect=_find)
+        monkeypatch.setattr(task_handler, "get_extension_override_repo", lambda: repo)
+        return repo
+
+    @pytest.fixture
+    def diary(self, make_extension, use_extensions):
+        """拡張 `diary` を登録する。"""
+        use_extensions(make_extension("diary"))
+
+    @pytest.fixture(autouse=True)
+    def _stop(self):
+        """テスト後に実物のスケジューラを止める。"""
+        yield
+        task_handler.stop_scheduler()
+
+    def _tools(self, **schedules):
+        """`diary` が同梱したタスクと、拡張に属さないタスクを含むツール辞書を作る。"""
+        tools = {}
+        for name, schedule in schedules.items():
+            tool = MagicMock()
+            tool.schedule = schedule
+            tools[name] = {
+                "instance": tool, "trigger": "task", "scheduled": True,
+                "extension": None if name.startswith("task_core") else "diary",
+            }
+        return tools
+
+    def _job(self, name):
+        return task_handler._scheduler.get_job(name)
+
+    def _fields(self, name):
+        """ジョブのトリガーの cron フィールドを文字列で返す。"""
+        return {f.name: str(f) for f in self._job(name).trigger.fields}
+
+    async def test_startup_applies_schedule_override(self, repo, diary) -> None:
+        """起動時に上書きの schedule でジョブが登録される。上書きの無いタスクはデフォルト。"""
+        repo.docs = {"diary": {"extension": "diary", "tasks": {"task_a": {"schedule": "30 21 * * *"}}}}
+
+        await task_handler.start_scheduler(
+            self._tools(task_a=self.DEFAULT, task_b=self.DEFAULT, task_core=self.DEFAULT), MagicMock()
+        )
+
+        assert self._fields("task_a")["hour"] == "21"
+        assert self._fields("task_b")["hour"] == "7"
+        assert self._fields("task_core")["hour"] == "7"
+        repo.find_by_extensions.assert_awaited_once_with(["diary"])
+
+    async def test_reapply_changes_trigger_and_next_run(self, repo, diary) -> None:
+        """上書きを入れて反映すると、ジョブのトリガーと次回実行時刻が変わる。"""
+        await task_handler.start_scheduler(self._tools(task_a=self.DEFAULT), MagicMock())
+        before = self._job("task_a").next_run_time
+
+        repo.docs = {"diary": {"extension": "diary", "tasks": {"task_a": {"schedule": "15 22 * * *"}}}}
+        await task_handler.apply_task_overrides("diary")
+
+        after = self._job("task_a").next_run_time
+        assert self._fields("task_a")["hour"] == "22"
+        assert self._fields("task_a")["minute"] == "15"
+        assert after != before
+        assert (after.hour, after.minute) == (22, 15)
+
+    async def test_disable_then_clear_restores_default(self, repo, diary) -> None:
+        """`enabled: false` でジョブが外れ、上書きを消して反映するとデフォルトで登録し直される。"""
+        await task_handler.start_scheduler(self._tools(task_a=self.DEFAULT), MagicMock())
+
+        repo.docs = {"diary": {"extension": "diary", "tasks": {"task_a": {"enabled": False, "schedule": "1 1 * * *"}}}}
+        await task_handler.apply_task_overrides("diary", "task_a")
+        assert self._job("task_a") is None
+
+        repo.docs = {}
+        await task_handler.apply_task_overrides("diary", "task_a")
+        assert self._job("task_a") is not None
+        assert self._fields("task_a")["hour"] == "7"
+        assert self._fields("task_a")["minute"] == "0"
+
+    async def test_disabled_at_startup_is_not_registered(self, repo, diary) -> None:
+        """起動時に `enabled: false` のタスクはジョブを登録しない。"""
+        repo.docs = {"diary": {"extension": "diary", "tasks": {"task_a": {"enabled": False}}}}
+
+        await task_handler.start_scheduler(self._tools(task_a=self.DEFAULT), MagicMock())
+
+        assert self._job("task_a") is None
+
+    async def test_invalid_cron_override_falls_back_with_warning(self, repo, diary, caplog) -> None:
+        """不正な crontab の上書きは、拡張名とツール名を含む WARNING を出してデフォルトのまま。"""
+        repo.docs = {"diary": {"extension": "diary", "tasks": {"task_a": {"schedule": "not a cron"}}}}
+
+        with caplog.at_level("WARNING"):
+            await task_handler.start_scheduler(self._tools(task_a=self.DEFAULT), MagicMock())
+
+        assert self._fields("task_a")["hour"] == "7"
+        assert any(
+            "task_a" in r.getMessage() and "diary" in r.getMessage() and r.levelname == "WARNING"
+            for r in caplog.records
+        )
+
+    async def test_invalid_cron_on_reapply_keeps_default(self, repo, diary, caplog) -> None:
+        """反映時の不正な crontab も、デフォルトのスケジュールを保つ。"""
+        repo.docs = {"diary": {"extension": "diary", "tasks": {"task_a": {"schedule": "30 21 * * *"}}}}
+        await task_handler.start_scheduler(self._tools(task_a=self.DEFAULT), MagicMock())
+
+        repo.docs = {"diary": {"extension": "diary", "tasks": {"task_a": {"schedule": "99 99 * * *"}}}}
+        with caplog.at_level("WARNING"):
+            await task_handler.apply_task_overrides("diary")
+
+        assert self._fields("task_a")["hour"] == "7"
+        assert any("invalid cron" in r.getMessage() for r in caplog.records)
+
+    async def test_unknown_tool_name_is_ignored_with_warning(self, repo, diary, caplog) -> None:
+        """拡張が同梱していないツール名（拡張に属さないタスクを含む）は無視して WARNING。"""
+        repo.docs = {"diary": {"extension": "diary", "tasks": {
+            "task_core": {"enabled": False},
+            "task_missing": {"schedule": "1 1 * * *"},
+        }}}
+
+        with caplog.at_level("WARNING"):
+            await task_handler.start_scheduler(
+                self._tools(task_a=self.DEFAULT, task_core=self.DEFAULT), MagicMock()
+            )
+
+        assert self._job("task_core") is not None
+        assert self._fields("task_a")["hour"] == "7"
+        messages = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any("task_core" in m and "diary" in m for m in messages)
+        assert any("task_missing" in m and "diary" in m for m in messages)
+
+    @pytest.mark.parametrize(
+        ("tasks", "needle"),
+        [
+            (["x"], "'tasks' must be an object"),
+            ({"task_a": "0 1 * * *"}, "expected an object"),
+            ({"task_a": {"schedule": 5}}, "expected a string"),
+            ({"task_a": {"enabled": "no"}}, "expected a boolean"),
+        ],
+    )
+    async def test_invalid_values_fall_back_to_default(self, repo, diary, caplog, tasks, needle) -> None:
+        """型の不正な上書きは WARNING を出してデフォルトになる。"""
+        repo.docs = {"diary": {"extension": "diary", "tasks": tasks}}
+
+        with caplog.at_level("WARNING"):
+            await task_handler.start_scheduler(self._tools(task_a=self.DEFAULT), MagicMock())
+
+        assert self._fields("task_a")["hour"] == "7"
+        assert any(needle in r.getMessage() and "diary" in r.getMessage() for r in caplog.records)
+
+    async def test_document_without_tasks_keeps_defaults(self, repo, diary) -> None:
+        """`tasks` キーの無いドキュメント（`prompt` だけ）は全タスクがデフォルト。"""
+        repo.docs = {"diary": {"extension": "diary", "prompt": "上書き"}}
+
+        await task_handler.start_scheduler(self._tools(task_a=self.DEFAULT, task_b="5 6 * * *"), MagicMock())
+
+        assert self._fields("task_a")["hour"] == "7"
+        assert self._fields("task_b")["hour"] == "6"
+
+    async def test_load_failure_registers_defaults(self, repo, diary, caplog) -> None:
+        """MongoDB の読み込みに失敗したら WARNING を出して全タスクをデフォルトで登録する。"""
+        repo.find_by_extensions.side_effect = RuntimeError("down")
+
+        with caplog.at_level("WARNING"):
+            await task_handler.start_scheduler(self._tools(task_a=self.DEFAULT), MagicMock())
+
+        assert self._fields("task_a")["hour"] == "7"
+        assert task_handler._scheduler.running
+        assert any("Failed to load extension overrides" in r.getMessage() for r in caplog.records)
+
+    async def test_no_extensions_does_not_read_db(self, repo, use_extensions) -> None:
+        """拡張が 1 つも無ければ DB を読まない。"""
+        use_extensions()
+
+        await task_handler.start_scheduler(self._tools(task_core=self.DEFAULT), MagicMock())
+
+        repo.find_by_extensions.assert_not_awaited()
+        assert self._job("task_core") is not None
+
+    async def test_reapply_without_scheduler_is_noop(self, repo, caplog) -> None:
+        """スケジューラが動いていなければ何もせず WARNING。"""
+        with caplog.at_level("WARNING"):
+            await task_handler.apply_task_overrides("diary")
+
+        repo.find_by_extensions.assert_not_awaited()
+        assert any("Scheduler is not running" in r.getMessage() for r in caplog.records)
+
+    async def test_reapply_unknown_task_name_is_noop(self, repo, diary, caplog) -> None:
+        """拡張が同梱していないタスク名を指定した反映は、DB を読まずに WARNING。"""
+        await task_handler.start_scheduler(self._tools(task_a=self.DEFAULT), MagicMock())
+        repo.find_by_extensions.reset_mock()
+
+        with caplog.at_level("WARNING"):
+            await task_handler.apply_task_overrides("diary", "task_missing")
+
+        repo.find_by_extensions.assert_not_awaited()
+        assert any("task_missing" in r.getMessage() for r in caplog.records)
+
+    async def test_reapply_single_task_leaves_others(self, repo, diary) -> None:
+        """1 タスクだけの反映は、同じ拡張の他のタスクに触れない。"""
+        await task_handler.start_scheduler(self._tools(task_a=self.DEFAULT, task_b=self.DEFAULT), MagicMock())
+
+        repo.docs = {"diary": {"extension": "diary", "tasks": {
+            "task_a": {"schedule": "0 9 * * *"}, "task_b": {"schedule": "0 10 * * *"},
+        }}}
+        await task_handler.apply_task_overrides("diary", "task_a")
+
+        assert self._fields("task_a")["hour"] == "9"
+        assert self._fields("task_b")["hour"] == "7"
