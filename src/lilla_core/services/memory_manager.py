@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone, tzinfo
 from functools import lru_cache
 
 from lilla_core.core.config import AppConfig, get_config
-from lilla_core.core.extension import get_client_prompt_providers
+from lilla_core.core.extension import get_client_prompt_providers, get_default_prompts
 from lilla_core.services.message_util import format_session_memory_block, prepend_timestamp_prefix
 from lilla_core.services.session_memory_manager import get_session_memory_manager
 from lilla_core.utils.datetime_utils import local_now
@@ -43,6 +43,30 @@ def _resolve_client_prompt(client_type: str) -> str:
     if client_type == "discord":
         return get_config().discord_client_prompt
     return ""
+
+
+#: `ui.locale` に一致する言語が無いときに順に試す言語。
+_DEFAULT_PROMPT_FALLBACK_LOCALES = ("ja", "en")
+
+
+def _select_default_prompt(prompts: dict[str, str], locale: str) -> str:
+    """拡張のデフォルトプロンプトから `locale` に合う本文を選ぶ。
+
+    `locale` → `ja` → `en` → 定義の先頭の言語、の順に最初に見つかったものを使う。
+
+    Args:
+        prompts: 言語 -> 本文（空でないことはロード時に検証済み）。
+        locale: `ui.locale` の値。
+
+    Returns:
+        選んだ本文。
+    """
+    if isinstance(locale, str) and locale in prompts:
+        return prompts[locale]
+    for fallback in _DEFAULT_PROMPT_FALLBACK_LOCALES:
+        if fallback in prompts:
+            return prompts[fallback]
+    return next(iter(prompts.values()))
 
 
 def _floor_to_hour(dt: datetime, tz: tzinfo) -> datetime:
@@ -88,10 +112,12 @@ class MemoryManager:
         from lilla_core.repository.user_memo_repository import get_user_memo_repo
         from lilla_core.repository.tool_cache_repository import get_tool_cache_repo
         from lilla_core.repository.channel_summary_repository import get_channel_summary_repo
+        from lilla_core.repository.extension_override_repository import get_extension_override_repo
         self._conv_repo = get_conversation_repo()
         self._memo_repo = get_user_memo_repo()
         self._tool_cache_repo = get_tool_cache_repo()
         self._channel_summary_repo = get_channel_summary_repo()
+        self._extension_override_repo = get_extension_override_repo()
         self._session_memory = get_session_memory_manager()
         self._config = config
         self._max_history_turns = config.memory.max_history_turns
@@ -201,6 +227,57 @@ class MemoryManager:
             "The conversation history below spans every channel and DM, not just this one."
         )
 
+    async def _resolve_extension_prompts(self, client_type: str) -> str:
+        """有効な拡張のプロンプトを、拡張のロード順に空行区切りで連結して返す。
+
+        対象は `default_prompt()` を持つロード済みの拡張だけ。拡張ごとの本文は
+        次の順に決める（キャッシュせず、呼ぶたびに MongoDB を読む）。
+
+        1. `extension_overrides` のドキュメントに `prompt` キーがあり、値が文字列なら
+           それを使う（空文字は「この拡張のプロンプトを注入しない」という上書き）
+        2. 無ければ `ui.locale` に一致する言語のデフォルトを使う
+        3. それも無ければ `ja` → `en` → 定義の先頭の言語の順にデフォルトを使う
+
+        `prompt` が文字列でない場合と、上書きの読み込み自体が失敗した場合は WARNING
+        ログを出してデフォルトへフォールバックする（応答は止めない）。会話プロンプトと
+        同じく、`client_type` が `"task"` のときは何も注入しない。
+
+        Args:
+            client_type: 会話のクライアント種別。
+
+        Returns:
+            追記するプロンプト本文。付けるものが無ければ空文字列。
+        """
+        if client_type == "task":
+            return ""
+        defaults = get_default_prompts()
+        if not defaults:
+            return ""
+        try:
+            overrides = await self._extension_override_repo.find_by_extensions(
+                [name for name, _ in defaults]
+            )
+        except Exception as e:
+            logger.warning("Failed to load extension overrides; using default prompts: %s", e)
+            overrides = {}
+        locale = self._config.ui.locale
+        parts: list[str] = []
+        for name, prompts in defaults:
+            text = _select_default_prompt(prompts, locale)
+            override = overrides.get(name)
+            if override is not None and "prompt" in override:
+                value = override["prompt"]
+                if isinstance(value, str):
+                    text = value
+                else:
+                    logger.warning(
+                        "Ignoring prompt override for extension '%s': expected a string, got %s",
+                        name, type(value).__name__,
+                    )
+            if text.strip():
+                parts.append(text)
+        return "\n\n".join(parts)
+
     async def _resolve_channel_summary_section(self, discord_channel_id: int | None) -> str:
         """登録チャンネルの「部屋のノート」（`channel_summaries`）の一節を返す。
 
@@ -256,12 +333,14 @@ class MemoryManager:
 
         base_prompt に以下を順に追記する:
         1. クライアント固有プロンプト（`_resolve_client_prompt` で解決できた場合のみ付与）
-        2. 登録チャンネルの一節（`discord.channels` に登録されたチャンネルでの会話のみ）
-        3. 登録チャンネルの部屋ノート（要約が保存されている場合のみ）
-        4. 動的メモリ（有効なuser_memosが存在する場合のみ）
-        5. セッションメモリ（有効なセッションメモリが存在する場合のみ）
-        6. 呼び出し元が渡した追加の節（`extra_sections`。空文字列は読み飛ばす）
-        7. 現在日時と時刻付き会話履歴
+        2. `extra_prompt`（会話プロンプトなど）
+        3. 拡張のプロンプト（`_resolve_extension_prompts`。`client_type` が `"task"` 以外のみ）
+        4. 登録チャンネルの一節（`discord.channels` に登録されたチャンネルでの会話のみ）
+        5. 登録チャンネルの部屋ノート（要約が保存されている場合のみ）
+        6. 動的メモリ（有効なuser_memosが存在する場合のみ）
+        7. セッションメモリ（有効なセッションメモリが存在する場合のみ）
+        8. 呼び出し元が渡した追加の節（`extra_sections`。空文字列は読み飛ばす）
+        9. 現在日時と時刻付き会話履歴
 
         Args:
             extra_prompt: base_prompt の直後に追記する文字列（会話プロンプトなど）。
@@ -288,6 +367,7 @@ class MemoryManager:
         time_section = f"Current time: {now_str}"
 
         client_prompt = _resolve_client_prompt(client_type)
+        extension_prompts = await self._resolve_extension_prompts(client_type)
         channel_section = self._resolve_registered_channel_section(discord_channel_id)
         channel_note_section = await self._resolve_channel_summary_section(discord_channel_id)
 
@@ -296,6 +376,8 @@ class MemoryManager:
             base = base + "\n\n" + client_prompt
         if extra_prompt:
             base = base + "\n\n" + extra_prompt
+        if extension_prompts:
+            base = base + "\n\n" + extension_prompts
         parts = [base]
         if channel_section:
             parts.append(channel_section)

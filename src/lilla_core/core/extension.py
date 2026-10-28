@@ -577,6 +577,22 @@ class Extension:
         """
         return {}
 
+    def default_prompt(self) -> dict[str, str] | None:
+        """この拡張のデフォルトのプロンプトを言語ごとに返す（持たないなら `None`）。
+
+        戻り値は `{"ja": "...", "en": "..."}` の形で、特定の言語は必須にしない
+        （英語だけの拡張も書ける）。1 拡張が持てるプロンプトは 1 つだけ。コアは
+        システムプロンプトの組み立てのたびに、MongoDB の `extension_overrides` に
+        この拡張（`name`）の `prompt` の上書きがあればそれを、無ければ
+        `ui.locale` → `ja` → `en` → 定義の先頭の順に最初に見つかった言語の本文を
+        選び、ロード順に連結して注入する（`client_type` が `"task"` のときは注入しない）。
+        `client_prompt_providers()` と違い、`client_type` によらず全会話に入る。
+
+        形（空でない `dict` であること・キーと値が文字列であること）は
+        ロード時に検証し、違反は fail-fast する。
+        """
+        return None
+
     def conversation_start_hooks(self) -> dict[str, list[ConversationStartHook]]:
         """`run_conversation` の冒頭で呼ばれるフックを `client_type` ごとにリストで返す。
 
@@ -608,6 +624,7 @@ _tool_context_providers: dict[str, ContextValueProvider] = {}
 _result_deliveries: dict[str, DeliveryFn] = {}
 _client_prompt_providers: dict[str, list[PromptProvider]] = {}
 _conversation_start_hooks: dict[str, list[ConversationStartHook]] = {}
+_default_prompts: list[tuple[str, dict[str, str]]] = []
 _dashboard_pages: list[DashboardPageEntry] = []
 _dashboard_static_mounts: list[DashboardStaticMount] = []
 _dashboard_routes: list[DashboardRoute] = []
@@ -766,6 +783,46 @@ def _collect_config_models(extensions: list[Extension]) -> dict[str, Any]:
             )
         models[section] = model
     return models
+
+
+def _collect_default_prompts(
+    extensions: list[Extension],
+) -> list[tuple[str, dict[str, str]]]:
+    """各拡張の `default_prompt()` を検証し、「(拡張名, 言語 -> 本文)」をロード順に並べる。
+
+    Args:
+        extensions: ロード順に並んだ拡張のリスト（`name` は検証済み）。
+
+    Returns:
+        `(name, prompts)` のリスト。`default_prompt()` が `None` の拡張は含めない。
+
+    Raises:
+        ValueError: 戻り値が `dict` でない場合、空の場合、またはキー・値に
+            文字列以外が含まれる場合。
+    """
+    collected: list[tuple[str, dict[str, str]]] = []
+    for ext in extensions:
+        prompts = ext.default_prompt()
+        if prompts is None:
+            continue
+        if not isinstance(prompts, dict):
+            raise ValueError(
+                f"Extension '{ext.name}' default_prompt() must return a dict of "
+                f"language -> prompt or None, got {type(prompts).__name__}"
+            )
+        if not prompts:
+            raise ValueError(
+                f"Extension '{ext.name}' default_prompt() must include at least one "
+                "language (return None to provide no prompt)"
+            )
+        for lang, text in prompts.items():
+            if not isinstance(lang, str) or not isinstance(text, str):
+                raise ValueError(
+                    f"Extension '{ext.name}' default_prompt() must map str languages "
+                    f"to str prompts, got {lang!r}: {type(text).__name__}"
+                )
+        collected.append((ext.name, dict(prompts)))
+    return collected
 
 
 def _validate_names(extensions: list[Extension]) -> None:
@@ -1078,8 +1135,9 @@ def set_extensions(extensions: list[Extension]) -> None:
             `EnvConfig` フィールド名を提供した場合、`requires` の拡張が未ロードか
             自分より後ろに並んでいる場合、または誰も提供していない名前を
             `required_env_fields()` / `required_tool_context_keys()` が要求している場合、
-            `locale_dirs()` のカタログが名前空間の規約に違反している場合、または
-            ダッシュボードの申告（`name` の形・予約名・ルートのパス接頭辞・
+            `locale_dirs()` のカタログが名前空間の規約に違反している場合、
+            `default_prompt()` の形が不正（`dict` でない・空・文字列以外を
+            含む）な場合、またはダッシュボードの申告（`name` の形・予約名・ルートのパス接頭辞・
             ページを出すのに静的ディレクトリが無い）が規約に違反している場合、
             または共有 HTTP サーバーのルート申告がコアや他の拡張と重なる場合。
     """
@@ -1129,6 +1187,7 @@ def set_extensions(extensions: list[Extension]) -> None:
     start_hooks = _merge_lists(
         extensions, "conversation_start_hooks", "conversation start hook"
     )
+    default_prompts = _collect_default_prompts(extensions)
     dashboard_pages, static_mounts, dash_routes, public_routes = _collect_dashboard(
         extensions
     )
@@ -1149,6 +1208,8 @@ def set_extensions(extensions: list[Extension]) -> None:
     _client_prompt_providers.update(prompts)
     _conversation_start_hooks.clear()
     _conversation_start_hooks.update(start_hooks)
+    _default_prompts.clear()
+    _default_prompts.extend(default_prompts)
     _dashboard_pages.clear()
     _dashboard_pages.extend(dashboard_pages)
     _dashboard_static_mounts.clear()
@@ -1262,7 +1323,8 @@ def load_extensions(spec: str | None = None) -> list[Extension]:
         AttributeError: モジュールが `extension` 属性を持たない場合。
         TypeError: `extension` が `Extension` インスタンスでない場合。
         ValueError: 名前または貢献キーが衝突している場合、`requires` の依存が
-            満たされない場合、または `required_*()` が誰も提供しない名前を要求した場合。
+            満たされない場合、`required_*()` が誰も提供しない名前を要求した場合、
+            または `default_prompt()` の形が不正な場合。
         pydantic.ValidationError: 合成後のモデルで設定の検証に失敗した場合。
     """
     if spec is None:
@@ -1438,6 +1500,15 @@ def get_client_prompt_providers(client_type: str) -> list[PromptProvider]:
     （`"discord"` のみ）へフォールバックする。
     """
     return list(_client_prompt_providers.get(client_type, []))
+
+
+def get_default_prompts() -> list[tuple[str, dict[str, str]]]:
+    """デフォルトのプロンプトを持つ拡張の「(拡張名, 言語 -> 本文)」をロード順で返す。
+
+    `default_prompt()` が `None` の拡張は含めない。戻り値はコピーで、書き換えても
+    登録内容には影響しない。
+    """
+    return [(name, dict(prompts)) for name, prompts in _default_prompts]
 
 
 def get_conversation_start_hooks(client_type: str) -> list[ConversationStartHook]:

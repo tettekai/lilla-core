@@ -29,6 +29,7 @@ def mock_cfg() -> MagicMock:
     cfg.memory.session_memory_ttl_hours = 3
     cfg.discord_client_prompt = _DISCORD_PROMPT
     cfg.lilla_client_prompt = _LILLA_CLIENT_PROMPT
+    cfg.ui.locale = "ja"
     return cfg
 
 
@@ -67,6 +68,13 @@ def mock_channel_summary_repo() -> MagicMock:
 
 
 @pytest.fixture
+def mock_extension_override_repo() -> MagicMock:
+    repo = MagicMock()
+    repo.find_by_extensions = AsyncMock(return_value={})
+    return repo
+
+
+@pytest.fixture
 def mock_session_memory() -> MagicMock:
     mock = MagicMock()
     mock.get = MagicMock(return_value=None)
@@ -79,6 +87,7 @@ def with_mocked_modules(
     mock_memo_repo: MagicMock,
     mock_tool_cache_repo: MagicMock,
     mock_channel_summary_repo: MagicMock,
+    mock_extension_override_repo: MagicMock,
     mock_session_memory: MagicMock,
 ):
     """依存モジュールを patch.dict で差し替える。"""
@@ -103,6 +112,9 @@ def with_mocked_modules(
             ),
             "lilla_core.repository.channel_summary_repository": MagicMock(
                 get_channel_summary_repo=MagicMock(return_value=mock_channel_summary_repo)
+            ),
+            "lilla_core.repository.extension_override_repository": MagicMock(
+                get_extension_override_repo=MagicMock(return_value=mock_extension_override_repo)
             ),
             "lilla_core.services.session_memory_manager": MagicMock(
                 get_session_memory_manager=MagicMock(return_value=mock_session_memory)
@@ -130,6 +142,7 @@ def manager(
     mock_memo_repo: MagicMock,
     mock_tool_cache_repo: MagicMock,
     mock_channel_summary_repo: MagicMock,
+    mock_extension_override_repo: MagicMock,
     mock_session_memory: MagicMock,
 ):
     """テスト用 MemoryManager インスタンスを返す。"""
@@ -138,6 +151,7 @@ def manager(
     mgr._memo_repo = mock_memo_repo
     mgr._tool_cache_repo = mock_tool_cache_repo
     mgr._channel_summary_repo = mock_channel_summary_repo
+    mgr._extension_override_repo = mock_extension_override_repo
     mgr._session_memory = mock_session_memory
     mgr._max_history_turns = 10
     return mgr
@@ -723,6 +737,182 @@ class TestCachedToolResultsSection:
         assert "llm_personal_info" in result
         assert '{"info_type": "FAVORITE_FOODS"}' in result
         assert "寿司、焼肉、カレー" in result
+
+
+class TestExtensionPrompts:
+    """拡張のデフォルトプロンプトと `extension_overrides` の上書きの注入を検証する。
+
+    `"discord"` はクライアント固有プロンプトの内蔵デフォルトが本物の `get_config()` を
+    見るため、拡張のプロンプトだけを見たいテストでは他のクライアント種別を使う。
+    """
+
+    @pytest.fixture
+    def diary(self, make_extension):
+        """日英のデフォルトプロンプトを持つ拡張。"""
+        return make_extension("diary", default_prompt={"ja": "日記の指示", "en": "Diary rules"})
+
+    async def test_locale_default_is_injected_without_override(
+        self, manager, mock_cfg, diary, use_extensions,
+    ) -> None:
+        """上書きが無ければ `ui.locale` に合うデフォルトを注入する。"""
+        mock_cfg.ui.locale = "en"
+        use_extensions(diary)
+        result = await manager.build_system_prompt(client_type="web")
+        assert "Diary rules" in result
+        assert "日記の指示" not in result
+
+    async def test_falls_back_to_ja_when_locale_is_missing(
+        self, manager, mock_cfg, diary, use_extensions,
+    ) -> None:
+        """`ui.locale` に合うデフォルトが無ければ `ja` を使う。"""
+        mock_cfg.ui.locale = "fr"
+        use_extensions(diary)
+        result = await manager.build_system_prompt(client_type="web")
+        assert "日記の指示" in result
+        assert "Diary rules" not in result
+
+    async def test_falls_back_to_en_when_ja_is_missing(
+        self, manager, mock_cfg, make_extension, use_extensions,
+    ) -> None:
+        """`ui.locale` にも `ja` にも合わなければ `en` を使う。"""
+        mock_cfg.ui.locale = "ja"
+        use_extensions(make_extension(
+            "diary", default_prompt={"fr": "Règles", "en": "Diary rules"},
+        ))
+        result = await manager.build_system_prompt(client_type="web")
+        assert "Diary rules" in result
+        assert "Règles" not in result
+
+    async def test_falls_back_to_first_language(
+        self, manager, mock_cfg, make_extension, use_extensions,
+    ) -> None:
+        """`ja` も `en` も無ければ、定義の先頭の言語を使う。"""
+        mock_cfg.ui.locale = "ja"
+        use_extensions(make_extension(
+            "diary", default_prompt={"fr": "Règles", "de": "Regeln"},
+        ))
+        result = await manager.build_system_prompt(client_type="web")
+        assert "Règles" in result
+        assert "Regeln" not in result
+
+    async def test_override_replaces_default(
+        self, manager, diary, use_extensions, mock_extension_override_repo,
+    ) -> None:
+        """上書きがあればデフォルトの全文を置き換える。"""
+        use_extensions(diary)
+        mock_extension_override_repo.find_by_extensions.return_value = {
+            "diary": {"extension": "diary", "prompt": "上書きした指示"},
+        }
+        result = await manager.build_system_prompt(client_type="web")
+        assert "上書きした指示" in result
+        assert "日記の指示" not in result
+        mock_extension_override_repo.find_by_extensions.assert_awaited_once_with(["diary"])
+
+    async def test_document_without_prompt_key_uses_default(
+        self, manager, diary, use_extensions, mock_extension_override_repo,
+    ) -> None:
+        """ドキュメントがあっても `prompt` キーが無ければデフォルトを使う。"""
+        use_extensions(diary)
+        mock_extension_override_repo.find_by_extensions.return_value = {
+            "diary": {"extension": "diary", "settings": {"x": 1}},
+        }
+        result = await manager.build_system_prompt(client_type="web")
+        assert "日記の指示" in result
+
+    async def test_empty_override_suppresses_prompt(
+        self, manager, diary, use_extensions, mock_extension_override_repo,
+    ) -> None:
+        """空文字の上書きはその拡張のプロンプトを注入しない。"""
+        use_extensions(diary)
+        mock_extension_override_repo.find_by_extensions.return_value = {
+            "diary": {"extension": "diary", "prompt": ""},
+        }
+        result = await manager.build_system_prompt(client_type="web")
+        assert "日記の指示" not in result
+        assert "Diary rules" not in result
+
+    @pytest.mark.parametrize("value", [1, ["a"], {"ja": "x"}, None])
+    async def test_invalid_override_falls_back_with_warning(
+        self, manager, diary, use_extensions, mock_extension_override_repo, caplog, value,
+    ) -> None:
+        """`prompt` が文字列でなければ WARNING を出してデフォルトを使う。"""
+        use_extensions(diary)
+        mock_extension_override_repo.find_by_extensions.return_value = {
+            "diary": {"extension": "diary", "prompt": value},
+        }
+        with caplog.at_level("WARNING"):
+            result = await manager.build_system_prompt(client_type="web")
+        assert "日記の指示" in result
+        assert any(
+            r.levelname == "WARNING" and "diary" in r.getMessage() for r in caplog.records
+        )
+
+    async def test_load_failure_falls_back_to_defaults(
+        self, manager, diary, use_extensions, mock_extension_override_repo, caplog,
+    ) -> None:
+        """上書きの読み込みに失敗しても、WARNING を出して全拡張をデフォルトで注入する。"""
+        use_extensions(diary)
+        mock_extension_override_repo.find_by_extensions.side_effect = RuntimeError("down")
+        with caplog.at_level("WARNING"):
+            result = await manager.build_system_prompt(client_type="web")
+        assert "日記の指示" in result
+        assert any(r.levelname == "WARNING" for r in caplog.records)
+
+    async def test_multiple_extensions_follow_load_order(
+        self, manager, make_extension, use_extensions, mock_extension_override_repo,
+    ) -> None:
+        """複数の拡張のプロンプトはロード順に空行区切りで並ぶ。"""
+        use_extensions(
+            make_extension("zeta", default_prompt={"ja": "Z の指示"}),
+            make_extension("plain"),
+            make_extension("alpha", default_prompt={"ja": "A の指示"}),
+        )
+        mock_extension_override_repo.find_by_extensions.return_value = {
+            "alpha": {"extension": "alpha", "prompt": "A の上書き"},
+        }
+        result = await manager.build_system_prompt(client_type="web")
+        assert "Z の指示\n\nA の上書き" in result
+        mock_extension_override_repo.find_by_extensions.assert_awaited_once_with(
+            ["zeta", "alpha"]
+        )
+
+    async def test_not_injected_for_task(
+        self, manager, diary, use_extensions, mock_extension_override_repo,
+    ) -> None:
+        """`client_type` が `task` のときは注入せず、上書きも読まない。"""
+        use_extensions(diary)
+        result = await manager.build_system_prompt(client_type="task")
+        assert "日記の指示" not in result
+        mock_extension_override_repo.find_by_extensions.assert_not_awaited()
+
+    async def test_no_db_read_without_prompt_extensions(
+        self, manager, use_extensions, mock_extension_override_repo,
+    ) -> None:
+        """デフォルトプロンプトを持つ拡張が無ければ DB を読まない。"""
+        use_extensions()
+        await manager.build_system_prompt(client_type="web")
+        mock_extension_override_repo.find_by_extensions.assert_not_awaited()
+
+    async def test_placed_after_conversation_prompt_and_before_channel_section(
+        self, manager, mock_cfg, make_extension, use_extensions,
+    ) -> None:
+        """クライアント固有・会話プロンプトの後ろ、登録チャンネルの一節の前に入る。"""
+        use_extensions(make_extension(
+            "diary",
+            client_prompt_providers={"discord": [lambda: "クライアント固有"]},
+            default_prompt={"ja": "日記の指示"},
+        ))
+        entry = MagicMock()
+        entry.name = "dev"
+        mock_cfg.discord.find_channel_by_id = MagicMock(return_value=entry)
+
+        result = await manager.build_system_prompt(
+            extra_prompt="会話プロンプト", client_type="discord", discord_channel_id=100,
+        )
+        assert result.index(_SYSTEM_PROMPT) < result.index("クライアント固有")
+        assert result.index("クライアント固有") < result.index("会話プロンプト")
+        assert result.index("会話プロンプト") < result.index("日記の指示")
+        assert result.index("日記の指示") < result.index("## Current Channel")
 
 
 class TestResolveClientPrompt:

@@ -92,6 +92,7 @@ class TestExtensionDefaults:
         assert ext.result_deliveries() == {}
         assert ext.client_prompt_providers() == {}
         assert ext.conversation_start_hooks() == {}
+        assert ext.default_prompt() is None
         assert ext.requires == ()
         assert ext.api_version == ext_module.EXTENSION_API_VERSION
         assert ext.required_env_fields() == []
@@ -862,6 +863,62 @@ class TestAggregatedContributions:
 # ---------------------------------------------------------------------------
 # TestRunSetupHooks
 # ---------------------------------------------------------------------------
+
+
+class TestDefaultPrompts:
+    """`default_prompt()` の検証と集約。"""
+
+    def test_prompts_are_listed_in_load_order(self, make_extension) -> None:
+        """デフォルトプロンプトを持つ拡張だけが、ロード順に並ぶ。"""
+        ext_module.set_extensions([
+            make_extension("b", default_prompt={"ja": "B", "en": "B-en"}),
+            make_extension("none"),
+            make_extension("a", default_prompt={"ja": "A"}),
+        ])
+
+        assert ext_module.get_default_prompts() == [
+            ("b", {"ja": "B", "en": "B-en"}),
+            ("a", {"ja": "A"}),
+        ]
+
+    def test_returned_list_is_a_copy(self, make_extension) -> None:
+        """戻り値を書き換えても登録内容は変わらない。"""
+        ext_module.set_extensions([make_extension("a", default_prompt={"ja": "A"})])
+
+        ext_module.get_default_prompts()[0][1]["ja"] = "changed"
+
+        assert ext_module.get_default_prompts() == [("a", {"ja": "A"})]
+
+    @pytest.mark.parametrize(
+        "prompts",
+        [
+            "ja only string",
+            ["ja"],
+            {},
+            {"ja": 1},
+            {"ja": "ok", "en": None},
+            {"ja": "ok", 1: "number key"},
+        ],
+    )
+    def test_invalid_shape_fails_fast(self, make_extension, prompts) -> None:
+        """dict でない・空・文字列以外を含む形はロード時に落とす。"""
+        with pytest.raises(ValueError, match="default_prompt"):
+            ext_module.set_extensions([make_extension("bad", default_prompt=prompts)])
+
+    def test_language_other_than_ja_is_not_required(self, make_extension) -> None:
+        """`ja` を持たない（英語だけの）拡張もロードできる。"""
+        ext_module.set_extensions([make_extension("en-only", default_prompt={"en": "x"})])
+
+        assert ext_module.get_default_prompts() == [("en-only", {"en": "x"})]
+
+    def test_invalid_shape_leaves_registry_untouched(self, make_extension) -> None:
+        """検証に失敗したら、以前の登録内容がそのまま残る。"""
+        ext_module.set_extensions([make_extension("a", default_prompt={"ja": "A"})])
+
+        with pytest.raises(ValueError):
+            ext_module.set_extensions([make_extension("bad", default_prompt={})])
+
+        assert ext_module.get_default_prompts() == [("a", {"ja": "A"})]
 
 
 class TestRunSetupHooks:
