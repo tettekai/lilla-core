@@ -45,11 +45,17 @@ def _resolve_client_prompt(client_type: str) -> str:
     return ""
 
 
+#: `ui.locale` に一致する言語が無いときに順に試す言語。
+_DEFAULT_PROMPT_FALLBACK_LOCALES = ("ja", "en")
+
+
 def _select_default_prompt(prompts: dict[str, str], locale: str) -> str:
-    """拡張のデフォルトプロンプトから `locale` に合う本文を選ぶ（無ければ `ja`）。
+    """拡張のデフォルトプロンプトから `locale` に合う本文を選ぶ。
+
+    `locale` → `ja` → `en` → 定義の先頭の言語、の順に最初に見つかったものを使う。
 
     Args:
-        prompts: 言語 -> 本文（`ja` を必ず含むことはロード時に検証済み）。
+        prompts: 言語 -> 本文（空でないことはロード時に検証済み）。
         locale: `ui.locale` の値。
 
     Returns:
@@ -57,7 +63,10 @@ def _select_default_prompt(prompts: dict[str, str], locale: str) -> str:
     """
     if isinstance(locale, str) and locale in prompts:
         return prompts[locale]
-    return prompts["ja"]
+    for fallback in _DEFAULT_PROMPT_FALLBACK_LOCALES:
+        if fallback in prompts:
+            return prompts[fallback]
+    return next(iter(prompts.values()))
 
 
 def _floor_to_hour(dt: datetime, tz: tzinfo) -> datetime:
@@ -227,7 +236,7 @@ class MemoryManager:
         1. `extension_overrides` のドキュメントに `prompt` キーがあり、値が文字列なら
            それを使う（空文字は「この拡張のプロンプトを注入しない」という上書き）
         2. 無ければ `ui.locale` に一致する言語のデフォルトを使う
-        3. それも無ければ `ja` のデフォルトを使う
+        3. それも無ければ `ja` → `en` → 定義の先頭の言語の順にデフォルトを使う
 
         `prompt` が文字列でない場合と、上書きの読み込み自体が失敗した場合は WARNING
         ログを出してデフォルトへフォールバックする（応答は止めない）。会話プロンプトと

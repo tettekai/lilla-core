@@ -894,23 +894,29 @@ class TestDefaultPrompts:
         [
             "ja only string",
             ["ja"],
-            {"en": "English only"},
+            {},
             {"ja": 1},
             {"ja": "ok", "en": None},
             {"ja": "ok", 1: "number key"},
         ],
     )
     def test_invalid_shape_fails_fast(self, make_extension, prompts) -> None:
-        """dict でない・`ja` が無い・文字列以外を含む形はロード時に落とす。"""
+        """dict でない・空・文字列以外を含む形はロード時に落とす。"""
         with pytest.raises(ValueError, match="default_prompt"):
             ext_module.set_extensions([make_extension("bad", default_prompt=prompts)])
+
+    def test_language_other_than_ja_is_not_required(self, make_extension) -> None:
+        """`ja` を持たない（英語だけの）拡張もロードできる。"""
+        ext_module.set_extensions([make_extension("en-only", default_prompt={"en": "x"})])
+
+        assert ext_module.get_default_prompts() == [("en-only", {"en": "x"})]
 
     def test_invalid_shape_leaves_registry_untouched(self, make_extension) -> None:
         """検証に失敗したら、以前の登録内容がそのまま残る。"""
         ext_module.set_extensions([make_extension("a", default_prompt={"ja": "A"})])
 
         with pytest.raises(ValueError):
-            ext_module.set_extensions([make_extension("bad", default_prompt={"en": "x"})])
+            ext_module.set_extensions([make_extension("bad", default_prompt={})])
 
         assert ext_module.get_default_prompts() == [("a", {"ja": "A"})]
 

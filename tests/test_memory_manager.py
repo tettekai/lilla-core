@@ -771,6 +771,30 @@ class TestExtensionPrompts:
         assert "日記の指示" in result
         assert "Diary rules" not in result
 
+    async def test_falls_back_to_en_when_ja_is_missing(
+        self, manager, mock_cfg, make_extension, use_extensions,
+    ) -> None:
+        """`ui.locale` にも `ja` にも合わなければ `en` を使う。"""
+        mock_cfg.ui.locale = "ja"
+        use_extensions(make_extension(
+            "diary", default_prompt={"fr": "Règles", "en": "Diary rules"},
+        ))
+        result = await manager.build_system_prompt(client_type="web")
+        assert "Diary rules" in result
+        assert "Règles" not in result
+
+    async def test_falls_back_to_first_language(
+        self, manager, mock_cfg, make_extension, use_extensions,
+    ) -> None:
+        """`ja` も `en` も無ければ、定義の先頭の言語を使う。"""
+        mock_cfg.ui.locale = "ja"
+        use_extensions(make_extension(
+            "diary", default_prompt={"fr": "Règles", "de": "Regeln"},
+        ))
+        result = await manager.build_system_prompt(client_type="web")
+        assert "Règles" in result
+        assert "Regeln" not in result
+
     async def test_override_replaces_default(
         self, manager, diary, use_extensions, mock_extension_override_repo,
     ) -> None:

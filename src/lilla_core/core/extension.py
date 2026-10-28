@@ -580,14 +580,15 @@ class Extension:
     def default_prompt(self) -> dict[str, str] | None:
         """この拡張のデフォルトのプロンプトを言語ごとに返す（持たないなら `None`）。
 
-        戻り値は `{"ja": "...", "en": "..."}` の形で、`ja` は必須。1 拡張が持てる
-        プロンプトは 1 つだけ。コアはシステムプロンプトの組み立てのたびに、
-        MongoDB の `extension_overrides` にこの拡張（`name`）の `prompt` の上書きが
-        あればそれを、無ければ `ui.locale` に一致する言語（無ければ `ja`）の本文を
+        戻り値は `{"ja": "...", "en": "..."}` の形で、特定の言語は必須にしない
+        （英語だけの拡張も書ける）。1 拡張が持てるプロンプトは 1 つだけ。コアは
+        システムプロンプトの組み立てのたびに、MongoDB の `extension_overrides` に
+        この拡張（`name`）の `prompt` の上書きがあればそれを、無ければ
+        `ui.locale` → `ja` → `en` → 定義の先頭の順に最初に見つかった言語の本文を
         選び、ロード順に連結して注入する（`client_type` が `"task"` のときは注入しない）。
         `client_prompt_providers()` と違い、`client_type` によらず全会話に入る。
 
-        形（`dict` であること・`ja` があること・キーと値が文字列であること）は
+        形（空でない `dict` であること・キーと値が文字列であること）は
         ロード時に検証し、違反は fail-fast する。
         """
         return None
@@ -796,7 +797,7 @@ def _collect_default_prompts(
         `(name, prompts)` のリスト。`default_prompt()` が `None` の拡張は含めない。
 
     Raises:
-        ValueError: 戻り値が `dict` でない場合、`ja` が無い場合、またはキー・値に
+        ValueError: 戻り値が `dict` でない場合、空の場合、またはキー・値に
             文字列以外が含まれる場合。
     """
     collected: list[tuple[str, dict[str, str]]] = []
@@ -809,9 +810,10 @@ def _collect_default_prompts(
                 f"Extension '{ext.name}' default_prompt() must return a dict of "
                 f"language -> prompt or None, got {type(prompts).__name__}"
             )
-        if "ja" not in prompts:
+        if not prompts:
             raise ValueError(
-                f"Extension '{ext.name}' default_prompt() must include a 'ja' prompt"
+                f"Extension '{ext.name}' default_prompt() must include at least one "
+                "language (return None to provide no prompt)"
             )
         for lang, text in prompts.items():
             if not isinstance(lang, str) or not isinstance(text, str):
@@ -1134,7 +1136,7 @@ def set_extensions(extensions: list[Extension]) -> None:
             自分より後ろに並んでいる場合、または誰も提供していない名前を
             `required_env_fields()` / `required_tool_context_keys()` が要求している場合、
             `locale_dirs()` のカタログが名前空間の規約に違反している場合、
-            `default_prompt()` の形が不正（`dict` でない・`ja` が無い・文字列以外を
+            `default_prompt()` の形が不正（`dict` でない・空・文字列以外を
             含む）な場合、またはダッシュボードの申告（`name` の形・予約名・ルートのパス接頭辞・
             ページを出すのに静的ディレクトリが無い）が規約に違反している場合、
             または共有 HTTP サーバーのルート申告がコアや他の拡張と重なる場合。
