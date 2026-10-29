@@ -37,7 +37,7 @@ extension = MyExtension()
 | `conversation_start_hooks` | 会話処理開始前に await される非同期フック。形は `{client_type: [フック, ...]}` でプロンプトと同じく加算式。各フックは `ConversationContext`（`client_type` / `client_state` / `discord_channel_id` / `llm_name`）1 つを受け取る |
 | `tool_context_providers` | ツール実行 context への値の注入 |
 | `tool_roots` | ツールの `.py` を探す追加ディレクトリ |
-| `tool_config_roots` | 拡張が同梱する既定のツール YAML（`llm_*.yaml` / `task_*.yaml`）のディレクトリ。`${CONFIG_ROOT}/tools` に同じ stem の YAML があればそちらが丸ごと勝つ。同梱ツールを止めるにはそこに `enabled: false` の YAML を置く（[ツール契約](tools.md)） |
+| `tool_config_roots` | 拡張が同梱する既定のツール YAML（`llm_*.yaml` / `task_*.yaml`）のディレクトリ。`${CONFIG_ROOT}/tools` に同じ stem の YAML があればそちらが丸ごと勝つ。同梱ツールを止めるにはそこに `enabled: false` の YAML を置く（[ツール契約](tools.md)）。同梱したタスクのスケジュールと定期実行の有効・無効は MongoDB の `extension_overrides` の `tasks` で拡張ごとに上書きできる（[拡張のタスクの上書き](extension-task-override.md)） |
 | `locale_dirs` | 拡張が同梱する UI 文言カタログ（`{locale}.yaml`）のディレクトリ。カタログのトップレベルキーはその拡張の `name` ただ 1 つでなければならない（[下記](#ロケールカタログ)） |
 | `command_packages` | `@register_command` を探す追加パッケージ（[コマンドの実装と、Discord 以外からの実行](commands.md)） |
 | `dashboard_page` | 観測用ダッシュボードへ足すタブ 1 つ（`DashboardPage(label, group)`）。`group` は `main`（常用ナビ）か `admin`（管理メニュー）。経路は申告せず `name` から導出する（[ダッシュボードへの差し込み](extension-dashboard.md)） |
@@ -164,5 +164,6 @@ class MyExtension(Extension):
 
 - [設定の合成](extension-config.md)
 - [拡張のデフォルトプロンプトと上書き](extension-prompt.md)
+- [拡張のタスクの上書き](extension-task-override.md)
 - [ダッシュボードへの差し込み](extension-dashboard.md)
 - [拡張のテストの書き方](extension-testing.md)

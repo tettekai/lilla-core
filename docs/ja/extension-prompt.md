@@ -52,8 +52,9 @@ extension = DiaryExtension()
 - `extension` には拡張の `name` を書きます（ユニークインデックスがあり、起動時に作られます）。
 - `prompt` は言語の区別を持たない文字列 1 つで、デフォルトの全文を置き換えます。
 - `prompt` に空文字を書くと、「その拡張のプロンプトを注入しない」という上書きになります。
-- ドキュメントがあっても `prompt` キーが無ければ、デフォルトを使います（今後 `tasks` /
-  `settings` などのキーを同じドキュメントに足す予定で、存在するキーだけが上書きになります）。
+- ドキュメントがあっても `prompt` キーが無ければ、デフォルトを使います（同じドキュメントの
+  `tasks` キーでタスクのスケジュールも上書きできます。[拡張のタスクの上書き](extension-task-override.md)。
+  今後 `settings` などのキーも足す予定で、存在するキーだけが上書きになります）。
 - `prompt` が文字列でない（数値・配列・オブジェクト・`null` など）場合は、拡張名を含む
   WARNING ログを出してデフォルトを使います。
 - 書き込みの API と、ダッシュボードの編集画面はまだありません。`mongosh` などで直接入れます。
@@ -111,4 +112,5 @@ db.extension_overrides.updateOne(
 ## 関連ページ
 
 - [拡張の基本](extensions.md)
+- [拡張のタスクの上書き](extension-task-override.md)
 - [プロバイダーごとのシステムプロンプト追記（`llm.providers.<キー>.prompt`）](llm-provider-prompt.md)

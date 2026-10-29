@@ -399,7 +399,7 @@ def discord_bot(
     # `from lilla_core.handlers import task_handler` はパッケージ属性経由のため、
     # 先行テストで実モジュールが読み込まれていると patch.dict が効かない。
     discord_bot_mod.task_handler = MagicMock()
-    discord_bot_mod.task_handler.start_scheduler = MagicMock()
+    discord_bot_mod.task_handler.start_scheduler = AsyncMock()
     yield discord_bot_mod
     _unload_module("lilla_core.bot")
     _unload_module("lilla_core.bot_client")
@@ -1566,7 +1566,7 @@ class TestOnReady:
         await discord_bot.on_ready()
         for repo in startup_repo_instances:
             repo.init_collection.assert_called_once()
-        discord_bot.task_handler.start_scheduler.assert_called_once_with(
+        discord_bot.task_handler.start_scheduler.assert_awaited_once_with(
             discord_bot.tools, discord_bot.bot, discord_bot.llm_tools
         )
 

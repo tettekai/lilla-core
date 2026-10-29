@@ -118,7 +118,7 @@ async def on_ready():
                 "Failed to initialize repository: %s: %s",
                 repo.__class__.__name__, e, exc_info=True,
             )
-    task_handler.start_scheduler(tools, bot, llm_tools)
+    await task_handler.start_scheduler(tools, bot, llm_tools)
 
 
 @bot.event

@@ -107,21 +107,21 @@ def resolve_tool_dirs(
     )
 
 
-def resolve_tool_config_files(prefix: str, config_root: Path | None = None) -> list[Path]:
-    """ロード対象のツール YAML を、上書き規則を適用したうえで stem 順に返す。
+def _collect_tool_config_files(
+    prefix: str, config_root: Path | None
+) -> tuple[dict[str, Path], dict[str, str]]:
+    """ロード対象のツール YAML と、拡張が同梱した stem の持ち主を集める。
 
-    集める順序は「拡張の `tool_config_roots()`（ロード順）→ `${CONFIG_ROOT}/tools`」。
-    同じ stem の YAML が複数あるときは、`${CONFIG_ROOT}/tools` にあるものが拡張の
-    同梱分を丸ごと置き換える（内容のマージはしない）。拡張どうしで同じ stem を
-    同梱している場合はどちらを使うかが暗黙になるため fail-fast する。存在しない
-    ディレクトリは読み飛ばす。
+    `resolve_tool_config_files()` と `resolve_tool_config_owners()` が共有する本体。
+    持ち主（stem -> 拡張名）は、`${CONFIG_ROOT}/tools` の同名 YAML で置き換えられた
+    stem も同梱した拡張のものとして残す。
 
     Args:
         prefix: 集める YAML のファイル名プレフィックス（`"llm_"` または `"task_"`）。
         config_root: 設定ルート。`None` なら設定から取る。
 
     Returns:
-        YAML ファイルパスのリスト（stem の昇順）。
+        `(stem -> YAML パス, stem -> 同梱した拡張名)` の組。
 
     Raises:
         ValueError: 複数の拡張が同じ stem の YAML を同梱している場合。
@@ -154,7 +154,52 @@ def resolve_tool_config_files(prefix: str, config_root: Path | None = None) -> l
                 )
             selected[path.stem] = path
 
+    return selected, owners
+
+
+def resolve_tool_config_files(prefix: str, config_root: Path | None = None) -> list[Path]:
+    """ロード対象のツール YAML を、上書き規則を適用したうえで stem 順に返す。
+
+    集める順序は「拡張の `tool_config_roots()`（ロード順）→ `${CONFIG_ROOT}/tools`」。
+    同じ stem の YAML が複数あるときは、`${CONFIG_ROOT}/tools` にあるものが拡張の
+    同梱分を丸ごと置き換える（内容のマージはしない）。拡張どうしで同じ stem を
+    同梱している場合はどちらを使うかが暗黙になるため fail-fast する。存在しない
+    ディレクトリは読み飛ばす。
+
+    Args:
+        prefix: 集める YAML のファイル名プレフィックス（`"llm_"` または `"task_"`）。
+        config_root: 設定ルート。`None` なら設定から取る。
+
+    Returns:
+        YAML ファイルパスのリスト（stem の昇順）。
+
+    Raises:
+        ValueError: 複数の拡張が同じ stem の YAML を同梱している場合。
+    """
+    selected, _ = _collect_tool_config_files(prefix, config_root)
     return [selected[stem] for stem in sorted(selected)]
+
+
+def resolve_tool_config_owners(prefix: str, config_root: Path | None = None) -> dict[str, str]:
+    """拡張が `tool_config_roots()` で同梱したツール YAML の stem と、その拡張名を返す。
+
+    `${CONFIG_ROOT}/tools` に同じ stem の YAML を置いて同梱分を置き換えていても、
+    その stem は同梱した拡張のものとして含める。拡張が同梱していない stem
+    （利用者だけが置いた YAML・コア組み込みツール）は含めない。拡張のタスクの
+    上書き（`extension_overrides` の `tasks`）で、どの拡張のタスクかを引くのに使う。
+
+    Args:
+        prefix: 対象の YAML のファイル名プレフィックス（`"llm_"` または `"task_"`）。
+        config_root: 設定ルート。`None` なら設定から取る。
+
+    Returns:
+        stem から拡張名への dict。
+
+    Raises:
+        ValueError: 複数の拡張が同じ stem の YAML を同梱している場合。
+    """
+    _, owners = _collect_tool_config_files(prefix, config_root)
+    return owners
 
 
 def is_tool_enabled(config: dict) -> bool:

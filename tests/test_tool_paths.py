@@ -282,6 +282,36 @@ class TestResolveToolConfigFiles:
         assert tool_paths.resolve_tool_config_files("task_", tmp_path) == [pack / "task_y.yaml"]
 
 
+class TestResolveToolConfigOwners:
+    @staticmethod
+    def _touch(directory: Path, *names: str) -> None:
+        """`directory` に空のファイルを作る。"""
+        directory.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            (directory / name).write_text("type: x\n")
+
+    def test_returns_bundled_stems_with_extension_name(
+        self, tmp_path: Path, make_extension, use_extensions
+    ) -> None:
+        """同梱した stem は、利用者の YAML で置き換えられていてもその拡張のものとして返す。"""
+        pack = tmp_path / "pack"
+        self._touch(pack, "task_a.yaml", "task_b.yaml", "llm_c.yaml")
+        self._touch(tmp_path / "tools", "task_b.yaml", "task_user.yaml")
+        use_extensions(make_extension("pack", tool_config_roots=[pack]))
+
+        assert tool_paths.resolve_tool_config_owners("task_", tmp_path) == {
+            "task_a": "pack",
+            "task_b": "pack",
+        }
+
+    def test_empty_without_extensions(self, tmp_path: Path, use_extensions) -> None:
+        """拡張が同梱していなければ空。"""
+        use_extensions()
+        self._touch(tmp_path / "tools", "task_user.yaml")
+
+        assert tool_paths.resolve_tool_config_owners("task_", tmp_path) == {}
+
+
 class TestIsToolEnabled:
     @pytest.mark.parametrize("config", [{}, {"enabled": True}, {"enabled": "no"}, {"enabled": 0}])
     def test_enabled_unless_explicit_false(self, config: dict) -> None:

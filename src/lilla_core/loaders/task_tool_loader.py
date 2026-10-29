@@ -11,6 +11,7 @@ from lilla_core.loaders.tool_paths import (
     is_import_path,
     is_tool_enabled,
     resolve_tool_config_files,
+    resolve_tool_config_owners,
     resolve_tool_roots,
 )
 
@@ -64,7 +65,9 @@ def _resolve_tool_class(
     return class_map.get(tool_type)
 
 
-def _build_tool_entry(instance, name: str, config: dict) -> dict:
+def _build_tool_entry(
+    instance, name: str, config: dict, extension: str | None = None
+) -> dict:
     """インスタンスからツールメタデータ dict を生成する（純粋関数）。
 
     トリガー種別は YAML のファイル名 stem（＝ツール名）から判定する。`type` から
@@ -75,6 +78,8 @@ def _build_tool_entry(instance, name: str, config: dict) -> dict:
         instance: 生成済みのツールインスタンス。
         name: YAML のファイル名 stem（ツール名）。
         config: ツールの YAML 設定（現状は未使用）。
+        extension: このツールの YAML を `tool_config_roots()` で同梱した拡張の名前。
+            拡張のものでなければ `None`（タスクの上書きの対象を決めるのに使う）。
 
     Returns:
         ツールメタデータ dict。
@@ -85,6 +90,7 @@ def _build_tool_entry(instance, name: str, config: dict) -> dict:
         "category": getattr(instance, "category", "unknown"),
         "trigger": _get_trigger_from_filename(name),
         "scheduled": bool(getattr(instance, "schedule", None)),
+        "extension": extension,
     }
 
 
@@ -96,6 +102,7 @@ def load_all_tools(
     """全ツールを読み込み、ツール名をキーとする dict を返す。
 
     `tool_roots` の既定は `paths.tool_root` に拡張の `tool_roots()` を足したもの。
+    各エントリの `extension` には、その YAML を同梱した拡張の名前（無ければ `None`）を入れる。
     """
     if tool_roots is None:
         tool_roots = resolve_tool_roots()
@@ -104,6 +111,7 @@ def load_all_tools(
     if class_map is None:
         class_map = tool_class_map
 
+    owners = resolve_tool_config_owners("task_", config_root)
     tools = {}
     for config_path, config in _load_tool_configs(config_root):
         tool_type = config.get("type")
@@ -118,7 +126,7 @@ def load_all_tools(
         config["_yaml_path"] = config_path
         name = Path(config_path).stem
         instance = cls(config, name)
-        tools[name] = _build_tool_entry(instance, name, config)
+        tools[name] = _build_tool_entry(instance, name, config, owners.get(name))
         logger.info("Tool loaded: %s (%s)", name, tool_type)
 
     return tools
