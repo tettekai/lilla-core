@@ -554,3 +554,143 @@ class TestLlmExpertLimitCatalog:
         catalog = yaml.safe_load(path.read_text(encoding="utf-8"))
 
         assert catalog["tool"]["llm_expert"]["tool_call_limit"]
+
+
+# ---------------------------------------------------------------------------
+# TestRunPreToolCalls
+# ---------------------------------------------------------------------------
+
+
+def _schema(name: str, required: list[str] | None = None) -> dict:
+    parameters: dict = {"type": "object", "properties": {}}
+    if required is not None:
+        parameters["required"] = required
+    return {"type": "function", "function": {"name": name, "parameters": parameters}}
+
+
+async def _run_pre(tool_loop, pre_tool_calls, messages=None, tools=None, context=None):
+    messages = messages if messages is not None else []
+    result = await tool_loop.run_pre_tool_calls(
+        messages,
+        pre_tool_calls,
+        tools=tools if tools is not None else [_schema("climate"), _schema("light", ["on"])],
+        llm_tools={"climate": {}, "light": {}, "hidden": {}},
+        context=context if context is not None else {"client_type": "discord"},
+    )
+    return messages, result
+
+
+class TestRunPreToolCalls:
+    """`run_pre_tool_calls` が呼び出し元の決めたツールを実行して `messages` へ積むこと。"""
+
+    async def test_executes_in_order_and_appends_call_and_result(
+        self, tool_loop, mock_loader: MagicMock
+    ) -> None:
+        """書かれた順に実行し、assistant の tool_calls と tool の結果を 1 組ずつ積む。"""
+        mock_loader.execute_tool_call.side_effect = [_ok_result("C"), _ok_result("L")]
+        context = {"client_type": "discord"}
+        messages, result = await _run_pre(
+            tool_loop,
+            [{"tool": "climate"}, {"tool": "light", "args": {"on": True}}],
+            messages=[{"role": "user", "content": "hi"}],
+            context=context,
+        )
+
+        calls = mock_loader.execute_tool_call.await_args_list
+        assert [c.args[0] for c in calls] == ["climate", "light"]
+        assert calls[0].args[1] == {}
+        assert calls[1].args[1] == {"on": True}
+        assert calls[0].args[3] is context
+        assert result.needs_auth_list == []
+        assert result.called_tool_names == ["climate", "light"]
+        assert messages == [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant", "content": None,
+                "tool_calls": [{
+                    "id": "pre_tool_call_0", "type": "function",
+                    "function": {"name": "climate", "arguments": "{}"},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "pre_tool_call_0", "content": "C"},
+            {
+                "role": "assistant", "content": None,
+                "tool_calls": [{
+                    "id": "pre_tool_call_1", "type": "function",
+                    "function": {"name": "light", "arguments": '{"on": true}'},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "pre_tool_call_1", "content": "L"},
+        ]
+
+    @pytest.mark.parametrize(
+        ("item", "expected_name", "expected_error"),
+        [
+            ({"tool": "missing"}, "missing", "この会話で使えません"),
+            ({"tool": "hidden"}, "hidden", "この会話で使えません"),
+            ({"tool": "climate", "args": "x"}, "climate", "dict ではありません"),
+            ({"tool": "light", "args": {}}, "light", "必須の引数がありません: on"),
+            ("climate", "invalid_pre_tool_call", "要素が dict ではありません"),
+            ({"tool": 1}, "invalid_pre_tool_call", "'tool' が文字列ではありません"),
+            ({}, "invalid_pre_tool_call", "'tool' が文字列ではありません"),
+        ],
+    )
+    async def test_invalid_item_becomes_error_result_and_continues(
+        self, tool_loop, mock_loader: MagicMock, item, expected_name: str, expected_error: str
+    ) -> None:
+        """使えないツール・不正な引数・不正な要素は実行せずエラーの結果を積み、後続も実行する。"""
+        messages, result = await _run_pre(tool_loop, [item, {"tool": "climate"}])
+
+        mock_loader.execute_tool_call.assert_awaited_once()
+        assert mock_loader.execute_tool_call.await_args.args[0] == "climate"
+        assert len(messages) == 4
+        assert messages[0]["tool_calls"][0]["function"]["name"] == expected_name
+        assert messages[1]["role"] == "tool"
+        assert expected_error in messages[1]["content"]
+        assert messages[3]["content"] == "RESULT"
+        # 実行しなかった要素は実行済みツール名に含めない
+        assert result.called_tool_names == ["climate"]
+
+    async def test_tool_failure_is_passed_as_result(
+        self, tool_loop, mock_loader: MagicMock
+    ) -> None:
+        """実行中の例外（execute_tool_call の失敗結果）はそのまま tool の結果として積む。"""
+        mock_loader.execute_tool_call.return_value = {
+            "success": False, "tool_name": "climate", "data": None,
+            "error": "ツール実行中にエラーが発生しました: boom",
+        }
+        messages, _ = await _run_pre(tool_loop, [{"tool": "climate"}])
+
+        assert messages[1]["content"] == "ツール実行中にエラーが発生しました: boom"
+
+    async def test_collects_needs_auth(self, tool_loop, mock_loader: MagicMock) -> None:
+        """再認証が必要な結果の `needs_auth_list` を返す。"""
+        mock_loader.execute_tool_call.return_value = _auth_result("svc")
+        _, result = await _run_pre(tool_loop, [{"tool": "climate"}])
+
+        assert result.needs_auth_list == [{"auth_service": "svc", "auth_url": "https://auth/svc"}]
+
+
+class TestInitialCalledToolNames:
+    """`run_tool_loop` の `initial_called_tool_names` が実行済みツール名の先頭に入ること。"""
+
+    async def test_passed_to_select_provider_from_first_call(
+        self, tool_loop, mock_llm_client: MagicMock
+    ) -> None:
+        """最初の LLM 呼び出しから `select_provider` に渡り、結果の先頭にも入る。"""
+        mock_llm_client.chat_to_llm_with_tools.side_effect = [
+            _tool_response(("t", "{}")),
+            _final_response(),
+        ]
+        seen: list = []
+
+        async def _select(called, previous):
+            seen.append(called)
+            return "p"
+
+        result = await _run(
+            tool_loop, select_provider=_select, initial_called_tool_names=["pre"]
+        )
+
+        assert seen == [("pre",), ("pre", "t")]
+        assert result.called_tool_names == ["pre", "t"]
