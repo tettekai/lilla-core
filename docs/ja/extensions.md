@@ -99,6 +99,38 @@ lilla-habits:
 フックには `ConversationContext.client_state` として、LLM ツールには context の
 `client_state` キーとしてそのまま渡します。
 
+## ツールの事前実行（`pre_tool_calls`）
+
+`run_conversation()` を自分で呼ぶクライアント拡張は、LLM に応答させる前に決まったツールを
+実行させたいとき、`pre_tool_calls` に実行するツールと引数を並べて渡せます。LLM にツールを
+呼ぶかどうかを判断させず、呼び出し側が実行するツールを明示したい場面（タイマーの区間が
+切り替わったら照明をつける、など）向けです。
+
+```python
+reply = await run_conversation(
+    llm_tools,
+    client_type="my-client",
+    pre_tool_calls=[
+        {"tool": "llm_workroom_climate", "args": {}},  # args は省略可
+    ],
+)
+```
+
+- 書かれた順に 1 件ずつ実行し、LLM が自分でツールを呼んだときと同じ形（assistant の
+  ツール呼び出しとツールの結果）で、最新の user メッセージのあとに積んでから通常の
+  ツールループに入ります。呼び出し ID は `pre_tool_call_0` から順に振ります
+- 実行できるのは、その会話で LLM に渡すツール（`allowed_tool_names` と
+  `supported_client_type` で絞り込んだ後）だけです。専用の許可リストはありません
+- 存在しない・その会話で使えないツール、`args` が dict でない・必須の引数が無い、
+  要素の形が不正、実行中の例外は、例外にせずそのツールの結果としてエラー内容を
+  LLM に渡し、後続の事前実行も続けます
+- `tool_call_notifier` を渡していれば、通常のツール呼び出しと同じく実行前に
+  通知します（depth は 0）
+- ツールループの往復回数の上限には数えません
+- 呼び出しと結果は LLM に渡す `messages` にだけ積み、会話履歴（MongoDB）には保存しません
+- ツールなしの会話（`allowed_tool_names=[]`・`!disable_tools` 中など）では実行せず、
+  WARNING ログを出して無視します
+
 ## 拡張どうしの依存
 
 依存する拡張は、クラス属性 `requires` に名前を並べて宣言します。コアはロード時に、

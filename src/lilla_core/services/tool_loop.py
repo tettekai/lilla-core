@@ -12,6 +12,10 @@ LLM を呼ぶ → `tool_calls` を実行して結果を `tool` メッセージ�
 
 往復回数が上限に達したときの「打ち切り時のまとめ」（`llm.on_tool_call_limit: summarize`）
 だけはここで行う。会話と専門家ツールのどちらで上限に達しても同じ挙動にするため。
+
+呼び出し元が決めたツールをループの前に実行して、その呼び出しと結果を `messages` へ積む
+事前実行（`run_pre_tool_calls`）もここに置く。LLM が自分でツールを呼んだときと同じ形で
+積むため。
 """
 from __future__ import annotations
 
@@ -29,6 +33,12 @@ from lilla_core.loaders.llm_tool_loader import execute_tool_call
 from lilla_core.utils.datetime_utils import ensure_utc
 
 logger = logging.getLogger(__name__)
+
+# 事前実行の呼び出し ID の接頭辞。LLM が返す ID と区別できるよう、こちらで採番する。
+PRE_TOOL_CALL_ID_PREFIX = "pre_tool_call_"
+# 事前実行の要素からツール名を読み取れなかったときに、積む呼び出しへ使う関数名。
+# 空の関数名を送ると API に弾かれうるため、空にはしない。
+INVALID_PRE_TOOL_NAME = "invalid_pre_tool_call"
 
 # 各 LLM 呼び出しの前に呼ばれ、その回に使うプロバイダー名を返すコールバック。
 # 引数はこのループで既に実行したツール名（出現順・重複あり）と、前回選んだプロバイダー名
@@ -161,6 +171,132 @@ def _parse_arguments(tc: dict) -> tuple[Any, dict | None]:
             "data": None,
             "error": error_message,
         }
+
+
+def _pre_tool_call_error(tool_name: str, message: str) -> dict:
+    """事前実行で実行しなかった（できなかった）呼び出しのエラー結果を作る。"""
+    return {
+        "success": False,
+        "tool_name": tool_name,
+        "memory_entry": message,
+        "data": None,
+        "error": message,
+    }
+
+
+def _check_pre_tool_call(item: Any, schemas: dict[str, dict]) -> tuple[str, dict, dict | None]:
+    """事前実行の 1 要素を検査する。
+
+    Returns
+    -------
+    tuple
+        `(ツール名, 引数, None)`。実行できなければ `(ツール名, 引数, エラー結果の dict)`。
+        ツール名・引数が読み取れない要素では、それぞれ `INVALID_PRE_TOOL_NAME`・空の dict を返す。
+    """
+    if not isinstance(item, dict):
+        return INVALID_PRE_TOOL_NAME, {}, _pre_tool_call_error(
+            INVALID_PRE_TOOL_NAME, "事前実行の要素が dict ではありません"
+        )
+    tool_name = item.get("tool")
+    if not isinstance(tool_name, str) or not tool_name:
+        return INVALID_PRE_TOOL_NAME, {}, _pre_tool_call_error(
+            INVALID_PRE_TOOL_NAME, "事前実行の要素の 'tool' が文字列ではありません"
+        )
+    args = item.get("args", {})
+    if args is None:
+        args = {}
+    if not isinstance(args, dict):
+        return tool_name, {}, _pre_tool_call_error(
+            tool_name, f"ツール '{tool_name}' の引数が dict ではありません"
+        )
+    schema = schemas.get(tool_name)
+    if schema is None:
+        return tool_name, args, _pre_tool_call_error(
+            tool_name, f"ツール '{tool_name}' はこの会話で使えません"
+        )
+    required = schema.get("function", {}).get("parameters", {}).get("required") or []
+    missing = [name for name in required if name not in args]
+    if missing:
+        return tool_name, args, _pre_tool_call_error(
+            tool_name,
+            f"ツール '{tool_name}' の必須の引数がありません: {', '.join(missing)}",
+        )
+    return tool_name, args, None
+
+
+async def run_pre_tool_calls(
+    messages: list[dict],
+    pre_tool_calls: list,
+    *,
+    tools: list,
+    llm_tools: dict,
+    context: dict,
+) -> list[dict]:
+    """呼び出し元が決めたツールを順に実行し、呼び出しと結果を `messages` の末尾へ積む。
+
+    LLM が自分でツールを呼んだときと同じ形（assistant の `tool_calls` と `tool` の結果）で、
+    1 件ごとに 1 組ずつ積む。呼び出し ID は `PRE_TOOL_CALL_ID_PREFIX` + 連番で採番する。
+    実行してよいのは `tools`（LLM に渡す tools パラメータ）に関数名があるものだけ。
+    要素の形が不正・使えないツール・引数が dict でない・必須の引数が無い・実行中の例外は
+    例外にせず、そのツールの結果としてエラー内容を積んで後続も続ける。実行は
+    `execute_tool_call` を通すため、通知（depth 0）・キャッシュも通常の呼び出しと同じ。
+    往復回数の上限には数えない（呼び出し元はこのあと `run_tool_loop` を回す）。
+
+    Parameters
+    ----------
+    messages : list[dict]
+        LLM へ送るメッセージ列。その場で追記される。
+    pre_tool_calls : list
+        `{"tool": str, "args": dict}` の並び（`args` は省略可）。
+    tools : list
+        LLM に渡す tools パラメータ（`build_tools_param` の戻り値）。
+    llm_tools : dict
+        ツールレジストリ（`load_llm_tools()` の戻り値）。
+    context : dict
+        `execute_tool_call` に渡すツール実行 context。
+
+    Returns
+    -------
+    list[dict]
+        ツール結果の `needs_auth_list` を出現順に連結したもの。
+    """
+    schemas = {
+        schema["function"]["name"]: schema
+        for schema in tools
+        if isinstance(schema, dict) and schema.get("function", {}).get("name")
+    }
+    needs_auth_list: list[dict] = []
+    for index, item in enumerate(pre_tool_calls):
+        tool_name, args, tool_result = _check_pre_tool_call(item, schemas)
+        if tool_result is None:
+            tool_result = await execute_tool_call(tool_name, args, llm_tools, context)
+            if tool_result.get("needs_auth"):
+                needs_auth_list.extend(tool_result.get("needs_auth_list", []))
+        if tool_result.get("success") is False:
+            logger.warning(
+                "Pre tool call returned a failure result (%s): %s",
+                tool_name,
+                tool_result.get("error"),
+            )
+        call_id = f"{PRE_TOOL_CALL_ID_PREFIX}{index}"
+        messages.append({
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "arguments": json.dumps(args, ensure_ascii=False, default=str),
+                },
+            }],
+        })
+        messages.append({
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": build_tool_message_content(tool_result),
+        })
+    return needs_auth_list
 
 
 def _summary_provider_for(provider: str | None, use_final_reply_provider: bool) -> str | None:

@@ -27,7 +27,11 @@ from lilla_core.services.llm_resolver import content_has_image, resolve_llm_name
 from lilla_core.services.memory_manager import get_memory_manager
 from lilla_core.services.message_util import extract_meta_block, prepend_timestamp_prefix
 from lilla_core.services.session_memory_manager import get_session_memory_manager
-from lilla_core.services.tool_loop import build_tool_message_content, run_tool_loop
+from lilla_core.services.tool_loop import (
+    build_tool_message_content,
+    run_pre_tool_calls,
+    run_tool_loop,
+)
 from lilla_core.ui.messages import t
 from lilla_core.utils.datetime_utils import local_now
 
@@ -148,6 +152,7 @@ async def run_conversation(
     tool_call_notifier: Callable[[str, int], Awaitable[None]] | None = None,
     allowed_tool_names: list[str] | None = None,
     max_tool_call_iterations: int | None = None,
+    pre_tool_calls: list[dict] | None = None,
 ) -> str:
     """会話履歴を読み込み、tool_call ループを回して返答を返す。
 
@@ -213,6 +218,14 @@ async def run_conversation(
         1 回だけ LLM を呼んだまとめ（最後のプロバイダーに `final_reply_provider` があれば
         指定先が書く。書き直し先で上限に達したときは書き直し先が書く）を最終応答として返し、
         `message` またはまとめを得られなければ `conversation.tool_call_limit` の文言を返す。
+    pre_tool_calls : list[dict] | None, optional
+        LLM を呼ぶ前に実行するツールの並び（`{"tool": str, "args": dict}`。`args` は省略可）。
+        書かれた順に実行し、LLM が自分で呼んだときと同じ形（assistant の tool_calls と
+        tool の結果）で履歴の末尾へ積んでからツールループに入る（`tool_loop.run_pre_tool_calls`）。
+        実行できるのはこの回 LLM に渡すツール（`allowed_tool_names` と `supported_client_type`
+        で絞った後）だけで、使えないツール・不正な引数・実行中の例外はエラーの結果として
+        LLM に渡す。往復回数の上限には数えず、会話履歴（MongoDB）にも保存しない。
+        ツールなしの会話では実行せず WARNING ログを出す。None・空リストなら何もしない。
 
     Returns
     -------
@@ -236,6 +249,7 @@ async def run_conversation(
             tool_call_notifier=tool_call_notifier,
             allowed_tool_names=allowed_tool_names,
             max_tool_call_iterations=max_tool_call_iterations,
+            pre_tool_calls=pre_tool_calls,
         )
 
 
@@ -250,6 +264,7 @@ async def _run_conversation(
     tool_call_notifier: Callable[[str, int], Awaitable[None]] | None = None,
     allowed_tool_names: list[str] | None = None,
     max_tool_call_iterations: int | None = None,
+    pre_tool_calls: list[dict] | None = None,
 ) -> str:
     """`run_conversation` の本体（引数の意味は `run_conversation` を参照）。"""
     # クライアント種別ごとの会話開始フック（拡張側のクライアント固有の前処理用）。
@@ -325,6 +340,11 @@ async def _run_conversation(
     }
 
     if not use_tools:
+        if pre_tool_calls:
+            logger.warning(
+                "Ignored %d pre tool call(s) because tools are not used in this conversation",
+                len(pre_tool_calls),
+            )
         resolved_name = await resolve_llm_name(llm_key, **resolve_kwargs)
         reply = await chat_to_llm(history, system_prompt=system_prompt, llm_name=resolved_name)
         return _apply_meta_actions(reply)
@@ -356,6 +376,18 @@ async def _run_conversation(
             **resolve_kwargs,
         )
 
+    # 呼び出し元が決めたツールを先に実行し、LLM が自分で呼んだあとと同じ状態にしてから
+    # ループに入る。`messages` にだけ積み、会話履歴には保存しない。往復回数にも数えない
+    pre_needs_auth_list: list[dict] = []
+    if pre_tool_calls:
+        pre_needs_auth_list = await run_pre_tool_calls(
+            messages,
+            pre_tool_calls,
+            tools=tools_param,
+            llm_tools=llm_tools,
+            context=context,
+        )
+
     loop_result = await run_tool_loop(
         messages,
         system_prompt=system_prompt,
@@ -365,7 +397,7 @@ async def _run_conversation(
         max_iterations=max_iterations,
         select_provider=_select_provider,
     )
-    needs_auth_list = list(loop_result.needs_auth_list)
+    needs_auth_list = pre_needs_auth_list + list(loop_result.needs_auth_list)
 
     # 最終応答を返したプロバイダーに `final_reply_provider` があれば、その本文は捨てて
     # （`messages` には足されていない）以降を指定先に任せる。指定先には同じツールを渡すため、
