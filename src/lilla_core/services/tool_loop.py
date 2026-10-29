@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -131,6 +131,7 @@ class ToolLoopResult:
         ツール結果の `needs_auth_list` を出現順に連結したもの。
     called_tool_names : list[str]
         実行したツール名（出現順・重複あり。引数 JSON が壊れていて実行しなかったものは含まない）。
+        `initial_called_tool_names` を渡した場合はその分が先頭に入る。
     iterations : int
         ツールを実行した往復の回数。
     """
@@ -142,6 +143,23 @@ class ToolLoopResult:
     needs_auth_list: list[dict] = field(default_factory=list)
     called_tool_names: list[str] = field(default_factory=list)
     iterations: int = 0
+
+
+@dataclass
+class PreToolCallsResult:
+    """`run_pre_tool_calls` の結果。
+
+    Attributes
+    ----------
+    called_tool_names : list[str]
+        実行したツール名（出現順・重複あり。エラーで実行しなかったものは含まない）。
+        `run_tool_loop` の `initial_called_tool_names` へそのまま渡せる。
+    needs_auth_list : list[dict]
+        ツール結果の `needs_auth_list` を出現順に連結したもの。
+    """
+
+    called_tool_names: list[str] = field(default_factory=list)
+    needs_auth_list: list[dict] = field(default_factory=list)
 
 
 def _parse_arguments(tc: dict) -> tuple[Any, dict | None]:
@@ -241,6 +259,8 @@ async def run_pre_tool_calls(
     例外にせず、そのツールの結果としてエラー内容を積んで後続も続ける。実行は
     `execute_tool_call` を通すため、通知（depth 0）・キャッシュも通常の呼び出しと同じ。
     往復回数の上限には数えない（呼び出し元はこのあと `run_tool_loop` を回す）。
+    実行したツール名は、続く `run_tool_loop` の `initial_called_tool_names` に渡すと
+    `select_provider` へ渡る実行済みツール名に含まれる。
 
     Parameters
     ----------
@@ -257,21 +277,22 @@ async def run_pre_tool_calls(
 
     Returns
     -------
-    list[dict]
-        ツール結果の `needs_auth_list` を出現順に連結したもの。
+    PreToolCallsResult
+        実行したツール名と、ツール結果の `needs_auth_list` を出現順に連結したもの。
     """
     schemas = {
         schema["function"]["name"]: schema
         for schema in tools
         if isinstance(schema, dict) and schema.get("function", {}).get("name")
     }
-    needs_auth_list: list[dict] = []
+    result = PreToolCallsResult()
     for index, item in enumerate(pre_tool_calls):
         tool_name, args, tool_result = _check_pre_tool_call(item, schemas)
         if tool_result is None:
+            result.called_tool_names.append(tool_name)
             tool_result = await execute_tool_call(tool_name, args, llm_tools, context)
             if tool_result.get("needs_auth"):
-                needs_auth_list.extend(tool_result.get("needs_auth_list", []))
+                result.needs_auth_list.extend(tool_result.get("needs_auth_list", []))
         if tool_result.get("success") is False:
             logger.warning(
                 "Pre tool call returned a failure result (%s): %s",
@@ -296,7 +317,7 @@ async def run_pre_tool_calls(
             "tool_call_id": call_id,
             "content": build_tool_message_content(tool_result),
         })
-    return needs_auth_list
+    return result
 
 
 def _summary_provider_for(provider: str | None, use_final_reply_provider: bool) -> str | None:
@@ -365,6 +386,7 @@ async def run_tool_loop(
     select_provider: ProviderSelector | None = None,
     stop_on_needs_auth: bool = False,
     summarize_with_final_reply_provider: bool = True,
+    initial_called_tool_names: Sequence[str] = (),
 ) -> ToolLoopResult:
     """LLM のツール呼び出しループを最終応答か上限まで回す。
 
@@ -399,6 +421,9 @@ async def run_tool_loop(
     summarize_with_final_reply_provider : bool
         上限に達してまとめを書かせるとき、最後のプロバイダーの `final_reply_provider` を
         見るか。すでに書き直し先で回しているループでは False を渡し、書き直しを重ねない。
+    initial_called_tool_names : Sequence[str]
+        このループより前に実行済みのツール名（`run_pre_tool_calls` の事前実行分など）。
+        結果の `called_tool_names` の先頭に入り、最初の呼び出しから `select_provider` に渡る。
 
     上限に達したときは、`llm.on_tool_call_limit` が `summarize`（既定）なら
     `summarize_on_limit` でツールなしのまとめを 1 回だけ書かせて `content` に入れる。
@@ -409,7 +434,7 @@ async def run_tool_loop(
     ToolLoopResult
         ループの結果。
     """
-    result = ToolLoopResult()
+    result = ToolLoopResult(called_tool_names=list(initial_called_tool_names))
     provider: str | None = None
 
     while result.iterations < max_iterations:

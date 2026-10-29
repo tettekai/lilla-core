@@ -28,6 +28,7 @@ from lilla_core.services.memory_manager import get_memory_manager
 from lilla_core.services.message_util import extract_meta_block, prepend_timestamp_prefix
 from lilla_core.services.session_memory_manager import get_session_memory_manager
 from lilla_core.services.tool_loop import (
+    PreToolCallsResult,
     build_tool_message_content,
     run_pre_tool_calls,
     run_tool_loop,
@@ -225,6 +226,8 @@ async def run_conversation(
         実行できるのはこの回 LLM に渡すツール（`allowed_tool_names` と `supported_client_type`
         で絞った後）だけで、使えないツール・不正な引数・実行中の例外はエラーの結果として
         LLM に渡す。往復回数の上限には数えず、会話履歴（MongoDB）にも保存しない。
+        実行したツール名は、resolver に渡す `called_tool_names` に最初の呼び出しから含める
+        （エラーで実行しなかったものは含めない）。
         ツールなしの会話では実行せず WARNING ログを出す。None・空リストなら何もしない。
 
     Returns
@@ -377,10 +380,11 @@ async def _run_conversation(
         )
 
     # 呼び出し元が決めたツールを先に実行し、LLM が自分で呼んだあとと同じ状態にしてから
-    # ループに入る。`messages` にだけ積み、会話履歴には保存しない。往復回数にも数えない
-    pre_needs_auth_list: list[dict] = []
+    # ループに入る。`messages` にだけ積み、会話履歴には保存しない。往復回数にも数えない。
+    # 実行したツール名は resolver に渡す実行済みツール名に含める
+    pre_result = PreToolCallsResult()
     if pre_tool_calls:
-        pre_needs_auth_list = await run_pre_tool_calls(
+        pre_result = await run_pre_tool_calls(
             messages,
             pre_tool_calls,
             tools=tools_param,
@@ -396,8 +400,9 @@ async def _run_conversation(
         context=context,
         max_iterations=max_iterations,
         select_provider=_select_provider,
+        initial_called_tool_names=pre_result.called_tool_names,
     )
-    needs_auth_list = pre_needs_auth_list + list(loop_result.needs_auth_list)
+    needs_auth_list = pre_result.needs_auth_list + list(loop_result.needs_auth_list)
 
     # 最終応答を返したプロバイダーに `final_reply_provider` があれば、その本文は捨てて
     # （`messages` には足されていない）以降を指定先に任せる。指定先には同じツールを渡すため、

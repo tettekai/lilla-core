@@ -127,6 +127,8 @@ reply = await run_conversation(
 - `tool_call_notifier` を渡していれば、通常のツール呼び出しと同じく実行前に
   通知します（depth は 0）
 - ツールループの往復回数の上限には数えません
+- 実行したツール名は、resolver 型のプロバイダーのスクリプトに渡す `called_tool_names` に
+  最初の LLM 呼び出しから含まれます（エラーで実行しなかったものは含みません）
 - 呼び出しと結果は LLM に渡す `messages` にだけ積み、会話履歴（MongoDB）には保存しません
 - ツールなしの会話（`allowed_tool_names=[]`・`!disable_tools` 中など）では実行せず、
   WARNING ログを出して無視します

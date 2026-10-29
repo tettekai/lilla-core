@@ -2186,3 +2186,17 @@ class TestPreToolCalls:
 
         mock_llm_tool_loader.execute_tool_call.assert_not_awaited()
         assert sent_messages[0] == [{"role": "user", "content": "[May 04 09:10] focus"}]
+
+    async def test_pre_called_tools_are_passed_to_resolver(
+        self, conversation_service, tools, sent_messages, history,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """実行した事前実行のツール名は、最初の LLM 呼び出しから resolver に渡る（エラー分は除く）。"""
+        mock_resolve = AsyncMock(return_value="concrete")
+        monkeypatch.setattr(conversation_service, "resolve_llm_name", mock_resolve)
+
+        await conversation_service.run_conversation(
+            tools, pre_tool_calls=[{"tool": "climate"}, {"tool": "missing"}]
+        )
+
+        assert mock_resolve.await_args_list[0].kwargs["called_tool_names"] == ("climate",)

@@ -570,14 +570,14 @@ def _schema(name: str, required: list[str] | None = None) -> dict:
 
 async def _run_pre(tool_loop, pre_tool_calls, messages=None, tools=None, context=None):
     messages = messages if messages is not None else []
-    needs_auth = await tool_loop.run_pre_tool_calls(
+    result = await tool_loop.run_pre_tool_calls(
         messages,
         pre_tool_calls,
         tools=tools if tools is not None else [_schema("climate"), _schema("light", ["on"])],
         llm_tools={"climate": {}, "light": {}, "hidden": {}},
         context=context if context is not None else {"client_type": "discord"},
     )
-    return messages, needs_auth
+    return messages, result
 
 
 class TestRunPreToolCalls:
@@ -589,7 +589,7 @@ class TestRunPreToolCalls:
         """書かれた順に実行し、assistant の tool_calls と tool の結果を 1 組ずつ積む。"""
         mock_loader.execute_tool_call.side_effect = [_ok_result("C"), _ok_result("L")]
         context = {"client_type": "discord"}
-        messages, needs_auth = await _run_pre(
+        messages, result = await _run_pre(
             tool_loop,
             [{"tool": "climate"}, {"tool": "light", "args": {"on": True}}],
             messages=[{"role": "user", "content": "hi"}],
@@ -601,7 +601,8 @@ class TestRunPreToolCalls:
         assert calls[0].args[1] == {}
         assert calls[1].args[1] == {"on": True}
         assert calls[0].args[3] is context
-        assert needs_auth == []
+        assert result.needs_auth_list == []
+        assert result.called_tool_names == ["climate", "light"]
         assert messages == [
             {"role": "user", "content": "hi"},
             {
@@ -638,7 +639,7 @@ class TestRunPreToolCalls:
         self, tool_loop, mock_loader: MagicMock, item, expected_name: str, expected_error: str
     ) -> None:
         """使えないツール・不正な引数・不正な要素は実行せずエラーの結果を積み、後続も実行する。"""
-        messages, _ = await _run_pre(tool_loop, [item, {"tool": "climate"}])
+        messages, result = await _run_pre(tool_loop, [item, {"tool": "climate"}])
 
         mock_loader.execute_tool_call.assert_awaited_once()
         assert mock_loader.execute_tool_call.await_args.args[0] == "climate"
@@ -647,6 +648,8 @@ class TestRunPreToolCalls:
         assert messages[1]["role"] == "tool"
         assert expected_error in messages[1]["content"]
         assert messages[3]["content"] == "RESULT"
+        # 実行しなかった要素は実行済みツール名に含めない
+        assert result.called_tool_names == ["climate"]
 
     async def test_tool_failure_is_passed_as_result(
         self, tool_loop, mock_loader: MagicMock
@@ -663,6 +666,31 @@ class TestRunPreToolCalls:
     async def test_collects_needs_auth(self, tool_loop, mock_loader: MagicMock) -> None:
         """再認証が必要な結果の `needs_auth_list` を返す。"""
         mock_loader.execute_tool_call.return_value = _auth_result("svc")
-        _, needs_auth = await _run_pre(tool_loop, [{"tool": "climate"}])
+        _, result = await _run_pre(tool_loop, [{"tool": "climate"}])
 
-        assert needs_auth == [{"auth_service": "svc", "auth_url": "https://auth/svc"}]
+        assert result.needs_auth_list == [{"auth_service": "svc", "auth_url": "https://auth/svc"}]
+
+
+class TestInitialCalledToolNames:
+    """`run_tool_loop` の `initial_called_tool_names` が実行済みツール名の先頭に入ること。"""
+
+    async def test_passed_to_select_provider_from_first_call(
+        self, tool_loop, mock_llm_client: MagicMock
+    ) -> None:
+        """最初の LLM 呼び出しから `select_provider` に渡り、結果の先頭にも入る。"""
+        mock_llm_client.chat_to_llm_with_tools.side_effect = [
+            _tool_response(("t", "{}")),
+            _final_response(),
+        ]
+        seen: list = []
+
+        async def _select(called, previous):
+            seen.append(called)
+            return "p"
+
+        result = await _run(
+            tool_loop, select_provider=_select, initial_called_tool_names=["pre"]
+        )
+
+        assert seen == [("pre",), ("pre", "t")]
+        assert result.called_tool_names == ["pre", "t"]
