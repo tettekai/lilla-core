@@ -4,12 +4,16 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone, tzinfo
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
 from lilla_core.core.config import AppConfig, get_config
 from lilla_core.core.extension import get_client_prompt_providers, get_default_prompts
 from lilla_core.services.message_util import format_session_memory_block, prepend_timestamp_prefix
 from lilla_core.services.session_memory_manager import get_session_memory_manager
 from lilla_core.utils.datetime_utils import local_now
+
+if TYPE_CHECKING:
+    from lilla_core.repository.conversation_repository import SavedConversation
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +135,9 @@ class MemoryManager:
     ) -> str:
         """会話メッセージを保存し、保存したドキュメントの _id を返す。
 
+        `ConversationRepository.save`（`save_entry` の `.id` を返す薄いラッパー）へ
+        委譲する。`time` も必要なら `add_conversation_entry` を使う。
+
         Args:
             message: 保存する会話メッセージ（role / content）。
             tags: エントリの分類タグ（例: ["toolresult", "dirty"]）。
@@ -141,6 +148,37 @@ class MemoryManager:
             保存したドキュメントの _id（文字列）。
         """
         return await self._conv_repo.save(
+            message,
+            tags=tags,
+            discord_channel_id=discord_channel_id,
+            discord_message_ids=discord_message_ids,
+        )
+
+    async def add_conversation_entry(
+        self,
+        message: dict,
+        tags: list[str] | None = None,
+        discord_channel_id: int | None = None,
+        discord_message_ids: list[int] | None = None,
+    ) -> SavedConversation:
+        """会話メッセージを保存し、保存したエントリの `_id` と `time` を返す。
+
+        `ConversationRepository.save_entry` の戻り値をそのまま返す。クライアントへ
+        保存エントリの識別子を渡し、`list_for_client` の `after_id` / `since` で
+        差分取得させる用途を想定する。
+
+        Args:
+            message: 保存する会話メッセージ（role / content）。
+            tags: エントリの分類タグ（例: ["toolresult", "dirty"]）。
+            discord_channel_id: 対応する Discord メッセージのチャンネル ID。
+            discord_message_ids: 対応する Discord メッセージの ID リスト。
+
+        Returns:
+            `SavedConversation`。`id` は保存したドキュメントの `_id`（文字列）、
+            `time` は保存した `time`（UTC の timezone-aware な datetime。ミリ秒精度で、
+            `list_for_client` が返す同じエントリの `time` と `==` で一致する）。
+        """
+        return await self._conv_repo.save_entry(
             message,
             tags=tags,
             discord_channel_id=discord_channel_id,

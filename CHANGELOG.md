@@ -9,6 +9,16 @@
 
 ### Added
 
+- `ConversationRepository.list_for_client()` に省略可能な差分取得の引数 `after_id` / `since` を追加した（#288）。
+  `after_id` はそのドキュメントより `(time, _id)` の組で新しいもの（自身は含まない。同じ `time` の後続も含む）、`since` は
+  その時刻以降（境界ちょうどを含む）を返し、どちらかを渡したときは古い順に返す。`after_id` が ObjectId として不正なら
+  `ValueError`、存在しなければ `since` があれば `since` だけで絞り込み、無ければ新しい例外 `ConversationNotFoundError`
+  （`lilla_core.core.exceptions`。`LookupError` の派生）を送出する。引数を省略した場合は従来どおり新しい順
+- `ConversationRepository.save_entry()` と `MemoryManager.add_conversation_entry()` を追加した（#288）。引数は `save()` /
+  `add_conversation()` と同じで、保存したエントリの `_id`（`str`）と `time`（UTC の timezone-aware な `datetime`）を持つ
+  `SavedConversation` を返す。返す `time` は `list_for_client()` が返す値と `==` で一致する。既存の `save()` /
+  `add_conversation()` の引数と戻り値（`_id` の `str`）は変えていない
+
 - `run_conversation()` に任意の引数 `pre_tool_calls`（`[{"tool": str, "args": dict}]`。`args` は省略可）を追加した（#286）。
   LLM を呼ぶ前に書かれた順にツールを実行し、LLM が自分で呼んだときと同じ形の呼び出しと結果を最新の user メッセージのあとに積んでから
   通常のツールループに入る。実行できるのはその会話で LLM に渡すツールだけで、使えないツール・不正な引数・実行中の例外はエラーの結果として
@@ -38,6 +48,9 @@
 
 - `handlers/task_handler.py` の `start_scheduler()` を非同期関数にした（#284。起動時に MongoDB の上書きを読むため）。
   呼び出し側は `await` が必要
+- 会話履歴の `time` をミリ秒単位に切り捨てて保存するようにした（MongoDB の保存精度と同じ。#288）
+- `ConversationRepository.list_for_client()` の並び順を `(time, _id)` の複合キーにし、同じ `time` のドキュメントの順序を
+  決定的にした（#288）。あわせて起動時に `conversations` へ `(time, _id)` の複合インデックスを作る
 
 ## [0.7.1] - 2026-10-25
 

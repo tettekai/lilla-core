@@ -215,6 +215,37 @@ class TestAddConversation:
         )
 
 
+class TestAddConversationEntry:
+    async def test_returns_repository_result_as_is(
+        self, manager, mock_conv_repo, mock_memo_repo, mock_tool_cache_repo, mock_session_memory
+    ) -> None:
+        """add_conversation_entry が save_entry へ引数を渡し、戻り値をそのまま返す。"""
+        saved = MagicMock(id="65f0000000000000000000aa", time=datetime(2026, 10, 30, tzinfo=timezone.utc))
+        mock_conv_repo.save_entry = AsyncMock(return_value=saved)
+        msg = {"role": "assistant", "content": "hello"}
+
+        result = await manager.add_conversation_entry(
+            msg, tags=["dirty"], discord_channel_id=555, discord_message_ids=[10],
+        )
+
+        assert result is saved
+        mock_conv_repo.save_entry.assert_awaited_once_with(
+            msg, tags=["dirty"], discord_channel_id=555, discord_message_ids=[10],
+        )
+
+    async def test_add_conversation_still_returns_str_id(
+        self, manager, mock_conv_repo, mock_memo_repo, mock_tool_cache_repo, mock_session_memory
+    ) -> None:
+        """add_conversation は従来どおり _id の str を返す（save_entry の戻り値を返さない）。"""
+        mock_conv_repo.save.return_value = "65f0000000000000000000aa"
+        mock_conv_repo.save_entry = AsyncMock()
+
+        result = await manager.add_conversation({"role": "user", "content": "hi"})
+
+        assert result == "65f0000000000000000000aa"
+        assert isinstance(result, str)
+
+
 class TestDeleteConversation:
     async def test_delegates_to_conv_repo(self, manager, mock_conv_repo, mock_memo_repo, mock_tool_cache_repo, mock_session_memory) -> None:
         """delete_conversation が ConversationRepository.delete を呼び、結果を返す。"""
