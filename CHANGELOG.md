@@ -46,6 +46,13 @@
 
 ### Changed
 
+- **BREAKING**: `!toolresult` の結果を Discord 以外の配送先（拡張が `result_deliveries()` で登録したもの）へ届けるときは、
+  先に会話履歴へ保存してから配送関数を呼ぶようにし、配送関数の型 `DeliveryFn` を
+  `Callable[[str], Awaitable[None]]` から `Callable[[str, SavedConversation], Awaitable[None]]` に変えた（#291）。
+  2 つ目の引数は保存したエントリの `_id` と `time` で、`list_for_client()` が返す同じ項目の値と一致する。配送関数が例外を
+  投げても保存済みの履歴は残す。Discord への配送は従来どおり送信してから保存する。`(text, saved)` の 2 引数で呼べない形の配送関数
+  （1 引数のものなど）は、拡張名と `client_type` を示してロード時に失敗する（`*args` や 2 つ目の引数に既定値がある関数は読み込む）。
+  `EXTENSION_API_VERSION` は 2 のまま
 - `handlers/task_handler.py` の `start_scheduler()` を非同期関数にした（#284。起動時に MongoDB の上書きを読むため）。
   呼び出し側は `await` が必要
 - 会話履歴の `time` をミリ秒単位に切り捨てて保存するようにした（MongoDB の保存精度と同じ。#288）

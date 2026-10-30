@@ -54,6 +54,7 @@ YAML セクションを読む依存は `requires` で表す）。汎用の `vali
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 import os
 import re
@@ -64,6 +65,8 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
+
+    from lilla_core.repository.conversation_repository import SavedConversation
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +173,7 @@ RESERVED_EXTENSION_NAMES = frozenset(
 
 # 型エイリアス（可読性向上目的のためだけ）
 StartupRepoFactory = Callable[[], Any]
-DeliveryFn = Callable[[str], Awaitable[None]]
+DeliveryFn = Callable[[str, "SavedConversation"], Awaitable[None]]
 PromptProvider = Callable[[], str]
 ConversationStartHook = Callable[["ConversationContext"], Awaitable[None]]
 ContextValueProvider = Callable[[], Any]
@@ -566,7 +569,16 @@ class Extension:
         return {}
 
     def result_deliveries(self) -> dict[str, DeliveryFn]:
-        """`!toolresult` の結果配送関数を `client_type` ごとに返す。"""
+        """`!toolresult` の結果配送関数を `client_type` ごとに返す。
+
+        配送関数は `async def deliver(text, saved)` の形で、`text` は配送する返信本文、
+        `saved` はその返信を会話履歴へ保存した結果の `SavedConversation`（`id` と `time`。
+        `list_for_client` が返す同じエントリの `_id` / `time` と一致する）。コアは
+        保存してから配送関数を呼ぶため、呼ばれた時点で履歴にはすでに載っている。
+        配送関数が例外を投げても保存済みの履歴は消さない（クライアントは差分取得で拾える）。
+        `(text, saved)` の 2 引数で呼べない形の配送関数は、ロード時に `ValueError` で落とす。
+        `"discord"` はコアが配送を持つ予約キーで、ここでは使えない。
+        """
         return {}
 
     def client_prompt_providers(self) -> dict[str, list[PromptProvider]]:
@@ -698,6 +710,33 @@ def _merge_lists(
                 )
             merged.setdefault(key, []).extend(values)
     return merged
+
+
+def _validate_delivery_signatures(extensions: list[Extension]) -> None:
+    """`result_deliveries()` の配送関数がコアの呼び方 `delivery(text, saved)` で呼べるか検証する。
+
+    `inspect.signature(fn).bind()` に本文と `SavedConversation` の代わりのダミーを渡し、
+    `TypeError` になる（確実に呼べない）ものだけをロード時に落とす。`*args` で受ける関数や
+    2 つ目の引数に既定値がある関数は `bind` を通るので読み込む。シグネチャを取れない
+    呼び出し可能オブジェクト（`inspect.signature` が `ValueError` / `TypeError`）は検査しない。
+
+    Raises:
+        ValueError: 配送関数が 2 つの位置引数で呼べない形の場合。
+    """
+    for ext in extensions:
+        for client_type, fn in ext.result_deliveries().items():
+            try:
+                signature = inspect.signature(fn)
+            except (ValueError, TypeError):
+                continue
+            try:
+                signature.bind("", object())
+            except TypeError as exc:
+                raise ValueError(
+                    f"Extension '{ext.name}' provides a result delivery for client_type "
+                    f"'{client_type}' that cannot be called as delivery(text, saved); "
+                    f"a delivery function must accept two arguments (text, saved): {exc}"
+                ) from exc
 
 
 def _validate_api_versions(extensions: list[Extension]) -> None:
@@ -1139,7 +1178,9 @@ def set_extensions(extensions: list[Extension]) -> None:
             `default_prompt()` の形が不正（`dict` でない・空・文字列以外を
             含む）な場合、またはダッシュボードの申告（`name` の形・予約名・ルートのパス接頭辞・
             ページを出すのに静的ディレクトリが無い）が規約に違反している場合、
-            または共有 HTTP サーバーのルート申告がコアや他の拡張と重なる場合。
+            共有 HTTP サーバーのルート申告がコアや他の拡張と重なる場合、
+            または `result_deliveries()` の配送関数が `(text, saved)` の 2 引数で
+            呼べない形の場合。
     """
     from lilla_core.core.config import core_env_field_names
 
@@ -1183,6 +1224,7 @@ def set_extensions(extensions: list[Extension]) -> None:
         "result delivery",
         reserved=_RESERVED_DELIVERY_CLIENT_TYPES,
     )
+    _validate_delivery_signatures(extensions)
     prompts = _merge_lists(extensions, "client_prompt_providers", "client prompt provider")
     start_hooks = _merge_lists(
         extensions, "conversation_start_hooks", "conversation start hook"

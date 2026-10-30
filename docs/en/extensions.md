@@ -35,7 +35,7 @@ Load the module by listing it in `LILLA_EXTENSIONS`
 | `startup_repos` | Extra repository factories to initialize on `on_ready` |
 | `on_message` | Invoked at the start of `on_message`; return `True` to stop further handling |
 | `setup` | Startup work awaited before `bot.start()` (e.g. an HTTP server). Receives one `SetupContext` (`tools`, `llm_tools`, `bot`, `config`); new fields may be added without breaking existing extensions |
-| `result_deliveries` | Where `!toolresult` delivers results, per `client_type` |
+| `result_deliveries` | Where `!toolresult` delivers results, per `client_type`. A delivery function receives the reply text and the `SavedConversation` (`_id`, `time`) of the already-saved history entry ([below](#result-delivery-result_deliveries)) |
 | `client_prompt_providers` | System prompt additions per `client_type`, as `{client_type: [provider, ...]}`. Additive: several extensions may target the same `client_type`; the core concatenates them in load order, separated by blank lines |
 | `conversation_start_hooks` | Async hooks run before conversation handling starts, as `{client_type: [hook, ...]}`. Additive like the prompts. Each hook receives one `ConversationContext` (`client_type`, `client_state`, `discord_channel_id`, `llm_name`) |
 | `tool_context_providers` | Values injected into the tool execution context |
@@ -68,6 +68,45 @@ order, so several extensions can contribute to the same client.
 `client_type="discord"` is special in two ways: the core provides a built-in system
 prompt that is used only when no extension contributes one, and the core owns
 `!toolresult` delivery, so extensions cannot register a result delivery for it.
+
+## Result delivery (`result_deliveries`)
+
+`!toolresult` turns an external agent's result into Lilla's reply, delivers it to the
+requesting client and records it in the conversation history. When the request's
+`client_type` is not `discord`, the reply goes to the delivery function an extension
+registered through `result_deliveries()`.
+
+```python
+from lilla_core.repository.conversation_repository import SavedConversation
+
+
+async def deliver_via_ws(text: str, saved: SavedConversation) -> None:
+    await broadcast({"id": saved.id, "time": saved.time.isoformat(), "content": text})
+
+
+class MyClientExtension(Extension):
+    name = "my-client"
+
+    def result_deliveries(self):
+        return {"my-client": deliver_via_ws}
+```
+
+- The type is `DeliveryFn = Callable[[str, SavedConversation], Awaitable[None]]`. `text`
+  is the reply to deliver, and `saved` holds the `_id` (`saved.id`) and `time`
+  (`saved.time`, a timezone-aware UTC `datetime`) of the history entry for that reply
+- The core **saves first, then** calls the delivery function. By the time it runs the
+  reply is already in the history, and `saved.id` / `saved.time` equal the `_id` / `time`
+  that `ConversationRepository.list_for_client()` returns for the same entry, so a client
+  that receives both incremental fetches (`after_id`) and deliveries can de-duplicate by `_id`
+- A delivery function that cannot be called as `(text, saved)` (for example one that
+  takes only one argument) fails at load, naming the extension and the `client_type`.
+  Functions taking `*args` or with a default for the second argument are loaded as is
+- If the delivery function raises, the saved entry is kept (the client can pick it up
+  through an incremental fetch)
+- The entry is tagged `toolresult` / `dirty` and carries no Discord message info
+- Delivery to `discord` is owned by the core and still sends first and saves afterwards,
+  because the sent message IDs are stored for `!cleardirty`. A `client_type` with no
+  registered delivery function also falls back to Discord
 
 ## Locale catalogs
 
