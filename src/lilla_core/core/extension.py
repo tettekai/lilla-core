@@ -65,6 +65,8 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
+    from lilla_core.repository.conversation_repository import SavedConversation
+
 logger = logging.getLogger(__name__)
 
 #: 拡張モジュールの import パスを並べる環境変数名（カンマ区切り）。
@@ -82,7 +84,9 @@ _OFFICIAL_EXTENSION_PACKAGE_PREFIX = "lilla_core.extensions."
 #: メソッドや context フィールドの追加は非破壊なので上げない。
 #: 2: `config_models()` / `required_config_sections()` を廃止し、節名を `name` から導く
 #: `config_model()` に置き換えた。
-EXTENSION_API_VERSION = 2
+#: 3: `result_deliveries()` の配送関数（`DeliveryFn`）が本文に加えて、配送前に保存した
+#: 会話履歴の `SavedConversation`（`_id` と `time`）を受け取るようにした。
+EXTENSION_API_VERSION = 3
 
 #: このコアがロードを受け付ける契約バージョンの集合。旧バージョンとの互換層を
 #: 持つときはここへ足す。
@@ -170,7 +174,7 @@ RESERVED_EXTENSION_NAMES = frozenset(
 
 # 型エイリアス（可読性向上目的のためだけ）
 StartupRepoFactory = Callable[[], Any]
-DeliveryFn = Callable[[str], Awaitable[None]]
+DeliveryFn = Callable[[str, "SavedConversation"], Awaitable[None]]
 PromptProvider = Callable[[], str]
 ConversationStartHook = Callable[["ConversationContext"], Awaitable[None]]
 ContextValueProvider = Callable[[], Any]
@@ -566,7 +570,15 @@ class Extension:
         return {}
 
     def result_deliveries(self) -> dict[str, DeliveryFn]:
-        """`!toolresult` の結果配送関数を `client_type` ごとに返す。"""
+        """`!toolresult` の結果配送関数を `client_type` ごとに返す。
+
+        配送関数は `async def deliver(text, saved)` の形で、`text` は配送する返信本文、
+        `saved` はその返信を会話履歴へ保存した結果の `SavedConversation`（`id` と `time`。
+        `list_for_client` が返す同じエントリの `_id` / `time` と一致する）。コアは
+        保存してから配送関数を呼ぶため、呼ばれた時点で履歴にはすでに載っている。
+        配送関数が例外を投げても保存済みの履歴は消さない（クライアントは差分取得で拾える）。
+        `"discord"` はコアが配送を持つ予約キーで、ここでは使えない。
+        """
         return {}
 
     def client_prompt_providers(self) -> dict[str, list[PromptProvider]]:

@@ -31,7 +31,7 @@ extension = MyExtension()
 | `startup_repos` | `on_ready` で初期化する追加リポジトリファクトリ |
 | `on_message` | `on_message` の冒頭で呼ばれる。`True` を返すと以降の処理を止める |
 | `setup` | `bot.start()` の前に await される起動処理（HTTP サーバー等）。引数は `SetupContext` 1 つ（`tools` / `llm_tools` / `bot` / `config`）で、フィールドの追加は既存の拡張を壊さない |
-| `result_deliveries` | `!toolresult` の配送先を `client_type` ごとに指定 |
+| `result_deliveries` | `!toolresult` の配送先を `client_type` ごとに指定。配送関数は返信本文と、保存済みの会話履歴の `SavedConversation`（`_id`・`time`）を受け取る（[下記](#結果の配送result_deliveries)） |
 | `client_prompt_providers` | `client_type` ごとのシステムプロンプト追記。形は `{client_type: [プロバイダ, ...]}` の加算式で、複数の拡張が同じ `client_type` に足せる。コアがロード順に空行区切りで連結する |
 | `default_prompt` | この拡張のデフォルトのプロンプトを言語ごとに返す（`{"ja": ..., "en": ...}`。特定の言語は必須ではない。既定は `None`）。`client_type` によらず（`task` を除く）システムプロンプトへ入り、MongoDB の `extension_overrides` で拡張ごとに上書きできる（[拡張のデフォルトプロンプトと上書き](extension-prompt.md)） |
 | `conversation_start_hooks` | 会話処理開始前に await される非同期フック。形は `{client_type: [フック, ...]}` でプロンプトと同じく加算式。各フックは `ConversationContext`（`client_type` / `client_state` / `discord_channel_id` / `llm_name`）1 つを受け取る |
@@ -64,6 +64,40 @@ env フィールド名・ツール context のキー・結果配送の `client_t
 `client_type="discord"` だけは扱いが 2 点異なります。システムプロンプトはコアが内蔵
 デフォルトを持ち、拡張が 1 つも出していないときだけそれを使います。`!toolresult` の
 配送はコアが持つため拡張は登録できません。
+
+## 結果の配送（`result_deliveries`）
+
+`!toolresult` は外部エージェントの結果からリラの返信を作り、依頼元のクライアントへ届けて
+会話履歴にも残します。依頼元の `client_type` が `discord` 以外なら、拡張が
+`result_deliveries()` で登録した配送関数へ渡します。
+
+```python
+from lilla_core.repository.conversation_repository import SavedConversation
+
+
+async def deliver_via_ws(text: str, saved: SavedConversation) -> None:
+    await broadcast({"id": saved.id, "time": saved.time.isoformat(), "content": text})
+
+
+class MyClientExtension(Extension):
+    name = "my-client"
+
+    def result_deliveries(self):
+        return {"my-client": deliver_via_ws}
+```
+
+- 配送関数の型は `DeliveryFn = Callable[[str, SavedConversation], Awaitable[None]]` です。
+  `text` は届ける返信本文、`saved` はその返信を保存した会話履歴の `_id`（`saved.id`）と
+  `time`（`saved.time`。UTC の timezone-aware な `datetime`）です
+- コアは **保存してから** 配送関数を呼びます。呼ばれた時点で返信はすでに会話履歴にあり、
+  `saved.id` / `saved.time` は `ConversationRepository.list_for_client()` が返す同じ項目の
+  `_id` / `time` と一致します。クライアントは差分取得（`after_id`）と配送の両方で受け取り、
+  `_id` で重複を除けます
+- 配送関数が例外を投げても、保存済みの履歴は取り消しません（クライアントは差分取得で拾えます）
+- 保存するタグは `toolresult` / `dirty` で、Discord のメッセージ情報は持ちません
+- `discord` への配送はコアが持ち、送信したメッセージの ID を履歴に残す（`!cleardirty` 用）
+  ため、従来どおり送信してから保存します。配送関数が未登録の `client_type` も Discord
+  への配送になります
 
 ## ロケールカタログ
 
@@ -174,13 +208,15 @@ from lilla_core.core.extension import EXTENSION_API_VERSION, Extension
 
 class MyExtension(Extension):
     name = "my-extension"
-    api_version = 2  # 省略すると EXTENSION_API_VERSION
+    api_version = 3  # 省略すると EXTENSION_API_VERSION
 ```
 
 宣言したバージョンを受け付けない場合、`load_extensions()` は拡張名と両方のバージョンを
 示して失敗します。古い契約で書かれた拡張をそのまま読み込んで、起動後に壊れるのを
-防ぐためです。現在のバージョンは 2 で、`config_models()` と `required_config_sections()` を
-`config_model()` に置き換えました。廃止したメソッドのどちらかを定義したままの拡張は、
+防ぐためです。現在のバージョンは 3 です。3 では `result_deliveries()` の配送関数が、本文に
+加えて保存済みの会話履歴の `SavedConversation` を受け取るようにしました（[上記](#結果の配送result_deliveries)）。
+2 では `config_models()` と `required_config_sections()` を `config_model()` に置き換えました。
+廃止したメソッドのどちらかを定義したままの拡張は、
 `api_version` を宣言していなくても、代わりの経路を示してロード時に失敗します。
 
 契約を変えるときの方針:

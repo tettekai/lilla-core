@@ -825,6 +825,38 @@ class TestAggregatedContributions:
 
         assert ext_module.get_command_packages() == ["pkg.one", "pkg.two", "pkg.three"]
 
+    async def test_result_delivery_receives_text_and_saved_conversation(
+        self, make_extension
+    ) -> None:
+        """登録した配送関数は本文と SavedConversation（`_id`・`time`）の 2 引数で呼べる。"""
+        from datetime import datetime, timezone
+
+        from lilla_core.repository.conversation_repository import SavedConversation
+
+        received: list = []
+
+        async def deliver(text: str, saved: SavedConversation) -> None:
+            received.append((text, saved))
+
+        ext_module.set_extensions([make_extension("a", result_deliveries={"web": deliver})])
+        saved = SavedConversation(
+            id="65f0a1b2c3d4e5f6a7b8c9d0",
+            time=datetime(2026, 10, 30, 5, 15, tzinfo=timezone.utc),
+        )
+
+        await ext_module.get_result_delivery("web")("本文", saved)
+
+        assert received == [("本文", saved)]
+
+    def test_delivery_fn_signature_includes_saved_conversation(self) -> None:
+        """`DeliveryFn` は本文と SavedConversation を受け取る形になっている。"""
+        import typing
+
+        params, _ret = typing.get_args(ext_module.DeliveryFn)
+        assert len(params) == 2
+        assert params[0] is str
+        assert "SavedConversation" in repr(params[1])
+
     def test_lookups_return_empty_when_unregistered(self) -> None:
         """未登録の client_type は、排他の参照では None、加算式の参照では空リスト。"""
         assert ext_module.get_result_delivery("web") is None
@@ -1399,9 +1431,10 @@ class TestDashboardContributions:
     def test_api_version_is_current(self) -> None:
         """ダッシュボードの申告はメソッドの追加だけで版を上げていない。
 
-        版は #110（`config_models()` の廃止）で 2 へ上がった。
+        版は #110（`config_models()` の廃止）で 2 へ、#291（`DeliveryFn` が
+        `SavedConversation` も受け取る形への変更）で 3 へ上がった。
         """
-        assert ext_module.EXTENSION_API_VERSION == 2
+        assert ext_module.EXTENSION_API_VERSION == 3
 
 
 # ---------------------------------------------------------------------------

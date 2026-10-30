@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import TYPE_CHECKING
 
 from lilla_core.commands.attachment_body import resolve_command_body
 from lilla_core.commands.discord_util import resolve_discord_channel
 from lilla_core.commands.registry import register_command
 from lilla_core.core.llm_call_origin import llm_call_origin
 from lilla_core.services.message_util import resolve_dm_channel
+
+if TYPE_CHECKING:
+    from lilla_core.repository.conversation_repository import SavedConversation
 
 logger = logging.getLogger(__name__)
 
@@ -184,22 +188,31 @@ async def _deliver_tool_result(record: dict, result_text: str, bot) -> None:
     委譲し、未登録の `client_type`（拡張を読み込まないコア単体起動や、将来の
     未知の値）は Discord 配送へフォールバックする。`"discord"` はコアが配送を
     持つ予約キーで、拡張が登録しようとするとロード時に落ちる。
+
+    保存と配送の順番は配送先で異なる。Discord 以外は先に会話履歴へ保存し、保存した
+    `SavedConversation`（`_id` と `time`）を本文と一緒に配送関数へ渡す（クライアントが
+    届いたメッセージを履歴の項目と突き合わせられるように）。配送関数が例外を投げても
+    保存済みの履歴は消さない。Discord は送信したメッセージの ID を履歴に残すため、
+    従来どおり配送してから保存する。
     """
     from lilla_core.core.extension import get_result_delivery
 
     client_type = record.get("client_type") or "discord"
     reply_text = await _generate_reply(record, result_text, client_type)
 
-    discord_channel_id = None
-    discord_message_ids = None
     delivery = get_result_delivery(client_type) if client_type != "discord" else None
     if delivery is not None:
-        await delivery(reply_text)
-    else:
-        discord_channel_id, discord_message_ids = await _deliver_to_discord(
-            record.get("discord_channel_id"), reply_text, bot
-        )
+        # Discord 以外は保存してから配送し、保存した `_id` / `time` を配送先へ渡す。
+        # クライアントは差分取得（`list_for_client`）と配送の両方で受け取り、`_id` で
+        # 重複を除くため。配送関数が例外を投げても保存済みの履歴は残す（差分取得で拾える）。
+        saved = await _save_to_history(reply_text)
+        await delivery(reply_text, saved)
+        return
 
+    # Discord は送信したメッセージの ID を履歴へ残す（`!cleardirty` 用）ため、配送してから保存する
+    discord_channel_id, discord_message_ids = await _deliver_to_discord(
+        record.get("discord_channel_id"), reply_text, bot
+    )
     await _save_to_history(
         reply_text,
         discord_channel_id=discord_channel_id,
@@ -211,17 +224,20 @@ async def _save_to_history(
     text: str,
     discord_channel_id: int | None = None,
     discord_message_ids: list[int] | None = None,
-) -> None:
-    """配送した結果を assistant メッセージとして会話履歴に登録する。
+) -> SavedConversation:
+    """結果を assistant メッセージとして会話履歴に登録し、保存したエントリを返す。
 
     Args:
         text: 会話履歴に残す返信本文。
-        discord_channel_id: 配送先 Discord チャンネルの ID（Discord 以外へ配送した場合は None）。
+        discord_channel_id: 配送先 Discord チャンネルの ID（Discord 以外へ配送する場合は None）。
         discord_message_ids: 送信した Discord メッセージの ID リスト。
+
+    Returns:
+        保存したエントリの `_id` と `time`（`SavedConversation`）。
     """
     from lilla_core.services.memory_manager import get_memory_manager
 
-    await get_memory_manager().add_conversation(
+    return await get_memory_manager().add_conversation_entry(
         {"role": "assistant", "content": text},
         tags=["toolresult", "dirty"],
         discord_channel_id=discord_channel_id,
