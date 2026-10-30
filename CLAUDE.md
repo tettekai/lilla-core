@@ -625,7 +625,7 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
 | `startup_repos` | `get_startup_repos` | `on_ready` で `init_collection()` を呼ぶ追加リポジトリファクトリ |
 | `on_message` | `dispatch_on_message` | `on_message` の冒頭でロード順に呼ばれる。`True` で以降を止める |
 | `setup` | `run_setup_hooks` | `main()` で `bot.start()` の前に順に await される非同期関数（HTTP サーバー等の起動など）。引数は `SetupContext`（frozen dataclass。`tools` / `llm_tools` / `bot` / `config`）1 つで、`run_setup_hooks` が 1 度だけ組み立てて全拡張へ同じインスタンスを渡す。フィールドの追加は非破壊、削除・改名は破壊的変更として扱う |
-| `result_deliveries` | `get_result_delivery` | `!toolresult` が結果を届ける先を `client_type` ごとに差し替える。配送関数（`DeliveryFn`）は `(本文, SavedConversation)` を受け取り、コアは会話履歴へ保存してから呼ぶ（配送関数が例外を投げても履歴は残す） |
+| `result_deliveries` | `get_result_delivery` | `!toolresult` が結果を届ける先を `client_type` ごとに差し替える。配送関数（`DeliveryFn`）は `(本文, SavedConversation)` を受け取り、コアは会話履歴へ保存してから呼ぶ（配送関数が例外を投げても履歴は残す）。`(text, saved)` で呼べない形（`inspect.signature().bind()` が `TypeError`）はロード時に fail-fast する（シグネチャを取れないものは検査しない） |
 | `client_prompt_providers` | `get_client_prompt_providers` | `client_type` ごとにシステムプロンプトへ追記する文字列を返すプロバイダの **リスト**（`{client_type: [provider, ...]}`）。加算式で、複数の拡張が同じ `client_type` に足せる。コアがロード順に連結し、`memory_manager._resolve_client_prompt()` が空でない戻り値を空行区切りで追記する（呼ぶたびに評価される） |
 | `default_prompt` | `get_default_prompts` / `memory_manager._resolve_extension_prompts` | この拡張のデフォルトのプロンプトを言語ごとに返す（`{"ja": ..., "en": ...}`。特定の言語は必須にしない。既定は `None`。1 拡張 1 つ）。形（空でない `dict`・キーと値が文字列）はロード時に検証して fail-fast する。`client_type` が `"task"` 以外の会話で、MongoDB の `extension_overrides` に `prompt`（文字列）の上書きがあればそれを、無ければ `ui.locale` → `ja` → `en` → 定義の先頭の順に最初に見つかった言語を選び、ロード順に空行区切りでクライアント固有・会話プロンプトの後ろ、登録チャンネルの一節の前へ注入する（利用者向けの説明は `docs/ja/extension-prompt.md`） |
 | `conversation_start_hooks` | `get_conversation_start_hooks` | `run_conversation` の冒頭で `client_type` ごとに呼ばれる非同期関数の **リスト**。加算式。各フックは `ConversationContext`（frozen dataclass。`client_type` / `client_state` / `discord_channel_id` / `llm_name`）1 つを受け取り、ロード順に await される。1 件の失敗は DEBUG ログのみで、後続のフックも会話本体も止めない |
@@ -644,7 +644,7 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
 | `required_env_fields` | `set_extensions` の検証 | 自分では提供しないが読む `EnvConfig` のフィールド名（コア確定のフィールドは常に利用可） |
 | `required_tool_context_keys` | `set_extensions` の検証 | 自分では提供しないが、自分のツールが読むツール実行 context のキー名（`client_type` / `call_tool` などコアの共通キーは常に利用可） |
 | `requires`（クラス属性） | `set_extensions` の検証 | 依存する拡張の `name` のタプル。未ロード、または自分より後ろに並んでいれば fail-fast |
-| `api_version`（クラス属性） | `set_extensions` の検証 | 拡張が書かれた契約バージョン（既定は `EXTENSION_API_VERSION`。現在 3）。`SUPPORTED_EXTENSION_API_VERSIONS` に無い値、または整数以外は fail-fast。廃止したメソッド（`config_models` / `required_config_sections`）を定義している拡張も、版の宣言によらず fail-fast（`_REMOVED_EXTENSION_METHODS`） |
+| `api_version`（クラス属性） | `set_extensions` の検証 | 拡張が書かれた契約バージョン（既定は `EXTENSION_API_VERSION`。現在 2）。`SUPPORTED_EXTENSION_API_VERSIONS` に無い値、または整数以外は fail-fast。廃止したメソッド（`config_models` / `required_config_sections`）を定義している拡張も、版の宣言によらず fail-fast（`_REMOVED_EXTENSION_METHODS`） |
 
 ### 衝突は fail-fast
 拡張どうしで以下が重複したら、静かな後勝ちにせずロード時に例外を投げる。

@@ -54,6 +54,7 @@ YAML セクションを読む依存は `requires` で表す）。汎用の `vali
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 import os
 import re
@@ -84,9 +85,7 @@ _OFFICIAL_EXTENSION_PACKAGE_PREFIX = "lilla_core.extensions."
 #: メソッドや context フィールドの追加は非破壊なので上げない。
 #: 2: `config_models()` / `required_config_sections()` を廃止し、節名を `name` から導く
 #: `config_model()` に置き換えた。
-#: 3: `result_deliveries()` の配送関数（`DeliveryFn`）が本文に加えて、配送前に保存した
-#: 会話履歴の `SavedConversation`（`_id` と `time`）を受け取るようにした。
-EXTENSION_API_VERSION = 3
+EXTENSION_API_VERSION = 2
 
 #: このコアがロードを受け付ける契約バージョンの集合。旧バージョンとの互換層を
 #: 持つときはここへ足す。
@@ -577,6 +576,7 @@ class Extension:
         `list_for_client` が返す同じエントリの `_id` / `time` と一致する）。コアは
         保存してから配送関数を呼ぶため、呼ばれた時点で履歴にはすでに載っている。
         配送関数が例外を投げても保存済みの履歴は消さない（クライアントは差分取得で拾える）。
+        `(text, saved)` の 2 引数で呼べない形の配送関数は、ロード時に `ValueError` で落とす。
         `"discord"` はコアが配送を持つ予約キーで、ここでは使えない。
         """
         return {}
@@ -710,6 +710,33 @@ def _merge_lists(
                 )
             merged.setdefault(key, []).extend(values)
     return merged
+
+
+def _validate_delivery_signatures(extensions: list[Extension]) -> None:
+    """`result_deliveries()` の配送関数がコアの呼び方 `delivery(text, saved)` で呼べるか検証する。
+
+    `inspect.signature(fn).bind()` に本文と `SavedConversation` の代わりのダミーを渡し、
+    `TypeError` になる（確実に呼べない）ものだけをロード時に落とす。`*args` で受ける関数や
+    2 つ目の引数に既定値がある関数は `bind` を通るので読み込む。シグネチャを取れない
+    呼び出し可能オブジェクト（`inspect.signature` が `ValueError` / `TypeError`）は検査しない。
+
+    Raises:
+        ValueError: 配送関数が 2 つの位置引数で呼べない形の場合。
+    """
+    for ext in extensions:
+        for client_type, fn in ext.result_deliveries().items():
+            try:
+                signature = inspect.signature(fn)
+            except (ValueError, TypeError):
+                continue
+            try:
+                signature.bind("", object())
+            except TypeError as exc:
+                raise ValueError(
+                    f"Extension '{ext.name}' provides a result delivery for client_type "
+                    f"'{client_type}' that cannot be called as delivery(text, saved); "
+                    f"a delivery function must accept two arguments (text, saved): {exc}"
+                ) from exc
 
 
 def _validate_api_versions(extensions: list[Extension]) -> None:
@@ -1151,7 +1178,9 @@ def set_extensions(extensions: list[Extension]) -> None:
             `default_prompt()` の形が不正（`dict` でない・空・文字列以外を
             含む）な場合、またはダッシュボードの申告（`name` の形・予約名・ルートのパス接頭辞・
             ページを出すのに静的ディレクトリが無い）が規約に違反している場合、
-            または共有 HTTP サーバーのルート申告がコアや他の拡張と重なる場合。
+            共有 HTTP サーバーのルート申告がコアや他の拡張と重なる場合、
+            または `result_deliveries()` の配送関数が `(text, saved)` の 2 引数で
+            呼べない形の場合。
     """
     from lilla_core.core.config import core_env_field_names
 
@@ -1195,6 +1224,7 @@ def set_extensions(extensions: list[Extension]) -> None:
         "result delivery",
         reserved=_RESERVED_DELIVERY_CLIENT_TYPES,
     )
+    _validate_delivery_signatures(extensions)
     prompts = _merge_lists(extensions, "client_prompt_providers", "client prompt provider")
     start_hooks = _merge_lists(
         extensions, "conversation_start_hooks", "conversation start hook"

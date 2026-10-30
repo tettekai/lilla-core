@@ -98,6 +98,9 @@ class MyClientExtension(Extension):
   reply is already in the history, and `saved.id` / `saved.time` equal the `_id` / `time`
   that `ConversationRepository.list_for_client()` returns for the same entry, so a client
   that receives both incremental fetches (`after_id`) and deliveries can de-duplicate by `_id`
+- A delivery function that cannot be called as `(text, saved)` (for example one that
+  takes only one argument) fails at load, naming the extension and the `client_type`.
+  Functions taking `*args` or with a default for the second argument are loaded as is
 - If the delivery function raises, the saved entry is kept (the client can pick it up
   through an incremental fetch)
 - The entry is tagged `toolresult` / `dirty` and carries no Discord message info
@@ -180,14 +183,12 @@ from lilla_core.core.extension import EXTENSION_API_VERSION, Extension
 
 class MyExtension(Extension):
     name = "my-extension"
-    api_version = 3  # or leave the default, which is EXTENSION_API_VERSION
+    api_version = 2  # or leave the default, which is EXTENSION_API_VERSION
 ```
 
 If the declared version is not supported, `load_extensions()` fails and names the
 extension and both versions, instead of loading an extension written against an older
-contract and breaking later at run time. The current version is 3, in which
-`result_deliveries()` functions also receive the `SavedConversation` of the saved history
-entry ([above](#result-delivery-result_deliveries)). Version 2 replaced
+contract and breaking later at run time. The current version is 2, which replaced
 `config_models()` and `required_config_sections()` with `config_model()`; an extension
 that still defines either removed method fails at load with a message naming the
 replacement, even if it does not declare `api_version`.

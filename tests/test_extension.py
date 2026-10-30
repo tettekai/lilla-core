@@ -1,6 +1,7 @@
 """`lilla_core.core.extension` の `Extension` とロード・参照 API のテスト。"""
 from __future__ import annotations
 
+import inspect
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -857,6 +858,78 @@ class TestAggregatedContributions:
         assert params[0] is str
         assert "SavedConversation" in repr(params[1])
 
+    def test_one_arg_delivery_fails_at_load(self, make_extension) -> None:
+        """`(text, saved)` で呼べない 1 引数の配送関数はロード時に落とす。"""
+
+        async def deliver(text: str) -> None:
+            pass
+
+        with pytest.raises(ValueError, match=r"'a'.*'web'.*\(text, saved\)"):
+            ext_module.set_extensions(
+                [make_extension("a", result_deliveries={"web": deliver})]
+            )
+        assert ext_module.get_result_delivery("web") is None
+
+    def test_three_required_args_delivery_fails_at_load(self, make_extension) -> None:
+        """必須の引数が 3 つある配送関数も 2 引数では呼べないので落とす。"""
+
+        async def deliver(text, saved, extra) -> None:
+            pass
+
+        with pytest.raises(ValueError, match="two arguments"):
+            ext_module.set_extensions(
+                [make_extension("a", result_deliveries={"web": deliver})]
+            )
+
+    def test_compatible_delivery_signatures_load(self, make_extension) -> None:
+        """2 引数・`*args`・2 つ目に既定値のある配送関数は読み込める。"""
+
+        async def two_args(text, saved) -> None:
+            pass
+
+        async def var_args(*args) -> None:
+            pass
+
+        async def with_default(text, saved=None) -> None:
+            pass
+
+        ext_module.set_extensions(
+            [
+                make_extension(
+                    "a",
+                    result_deliveries={
+                        "two": two_args,
+                        "var": var_args,
+                        "default": with_default,
+                    },
+                )
+            ]
+        )
+
+        assert ext_module.get_result_delivery("two") is two_args
+        assert ext_module.get_result_delivery("var") is var_args
+        assert ext_module.get_result_delivery("default") is with_default
+
+    def test_delivery_without_signature_is_not_checked(self, make_extension) -> None:
+        """シグネチャを取れない呼び出し可能オブジェクトは検査せずに読み込む。"""
+
+        class NoSignature:
+            # Signature 以外の `__signature__` は inspect.signature() が TypeError にする
+            __signature__ = "not a signature"
+
+            async def __call__(self, text: str) -> None:
+                pass
+
+        deliver = NoSignature()
+        with pytest.raises((ValueError, TypeError)):
+            inspect.signature(deliver)
+
+        ext_module.set_extensions(
+            [make_extension("a", result_deliveries={"web": deliver})]
+        )
+
+        assert ext_module.get_result_delivery("web") is deliver
+
     def test_lookups_return_empty_when_unregistered(self) -> None:
         """未登録の client_type は、排他の参照では None、加算式の参照では空リスト。"""
         assert ext_module.get_result_delivery("web") is None
@@ -1431,10 +1504,9 @@ class TestDashboardContributions:
     def test_api_version_is_current(self) -> None:
         """ダッシュボードの申告はメソッドの追加だけで版を上げていない。
 
-        版は #110（`config_models()` の廃止）で 2 へ、#291（`DeliveryFn` が
-        `SavedConversation` も受け取る形への変更）で 3 へ上がった。
+        版は #110（`config_models()` の廃止）で 2 へ上がった。
         """
-        assert ext_module.EXTENSION_API_VERSION == 3
+        assert ext_module.EXTENSION_API_VERSION == 2
 
 
 # ---------------------------------------------------------------------------

@@ -93,6 +93,9 @@ class MyClientExtension(Extension):
   `saved.id` / `saved.time` は `ConversationRepository.list_for_client()` が返す同じ項目の
   `_id` / `time` と一致します。クライアントは差分取得（`after_id`）と配送の両方で受け取り、
   `_id` で重複を除けます
+- `(text, saved)` の 2 引数で呼べない形の配送関数（1 引数しか受け取らないものなど）は、
+  ロード時に拡張名と `client_type` を示して失敗します。`*args` で受ける関数や 2 つ目の引数に
+  既定値がある関数はそのまま読み込みます
 - 配送関数が例外を投げても、保存済みの履歴は取り消しません（クライアントは差分取得で拾えます）
 - 保存するタグは `toolresult` / `dirty` で、Discord のメッセージ情報は持ちません
 - `discord` への配送はコアが持ち、送信したメッセージの ID を履歴に残す（`!cleardirty` 用）
@@ -208,15 +211,13 @@ from lilla_core.core.extension import EXTENSION_API_VERSION, Extension
 
 class MyExtension(Extension):
     name = "my-extension"
-    api_version = 3  # 省略すると EXTENSION_API_VERSION
+    api_version = 2  # 省略すると EXTENSION_API_VERSION
 ```
 
 宣言したバージョンを受け付けない場合、`load_extensions()` は拡張名と両方のバージョンを
 示して失敗します。古い契約で書かれた拡張をそのまま読み込んで、起動後に壊れるのを
-防ぐためです。現在のバージョンは 3 です。3 では `result_deliveries()` の配送関数が、本文に
-加えて保存済みの会話履歴の `SavedConversation` を受け取るようにしました（[上記](#結果の配送result_deliveries)）。
-2 では `config_models()` と `required_config_sections()` を `config_model()` に置き換えました。
-廃止したメソッドのどちらかを定義したままの拡張は、
+防ぐためです。現在のバージョンは 2 で、`config_models()` と `required_config_sections()` を
+`config_model()` に置き換えました。廃止したメソッドのどちらかを定義したままの拡張は、
 `api_version` を宣言していなくても、代わりの経路を示してロード時に失敗します。
 
 契約を変えるときの方針:
