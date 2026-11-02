@@ -110,6 +110,10 @@ tools:
   `async def execute(context: dict) -> None` を持つことが期待されます。
 - `schedule` は省略可能です。未設定のツールはスケジューラには登録されませんが、
   `!runtask` による手動実行は可能です。
+- `type` が `self` の場合は LLM ツールと同じく、ツールルートを探索せず YAML と同じ
+  ディレクトリ・同名の `.py`（`${CONFIG_ROOT}/tools/task_foo.yaml` なら
+  `${CONFIG_ROOT}/tools/task_foo.py`）からクラスを読みます。`.py` が無ければ警告を出して
+  そのツールだけ読み飛ばします。
 - `type` はこちらでも import パスを受け付けます（`type: some_package.tasks.daily_summary`）。
   クラスはファイルから読む場合と同じ規則で、import したモジュールから探します。
   トリガー種別は `type` ではなく YAML のファイル名から判定するため、import パス指定の
