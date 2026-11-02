@@ -528,3 +528,137 @@ class TestLoadAllTools:
             tool_roots=[tool_root], config_root=config_root, class_map={}
         )
         assert task_tool_loader.tool_class_map == before
+
+
+# ---------------------------------------------------------------------------
+# TestSelfType（type: self）
+# ---------------------------------------------------------------------------
+
+
+class TestSelfType:
+    @pytest.fixture()
+    def config_root(self, tmp_path: Path) -> Path:
+        cr = tmp_path / "config_root"
+        (cr / "tools").mkdir(parents=True)
+        return cr
+
+    @pytest.fixture()
+    def tool_root(self, tmp_path: Path) -> Path:
+        root = tmp_path / "tool_root"
+        root.mkdir()
+        return root
+
+    def test_loads_class_from_same_stem_py(
+        self, task_tool_loader, tool_root: Path, config_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """type: self は YAML と同名の .py を、config_root/tools を含む tool_dirs で読む。"""
+        tools_dir = config_root / "tools"
+        _write_yaml(tools_dir, "task_mine.yaml", "type: self\n")
+        (tools_dir / "task_mine.py").touch()
+        captured: dict = {}
+
+        def fake_load(path, **kw):
+            captured["path"] = path
+            captured["tool_dirs"] = kw.get("tool_dirs")
+            return _make_tool_class()
+
+        monkeypatch.setattr(task_tool_loader, "load_script_class", fake_load)
+        monkeypatch.setattr(
+            task_tool_loader, "find_tool_file", lambda *a, **kw: pytest.fail("must not search tool roots")
+        )
+
+        result = task_tool_loader.load_all_tools(
+            tool_roots=[tool_root], config_root=config_root, class_map={}
+        )
+
+        assert "task_mine" in result
+        assert result["task_mine"]["trigger"] == "task"
+        assert captured["path"] == tools_dir / "task_mine.py"
+        assert tools_dir.resolve() in captured["tool_dirs"]
+        assert tool_root.resolve() in captured["tool_dirs"]
+
+    def test_skips_when_py_missing(
+        self, task_tool_loader, tool_root: Path, config_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """同名の .py が無ければ警告してそのツールだけスキップする。"""
+        _write_yaml(config_root / "tools", "task_mine.yaml", "type: self\n")
+        monkeypatch.setattr(
+            task_tool_loader, "load_script_class", lambda *a, **kw: pytest.fail("must not load")
+        )
+
+        result = task_tool_loader.load_all_tools(
+            tool_roots=[tool_root], config_root=config_root, class_map={}
+        )
+
+        assert result == {}
+
+    def test_cache_key_is_per_file(
+        self, task_tool_loader, tool_root: Path, config_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """type: self の YAML が複数あっても、それぞれ自分の .py のクラスを使う。"""
+        tools_dir = config_root / "tools"
+        for stem in ("task_a", "task_b"):
+            _write_yaml(tools_dir, f"{stem}.yaml", "type: self\n")
+            (tools_dir / f"{stem}.py").touch()
+        classes = {"task_a": _make_tool_class(), "task_b": _make_tool_class()}
+        monkeypatch.setattr(
+            task_tool_loader, "load_script_class", lambda path, **kw: classes[Path(path).stem]
+        )
+
+        result = task_tool_loader.load_all_tools(
+            tool_roots=[tool_root], config_root=config_root, class_map={}
+        )
+
+        assert type(result["task_a"]["instance"]) is classes["task_a"]
+        assert type(result["task_b"]["instance"]) is classes["task_b"]
+
+
+class TestSelfTypeRealLoad:
+    """script_loader を差し替えずに、type: self の実ファイルロードとディレクトリ検査を確かめる。"""
+
+    _SOURCE = (
+        "class MyTask:\n"
+        "    description = 'mine'\n"
+        "    schedule = '0 3 * * *'\n"
+        "    def __init__(self, config, name):\n"
+        "        self.config = config\n"
+        "        self.name = name\n"
+        "    async def execute(self, context):\n"
+        "        return None\n"
+    )
+
+    def test_loads_real_class(self, tmp_path: Path) -> None:
+        from lilla_core.loaders.task_tool_loader import load_all_tools
+
+        tools_dir = tmp_path / "config" / "tools"
+        tools_dir.mkdir(parents=True)
+        (tools_dir / "task_mine.yaml").write_text("type: self\nfoo: bar\n", encoding="utf-8")
+        (tools_dir / "task_mine.py").write_text(self._SOURCE, encoding="utf-8")
+
+        result = load_all_tools(
+            tool_roots=[tmp_path / "tool_root"], config_root=tmp_path / "config", class_map={}
+        )
+
+        entry = result["task_mine"]
+        assert entry["description"] == "mine"
+        assert entry["scheduled"] is True
+        assert entry["instance"].name == "task_mine"
+        assert entry["instance"].config["foo"] == "bar"
+
+    def test_symlink_outside_tool_dirs_is_not_loaded(self, tmp_path: Path) -> None:
+        """同名の .py が外を指すシンボリックリンクならロードしない。"""
+        from lilla_core.loaders.task_tool_loader import load_all_tools
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "evil.py").write_text(self._SOURCE, encoding="utf-8")
+        tools_dir = tmp_path / "config" / "tools"
+        tools_dir.mkdir(parents=True)
+        (tools_dir / "task_mine.yaml").write_text("type: self\n", encoding="utf-8")
+        (tools_dir / "task_mine.py").symlink_to(outside / "evil.py")
+
+        result = load_all_tools(
+            tool_roots=[tmp_path / "tool_root"], config_root=tmp_path / "config", class_map={}
+        )
+
+        assert result == {}

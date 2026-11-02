@@ -9,6 +9,11 @@
 
 ### Added
 
+- task ツールの YAML でも `type: self` を使えるようにした。LLM ツールと同じく、ツールルートを探索せず YAML と同じディレクトリ・
+  同名の `.py`（`${CONFIG_ROOT}/tools/task_foo.yaml` なら `task_foo.py`）からクラスを読む。ロードはツールを置いてよいディレクトリ
+  （探索ルート・拡張の同梱 YAML ディレクトリ・`${CONFIG_ROOT}/tools`）の配下に限り、外を指すシンボリックリンクは読まない。
+  同名の `.py` が無ければ WARNING を出してそのツールだけスキップする
+
 - `ConversationRepository.list_for_client()` に省略可能な差分取得の引数 `after_id` / `since` を追加した（#288）。
   `after_id` はそのドキュメントより `(time, _id)` の組で新しいもの（自身は含まない。同じ `time` の後続も含む）、`since` は
   その時刻以降（境界ちょうどを含む）を返し、どちらかを渡したときは古い順に返す。`after_id` が ObjectId として不正なら

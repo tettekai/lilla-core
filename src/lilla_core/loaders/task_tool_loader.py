@@ -12,12 +12,13 @@ from lilla_core.loaders.tool_paths import (
     is_tool_enabled,
     resolve_tool_config_files,
     resolve_tool_config_owners,
+    resolve_tool_dirs,
     resolve_tool_roots,
 )
 
 logger = logging.getLogger(__name__)
 
-tool_class_map = {}  # type名 -> クラス（キャッシュ）
+tool_class_map = {}  # type名（type: self は "self:<解決後の .py のパス>"）-> クラス（キャッシュ）
 
 
 def _load_tool_configs(config_root: Path) -> list[tuple[str, dict]]:
@@ -65,6 +66,37 @@ def _resolve_tool_class(
     return class_map.get(tool_type)
 
 
+def _resolve_self_tool_class(
+    config_path: Path, tool_dirs: list[Path], class_map: dict
+) -> type | None:
+    """`type: self` 用に、YAML と同じディレクトリ・同じ stem の `.py` からクラスを返す。
+
+    LLM ツールの `type: self` と同じ規則で、ツールルートの探索は行わない。
+    ロードは `tool_dirs`（探索ルート + 拡張の同梱 YAML ディレクトリ + `config_root/tools`）
+    の配下に閉じ、解決後のパスが外へ出ていればロードしない。キャッシュのキーは
+    `type` ではなく解決後の `.py` のパスにする（`self` は YAML ごとに別のファイルを指すため）。
+
+    Args:
+        config_path: YAML 設定ファイルのパス。
+        tool_dirs: ロードを許すディレクトリ。
+        class_map: クラスのキャッシュ。
+
+    Returns:
+        ツールクラス。同名の `.py` が無い・外を指す・クラスが無い場合は `None`。
+    """
+    py_file = config_path.with_suffix(".py")
+    if not py_file.exists():
+        logger.warning("type: self but no matching .py file found: %s", py_file)
+        return None
+    key = f"self:{py_file.resolve()}"
+    if key not in class_map:
+        cls = load_script_class(py_file, tool_dirs=tool_dirs)
+        if not cls:
+            return None
+        class_map[key] = cls
+    return class_map[key]
+
+
 def _build_tool_entry(
     instance, name: str, config: dict, extension: str | None = None
 ) -> dict:
@@ -102,6 +134,8 @@ def load_all_tools(
     """全ツールを読み込み、ツール名をキーとする dict を返す。
 
     `tool_roots` の既定は `paths.tool_root` に拡張の `tool_roots()` を足したもの。
+    YAML の `type` が `self` なら、ツールルートを探索せず YAML と同じディレクトリ・
+    同名の `.py` からクラスを読む（LLM ツールの `type: self` と同じ）。
     各エントリの `extension` には、その YAML を同梱した拡張の名前（無ければ `None`）を入れる。
     """
     if tool_roots is None:
@@ -112,6 +146,7 @@ def load_all_tools(
         class_map = tool_class_map
 
     owners = resolve_tool_config_owners("task_", config_root)
+    tool_dirs: list[Path] | None = None
     tools = {}
     for config_path, config in _load_tool_configs(config_root):
         tool_type = config.get("type")
@@ -119,7 +154,12 @@ def load_all_tools(
             logger.warning("Config file %s has no type. Skipping", config_path)
             continue
 
-        cls = _resolve_tool_class(tool_type, tool_roots, class_map)
+        if tool_type == "self":
+            if tool_dirs is None:
+                tool_dirs = resolve_tool_dirs(tool_roots, config_root)
+            cls = _resolve_self_tool_class(Path(config_path), tool_dirs, class_map)
+        else:
+            cls = _resolve_tool_class(tool_type, tool_roots, class_map)
         if not cls:
             continue
 
