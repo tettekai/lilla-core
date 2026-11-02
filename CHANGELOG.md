@@ -9,6 +9,10 @@
 
 ### Added
 
+- `send_http_request()` に省略可能な引数 `cookie_jar`（`aiohttp.abc.AbstractCookieJar`）を追加した。渡すとそのクッキージャーで
+  セッションを作るため、同じ `aiohttp.CookieJar` を続けて渡せば、ログインで受け取ったセッションクッキーをその後のリクエストへ
+  引き継げる（プロキシの適用は従来どおり）。省略時の挙動は変えていない
+
 - task ツールの YAML でも `type: self` を使えるようにした。LLM ツールと同じく、ツールルートを探索せず YAML と同じディレクトリ・
   同名の `.py`（`${CONFIG_ROOT}/tools/task_foo.yaml` なら `task_foo.py`）からクラスを読む。ロードはツールを置いてよいディレクトリ
   （探索ルート・拡張の同梱 YAML ディレクトリ・`${CONFIG_ROOT}/tools`）の配下に限り、外を指すシンボリックリンクは読まない。
