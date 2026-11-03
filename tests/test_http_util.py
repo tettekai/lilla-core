@@ -307,6 +307,23 @@ class TestSendHttpRequest:
         assert "leaked" not in caplog.text
         assert "***MASKED***" in caplog.text
 
+    async def test_default_session_has_no_shared_cookie_jar(
+        self, http_util, session_mock: tuple[MagicMock, MagicMock]
+    ) -> None:
+        """cookie_jar を渡さなければ、セッションは呼び出しごとの既定のジャーで作られる。"""
+        await http_util.send_http_request("http://example.com/api")
+        assert http_util.aiohttp.ClientSession.call_args.kwargs["cookie_jar"] is None
+
+    async def test_cookie_jar_is_passed_to_session(
+        self, http_util, session_mock: tuple[MagicMock, MagicMock]
+    ) -> None:
+        """cookie_jar を渡すと、そのジャーでセッションを作る（クッキーを呼び出し間で引き継ぐ）。"""
+        jar = MagicMock()
+        await http_util.send_http_request("http://example.com/a", method="GET", cookie_jar=jar)
+        await http_util.send_http_request("http://example.com/b", method="GET", cookie_jar=jar)
+        calls = http_util.aiohttp.ClientSession.call_args_list
+        assert [c.kwargs["cookie_jar"] for c in calls] == [jar, jar]
+
     async def test_get_request_sends_no_body(
         self, http_util, session_mock: tuple[MagicMock, MagicMock]
     ) -> None:
