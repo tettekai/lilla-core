@@ -9,6 +9,11 @@
 
 ### Added
 
+- task ツールなどから `!mongodata` と同じ形で MongoDB へ書き込むヘルパー `lilla_core.tool_support.mongodata.save_document()` を
+  追加した。`key` を渡すと `{key: 値}` を条件に `$set` で upsert し、省略すると insert する。書き込めるのは
+  `commands.mongodata.allowed_collections` に並べたコレクションだけで、`!mongodata` もこの関数で書き込むようにした
+  （コマンドの挙動は変えていない）
+
 - `send_http_request()` に省略可能な引数 `cookie_jar`（`aiohttp.abc.AbstractCookieJar`）を追加した。渡すとそのクッキージャーで
   セッションを作るため、同じ `aiohttp.CookieJar` を続けて渡せば、ログインで受け取ったセッションクッキーをその後のリクエストへ
   引き継げる（プロキシの適用は従来どおり）。省略時の挙動は変えていない
