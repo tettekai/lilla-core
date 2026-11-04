@@ -414,14 +414,17 @@ jobs:
               // bodies. Edited reviews never retrigger this workflow because
               // pull_request_review only listens for `submitted`.
               //
-              // Grok Bot はオーナーの PAT で投稿するため、投稿者では自分の
-              // レビューと owner 本人の依頼を区別できない。本文末尾のフッターで
-              // Grok の投稿を除き、owner 本人が出した `@claude` だけを数える。
+              // Grok（Grok Bot / Grok 本体）はオーナーのアカウントで投稿するため、
+              // 投稿者では自分のレビューと owner 本人の依頼を区別できない。本文末尾の
+              // フッターで Grok の投稿を除き、owner 本人が出した `@claude` だけを数える。
+              // 旧 Grok Bot のフッターも、それが残っている PR のために残す。
               // これは認証ではなく起動回数の目安なので、フッターの文言が変わって
               // も「Grok の分も数える」= 早めに上限へ当たる安全側に倒れるだけ。
-              const GROK_POST_MARKER = "Posted by Grok Bot";
+              const GROK_POST_MARKERS = ["Posted by Grok Automation", "Posted by Grok Bot"];
               const isOwnerMention = (body) =>
-                Boolean(body) && body.includes("@claude") && !body.includes(GROK_POST_MARKER);
+                Boolean(body) &&
+                body.includes("@claude") &&
+                !GROK_POST_MARKERS.some((marker) => body.includes(marker));
               const mentionCount =
                 issueComments.filter((c) => isOwnerMention(c.body)).length +
                 reviewComments.filter((c) => isOwnerMention(c.body)).length +
