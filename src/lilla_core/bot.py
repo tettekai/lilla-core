@@ -120,7 +120,13 @@ async def on_ready():
                 "Failed to initialize repository: %s: %s",
                 repo.__class__.__name__, e, exc_info=True,
             )
-    await task_handler.start_scheduler(tools, bot, llm_tools)
+    if task_handler.is_scheduler_enabled():
+        await task_handler.start_scheduler(tools, bot, llm_tools)
+    else:
+        logger.info(
+            "[TASK] Internal scheduler is disabled by scheduler.enabled=false; "
+            "scheduled tasks run only via POST /api/runtask or !runtask"
+        )
 
 
 @bot.event

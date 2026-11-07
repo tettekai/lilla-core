@@ -8,12 +8,18 @@ from typing import Callable
 
 from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
 
 from lilla_core.core.error_notify import notify_error
 from lilla_core.core.extension import build_tool_context, get_extensions
 from lilla_core.core.llm_call_origin import llm_call_origin
 from lilla_core.repository.extension_override_repository import get_extension_override_repo
+from lilla_core.services.task_schedules import (
+    TaskOverride,
+    build_cron_trigger,
+    parse_task_overrides,
+    resolve_task,
+    scheduled_task_entries,
+)
 from lilla_core.ui.messages import t
 from lilla_core.utils.datetime_utils import local_now, local_timezone
 
@@ -69,20 +75,12 @@ async def start_scheduler(tools: dict, bot, llm_tools: dict = None) -> None:
     _task_jobs.clear()
     _applied_schedules.clear()
 
-    for tool_name, tool_info in tools.items():
-        if not tool_info.get("scheduled"):
-            continue
-
+    for tool_name, tool_info in scheduled_task_entries(tools).items():
         tool = tool_info["instance"]
-        schedule = getattr(tool, "schedule", None)
-        if not schedule:
-            logger.warning("[TASK] %s has no schedule configured. Skipping", tool_name)
-            continue
-
         _task_jobs[tool_name] = _TaskJob(
             tool_name=tool_name,
             extension=tool_info.get("extension"),
-            default_schedule=schedule,
+            default_schedule=tool.schedule,
             job_func=_make_job_func(tool_name, tool, bot, llm_tools or {}),
         )
 
@@ -92,11 +90,11 @@ async def start_scheduler(tools: dict, bot, llm_tools: dict = None) -> None:
         # 読み込みの間に stop_scheduler() された
         return
 
-    resolved: dict[str, dict] = {}
+    resolved: dict[str, TaskOverride] = {}
     for name in extension_names:
-        resolved.update(_resolve_task_overrides(name, overrides.get(name), _extension_jobs(name)))
+        resolved.update(_parse_overrides(name, overrides.get(name), _extension_jobs(name)))
     for job in _task_jobs.values():
-        _sync_job(job, resolved.get(job.tool_name, {}))
+        _sync_job(job, resolved.get(job.tool_name))
 
     scheduler.start()
     logger.info("[TASK] Scheduler started")
@@ -108,6 +106,9 @@ async def start_scheduler(tools: dict, bot, llm_tools: dict = None) -> None:
 APPLY_APPLIED = "applied"
 #: `apply_task_overrides()` の結果: スケジューラが動いていない（保存済みの上書きは起動時に効く）。
 APPLY_SCHEDULER_NOT_RUNNING = "scheduler_not_running"
+#: `apply_task_overrides()` の結果: `scheduler.enabled: false` で内部スケジューラを使わない設定
+#: （保存済みの上書きは `GET /api/tasks` に出る）。
+APPLY_SCHEDULER_DISABLED = "scheduler_disabled"
 #: `apply_task_overrides()` の結果: 対象のタスクが無い（拡張が同梱した定期タスクではない）。
 APPLY_NOT_FOUND = "not_found"
 #: `apply_task_overrides()` の結果: 読み込みか反映に失敗した（`strict=True` のときだけ返す）。
@@ -143,10 +144,17 @@ async def apply_task_overrides(
         strict: 読み込み・反映の失敗を `APPLY_FAILED` として返す。
 
     Returns:
-        `APPLY_APPLIED` / `APPLY_SCHEDULER_NOT_RUNNING` / `APPLY_NOT_FOUND` /
-        `APPLY_FAILED` のいずれか。
+        `APPLY_APPLIED` / `APPLY_SCHEDULER_NOT_RUNNING` / `APPLY_SCHEDULER_DISABLED` /
+        `APPLY_NOT_FOUND` / `APPLY_FAILED` のいずれか。
     """
     if _scheduler is None:
+        if not is_scheduler_enabled():
+            logger.info(
+                "[TASK] Internal scheduler is disabled; task overrides of extension '%s' "
+                "are served by GET /api/tasks only",
+                extension_name,
+            )
+            return APPLY_SCHEDULER_DISABLED
         logger.warning(
             "[TASK] Scheduler is not running; ignoring task overrides of extension '%s'",
             extension_name,
@@ -177,12 +185,12 @@ async def apply_task_overrides(
         overrides = await _load_overrides([extension_name])
     if _scheduler is not scheduler:
         return APPLY_SCHEDULER_NOT_RUNNING
-    resolved = _resolve_task_overrides(
+    resolved = _parse_overrides(
         extension_name, overrides.get(extension_name), jobs, only=task_name
     )
     for job in jobs:
         try:
-            _sync_job(job, resolved.get(job.tool_name, {}))
+            _sync_job(job, resolved.get(job.tool_name))
         except Exception as e:
             if not strict:
                 raise
@@ -192,6 +200,17 @@ async def apply_task_overrides(
             )
             return APPLY_FAILED
     return APPLY_APPLIED
+
+
+def is_scheduler_enabled() -> bool:
+    """設定（`scheduler.enabled`）上、内部の定期スケジューラを使うかを返す。
+
+    実際に起動済みかどうか（`is_scheduler_running()`）とは別で、Discord 接続前の
+    未起動や `stop_scheduler()` 後でも、設定が真なら真を返す。
+    """
+    from lilla_core.core.config import get_config
+
+    return get_config().scheduler.enabled
 
 
 def is_scheduler_running() -> bool:
@@ -250,125 +269,56 @@ async def _load_overrides(extension_names: list[str]) -> dict[str, dict]:
         return {}
 
 
-def _resolve_task_overrides(
+def _parse_overrides(
     extension_name: str,
     doc: dict | None,
     jobs: list[_TaskJob],
     only: str | None = None,
-) -> dict[str, dict]:
-    """上書きドキュメントの `tasks` を検証し、ツール名 -> 有効な上書き項目を返す。
+) -> dict[str, TaskOverride]:
+    """上書きドキュメントの `tasks` を検証し、ツール名 -> 型の正しい上書き項目を返す。
 
-    返す値は `schedule`（文字列）と `enabled`（真偽値）のうち、型が正しく書かれていた
-    項目だけを持つ dict。crontab としての正しさは `_sync_job` がトリガーを作るときに
-    確かめる。不正な値・拡張が同梱していないツール名は、拡張名とツール名を含む
-    WARNING を出して無視する（その項目はデフォルトになる）。
-
-    Args:
-        extension_name: 上書きの持ち主の拡張名。
-        doc: その拡張の上書きドキュメント。無ければ `None`。
-        jobs: その拡張が同梱したタスクのデフォルト。
-        only: 指定したらこのツール名だけを見る（他のキーは警告も出さない）。
-
-    Returns:
-        ツール名から上書き項目への dict。
+    検証の規則は `services/task_schedules.parse_task_overrides()`（`GET /api/tasks` や
+    ダッシュボードと共通）。不正な値・拡張が同梱していないツール名は WARNING を出して無視する。
     """
-    if not doc or "tasks" not in doc:
-        return {}
-    tasks = doc["tasks"]
-    if not isinstance(tasks, dict):
-        logger.warning(
-            "[TASK] Ignoring task overrides of extension '%s': 'tasks' must be an object, got %s",
-            extension_name, type(tasks).__name__,
-        )
-        return {}
-
     known = {job.tool_name for job in jobs}
-    resolved: dict[str, dict] = {}
-    for tool_name, value in tasks.items():
-        if only is not None and tool_name != only:
-            continue
-        if tool_name not in known:
-            logger.warning(
-                "[TASK] Ignoring task override '%s' of extension '%s': "
-                "not a scheduled task bundled by the extension",
-                tool_name, extension_name,
-            )
-            continue
-        if not isinstance(value, dict):
-            logger.warning(
-                "[TASK] Ignoring task override '%s' of extension '%s': "
-                "expected an object, got %s",
-                tool_name, extension_name, type(value).__name__,
-            )
-            continue
-        entry: dict = {}
-        if "schedule" in value:
-            schedule = value["schedule"]
-            if isinstance(schedule, str):
-                entry["schedule"] = schedule
-            else:
-                logger.warning(
-                    "[TASK] Ignoring schedule override of task '%s' of extension '%s': "
-                    "expected a string, got %s",
-                    tool_name, extension_name, type(schedule).__name__,
-                )
-        if "enabled" in value:
-            enabled = value["enabled"]
-            if isinstance(enabled, bool):
-                entry["enabled"] = enabled
-            else:
-                logger.warning(
-                    "[TASK] Ignoring enabled override of task '%s' of extension '%s': "
-                    "expected a boolean, got %s",
-                    tool_name, extension_name, type(enabled).__name__,
-                )
-        resolved[tool_name] = entry
-    return resolved
+    return parse_task_overrides(extension_name, doc, known, only=only)
 
 
-def _build_trigger(schedule: str) -> CronTrigger:
-    """crontab 式から、スケジューラと同じタイムゾーンの `CronTrigger` を作る。
-
-    Raises:
-        Exception: crontab として解釈できない場合（APScheduler の例外をそのまま伝える）。
-    """
-    return CronTrigger.from_crontab(schedule, timezone=local_timezone())
-
-
-def _sync_job(job: _TaskJob, override: dict) -> None:
+def _sync_job(job: _TaskJob, override: TaskOverride | None) -> None:
     """上書きを重ねた設定に合わせて、1 タスクのジョブを登録・差し替え・削除する。
 
     起動時の登録と `apply_task_overrides()` の反映が共有する唯一の適用処理。
+    実効値は `services/task_schedules.resolve_task()` で決める（`GET /api/tasks` と同じ）。
     上書きの `schedule` が crontab として不正なら WARNING を出してデフォルトを使い、
     デフォルトも不正ならジョブを登録しない（登録済みなら外す）。
 
     Args:
         job: タスクのデフォルト。
-        override: `_resolve_task_overrides()` が返した、そのタスクの上書き項目。
+        override: `_parse_overrides()` が返した、そのタスクの上書き項目。
     """
     tool_name = job.tool_name
-    if override.get("enabled", True) is False:
+    resolved = resolve_task(tool_name, job.extension, job.default_schedule, override)
+    if not resolved.enabled:
         if tool_name in _applied_schedules:
             _remove_job(tool_name)
         logger.info("[TASK] Job disabled by override: %s (extension=%s)", tool_name, job.extension)
         return
 
-    schedule = override.get("schedule", job.default_schedule)
-    try:
-        trigger = _build_trigger(schedule)
-    except Exception as e:
-        if schedule == job.default_schedule:
-            logger.warning("[TASK] %s has invalid cron %r. Skipping: %s", tool_name, schedule, e)
-            if tool_name in _applied_schedules:
-                _remove_job(tool_name)
-            return
+    if resolved.schedule_override_rejected:
         logger.warning(
             "[TASK] Ignoring schedule override of task '%s' of extension '%s': "
-            "invalid cron %r (%s). Using default %r",
-            tool_name, job.extension, schedule, e, job.default_schedule,
+            "invalid cron %r. Using default %r",
+            tool_name, job.extension, resolved.override.schedule, job.default_schedule,
         )
-        _sync_job(job, {key: value for key, value in override.items() if key != "schedule"})
+    schedule = resolved.schedule
+    if schedule is None:
+        logger.warning(
+            "[TASK] %s has invalid cron %r. Skipping", tool_name, job.default_schedule
+        )
+        if tool_name in _applied_schedules:
+            _remove_job(tool_name)
         return
+    trigger = build_cron_trigger(schedule)
 
     if tool_name not in _applied_schedules:
         _scheduler.add_job(job.job_func, trigger, id=tool_name)

@@ -86,7 +86,10 @@ def registered(make_extension, use_extensions, monkeypatch):
         make_extension("diary", default_prompt=PROMPTS, settings_model=DiarySettings),
         make_extension("plain"),
     )
-    cfg = SimpleNamespace(ui=SimpleNamespace(locale="ja", timezone="Asia/Tokyo"))
+    cfg = SimpleNamespace(
+        ui=SimpleNamespace(locale="ja", timezone="Asia/Tokyo"),
+        scheduler=SimpleNamespace(enabled=True),
+    )
     monkeypatch.setattr("lilla_core.core.config.get_config", lambda: cfg)
 
 

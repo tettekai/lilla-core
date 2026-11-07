@@ -68,6 +68,7 @@ async def _detail(name: str, tools: dict) -> dict:
         get_config().ui.locale,
         task_handler.get_applied_schedules(),
         task_handler.is_scheduler_running(),
+        task_handler.is_scheduler_enabled(),
     )
     # 設定の読み込み失敗は節の `error` に入れ、上書きの編集は続けられるようにする
     detail["settings"] = await build_settings_detail(name)
@@ -105,7 +106,8 @@ async def handle_update(request: web.Request) -> web.Response:
 
     リクエスト全体を検証してから 1 回の更新で保存し（不正なら 400 で何も保存しない）、
     タスクを変えたときだけ稼働中のスケジューラへ反映する。応答の `saved` は保存の成否、
-    `tasks_apply` は反映の結果（`applied` / `scheduler_not_running` / `failed`。
+    `tasks_apply` は反映の結果（`applied` / `scheduler_not_running` /
+    `scheduler_disabled` / `failed`。
     タスクを変えていなければ `None`）で、保存できたが反映に失敗したことを成功と
     取り違えないよう分けて返す。保存に失敗したら 500 で、反映もしない。
     """
@@ -157,7 +159,8 @@ async def handle_apply(request: web.Request) -> web.Response:
     """POST /api/admin/extensions/{name}/tasks/apply - 保存済みのタスクの上書きを反映し直す。
 
     保存はできたが反映に失敗したときのやり直し用。反映に失敗したら 503、
-    スケジューラが動いていなければ 200 で `scheduler_not_running`（起動時に効く）を返す。
+    スケジューラが動いていなければ 200 で `scheduler_not_running`（起動時に効く）、
+    `scheduler.enabled: false` なら 200 で `scheduler_disabled`（`GET /api/tasks` に出る）を返す。
     対象のタスクを持たない拡張は 404。
     """
     from lilla_core.handlers import task_handler

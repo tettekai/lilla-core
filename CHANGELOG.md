@@ -9,6 +9,18 @@
 
 ### Added
 
+- 外部のスケジューラへ時刻の管理を任せるための設定と API を追加した（#309）。
+  - `lilla.yaml` に `scheduler.enabled`（既定 `true`。真偽値のみ）を追加した。`false` にすると APScheduler による定期起動
+    だけを始めず、タスクのロード・共有 HTTP サーバー・`POST /api/runtask`・`!runtask` は従来どおり使える。起動時にだけ読む
+  - 共有 HTTP サーバーに `GET /api/tasks`（Bearer 必須）を追加した。ロード済みの定期タスクごとに、拡張の上書きを重ねた
+    実効の `schedule` / `enabled` と `timezone`（`ui.timezone` の IANA 名。未指定なら `+09:00` 形式の UTC オフセット）を返し、
+    `scheduler_enabled` と `cron_format`（`apscheduler3`）も付ける。上書きは呼ぶたびに DB から読み、読み込み失敗は 503、
+    実効スケジュールを解決できないタスクがあれば 500 で返す（空の一覧にはしない）
+  - 実効値の解決を `lilla_core.services.task_schedules` にまとめ、内部スケジューラ・ダッシュボード・`GET /api/tasks` で共有した
+  - `task_handler.apply_task_overrides()` は内部スケジューラが無効な設定のとき `scheduler_disabled` を返す
+    （ダッシュボードの反映結果にも出る）。`task_handler.is_scheduler_enabled()` を追加した
+  - 拡張の `http_routes()` は `GET /api/tasks` を申告できなくなった（コアのルートと重なるため）
+
 - task ツールなどから `!mongodata` と同じ形で MongoDB へ書き込むヘルパー `lilla_core.tool_support.mongodata.save_document()` を
   追加した。`key` を渡すと `{key: 値}` を条件に `$set` で upsert し、省略すると insert する。書き込めるのは
   `commands.mongodata.allowed_collections` に並べたコレクションだけで、`!mongodata` もこの関数で書き込むようにした

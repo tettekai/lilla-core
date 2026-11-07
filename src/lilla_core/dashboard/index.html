@@ -516,7 +516,11 @@
               保存するとスケジューラへすぐ反映します（実行中のジョブは止めません）。
               スケジュール欄を空にするとデフォルトを使います。
             </p>
-            <div class="ext-warning" x-show="!exts.detail.scheduler_running">
+            <div class="ext-warning" x-show="exts.detail.scheduler_enabled === false">
+              内部スケジューラは無効です（<code>scheduler.enabled: false</code>）。保存した値は
+              外部のスケジューラが <code>GET /api/tasks</code> で取得したときに反映されます
+            </div>
+            <div class="ext-warning" x-show="exts.detail.scheduler_enabled !== false && !exts.detail.scheduler_running">
               スケジューラはまだ起動していません。保存した値は起動時に反映されます
             </div>
             <table class="ext-tasks">

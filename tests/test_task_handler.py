@@ -154,7 +154,7 @@ class TestStartScheduler:
 
         assert mock_scheduler.add_job.call_count == 2
 
-    @patch("lilla_core.handlers.task_handler.CronTrigger.from_crontab")
+    @patch("lilla_core.services.task_schedules.CronTrigger.from_crontab")
     @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
     async def test_invalid_cron_is_skipped_and_scheduler_still_starts(
         self, mock_scheduler_cls, mock_from_crontab, caplog: pytest.LogCaptureFixture
@@ -173,7 +173,7 @@ class TestStartScheduler:
         mock_scheduler.start.assert_called_once()
         assert any("invalid cron" in record.message for record in caplog.records)
 
-    @patch("lilla_core.handlers.task_handler.CronTrigger.from_crontab")
+    @patch("lilla_core.services.task_schedules.CronTrigger.from_crontab")
     @patch("lilla_core.handlers.task_handler.BackgroundScheduler")
     async def test_valid_cron_registered_when_mixed_with_invalid(
         self, mock_scheduler_cls, mock_from_crontab
@@ -182,7 +182,13 @@ class TestStartScheduler:
         mock_scheduler = MagicMock()
         mock_scheduler_cls.return_value = mock_scheduler
         valid_trigger = MagicMock()
-        mock_from_crontab.side_effect = [ValueError("bad cron"), valid_trigger]
+
+        def _from_crontab(expr, **kwargs):
+            if expr == "not a cron":
+                raise ValueError("bad cron")
+            return valid_trigger
+
+        mock_from_crontab.side_effect = _from_crontab
 
         tool_bad = MagicMock()
         tool_bad.schedule = "not a cron"
@@ -591,6 +597,17 @@ class TestTaskOverrides:
         await task_handler.start_scheduler(self._tools(task_a=self.DEFAULT), MagicMock())
         assert await task_handler.apply_task_overrides("diary") == task_handler.APPLY_APPLIED
         assert await task_handler.apply_task_overrides("diary", "task_missing") == task_handler.APPLY_NOT_FOUND
+
+    async def test_apply_reports_disabled_scheduler(self, repo, diary, monkeypatch) -> None:
+        """`scheduler.enabled: false` なら未起動ではなく無効と返し、DB も読まない。"""
+        from lilla_core.core.config import get_config
+
+        monkeypatch.setattr(get_config().scheduler, "enabled", False)
+
+        assert task_handler.is_scheduler_enabled() is False
+        assert task_handler.is_scheduler_running() is False
+        assert await task_handler.apply_task_overrides("diary") == task_handler.APPLY_SCHEDULER_DISABLED
+        repo.find_by_extensions.assert_not_awaited()
 
     async def test_strict_load_failure_keeps_current_jobs(self, repo, diary) -> None:
         """`strict=True` で読み込みに失敗したら、ジョブをデフォルトへ戻さず失敗を返す。"""

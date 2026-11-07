@@ -600,6 +600,19 @@ class HttpConfig(BaseModel):
     cors_allowed_origins: list[str] = []
 
 
+class SchedulerConfig(BaseModel):
+    """lilla.yaml の `scheduler:` セクション（内部の定期スケジューラ全体のスイッチ）。
+
+    `enabled: false` にすると APScheduler による定期起動だけを始めない。タスクのロード・
+    共有 HTTP サーバー（`GET /api/tasks` と `POST /api/runtask`）・`!runtask` は
+    止めないため、時刻の管理を外部のスケジューラへ任せられる。起動時にだけ読み、
+    変更は再起動後に効く。節ごと省略でき、既定は `true`（従来どおり）。
+    """
+
+    #: 内部の定期スケジューラを起動するか。`"false"` のような文字列や数値は受け付けない。
+    enabled: StrictBool = True
+
+
 class ExtensionsConfig(BaseModel):
     """lilla.yaml の `extensions:` セクション（拡張が申告した節の置き場）。
 
@@ -1003,6 +1016,7 @@ class AppConfig(BaseSettings):
     commands: CommandsConfig = CommandsConfig()
     dashboard: DashboardConfig = DashboardConfig()
     http: HttpConfig = HttpConfig()
+    scheduler: SchedulerConfig = SchedulerConfig()
     # `LlmConfig()` を直接デフォルト値にすると、クラス定義（モジュール import）の
     # 時点で即座にインスタンス化・検証されてしまい、YAML の内容に関わらず
     # import だけで落ちる。`default_factory` で AppConfig 構築時まで遅延させる。

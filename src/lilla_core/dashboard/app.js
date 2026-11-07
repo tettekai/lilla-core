@@ -922,6 +922,8 @@ function dashboardApp() {
       if (status === 'failed') {
         this.exts.notice = '';
         this.exts.error = '保存はできましたが、スケジューラへの反映に失敗しました。「再反映」を試すか、再起動してください';
+      } else if (status === 'scheduler_disabled') {
+        this.exts.notice = savedText + '。内部スケジューラは無効（scheduler.enabled: false）のため、外部のスケジューラが次に GET /api/tasks を取得したときに反映されます';
       } else if (status === 'scheduler_not_running') {
         this.exts.notice = savedText + '。スケジューラがまだ動いていないため、起動時に反映されます';
       } else if (status === 'applied') {
