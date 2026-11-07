@@ -22,7 +22,7 @@
 - 認証判定（``auth_middleware``）: リクエストごとに Cookie のセッションを引き、
   ``expires_at`` を毎回比較する。期限切れ・未発行はすべて 401。
 
-画面（ナビ）は組み込みの 6 つだけでなく、拡張が ``Extension.dashboard_page()`` で
+画面（ナビ）は組み込みの 7 つだけでなく、拡張が ``Extension.dashboard_page()`` で
 申告したページも ``GET /api/dashboard/nav`` のカタログに載せる。拡張のセッション API
 （``/api/{name}``）は Cookie の内側、公開コールバック（``/oauth/{name}``）と静的ファイル
 （``/static/ext/{name}/``）は外側に載せる。経路は lilla-core が ``Extension.name`` から
@@ -97,7 +97,7 @@ _AUTH_EXEMPT_PATHS = frozenset({"/", "/api/auth/status", "/api/login"})
 #: ``state`` の検証は拡張側の責任。
 _AUTH_EXEMPT_PREFIXES = ("/static/", "/oauth/")
 
-#: ダッシュボード組み込みの 6 画面。拡張のページと同じ形で ``/api/dashboard/nav``
+#: ダッシュボード組み込みの 7 画面。拡張のページと同じ形で ``/api/dashboard/nav``
 #: に並べ、フロントは組み込みと拡張を区別せずナビを組む。``name`` は
 #: lilla-core が ``RESERVED_EXTENSION_NAMES`` で押さえているので拡張と衝突しない。
 #: ``module`` が None のものは ``index.html`` に DOM を持つ組み込み画面。
@@ -118,6 +118,13 @@ _BUILTIN_PAGES: tuple[dict, ...] = (
         "label": "Admin",
         "group": "admin",
         "hash": "#/admin/logs",
+        "module": None,
+    },
+    {
+        "name": "extensions",
+        "label": "Extensions",
+        "group": "admin",
+        "hash": "#/admin/extensions",
         "module": None,
     },
 )
@@ -1111,7 +1118,7 @@ def _add_extension_routes(app: web.Application) -> None:
         app.router.add_route(route.method, route.path, route.handler)
 
 
-async def start_dashboard_server() -> None:
+async def start_dashboard_server(tools: dict | None = None) -> None:
     """ダッシュボードサーバーを起動する。
 
     認証ミドルウェア・認証 API・ログ・会話履歴 API と静的ファイル配信に加えて、
@@ -1120,7 +1127,12 @@ async def start_dashboard_server() -> None:
 
     拡張の申告（``get_dashboard_*()``）を読むため、``load_extensions()`` が
     終わったあとに呼ぶこと。
+
+    Args:
+        tools: task ツールのレジストリ（``load_all_tools()`` の結果）。拡張の上書き
+            編集ページが、拡張の同梱した定期タスクを列挙するのに使う。
     """
+    from lilla_core.handlers.dashboard_extensions import register_routes as register_extension_routes
 
     # aiohttp のアクセスログを抑制
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
@@ -1147,6 +1159,7 @@ async def start_dashboard_server() -> None:
     app.router.add_get("/api/dashboard/nav", handle_api_dashboard_nav)
     app.router.add_get("/api/dashboard/status", handle_api_dashboard_status)
     app.router.add_get("/api/usage", handle_api_usage)
+    register_extension_routes(app, tools)
     _add_extension_routes(app)
     app.router.add_static("/static", DASHBOARD_DIR)
 

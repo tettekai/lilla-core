@@ -389,6 +389,121 @@
       </div>
     </section>
 
+    <section x-show="activeTab === 'extensions'">
+      <p class="ext-intro">
+        拡張のデフォルトのプロンプトと、拡張が同梱した定期タスクの上書きを編集します。
+        ここでの値は <code>extension_overrides</code> に保存され、拡張そのもの（コードと同梱の既定値）は変わりません。
+      </p>
+      <div x-show="exts.loading" class="loading">読み込み中...</div>
+      <div x-show="!exts.loading && editableExtensions().length === 0" class="empty">
+        編集できる拡張がありません（デフォルトのプロンプトか定期タスクを持つ拡張だけが対象です）
+      </div>
+
+      <div class="ext-tabs" x-show="editableExtensions().length > 0">
+        <template x-for="item in editableExtensions()" :key="item.name">
+          <button :class="{ active: exts.selected === item.name }" @click="selectExtension(item.name)"
+            x-text="item.name"></button>
+        </template>
+      </div>
+
+      <div class="ext-error" x-show="exts.error">
+        <span x-text="exts.error"></span>
+        <button x-show="exts.applyFailed" @click="reapplyExtensionTasks()">再反映</button>
+      </div>
+      <div class="ext-notice" x-show="exts.notice" x-text="exts.notice"></div>
+      <div x-show="exts.detailLoading" class="loading">読み込み中...</div>
+
+      <template x-if="exts.detail && !exts.detailLoading">
+        <div>
+          <div class="ext-card" x-show="exts.detail.prompt">
+            <div class="ext-card-header">
+              <h3>プロンプト</h3>
+              <span :class="'badge ' + (exts.detail.prompt && exts.detail.prompt.overridden ? 'badge-warning' : 'level-default')"
+                x-text="exts.detail.prompt && exts.detail.prompt.overridden ? '上書き中' : 'デフォルト'"></span>
+            </div>
+            <p class="ext-help">
+              文字列 1 つで拡張のプロンプト全体を置き換えます。空にして保存すると、この拡張のプロンプトを
+              会話に入れません。次の会話から使われます。「デフォルトに戻す」は上書きを消すだけで、
+              デフォルトの本文はコピーしません（<code>ui.locale</code> を変えても上書きは翻訳されません）。
+            </p>
+            <div class="ext-warning" x-show="exts.detail.prompt && exts.detail.prompt.invalid">
+              保存済みの上書きが文字列ではないため、デフォルトを使っています
+            </div>
+            <textarea class="memo-input ext-prompt" rows="12" x-model="exts.promptDraft"></textarea>
+            <div class="memo-actions">
+              <button @click="savePromptOverride()">上書きを保存</button>
+              <button x-show="exts.detail.prompt && exts.detail.prompt.overridden"
+                @click="resetPromptOverride()">デフォルトに戻す</button>
+            </div>
+            <details class="ext-default">
+              <summary x-text="'デフォルト（' + ((exts.detail.prompt && exts.detail.prompt.default_locale) || '-') + '）'"></summary>
+              <pre x-text="exts.detail.prompt && exts.detail.prompt.default"></pre>
+            </details>
+          </div>
+
+          <div class="ext-card" x-show="exts.detail.tasks.length > 0">
+            <div class="ext-card-header">
+              <h3>定期タスク</h3>
+            </div>
+            <p class="ext-help">
+              crontab は <code x-text="exts.detail.timezone"></code>（<code>ui.timezone</code>）で解釈します。
+              「定期実行」を外すとスケジュールからだけ外れ、<code>!runtask</code> での手動実行はできます。
+              保存するとスケジューラへすぐ反映します（実行中のジョブは止めません）。
+              スケジュール欄を空にするとデフォルトを使います。
+            </p>
+            <div class="ext-warning" x-show="!exts.detail.scheduler_running">
+              スケジューラはまだ起動していません。保存した値は起動時に反映されます
+            </div>
+            <table class="ext-tasks">
+              <thead>
+                <tr>
+                  <th>タスク</th>
+                  <th>スケジュール</th>
+                  <th>定期実行</th>
+                  <th>状態</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="task in exts.detail.tasks" :key="task.name">
+                  <tr>
+                    <td><code x-text="task.name"></code></td>
+                    <td>
+                      <input type="text" class="ext-cron" x-model="exts.taskDrafts[task.name].schedule"
+                        :placeholder="task.default.schedule">
+                      <div class="ext-sub" x-text="'デフォルト: ' + task.default.schedule"></div>
+                    </td>
+                    <td>
+                      <label class="memo-toggle">
+                        <input type="checkbox" x-model="exts.taskDrafts[task.name].enabled">
+                        有効
+                      </label>
+                    </td>
+                    <td>
+                      <span :class="'badge ' + (taskHasOverride(task) ? 'badge-warning' : 'level-default')"
+                        x-text="taskHasOverride(task) ? '上書き中' : 'デフォルト'"></span>
+                      <div class="ext-sub" x-show="task.invalid.length > 0"
+                        x-text="'不正な上書きを無視: ' + task.invalid.join(', ')"></div>
+                      <div class="ext-sub" x-show="exts.detail.scheduler_running"
+                        x-text="task.applied_schedule ? '適用中: ' + task.applied_schedule : '適用中: なし（停止）'"></div>
+                      <div class="ext-sub ext-warning-text" x-show="!task.in_sync">
+                        保存値と適用中の値が違います
+                        <button @click="reapplyExtensionTasks()">再反映</button>
+                      </div>
+                    </td>
+                    <td class="ext-task-actions">
+                      <button @click="saveTaskOverride(task)">保存</button>
+                      <button x-show="taskHasOverride(task)" @click="resetTaskOverride(task)">デフォルトに戻す</button>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </template>
+    </section>
+
     <!-- 拡張ページ用スロット。中身は拡張の page.js が mount(el, ctx) で書くので、
          Alpine のディレクティブは置かない（殻が触るのは表示の切り替えだけ）。 -->
     <section x-show="extPage.name" x-cloak>

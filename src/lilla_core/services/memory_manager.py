@@ -53,7 +53,7 @@ def _resolve_client_prompt(client_type: str) -> str:
 _DEFAULT_PROMPT_FALLBACK_LOCALES = ("ja", "en")
 
 
-def _select_default_prompt(prompts: dict[str, str], locale: str) -> str:
+def select_default_prompt(prompts: dict[str, str], locale: str) -> str:
     """拡張のデフォルトプロンプトから `locale` に合う本文を選ぶ。
 
     `locale` → `ja` → `en` → 定義の先頭の言語、の順に最初に見つかったものを使う。
@@ -71,6 +71,10 @@ def _select_default_prompt(prompts: dict[str, str], locale: str) -> str:
         if fallback in prompts:
             return prompts[fallback]
     return next(iter(prompts.values()))
+
+
+#: 互換のための旧名。
+_select_default_prompt = select_default_prompt
 
 
 def _floor_to_hour(dt: datetime, tz: tzinfo) -> datetime:
@@ -301,7 +305,7 @@ class MemoryManager:
         locale = self._config.ui.locale
         parts: list[str] = []
         for name, prompts in defaults:
-            text = _select_default_prompt(prompts, locale)
+            text = select_default_prompt(prompts, locale)
             override = overrides.get(name)
             if override is not None and "prompt" in override:
                 value = override["prompt"]

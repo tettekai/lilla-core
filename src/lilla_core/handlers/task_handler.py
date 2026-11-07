@@ -104,7 +104,22 @@ async def start_scheduler(tools: dict, bot, llm_tools: dict = None) -> None:
         _log_next_run(tool_name)
 
 
-async def apply_task_overrides(extension_name: str, task_name: str | None = None) -> None:
+#: `apply_task_overrides()` の結果: 反映した（変わらなかった場合も含む）。
+APPLY_APPLIED = "applied"
+#: `apply_task_overrides()` の結果: スケジューラが動いていない（保存済みの上書きは起動時に効く）。
+APPLY_SCHEDULER_NOT_RUNNING = "scheduler_not_running"
+#: `apply_task_overrides()` の結果: 対象のタスクが無い（拡張が同梱した定期タスクではない）。
+APPLY_NOT_FOUND = "not_found"
+#: `apply_task_overrides()` の結果: 読み込みか反映に失敗した（`strict=True` のときだけ返す）。
+APPLY_FAILED = "failed"
+
+
+async def apply_task_overrides(
+    extension_name: str,
+    task_name: str | None = None,
+    *,
+    strict: bool = False,
+) -> str:
     """1 つの拡張（または、その中の 1 タスク）の上書きを読み直し、稼働中のスケジューラへ反映する。
 
     `extension_overrides` のその拡張のドキュメントを読み、`tasks` の上書きを重ねた
@@ -114,20 +129,29 @@ async def apply_task_overrides(extension_name: str, task_name: str | None = None
     実行中のジョブは止めない（差し替えは次回以降の実行に効く）。
 
     再起動なしで反映するための入口で、上書きを書き込んだ側（ダッシュボードなど）が
-    呼ぶ想定。変更の監視はしない。上書きはキャッシュせず、呼ぶたびに MongoDB を読む。
-    読み込みに失敗したときは WARNING を出し、その拡張のタスクをデフォルトへ戻す
-    （起動時と同じ扱い）。
+    呼ぶ。変更の監視はしない。上書きはキャッシュせず、呼ぶたびに MongoDB を読む。
+
+    `strict=False`（既定）では、読み込みに失敗したときに WARNING を出し、その拡張の
+    タスクをデフォルトへ戻す（起動時と同じ扱い）。`strict=True` では、読み込みに
+    失敗したら何も変えずに `APPLY_FAILED` を返し、反映中の例外も `APPLY_FAILED` に
+    して返す（保存は成功したが反映できなかったことを呼び出し元が利用者へ伝え、
+    再反映できるようにするため）。
 
     Args:
         extension_name: 対象の拡張の `name`。
         task_name: 対象をこのタスク（ツール名）だけに絞る。`None` ならその拡張の全タスク。
+        strict: 読み込み・反映の失敗を `APPLY_FAILED` として返す。
+
+    Returns:
+        `APPLY_APPLIED` / `APPLY_SCHEDULER_NOT_RUNNING` / `APPLY_NOT_FOUND` /
+        `APPLY_FAILED` のいずれか。
     """
     if _scheduler is None:
         logger.warning(
             "[TASK] Scheduler is not running; ignoring task overrides of extension '%s'",
             extension_name,
         )
-        return
+        return APPLY_SCHEDULER_NOT_RUNNING
     scheduler = _scheduler
     jobs = _extension_jobs(extension_name)
     if task_name is not None:
@@ -138,16 +162,50 @@ async def apply_task_overrides(extension_name: str, task_name: str | None = None
                 "bundled by extension '%s'",
                 task_name, extension_name,
             )
-            return
+            return APPLY_NOT_FOUND
 
-    overrides = await _load_overrides([extension_name])
+    if strict:
+        try:
+            overrides = await get_extension_override_repo().find_by_extensions([extension_name])
+        except Exception as e:
+            logger.warning(
+                "[TASK] Failed to load extension overrides for %s; task schedules unchanged: %s",
+                extension_name, e,
+            )
+            return APPLY_FAILED
+    else:
+        overrides = await _load_overrides([extension_name])
     if _scheduler is not scheduler:
-        return
+        return APPLY_SCHEDULER_NOT_RUNNING
     resolved = _resolve_task_overrides(
         extension_name, overrides.get(extension_name), jobs, only=task_name
     )
     for job in jobs:
-        _sync_job(job, resolved.get(job.tool_name, {}))
+        try:
+            _sync_job(job, resolved.get(job.tool_name, {}))
+        except Exception as e:
+            if not strict:
+                raise
+            logger.error(
+                "[TASK] Failed to apply task override of '%s' (extension=%s): %s",
+                job.tool_name, extension_name, e,
+            )
+            return APPLY_FAILED
+    return APPLY_APPLIED
+
+
+def is_scheduler_running() -> bool:
+    """定期スケジューラが起動済みかを返す（`start_scheduler()` 後、`stop_scheduler()` 前）。"""
+    return _scheduler is not None
+
+
+def get_applied_schedules() -> dict[str, str]:
+    """登録中のジョブの「ツール名 -> 適用中の crontab」の写しを返す。
+
+    ここに無いタスクはジョブを登録していない（`enabled: false`・不正な crontab・
+    スケジューラ未起動のいずれか）。
+    """
+    return dict(_applied_schedules)
 
 
 def stop_scheduler() -> None:

@@ -4,7 +4,7 @@
 // GET /api/dashboard/nav が正で、組み込みも拡張も同じ形で並ぶ。ハッシュと
 // 画面名の対応表はそのカタログから 1 度だけ組み立てる（二重管理しない）。
 
-// カタログを取れなかったときの退避。組み込み 6 画面だけはカタログ無しでも
+// カタログを取れなかったときの退避。組み込み 7 画面だけはカタログ無しでも
 // 開けるようにして、ナビの取得失敗でダッシュボードごと使えなくならないようにする。
 const FALLBACK_PAGES = [
   { name: 'home', label: 'Home', group: 'main', hash: '#/', module: null },
@@ -13,6 +13,7 @@ const FALLBACK_PAGES = [
   { name: 'skills', label: 'Skills', group: 'main', hash: '#/skills', module: null },
   { name: 'usage', label: 'Usage', group: 'main', hash: '#/usage', module: null },
   { name: 'logs', label: 'Admin', group: 'admin', hash: '#/admin/logs', module: null },
+  { name: 'extensions', label: 'Extensions', group: 'admin', hash: '#/admin/extensions', module: null },
 ];
 
 const DEFAULT_HASH = '#/';
@@ -100,6 +101,22 @@ function dashboardApp() {
       newContent: '',
       editingId: null,
       editContent: '',
+    },
+
+    // 拡張の上書き（extension_overrides）の編集。detail はサーバーの
+    // GET /api/admin/extensions/{name} の応答をそのまま持ち、編集中の値は
+    // promptDraft / taskDrafts に分けて持つ（保存前の値で表示を壊さないため）。
+    exts: {
+      items: [],
+      loading: false,
+      selected: null,
+      detail: null,
+      detailLoading: false,
+      error: '',
+      notice: '',
+      applyFailed: false,
+      promptDraft: '',
+      taskDrafts: {},
     },
 
     skills: {
@@ -238,6 +255,8 @@ function dashboardApp() {
         this.fetchSkills();
       } else if (tab === 'usage') {
         this.fetchUsage();
+      } else if (tab === 'extensions') {
+        this.fetchExtensions();
       } else if (tab === 'home') {
         this.fetchHomeStatus();
       }
@@ -717,6 +736,204 @@ function dashboardApp() {
       }
       if (res.status === 409) detail = '同じ名前のスキルが既にあります';
       alert(action + 'に失敗しました' + (detail ? ': ' + detail : ''));
+    },
+
+    // ---- 拡張の上書き ----
+
+    editableExtensions() {
+      return this.exts.items.filter((item) => item.editable);
+    },
+
+    async fetchExtensions() {
+      this.exts.loading = true;
+      this.exts.error = '';
+      try {
+        const res = await this.authedFetch('/api/admin/extensions');
+        const data = await res.json();
+        this.exts.items = data.items || [];
+        const editable = this.editableExtensions();
+        const keep = editable.find((item) => item.name === this.exts.selected);
+        const next = keep ? keep.name : (editable[0] ? editable[0].name : null);
+        if (next) {
+          await this.selectExtension(next);
+        } else {
+          this.exts.selected = null;
+          this.exts.detail = null;
+        }
+      } catch (e) {
+        console.error('Failed to fetch extensions', e);
+        this.exts.error = '拡張の一覧を取得できませんでした';
+      } finally {
+        this.exts.loading = false;
+      }
+    },
+
+    async selectExtension(name) {
+      if (this.exts.selected !== name) {
+        this.exts.notice = '';
+        this.exts.applyFailed = false;
+      }
+      this.exts.selected = name;
+      this.exts.detailLoading = true;
+      this.exts.error = '';
+      try {
+        const res = await this.authedFetch('/api/admin/extensions/' + encodeURIComponent(name));
+        if (!res.ok) {
+          this.exts.detail = null;
+          this.exts.error = await this.extErrorText(res, '上書きを取得できませんでした');
+          return;
+        }
+        this.setExtensionDetail(await res.json());
+      } catch (e) {
+        console.error('Failed to fetch extension detail', e);
+        this.exts.detail = null;
+        this.exts.error = '上書きを取得できませんでした';
+      } finally {
+        this.exts.detailLoading = false;
+      }
+    },
+
+    // 編集欄は「今効いている値」で埋める。タスクの schedule は上書きがあるときだけ
+    // 入れ、空欄は「デフォルトを使う」を意味する。
+    setExtensionDetail(detail) {
+      this.exts.detail = detail;
+      this.exts.promptDraft = detail.prompt ? detail.prompt.effective : '';
+      const drafts = {};
+      for (const task of detail.tasks || []) {
+        drafts[task.name] = {
+          schedule: task.override.schedule || '',
+          enabled: task.effective.enabled,
+        };
+      }
+      this.exts.taskDrafts = drafts;
+    },
+
+    async extErrorText(res, fallback) {
+      try {
+        const data = await res.json();
+        if (data && data.error) return fallback + ': ' + data.error;
+      } catch (e) {
+        // JSON でない応答は既定の文言にする
+      }
+      return fallback;
+    },
+
+    async saveExtensionOverrides(payload, doneText, failText) {
+      const name = this.exts.selected;
+      if (!name) return;
+      this.exts.notice = '';
+      this.exts.error = '';
+      try {
+        const res = await this.authedFetch(
+          '/api/admin/extensions/' + encodeURIComponent(name) + '/overrides',
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          },
+        );
+        if (!res.ok) {
+          this.exts.error = await this.extErrorText(res, failText + '（保存していません）');
+          return;
+        }
+        const data = await res.json();
+        if (data.detail) {
+          this.setExtensionDetail(data.detail);
+        } else {
+          await this.selectExtension(name);
+        }
+        this.showApplyResult(data.tasks_apply, doneText);
+      } catch (e) {
+        console.error('Failed to save extension overrides', e);
+        this.exts.error = failText;
+      }
+    },
+
+    // 保存と反映は分けて伝える。保存できても反映に失敗したら成功と言わない。
+    showApplyResult(status, savedText) {
+      this.exts.applyFailed = status === 'failed';
+      if (status === 'failed') {
+        this.exts.notice = '';
+        this.exts.error = '保存はできましたが、スケジューラへの反映に失敗しました。「再反映」を試すか、再起動してください';
+      } else if (status === 'scheduler_not_running') {
+        this.exts.notice = savedText + '。スケジューラがまだ動いていないため、起動時に反映されます';
+      } else if (status === 'applied') {
+        this.exts.notice = savedText + '。スケジューラへ反映しました';
+      } else {
+        this.exts.notice = savedText + '。次の会話から使われます';
+      }
+    },
+
+    async reapplyExtensionTasks() {
+      const name = this.exts.selected;
+      if (!name) return;
+      this.exts.notice = '';
+      this.exts.error = '';
+      try {
+        const res = await this.authedFetch(
+          '/api/admin/extensions/' + encodeURIComponent(name) + '/tasks/apply',
+          { method: 'POST' },
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok && data.status !== 'failed') {
+          this.exts.error = data.error ? '再反映に失敗しました: ' + data.error : '再反映に失敗しました';
+          return;
+        }
+        await this.selectExtension(name);
+        this.showApplyResult(data.status, '保存済みの上書きを再反映しました');
+      } catch (e) {
+        console.error('Failed to reapply task overrides', e);
+        this.exts.error = '再反映に失敗しました';
+      }
+    },
+
+    savePromptOverride() {
+      // 空文字も「何も注入しない」という有効な上書きとして保存する
+      this.saveExtensionOverrides(
+        { prompt: this.exts.promptDraft },
+        'プロンプトの上書きを保存しました',
+        'プロンプトの上書きを保存できませんでした',
+      );
+    },
+
+    resetPromptOverride() {
+      if (!confirm('プロンプトの上書きを消して、デフォルトに戻しますか？')) return;
+      this.saveExtensionOverrides(
+        { prompt: null },
+        'プロンプトをデフォルトに戻しました',
+        'プロンプトをデフォルトに戻せませんでした',
+      );
+    },
+
+    saveTaskOverride(task) {
+      const draft = this.exts.taskDrafts[task.name];
+      const schedule = draft.schedule.trim();
+      this.saveExtensionOverrides(
+        {
+          tasks: {
+            [task.name]: {
+              // 空欄はデフォルトの crontab を使う（上書きを消す）
+              schedule: schedule || null,
+              // 有効はデフォルトと同じなので上書きを消す
+              enabled: draft.enabled ? null : false,
+            },
+          },
+        },
+        task.name + ' の上書きを保存しました',
+        task.name + ' の上書きを保存できませんでした',
+      );
+    },
+
+    resetTaskOverride(task) {
+      this.saveExtensionOverrides(
+        { tasks: { [task.name]: { schedule: null, enabled: null } } },
+        task.name + ' をデフォルトに戻しました',
+        task.name + ' をデフォルトに戻せませんでした',
+      );
+    },
+
+    taskHasOverride(task) {
+      return Object.keys(task.override).length > 0 || task.invalid.length > 0;
     },
 
     async fetchSkills() {

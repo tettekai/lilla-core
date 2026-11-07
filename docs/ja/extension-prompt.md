@@ -57,7 +57,10 @@ extension = DiaryExtension()
   今後 `settings` などのキーも足す予定で、存在するキーだけが上書きになります）。
 - `prompt` が文字列でない（数値・配列・オブジェクト・`null` など）場合は、拡張名を含む
   WARNING ログを出してデフォルトを使います。
-- 書き込みの API と、ダッシュボードの編集画面はまだありません。`mongosh` などで直接入れます。
+- ふだんは観測用ダッシュボードの **Extensions** 画面（管理メニュー、`#/admin/extensions`）で
+  編集します（[観測用ダッシュボード](dashboard.md#extensions)）。「デフォルトに戻す」は `prompt`
+  キーを消すだけで、デフォルトの本文を上書きとしてコピーしません。下の例のように `mongosh`
+  などで直接入れることもできます。
 
 ```javascript
 db.extension_overrides.updateOne(

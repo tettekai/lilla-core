@@ -54,9 +54,24 @@
   ツール YAML の `enabled: false` と違いツールはロードされ `!runtask` で実行できる。不正な値・拡張が同梱していないツール名・読み込みの
   失敗は、拡張名とツール名を含む WARNING ログを出してデフォルトにフォールバックする（起動は止めない）。コア組み込みのタスクは対象外。
   稼働中のスケジューラへ再起動なしで反映する非同期関数 `handlers/task_handler.py` の `apply_task_overrides(extension_name, task_name=None)`
-  を追加したが、本番のコードから呼ぶ箇所はまだ無いため、現時点で上書きを変えたら再起動が必要
+  を追加した（#305 でダッシュボードの編集画面から呼ぶようになった）
 - `loaders/tool_paths.py` に、拡張が同梱したツール YAML の stem と拡張名の対応を返す `resolve_tool_config_owners()` を追加し、
   `load_all_tools()` の各エントリに同梱した拡張の名前（`extension`。無ければ `None`）を入れるようにした（#284）
+
+- 観測用ダッシュボードに、拡張の上書き（`extension_overrides`）を編集する管理画面 **Extensions**（`#/admin/extensions`）を
+  追加した（#305）。ロード済みの拡張ごとに、デフォルトのプロンプト（`ui.locale` に合うデフォルト・上書きの有無・実効値）と、
+  拡張が同梱した定期タスクの `schedule` / `enabled` を編集できる。API はログイン必須の
+  `GET /api/admin/extensions`・`GET /api/admin/extensions/{name}`・`PATCH /api/admin/extensions/{name}/overrides`・
+  `POST /api/admin/extensions/{name}/tasks/apply`。保存はリクエスト全体を検証してから 1 回の更新で行い（不正なら何も保存しない）、
+  指定したキーだけを書き換える。タスクを保存すると稼働中のスケジューラへ再起動なしで反映し、保存の成否と反映の成否を分けて返す
+  （反映に失敗しても成功とは表示せず、再反映できる）。`repository/extension_override_repository.py` に `find_one()` と
+  `update_overrides()` を追加した
+- `handlers/task_handler.py` の `apply_task_overrides()` にキーワード引数 `strict`（既定 `False`）を追加し、結果
+  （`APPLY_APPLIED` / `APPLY_SCHEDULER_NOT_RUNNING` / `APPLY_NOT_FOUND` / `APPLY_FAILED`）を返すようにした。`strict=True` では
+  上書きの読み込みに失敗してもジョブをデフォルトへ戻さず、反映中の例外も `APPLY_FAILED` として返す。状態を読む
+  `is_scheduler_running()` / `get_applied_schedules()` も追加した
+- `services/memory_manager.py` の拡張のデフォルトプロンプトを選ぶ関数を `select_default_prompt()` として公開した
+  （旧名 `_select_default_prompt` も残している）
 
 ### Changed
 
@@ -67,6 +82,8 @@
   投げても保存済みの履歴は残す。Discord への配送は従来どおり送信してから保存する。`(text, saved)` の 2 引数で呼べない形の配送関数
   （1 引数のものなど）は、拡張名と `client_type` を示してロード時に失敗する（`*args` や 2 つ目の引数に既定値がある関数は読み込む）。
   `EXTENSION_API_VERSION` は 2 のまま
+- `start_dashboard_server()` が省略可能な引数 `tools`（task ツールのレジストリ）を受け取るようにし、`bot.py` が渡すようにした（#305）。
+  拡張の名前 `extensions` を予約名（`RESERVED_EXTENSION_NAMES`）に加えた（ダッシュボードの `#/admin/extensions` と衝突するため）
 - `handlers/task_handler.py` の `start_scheduler()` を非同期関数にした（#284。起動時に MongoDB の上書きを読むため）。
   呼び出し側は `await` が必要
 - 会話履歴の `time` をミリ秒単位に切り捨てて保存するようにした（MongoDB の保存精度と同じ。#288）
