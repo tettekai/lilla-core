@@ -449,6 +449,26 @@ class Extension:
         """
         return None
 
+    def settings_model(self) -> type[BaseModel] | None:
+        """ダッシュボードで編集する設定（画面管理の設定本体）のモデルを返す（持たないなら `None`）。
+
+        `config_model()`（`lilla.yaml` の `extensions:` 下・起動時に確定）とは別の
+        設定で、MongoDB の `extension_settings` に拡張ごとに 1 ドキュメントで保存し、
+        観測用ダッシュボードの Extensions 画面で編集する。読み出しは
+        `services/extension_settings.py` の `load_settings(name, model)`（非同期・
+        呼ぶたびに DB を読む）で、保存の直後に始まる処理から新しい値を使える。
+
+        - 全フィールドに既定値が必要で、それが「保存していないときの初期値」になる
+          （未設定を表すなら `str | None = None` のように書く）。既定値がモデルの検証を
+          通らない・既定値の無いフィールドがある場合はロード時に落とす
+        - 1 つの項目の担当は YAML か画面のどちらか一方だけ。`config_model()` と同じ
+          名前のフィールドを持つとロード時に落とし、ここで宣言した項目を `lilla.yaml` の
+          `extensions.<節名>` に書くと、画面へ移った旨を示して起動時に落とす
+        - 複数行の入力欄にしたい文字列は `Field(json_schema_extra={"multiline": True})`
+          と書く（画面の表示だけに使う）
+        """
+        return None
+
     def env_fields(self) -> dict[str, str]:
         """この拡張が足す秘匿フィールドを「フィールド名 -> OS 環境変数名」で返す。
 
@@ -632,6 +652,7 @@ class Extension:
 
 _extensions: list[Extension] = []
 _config_models: dict[str, Any] = {}
+_settings_models: dict[str, Any] = {}
 _env_fields: dict[str, str] = {}
 _tool_context_providers: dict[str, ContextValueProvider] = {}
 _result_deliveries: dict[str, DeliveryFn] = {}
@@ -822,6 +843,59 @@ def _collect_config_models(extensions: list[Extension]) -> dict[str, Any]:
                 "start with a digit)"
             )
         models[section] = model
+    return models
+
+
+def _collect_settings_models(extensions: list[Extension]) -> dict[str, Any]:
+    """各拡張の `settings_model()` を検証し、「拡張名 -> モデル」へまとめる。
+
+    Args:
+        extensions: ロード順に並んだ拡張のリスト（`name` は検証済み）。
+
+    Returns:
+        拡張名からモデルクラスへの dict。`settings_model()` が `None` の拡張は含めない。
+
+    Raises:
+        ValueError: `BaseModel` サブクラス以外を返した場合、既定値の無いフィールドが
+            ある場合、既定値（初期値）がモデルの検証を通らない場合、または
+            `config_model()` と同じ名前のフィールドを持つ（担当の二重宣言）場合。
+    """
+    from pydantic import BaseModel, ValidationError
+
+    models: dict[str, Any] = {}
+    for ext in extensions:
+        model = ext.settings_model()
+        if model is None:
+            continue
+        if not (isinstance(model, type) and issubclass(model, BaseModel)):
+            raise ValueError(
+                f"Extension '{ext.name}' settings_model() must return a pydantic "
+                f"BaseModel subclass or None, got {model!r}"
+            )
+        required = sorted(
+            name for name, field in model.model_fields.items() if field.is_required()
+        )
+        if required:
+            raise ValueError(
+                f"Extension '{ext.name}' settings_model() fields must all have defaults "
+                f"(the initial values when nothing is saved): {', '.join(required)}"
+            )
+        try:
+            model.model_validate(model().model_dump())
+        except ValidationError as e:
+            raise ValueError(
+                f"Extension '{ext.name}' settings_model() has invalid default values: {e}"
+            ) from e
+        config_model = ext.config_model()
+        if isinstance(config_model, type) and issubclass(config_model, BaseModel):
+            both = sorted(set(model.model_fields) & set(config_model.model_fields))
+            if both:
+                raise ValueError(
+                    f"Extension '{ext.name}' declares {', '.join(both)} in both "
+                    "config_model() (lilla.yaml) and settings_model() (dashboard); "
+                    "each item must have a single owner"
+                )
+        models[ext.name] = model
     return models
 
 
@@ -1196,6 +1270,7 @@ def set_extensions(extensions: list[Extension]) -> None:
     _validate_requires(extensions)
 
     config_models = _collect_config_models(extensions)
+    settings_models = _collect_settings_models(extensions)
     env_fields = _merge_unique(
         extensions, "env_fields", "env field", reserved=core_env_field_names()
     )
@@ -1241,6 +1316,8 @@ def set_extensions(extensions: list[Extension]) -> None:
     _extensions = list(extensions)
     _config_models.clear()
     _config_models.update(config_models)
+    _settings_models.clear()
+    _settings_models.update(settings_models)
     _env_fields.clear()
     _env_fields.update(env_fields)
     _tool_context_providers.clear()
@@ -1398,6 +1475,11 @@ def load_extensions(spec: str | None = None) -> list[Extension]:
 def get_extensions() -> list[Extension]:
     """登録済み拡張のリストのコピーをロード順で返す。"""
     return list(_extensions)
+
+
+def get_settings_models() -> dict[str, Any]:
+    """全拡張の `settings_model()` を「拡張名 -> モデル」にまとめた dict のコピーをロード順で返す。"""
+    return dict(_settings_models)
 
 
 def get_config_models() -> dict[str, Any]:

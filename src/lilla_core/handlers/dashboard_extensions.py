@@ -8,10 +8,13 @@
 - ``PATCH /api/admin/extensions/{name}/overrides``: 上書きの保存（タスクを変えたら
   稼働中のスケジューラへ反映する）
 - ``POST /api/admin/extensions/{name}/tasks/apply``: 保存済みのタスクの上書きの再反映
+- ``PUT /api/admin/extensions/{name}/settings``: 画面管理の設定（設定の本体。
+  `extension_settings`）の一式の保存
 
 拡張の API は ``/api/{name}`` に載るため、衝突しないよう ``/api/admin/`` の下に置く。
-検証・組み立ては `services/extension_overrides.py`、保存は
-`repository/extension_override_repository.py`、反映は `handlers/task_handler.py` が持つ。
+上書きの検証・組み立ては `services/extension_overrides.py`、保存は
+`repository/extension_override_repository.py`、反映は `handlers/task_handler.py`、
+画面管理の設定は `services/extension_settings.py` が持つ。
 """
 from __future__ import annotations
 
@@ -40,6 +43,7 @@ def register_routes(app: web.Application, tools: dict | None) -> None:
     app.router.add_get("/api/admin/extensions/{name}", handle_detail)
     app.router.add_patch("/api/admin/extensions/{name}/overrides", handle_update)
     app.router.add_post("/api/admin/extensions/{name}/tasks/apply", handle_apply)
+    app.router.add_put("/api/admin/extensions/{name}/settings", handle_settings_update)
 
 
 def _error(status: int, message: str) -> web.Response:
@@ -54,8 +58,10 @@ async def _detail(name: str, tools: dict) -> dict:
     from lilla_core.repository.extension_override_repository import get_extension_override_repo
     from lilla_core.services.extension_overrides import build_detail
 
+    from lilla_core.services.extension_settings import build_settings_detail
+
     doc = await get_extension_override_repo().find_one(name)
-    return build_detail(
+    detail = build_detail(
         name,
         tools,
         doc,
@@ -63,6 +69,9 @@ async def _detail(name: str, tools: dict) -> dict:
         task_handler.get_applied_schedules(),
         task_handler.is_scheduler_running(),
     )
+    # 設定の読み込み失敗は節の `error` に入れ、上書きの編集は続けられるようにする
+    detail["settings"] = await build_settings_detail(name)
+    return detail
 
 
 async def handle_list(request: web.Request) -> web.Response:
@@ -163,3 +172,41 @@ async def handle_apply(request: web.Request) -> web.Response:
     if status == task_handler.APPLY_FAILED:
         return web.json_response({"status": status}, status=503)
     return web.json_response({"status": status})
+
+
+async def handle_settings_update(request: web.Request) -> web.Response:
+    """PUT /api/admin/extensions/{name}/settings - 画面管理の設定の一式を保存する。
+
+    ボディは ``{"values": {項目名: 値}}``。一式を検証してから 1 回の書き込みで保存し、
+    1 か所でも不正なら 400（`errors` に項目ごとの理由）で何も保存しない。保存に
+    失敗したら 500。設定を宣言していない拡張・ロードしていない拡張は 404。
+    保存した値は、拡張が次に `load_settings()` を呼んだ処理から使われる
+    （実行中の処理には影響しない）。
+    """
+    from lilla_core.services.extension_overrides import find_extension
+    from lilla_core.services.extension_settings import (
+        SettingsValidationError,
+        build_settings_detail,
+        get_settings_model,
+        save_settings,
+    )
+
+    name = request.match_info["name"]
+    if find_extension(name) is None:
+        return _error(404, f"Extension '{name}' is not loaded")
+    if get_settings_model(name) is None:
+        return _error(404, f"Extension '{name}' has no dashboard-managed settings")
+    body, ok = await parse_json_body(request)
+    if not ok:
+        return _error(400, "Invalid JSON body")
+    if not isinstance(body, dict) or set(body) != {"values"}:
+        return _error(400, "Request body must be an object with only 'values'")
+    try:
+        await save_settings(name, body["values"])
+    except SettingsValidationError as e:
+        return web.json_response({"error": str(e), "errors": e.errors}, status=400)
+    except Exception as e:
+        logger.error("Failed to save settings of extension '%s': %s", name, e)
+        return _error(500, "Failed to save settings")
+    logger.info("Extension settings saved: %s", name)
+    return web.json_response({"saved": True, "settings": await build_settings_detail(name)})

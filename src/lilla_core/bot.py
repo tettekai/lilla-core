@@ -46,6 +46,7 @@ from lilla_core.repository.admin_session_repository import get_admin_session_rep
 from lilla_core.repository.channel_summary_repository import get_channel_summary_repo
 from lilla_core.repository.llm_usage_repository import get_llm_usage_repo
 from lilla_core.repository.extension_override_repository import get_extension_override_repo
+from lilla_core.repository.extension_settings_repository import get_extension_settings_repo
 from lilla_core.handlers import message_handler, interaction_handler, task_handler
 from lilla_core.handlers.command_handler import set_command_runtime
 from lilla_core.handlers.dashboard_server import start_dashboard_server
@@ -75,6 +76,7 @@ _CORE_STARTUP_REPOS = [
     get_channel_summary_repo,
     get_llm_usage_repo,
     get_extension_override_repo,
+    get_extension_settings_repo,
 ]
 
 bot.http.proxy = _config.proxy.resolve_url()

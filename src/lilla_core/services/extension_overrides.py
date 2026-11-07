@@ -97,18 +97,24 @@ def list_editable(tools: dict) -> list[dict]:
         tools: ツールのレジストリ。
 
     Returns:
-        `name` / `has_prompt` / `task_count` / `editable` を持つ dict のリスト。
+        `name` / `has_prompt` / `task_count` / `has_settings` / `editable` を持つ dict のリスト。
+        `has_settings` は画面管理の設定（`settings_model()`）を宣言しているか。
     """
+    from lilla_core.core.extension import get_settings_models
+
+    settings_models = get_settings_models()
     items = []
     for ext in get_extensions():
         has_prompt = default_prompts_of(ext.name) is not None
         task_count = len(task_entries_of(ext.name, tools))
+        has_settings = ext.name in settings_models
         items.append(
             {
                 "name": ext.name,
                 "has_prompt": has_prompt,
                 "task_count": task_count,
-                "editable": has_prompt or task_count > 0,
+                "has_settings": has_settings,
+                "editable": has_prompt or task_count > 0 or has_settings,
             }
         )
     return items

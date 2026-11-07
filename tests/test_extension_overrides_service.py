@@ -61,7 +61,9 @@ class TestTargets:
         """プロンプトかタスクを持つ拡張だけが編集できる。"""
         items = {item["name"]: item for item in svc.list_editable(tools)}
 
-        assert items["diary"] == {"name": "diary", "has_prompt": True, "task_count": 2, "editable": True}
+        assert items["diary"] == {
+            "name": "diary", "has_prompt": True, "task_count": 2, "has_settings": False, "editable": True,
+        }
         assert items["habits"]["editable"] is True
         assert items["habits"]["has_prompt"] is False
         assert items["plain"]["editable"] is False

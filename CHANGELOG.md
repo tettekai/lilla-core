@@ -58,6 +58,14 @@
 - `loaders/tool_paths.py` に、拡張が同梱したツール YAML の stem と拡張名の対応を返す `resolve_tool_config_owners()` を追加し、
   `load_all_tools()` の各エントリに同梱した拡張の名前（`extension`。無ければ `None`）を入れるようにした（#284）
 
+- 拡張の設定をダッシュボードで編集し、再起動なしで使える **画面管理の設定** を追加した（#306）。拡張は新しい任意のメソッド
+  `Extension.settings_model()` で設定のモデルを宣言し、値は MongoDB の `extension_settings`（拡張ごとに 1 ドキュメント、起動時に
+  ユニークインデックスを作る）に保存する。読み取りは `services/extension_settings.py` の `load_settings(name, model)`（非同期・呼ぶたびに
+  DB を読む）で、未保存なら宣言した初期値を返し、DB から読めないときは `SettingsUnavailableError`、保存値が不正なときは
+  `InvalidStoredSettingsError` を投げる（初期値で黙って置き換えない）。全項目に既定値が無い・既定値が検証を通らない・`config_model()`
+  と同じ項目を持つ拡張はロード時に失敗し、画面管理の項目を `lilla.yaml` の `extensions.<節名>` に書くと移行先を示して起動時に失敗する。
+  ダッシュボードの Extensions 画面に設定の汎用編集欄と `PUT /api/admin/extensions/{name}/settings` を追加した。`settings_model()` を
+  定義しない拡張の挙動は変わらない
 - 観測用ダッシュボードに、拡張の上書き（`extension_overrides`）を編集する管理画面 **Extensions**（`#/admin/extensions`）を
   追加した（#305）。ロード済みの拡張ごとに、デフォルトのプロンプト（`ui.locale` に合うデフォルト・上書きの有無・実効値）と、
   拡張が同梱した定期タスクの `schedule` / `enabled` を編集できる。API はログイン必須の
