@@ -46,6 +46,7 @@ extension = MyExtension()
 | `dashboard_public_routes` | 認証の外側に載せる公開ルート（OAuth の戻り先など）。パスは `/oauth/{name}` 配下のみ。`state` の検証は拡張側の責任 |
 | `http_routes` | 共有 HTTP サーバー（ダッシュボードとは別ポート）に足すルート（`HttpRoute(method, path, handler, auth)`）。パスの接頭辞に制約は無く、`auth` は `bearer`（既定）/ `public` / `deferred`（[共有 HTTP サーバー](http-server.md)） |
 | `config_model` | この拡張が足す YAML セクションのモデル 1 つ（足さないなら `None`）。置き場は `extensions.<name のハイフンをアンダースコアにしたもの>`（`google-oauth` なら `cfg.extensions.google_oauth`）（[設定の合成](extension-config.md)） |
+| `settings_model` | ダッシュボードで編集する設定（設定の本体）のモデル 1 つ（持たないなら `None`）。MongoDB の `extension_settings` に保存し、`load_settings()` で処理ごとに読む。全項目に既定値が必要で、`config_model()` と同じ項目は持てない（[画面で管理する拡張の設定](extension-settings.md)） |
 | `env_fields` | この拡張が `cfg.env` に足す秘匿フィールド |
 | `required_env_fields` | 自分では提供しないが読む `cfg.env` のフィールド |
 | `required_tool_context_keys` | 自分では提供しないが、自分のツールが読むツール context のキー |
@@ -236,5 +237,6 @@ class MyExtension(Extension):
 - [設定の合成](extension-config.md)
 - [拡張のデフォルトプロンプトと上書き](extension-prompt.md)
 - [拡張のタスクの上書き](extension-task-override.md)
+- [画面で管理する拡張の設定](extension-settings.md)
 - [ダッシュボードへの差し込み](extension-dashboard.md)
 - [拡張のテストの書き方](extension-testing.md)

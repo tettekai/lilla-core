@@ -117,6 +117,11 @@ function dashboardApp() {
       applyFailed: false,
       promptDraft: '',
       taskDrafts: {},
+      // 画面管理の設定（設定の本体）の編集中の値。unset は「未設定（null）」にする項目。
+      settingsDraft: {},
+      settingsUnset: {},
+      settingsErrors: [],
+      settingsNotice: '',
     },
 
     skills: {
@@ -806,6 +811,68 @@ function dashboardApp() {
         };
       }
       this.exts.taskDrafts = drafts;
+      this.setSettingsDraft(detail.settings);
+    },
+
+    setSettingsDraft(settings) {
+      const draft = {};
+      const unset = {};
+      if (settings && settings.values) {
+        for (const field of settings.fields) {
+          const value = settings.values[field.name];
+          unset[field.name] = field.nullable && (value === null || value === undefined);
+          draft[field.name] = value === null || value === undefined ? '' : value;
+        }
+      }
+      this.exts.settingsDraft = draft;
+      this.exts.settingsUnset = unset;
+      this.exts.settingsErrors =
+        settings && settings.error && settings.error.errors ? settings.error.errors : [];
+    },
+
+    settingsFieldErrors(name) {
+      return this.exts.settingsErrors.filter((e) => e.field === name).map((e) => e.message);
+    },
+
+    async saveSettings() {
+      const name = this.exts.selected;
+      const settings = this.exts.detail && this.exts.detail.settings;
+      if (!name || !settings) return;
+      const values = {};
+      for (const field of settings.fields) {
+        let value = this.exts.settingsDraft[field.name];
+        if (field.nullable && this.exts.settingsUnset[field.name]) {
+          value = null;
+        } else if ((field.type === 'integer' || field.type === 'number') && value !== '') {
+          value = Number(value);
+        }
+        values[field.name] = value;
+      }
+      this.exts.settingsNotice = '';
+      this.exts.settingsErrors = [];
+      try {
+        const res = await this.authedFetch(
+          '/api/admin/extensions/' + encodeURIComponent(name) + '/settings',
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ values }),
+          },
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          this.exts.settingsErrors = data.errors && data.errors.length
+            ? data.errors
+            : [{ field: '', message: data.error || '保存できませんでした' }];
+          return;
+        }
+        this.exts.detail.settings = data.settings;
+        this.setSettingsDraft(data.settings);
+        this.exts.settingsNotice = '設定を保存しました。次に始まる処理から使われます';
+      } catch (e) {
+        console.error('Failed to save extension settings', e);
+        this.exts.settingsErrors = [{ field: '', message: '保存できませんでした' }];
+      }
     },
 
     async extErrorText(res, fallback) {

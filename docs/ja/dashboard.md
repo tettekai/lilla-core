@@ -38,10 +38,15 @@ Skills（`#/skills`）は `!skill` で呼び出すスキルの一覧・追加・
 
 ## Extensions
 
-Extensions（管理メニュー、`#/admin/extensions`）は、ロード済みの拡張の上書き
-（`extension_overrides`）を編集する画面です。拡張そのもの（コードと同梱の既定値）は変えません。
-デフォルトのプロンプトか、拡張が同梱した定期タスクを持つ拡張だけが並び、編集するものの無い節は
-出しません。
+Extensions（管理メニュー、`#/admin/extensions`）は、ロード済みの拡張の画面管理の設定
+（`extension_settings`。設定の本体）と上書き（`extension_overrides`。コードと同梱の既定値は
+変えません）を編集する画面です。画面管理の設定・デフォルトのプロンプト・拡張が同梱した定期タスクの
+どれかを持つ拡張だけが並び、編集するものの無い節は出しません。
+
+- **設定**: 拡張が `settings_model()` で宣言した設定の本体です（上書きではありません）。保存済みか
+  （未保存なら初期値）、項目ごとの値と未設定、検証エラーが分かります。一式を検証してから保存し、
+  拡張が次に始める処理から使われます（[画面で管理する拡張の設定](extension-settings.md)）。
+  データベースから読めないときは「読めない」と表示し、未保存とは区別します
 
 - **プロンプト**: デフォルト（`ui.locale` → `ja` → `en` の順に選んだもの）・上書きの有無・
   今効いている本文を見て、文字列 1 つで全体を上書きできます。空にして保存すると「この拡張の
@@ -65,9 +70,10 @@ Extensions（管理メニュー、`#/admin/extensions`）は、ロード済み�
 | メソッド・パス | 内容 |
 |------|------|
 | `GET /api/admin/extensions` | ロード済みの拡張と、編集できるかの目印 |
-| `GET /api/admin/extensions/{name}` | プロンプト・タスクのデフォルト・上書き・実効値と、スケジューラに今載っている値 |
+| `GET /api/admin/extensions/{name}` | プロンプト・タスクのデフォルト・上書き・実効値と、スケジューラに今載っている値。画面管理の設定（`settings`。項目・値・保存済みか・エラー）も含む |
 | `PATCH /api/admin/extensions/{name}/overrides` | 上書きの保存。ボディは `{"prompt": 文字列 \| null, "tasks": {ツール名: {"schedule": 文字列 \| null, "enabled": 真偽値 \| null}}}` で、省略したキーは変えず、`null` は上書きを消す。応答の `saved` は保存の成否、`tasks_apply` は反映の結果（`applied` / `scheduler_not_running` / `failed`。タスクを変えていなければ `null`） |
 | `POST /api/admin/extensions/{name}/tasks/apply` | 保存済みのタスクの上書きの再反映（失敗したら 503） |
+| `PUT /api/admin/extensions/{name}/settings` | 画面管理の設定の一式の保存。ボディは `{"values": {項目名: 値}}`。不正なら 400（`errors` に項目ごとの理由）で何も保存しない。設定を宣言していない拡張は 404 |
 
 ## Home
 

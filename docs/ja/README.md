@@ -40,6 +40,7 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [設定の合成](extension-config.md) — `config_model()` / `env_fields()` / `get_section()`
 - [拡張のデフォルトプロンプトと上書き](extension-prompt.md) — `default_prompt()` と `extension_overrides`
 - [拡張のタスクの上書き](extension-task-override.md) — `extension_overrides` の `tasks`（`schedule` / `enabled`）
+- [画面で管理する拡張の設定](extension-settings.md) — `settings_model()` と `extension_settings`
 - [ダッシュボードへの差し込み](extension-dashboard.md)
 - [拡張のテストの書き方](extension-testing.md) — `lilla_core.testing`
 

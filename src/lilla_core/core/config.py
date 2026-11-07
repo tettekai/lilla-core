@@ -622,6 +622,37 @@ class ExtensionsConfig(BaseModel):
         """`extensions:` だけ書いて中身が空（YAML の `null`）の場合を空の節として扱う。"""
         return {} if data is None else data
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_dashboard_managed_keys(cls, data: Any) -> Any:
+        """画面管理の設定（`Extension.settings_model()`）の項目が YAML に書かれていたら落とす。
+
+        1 つの項目の担当は YAML か画面のどちらか一方だけで、YAML に残った旧い値を
+        黙って捨てたり優先したりしない。移行先（ダッシュボードの Extensions 画面）を
+        示して起動時に落とす。拡張の登録内容は `core/extension.py` が持つため、
+        循環 import を避けて遅延 import する。
+        """
+        if not isinstance(data, dict):
+            return data
+        from lilla_core.core.extension import get_settings_models
+
+        found: list[str] = []
+        for ext_name, model in get_settings_models().items():
+            section = extension_section_name(ext_name)
+            values = data.get(section)
+            if not isinstance(values, dict):
+                continue
+            found.extend(
+                f"extensions.{section}.{key}" for key in values if key in model.model_fields
+            )
+        if found:
+            raise ValueError(
+                "These settings are managed in the dashboard (Extensions page, stored in "
+                "'extension_settings') and must be removed from lilla.yaml: "
+                + ", ".join(sorted(found))
+            )
+        return data
+
 
 class UiConfig(BaseModel):
     """lilla.yaml の `ui:` セクション。

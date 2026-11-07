@@ -391,12 +391,12 @@
 
     <section x-show="activeTab === 'extensions'">
       <p class="ext-intro">
-        拡張のデフォルトのプロンプトと、拡張が同梱した定期タスクの上書きを編集します。
-        ここでの値は <code>extension_overrides</code> に保存され、拡張そのもの（コードと同梱の既定値）は変わりません。
+        拡張の設定（<code>extension_settings</code>。設定の本体）と、デフォルトのプロンプト・同梱の定期タスクへの
+        上書き（<code>extension_overrides</code>。コードと同梱の既定値は変えません）を編集します。
       </p>
       <div x-show="exts.loading" class="loading">読み込み中...</div>
       <div x-show="!exts.loading && editableExtensions().length === 0" class="empty">
-        編集できる拡張がありません（デフォルトのプロンプトか定期タスクを持つ拡張だけが対象です）
+        編集できる拡張がありません（画面で管理する設定・デフォルトのプロンプト・定期タスクのどれかを持つ拡張だけが対象です）
       </div>
 
       <div class="ext-tabs" x-show="editableExtensions().length > 0">
@@ -415,6 +415,71 @@
 
       <template x-if="exts.detail && !exts.detailLoading">
         <div>
+          <div class="ext-card" x-show="exts.detail.settings">
+            <div class="ext-card-header">
+              <h3>設定</h3>
+              <span :class="'badge ' + (exts.detail.settings && exts.detail.settings.stored ? 'level-info' : 'level-default')"
+                x-text="exts.detail.settings && exts.detail.settings.stored ? '保存済み' : '未保存（初期値）'"></span>
+            </div>
+            <p class="ext-help">
+              この拡張の設定そのもの（<code>extension_settings</code>）です。下のプロンプト・定期タスクのような
+              「デフォルトへの上書き」ではありません。保存すると、拡張が次に始める処理から使われます
+              （実行中の処理は変わりません）。
+            </p>
+            <div class="ext-error" x-show="exts.detail.settings && exts.detail.settings.error && exts.detail.settings.error.kind === 'unavailable'">
+              設定を読み込めませんでした（保存されていないのではなく、データベースから読めませんでした）。時間をおいて開き直してください
+            </div>
+            <div class="ext-warning" x-show="exts.detail.settings && exts.detail.settings.error && exts.detail.settings.error.kind === 'invalid'">
+              保存されている値が今の設定の形に合いません。拡張はこの設定を使う処理で失敗します。正しい値で保存し直してください
+            </div>
+            <template x-if="exts.detail.settings && exts.detail.settings.values">
+              <div class="ext-settings">
+                <template x-for="field in exts.detail.settings.fields" :key="field.name">
+                  <div class="ext-setting">
+                    <label class="ext-setting-label">
+                      <span x-text="field.title"></span>
+                      <code class="ext-sub" x-text="field.name"></code>
+                    </label>
+                    <div class="ext-sub" x-show="field.description" x-text="field.description"></div>
+                    <label class="memo-toggle" x-show="field.nullable">
+                      <input type="checkbox" x-model="exts.settingsUnset[field.name]">
+                      未設定
+                    </label>
+                    <template x-if="field.type === 'boolean'">
+                      <label class="memo-toggle">
+                        <input type="checkbox" x-model="exts.settingsDraft[field.name]"
+                          :disabled="exts.settingsUnset[field.name]">
+                        有効
+                      </label>
+                    </template>
+                    <template x-if="field.type !== 'boolean' && field.multiline">
+                      <textarea class="memo-input ext-prompt" rows="12" x-model="exts.settingsDraft[field.name]"
+                        :disabled="exts.settingsUnset[field.name]"></textarea>
+                    </template>
+                    <template x-if="field.type !== 'boolean' && !field.multiline">
+                      <input class="ext-cron ext-setting-input"
+                        :type="field.type === 'integer' || field.type === 'number' ? 'number' : 'text'"
+                        x-model="exts.settingsDraft[field.name]" :disabled="exts.settingsUnset[field.name]"
+                        :placeholder="field.default === null ? '' : String(field.default)">
+                    </template>
+                    <template x-for="message in settingsFieldErrors(field.name)">
+                      <div class="ext-sub ext-error-text" x-text="message"></div>
+                    </template>
+                  </div>
+                </template>
+                <template x-for="message in settingsFieldErrors('')">
+                  <div class="ext-sub ext-error-text" x-text="message"></div>
+                </template>
+                <div class="ext-notice" x-show="exts.settingsNotice" x-text="exts.settingsNotice"></div>
+                <div class="memo-actions">
+                  <span class="memo-time" x-show="exts.detail.settings.updated_at"
+                    x-text="'更新: ' + formatDate(exts.detail.settings.updated_at)"></span>
+                  <button @click="saveSettings()">設定を保存</button>
+                </div>
+              </div>
+            </template>
+          </div>
+
           <div class="ext-card" x-show="exts.detail.prompt">
             <div class="ext-card-header">
               <h3>プロンプト</h3>
