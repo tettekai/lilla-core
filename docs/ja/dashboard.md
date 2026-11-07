@@ -71,7 +71,7 @@ Extensions（管理メニュー、`#/admin/extensions`）は、ロード済み�
 |------|------|
 | `GET /api/admin/extensions` | ロード済みの拡張と、編集できるかの目印 |
 | `GET /api/admin/extensions/{name}` | プロンプト・タスクのデフォルト・上書き・実効値と、スケジューラに今載っている値。画面管理の設定（`settings`。項目・値・保存済みか・エラー）も含む |
-| `PATCH /api/admin/extensions/{name}/overrides` | 上書きの保存。ボディは `{"prompt": 文字列 \| null, "tasks": {ツール名: {"schedule": 文字列 \| null, "enabled": 真偽値 \| null}}}` で、省略したキーは変えず、`null` は上書きを消す。応答の `saved` は保存の成否、`tasks_apply` は反映の結果（`applied` / `scheduler_not_running` / `failed`。タスクを変えていなければ `null`） |
+| `PATCH /api/admin/extensions/{name}/overrides` | 上書きの保存。ボディは `{"prompt": 文字列 \| null, "tasks": {ツール名: {"schedule": 文字列 \| null, "enabled": 真偽値 \| null}}}` で、省略したキーは変えず、`null` は上書きを消す。応答の `saved` は保存の成否、`tasks_apply` は反映の結果（`applied` / `scheduler_not_running` / `scheduler_disabled` / `failed`。タスクを変えていなければ `null`） |
 | `POST /api/admin/extensions/{name}/tasks/apply` | 保存済みのタスクの上書きの再反映（失敗したら 503） |
 | `PUT /api/admin/extensions/{name}/settings` | 画面管理の設定の一式の保存。ボディは `{"values": {項目名: 値}}`。不正なら 400（`errors` に項目ごとの理由）で何も保存しない。設定を宣言していない拡張は 404 |
 

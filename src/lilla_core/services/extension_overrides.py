@@ -7,16 +7,21 @@
 - 画面に出す「デフォルト・上書き・実効値」の組み立て（`build_detail`）
 - 保存リクエストの検証と、リポジトリへ渡す `$set` / `$unset` への変換（`parse_update`）
 
-上書きの解釈（プロンプトは `services/memory_manager.py`、タスクは
-`handlers/task_handler.py`）とずれないよう、実効値の決め方はそれらと同じ規則で書く。
+上書きの解釈（プロンプトは `services/memory_manager.py`）とずれないよう、実効値の
+決め方はそれと同じ規則で書く。タスクの実効値は `services/task_schedules.py` の共通処理
+（内部スケジューラ・`GET /api/tasks` と同じ）で決める。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from apscheduler.triggers.cron import CronTrigger
-
 from lilla_core.core.extension import Extension, get_default_prompts, get_extensions
+from lilla_core.services.task_schedules import (
+    is_valid_crontab,
+    parse_task_overrides,
+    resolve_task,
+    scheduled_task_entries,
+)
 from lilla_core.utils.datetime_utils import local_timezone
 
 #: 保存リクエストのトップレベルで受け付けるキー。
@@ -71,23 +76,7 @@ def task_entries_of(name: str, tools: dict) -> dict[str, dict]:
         name: 拡張名。
         tools: `load_all_tools()` が返したツールのレジストリ。
     """
-    result: dict[str, dict] = {}
-    for tool_name, info in (tools or {}).items():
-        if info.get("extension") != name or not info.get("scheduled"):
-            continue
-        if not getattr(info.get("instance"), "schedule", None):
-            continue
-        result[tool_name] = info
-    return result
-
-
-def is_valid_crontab(schedule: str) -> bool:
-    """crontab 式として解釈できるかを、スケジューラと同じタイムゾーンで確かめる。"""
-    try:
-        CronTrigger.from_crontab(schedule, timezone=local_timezone())
-    except Exception:
-        return False
-    return True
+    return scheduled_task_entries(tools, name)
 
 
 def list_editable(tools: dict) -> list[dict]:
@@ -127,6 +116,7 @@ def build_detail(
     locale: str,
     applied_schedules: dict[str, str],
     scheduler_running: bool,
+    scheduler_enabled: bool = True,
 ) -> dict:
     """1 つの拡張の編集画面に出す内容を組み立てる。
 
@@ -143,6 +133,8 @@ def build_detail(
         locale: `ui.locale`。
         applied_schedules: `task_handler.get_applied_schedules()` の結果。
         scheduler_running: スケジューラが起動済みか。
+        scheduler_enabled: 設定（`scheduler.enabled`）上、内部スケジューラを使うか。
+            偽なら画面は「起動時に効く」ではなく外部のスケジューラ向けの説明を出す。
     """
     from lilla_core.services.memory_manager import select_default_prompt
 
@@ -167,30 +159,24 @@ def build_detail(
             "effective": effective,
         }
 
-    stored_tasks = doc.get("tasks") if isinstance(doc.get("tasks"), dict) else {}
+    entries = task_entries_of(name, tools)
+    overrides = parse_task_overrides(name, doc, set(entries), warn=False)
     tasks = []
-    for tool_name, info in task_entries_of(name, tools).items():
+    for tool_name, info in entries.items():
         default_schedule = info["instance"].schedule
-        stored = stored_tasks.get(tool_name)
-        stored = stored if isinstance(stored, dict) else {}
+        resolved = resolve_task(tool_name, name, default_schedule, overrides.get(tool_name))
         override: dict = {}
-        invalid: list[str] = []
-        schedule = default_schedule
-        enabled = True
-        if "schedule" in stored:
-            value = stored["schedule"]
-            if isinstance(value, str) and is_valid_crontab(value):
-                override["schedule"] = value
-                schedule = value
+        invalid_keys = set(resolved.override.invalid)
+        if resolved.override.schedule is not None:
+            if resolved.schedule_override_rejected:
+                invalid_keys.add("schedule")
             else:
-                invalid.append("schedule")
-        if "enabled" in stored:
-            value = stored["enabled"]
-            if isinstance(value, bool):
-                override["enabled"] = value
-                enabled = value
-            else:
-                invalid.append("enabled")
+                override["schedule"] = resolved.override.schedule
+        if resolved.override.enabled is not None:
+            override["enabled"] = resolved.override.enabled
+        invalid = [key for key in ("schedule", "enabled") if key in invalid_keys]
+        schedule = override.get("schedule", default_schedule)
+        enabled = resolved.enabled
         applied = applied_schedules.get(tool_name)
         expected = schedule if enabled else None
         tasks.append(
@@ -211,6 +197,7 @@ def build_detail(
         "locale": locale,
         "timezone": str(local_timezone()),
         "scheduler_running": scheduler_running,
+        "scheduler_enabled": scheduler_enabled,
         "prompt": prompt_section,
         "tasks": tasks,
         "updated_at": updated_at.isoformat() if hasattr(updated_at, "isoformat") else None,

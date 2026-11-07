@@ -372,6 +372,118 @@ class TestRunTask:
 
 
 # ---------------------------------------------------------------------------
+# TestTasks
+# ---------------------------------------------------------------------------
+
+
+def _scheduled(schedule: str, extension: str | None, **extra) -> dict:
+    """定期タスクのレジストリのエントリ（プロンプトなどの設定も持つ）を作る。"""
+    instance = MagicMock()
+    instance.schedule = schedule
+    for key, value in extra.items():
+        setattr(instance, key, value)
+    return {"instance": instance, "trigger": "task", "scheduled": True, "extension": extension}
+
+
+@pytest.fixture
+def override_repo(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """上書きのリポジトリを差し替える（`docs` に「拡張名 -> ドキュメント」を置く）。"""
+    repo = MagicMock()
+    repo.docs = {}
+
+    async def _find(names):
+        return {name: doc for name, doc in repo.docs.items() if name in names}
+
+    repo.find_by_extensions = AsyncMock(side_effect=_find)
+    monkeypatch.setattr(
+        "lilla_core.repository.extension_override_repository.get_extension_override_repo",
+        lambda: repo,
+    )
+    monkeypatch.setattr(http_server, "timezone_label", lambda: "Asia/Tokyo")
+    return repo
+
+
+class TestTasks:
+    """`GET /api/tasks`。"""
+
+    def _tools(self) -> dict:
+        return {
+            "task_diary": _scheduled(
+                "0 22 * * *", "diary", prompt="secret prompt", target="dm:123", llm_provider="p"
+            ),
+            "task_core": _scheduled("0 2 * * *", None),
+            "task_manual": {
+                "instance": MagicMock(schedule=None), "trigger": "task", "scheduled": False,
+            },
+            "llm_y": {"trigger": "llm"},
+        }
+
+    async def test_requires_token(self, make_client, override_repo) -> None:
+        c = await make_client(tools=self._tools())
+        resp = await c.get("/api/tasks")
+        assert resp.status == 401
+        override_repo.find_by_extensions.assert_not_awaited()
+
+    async def test_lists_effective_schedules(
+        self, make_client, mock_cfg: MagicMock, override_repo: MagicMock
+    ) -> None:
+        """実効値だけを返し、非定期タスク・ツール設定は返さない。"""
+        mock_cfg.scheduler.enabled = False
+        override_repo.docs = {"diary": {"tasks": {"task_diary": {"schedule": "30 21 * * sun", "enabled": False}}}}
+        c = await make_client(tools=self._tools())
+
+        resp = await c.get("/api/tasks", headers=AUTH)
+
+        assert resp.status == 200
+        body = await resp.json()
+        assert body == {
+            "scheduler_enabled": False,
+            "cron_format": "apscheduler3",
+            "tasks": [
+                {"name": "task_diary", "schedule": "30 21 * * sun", "timezone": "Asia/Tokyo", "enabled": False},
+                {"name": "task_core", "schedule": "0 2 * * *", "timezone": "Asia/Tokyo", "enabled": True},
+            ],
+        }
+        text = await resp.text()
+        for secret in ("secret prompt", "dm:123", "llm_provider"):
+            assert secret not in text
+
+    async def test_db_failure_is_503_not_empty_list(
+        self, make_client, mock_cfg: MagicMock, override_repo: MagicMock
+    ) -> None:
+        mock_cfg.scheduler.enabled = True
+        override_repo.find_by_extensions = AsyncMock(side_effect=RuntimeError("mongodb://user:pw@host"))
+        c = await make_client(tools=self._tools())
+
+        resp = await c.get("/api/tasks", headers=AUTH)
+
+        assert resp.status == 503
+        body = await resp.json()
+        assert body == {"error": "overrides_unavailable"}
+
+    async def test_unresolvable_schedule_is_500_with_task_name(
+        self, make_client, mock_cfg: MagicMock, override_repo: MagicMock
+    ) -> None:
+        mock_cfg.scheduler.enabled = True
+        tools = {"task_ok": _scheduled("0 1 * * *", None), "task_bad": _scheduled("not a cron", None)}
+        c = await make_client(tools=tools)
+
+        resp = await c.get("/api/tasks", headers=AUTH)
+
+        assert resp.status == 500
+        assert await resp.json() == {"error": "invalid_schedule", "task": "task_bad"}
+
+    async def test_empty_registry_is_a_successful_empty_list(
+        self, make_client, mock_cfg: MagicMock, override_repo: MagicMock
+    ) -> None:
+        mock_cfg.scheduler.enabled = True
+        c = await make_client(tools={})
+        resp = await c.get("/api/tasks", headers=AUTH)
+        assert resp.status == 200
+        assert (await resp.json())["tasks"] == []
+
+
+# ---------------------------------------------------------------------------
 # TestExtensionRoutes
 # ---------------------------------------------------------------------------
 

@@ -127,6 +127,7 @@ CORE_HTTP_ROUTES = frozenset(
         ("GET", "/api/selftest"),
         ("POST", "/api/tools/call"),
         ("POST", "/api/runtask"),
+        ("GET", "/api/tasks"),
     }
 )
 

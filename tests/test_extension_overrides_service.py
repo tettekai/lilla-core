@@ -80,6 +80,13 @@ class TestBuildDetail:
     def _detail(self, tools, doc, locale="ja", applied=None, running=True, name="diary"):
         return svc.build_detail(name, tools, doc, locale, applied or {}, running)
 
+    def test_reports_scheduler_enabled(self, registered, tools) -> None:
+        """設定上の有効・無効を、起動済みかどうかとは別に返す。"""
+        assert self._detail(tools, None, running=False)["scheduler_enabled"] is True
+        detail = svc.build_detail("diary", tools, None, "ja", {}, False, False)
+        assert detail["scheduler_enabled"] is False
+        assert detail["scheduler_running"] is False
+
     def test_defaults_without_override(self, registered, tools) -> None:
         """上書きが無ければ、プロンプトもタスクもデフォルトが実効値になる。"""
         detail = self._detail(

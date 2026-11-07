@@ -24,6 +24,7 @@ http:
 | `GET /api/selftest` | Bearer | 自己診断（`!selftest` 相当）。`?full=true` を付けると LLM 疎通確認も行う（課金あり）。詳しくは下の節 |
 | `POST /api/tools/call` | Bearer | LLM ツールを直接呼ぶ。ボディは `{"tool": "<名前>", "parameters": {...}}`。名前は YAML の stem でも SCHEMA の関数名でもよい。結果は `{"success": true, "tool_name": ..., "data": ...}` か `{"success": false, "tool_name": ..., "error": ...}` |
 | `POST /api/runtask` | Bearer | task ツールを手動実行する（`!runtask` 相当）。ボディは `{"tool": "<名前>", "params": {...}}`。実行は待たずに `202` を返す |
+| `GET /api/tasks` | Bearer | ロード済みの定期タスクの実効スケジュール（`schedule` / `timezone` / `enabled`）を返す。外部のスケジューラ向け。詳しくは [外部スケジューラとの連携](external-scheduler.md) |
 
 ## 自己診断（`GET /api/selftest`）
 

@@ -15,6 +15,7 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [部屋のノート（深夜要約）](channel-notes.md)
 - [会話履歴の部屋名検索](history-search.md)
 - [スケジュール実行で LLM に委譲する通知](scheduled-llm.md)
+- [外部スケジューラとの連携](external-scheduler.md) — `scheduler.enabled` と `GET /api/tasks`
 - [タイムゾーン](timezone.md) — `ui.timezone`
 - [LLM プロバイダーの回しごと選択](llm-resolver.md) — `llm.providers` の `type: resolver`
 - [プロバイダーごとのシステムプロンプト追記](llm-provider-prompt.md) — `llm.providers.<キー>.prompt`
