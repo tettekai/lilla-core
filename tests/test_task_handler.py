@@ -584,6 +584,61 @@ class TestTaskOverrides:
         repo.find_by_extensions.assert_not_awaited()
         assert any("task_missing" in r.getMessage() for r in caplog.records)
 
+    async def test_reapply_returns_status(self, repo, diary) -> None:
+        """反映の結果を状態で返す（反映済み・スケジューラ未起動・対象外）。"""
+        assert await task_handler.apply_task_overrides("diary") == task_handler.APPLY_SCHEDULER_NOT_RUNNING
+
+        await task_handler.start_scheduler(self._tools(task_a=self.DEFAULT), MagicMock())
+        assert await task_handler.apply_task_overrides("diary") == task_handler.APPLY_APPLIED
+        assert await task_handler.apply_task_overrides("diary", "task_missing") == task_handler.APPLY_NOT_FOUND
+
+    async def test_strict_load_failure_keeps_current_jobs(self, repo, diary) -> None:
+        """`strict=True` で読み込みに失敗したら、ジョブをデフォルトへ戻さず失敗を返す。"""
+        repo.docs = {"diary": {"extension": "diary", "tasks": {"task_a": {"schedule": "0 9 * * *"}}}}
+        await task_handler.start_scheduler(self._tools(task_a=self.DEFAULT), MagicMock())
+        repo.find_by_extensions.side_effect = RuntimeError("db down")
+
+        status = await task_handler.apply_task_overrides("diary", strict=True)
+
+        assert status == task_handler.APPLY_FAILED
+        assert self._fields("task_a")["hour"] == "9"
+        assert task_handler.get_applied_schedules() == {"task_a": "0 9 * * *"}
+
+    async def test_non_strict_load_failure_resets_to_default(self, repo, diary) -> None:
+        """既定（`strict=False`）では従来どおりデフォルトへ戻して反映済みとする。"""
+        repo.docs = {"diary": {"extension": "diary", "tasks": {"task_a": {"schedule": "0 9 * * *"}}}}
+        await task_handler.start_scheduler(self._tools(task_a=self.DEFAULT), MagicMock())
+        repo.find_by_extensions.side_effect = RuntimeError("db down")
+
+        status = await task_handler.apply_task_overrides("diary")
+
+        assert status == task_handler.APPLY_APPLIED
+        assert self._fields("task_a")["hour"] == "7"
+
+    async def test_strict_sync_failure_is_reported(self, repo, diary, monkeypatch) -> None:
+        """`strict=True` では反映中の例外を外へ投げず、失敗として返す。"""
+        await task_handler.start_scheduler(self._tools(task_a=self.DEFAULT), MagicMock())
+
+        def _boom(job, override):
+            raise RuntimeError("scheduler broken")
+
+        monkeypatch.setattr(task_handler, "_sync_job", _boom)
+
+        assert await task_handler.apply_task_overrides("diary", strict=True) == task_handler.APPLY_FAILED
+
+    async def test_scheduler_state_getters(self, repo, diary) -> None:
+        """起動状態と、登録中のジョブの crontab の写しを返す。"""
+        assert task_handler.is_scheduler_running() is False
+        assert task_handler.get_applied_schedules() == {}
+
+        await task_handler.start_scheduler(self._tools(task_a=self.DEFAULT), MagicMock())
+
+        assert task_handler.is_scheduler_running() is True
+        applied = task_handler.get_applied_schedules()
+        assert applied == {"task_a": self.DEFAULT}
+        applied["task_a"] = "changed"
+        assert task_handler.get_applied_schedules() == {"task_a": self.DEFAULT}
+
     async def test_reapply_single_task_leaves_others(self, repo, diary) -> None:
         """1 タスクだけの反映は、同じ拡張の他のタスクに触れない。"""
         await task_handler.start_scheduler(self._tools(task_a=self.DEFAULT, task_b=self.DEFAULT), MagicMock())

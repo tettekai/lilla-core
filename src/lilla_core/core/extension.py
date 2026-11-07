@@ -168,6 +168,7 @@ RESERVED_EXTENSION_NAMES = frozenset(
         "skills",
         "usage",
         "logs",
+        "extensions",
     }
 )
 

@@ -158,7 +158,7 @@ async def main():
     `exc_info=True` で残す）。それ以外の例外は従来通りそのまま伝播させる。
     """
     await run_setup_hooks(tools, llm_tools, bot)
-    await start_dashboard_server()
+    await start_dashboard_server(tools)
     await start_http_server(tools, llm_tools, bot)
     try:
         await bot.start(_config.env.discord_token)

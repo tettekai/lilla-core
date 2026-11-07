@@ -626,3 +626,75 @@ tr.clickable:hover { background: var(--bg-secondary); }
 
 .skill-name { color: var(--accent); font-family: var(--font-mono); font-weight: 600; }
 .skill-description { color: var(--text-muted); font-size: 12px; }
+
+/* ---- Extensions（拡張の上書き） ---- */
+
+.ext-intro,
+.ext-help { color: var(--text-muted); font-size: 12px; margin: 0 0 12px; }
+
+.ext-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.ext-tabs button,
+.ext-tasks button,
+.ext-error button {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 3px 10px;
+}
+.ext-tabs button:hover,
+.ext-tasks button:hover,
+.ext-error button:hover { border-color: var(--accent); }
+.ext-tabs button.active { border-color: var(--accent); color: var(--accent); }
+.ext-cron {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 3px 6px;
+}
+
+.ext-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+}
+
+.ext-card-header { align-items: center; display: flex; gap: 8px; margin-bottom: 8px; }
+.ext-card-header h3 { font-size: 14px; margin: 0; }
+
+.ext-prompt { font-family: var(--font-mono); width: 100%; }
+
+.ext-default { margin-top: 8px; }
+.ext-default summary { color: var(--text-muted); cursor: pointer; font-size: 12px; }
+.ext-default pre { white-space: pre-wrap; word-break: break-word; }
+
+.ext-error,
+.ext-notice,
+.ext-warning {
+  align-items: center;
+  border-radius: 6px;
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+}
+.ext-error { border: 1px solid var(--error); color: var(--error); }
+.ext-notice { border: 1px solid var(--accent); color: var(--accent); }
+.ext-warning { border: 1px solid var(--warning); color: var(--warning); }
+.ext-warning-text { color: var(--warning); }
+
+.ext-tasks { border-collapse: collapse; width: 100%; }
+.ext-tasks th,
+.ext-tasks td { border-bottom: 1px solid var(--border); padding: 6px 8px; text-align: left; vertical-align: top; }
+.ext-cron { font-family: var(--font-mono); width: 20ch; }
+.ext-task-actions button + button { margin-left: 4px; }
+.ext-sub { color: var(--text-muted); font-size: 11px; margin-top: 4px; }
+.ext-task-actions { white-space: nowrap; }
+
+.badge.badge-warning { background: transparent; border: 1px solid var(--warning); color: var(--warning); }
