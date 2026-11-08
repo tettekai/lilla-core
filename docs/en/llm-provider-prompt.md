@@ -37,7 +37,8 @@ llm:
 
 The addition is appended, not substituted. It goes after the shared system prompt,
 separated by a blank line. If there is a per-`client_type` addition (`prompt.discord` or
-an extension's `client_prompt_providers()`), the provider's addition comes after the
+an extension's `client_prompt_providers()`) or an extension's default prompt
+([Extension default prompts and overrides](extension-prompt.md)), the provider's addition comes after the
 system prompt that already includes it.
 
 ```

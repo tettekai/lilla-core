@@ -37,10 +37,11 @@ Load the module by listing it in `LILLA_EXTENSIONS`
 | `setup` | Startup work awaited before `bot.start()` (e.g. an HTTP server). Receives one `SetupContext` (`tools`, `llm_tools`, `bot`, `config`); new fields may be added without breaking existing extensions |
 | `result_deliveries` | Where `!toolresult` delivers results, per `client_type`. A delivery function receives the reply text and the `SavedConversation` (`_id`, `time`) of the already-saved history entry ([below](#result-delivery-result_deliveries)) |
 | `client_prompt_providers` | System prompt additions per `client_type`, as `{client_type: [provider, ...]}`. Additive: several extensions may target the same `client_type`; the core concatenates them in load order, separated by blank lines |
+| `default_prompt` | Returns this extension's default prompt per language (`{"ja": ..., "en": ...}`; no particular language is required; defaults to `None`). It enters the system prompt regardless of `client_type` (except `task`) and can be overridden per extension in MongoDB's `extension_overrides` ([Extension default prompts and overrides](extension-prompt.md)) |
 | `conversation_start_hooks` | Async hooks run before conversation handling starts, as `{client_type: [hook, ...]}`. Additive like the prompts. Each hook receives one `ConversationContext` (`client_type`, `client_state`, `discord_channel_id`, `llm_name`) |
 | `tool_context_providers` | Values injected into the tool execution context |
 | `tool_roots` | Extra directories searched for tool `.py` files |
-| `tool_config_roots` | Directories of default tool YAML files (`llm_*.yaml` / `task_*.yaml`) shipped by the extension. A YAML with the same stem in `${CONFIG_ROOT}/tools` replaces it wholesale; put `enabled: false` there to turn a bundled tool off ([Tool contracts](tools.md)) |
+| `tool_config_roots` | Directories of default tool YAML files (`llm_*.yaml` / `task_*.yaml`) shipped by the extension. A YAML with the same stem in `${CONFIG_ROOT}/tools` replaces it wholesale; put `enabled: false` there to turn a bundled tool off ([Tool contracts](tools.md)). The schedule and the periodic-run on/off of bundled tasks can be overridden per extension in MongoDB's `extension_overrides` under `tasks` ([Overriding an extension's tasks](extension-task-override.md)) |
 | `locale_dirs` | Directories of UI message catalogs (`{locale}.yaml`) shipped by the extension. The catalog's only top-level key must be the extension's `name` ([below](#locale-catalogs)) |
 | `command_packages` | Extra packages scanned for `@register_command` handlers ([Writing commands and running them outside Discord](commands.md)) |
 | `dashboard_page` | One tab on the observability dashboard (`DashboardPage(label, group)`), where `group` is `main` (primary nav) or `admin` (overflow menu). Paths are not declared; they are derived from `name` ([Dashboard contributions](extension-dashboard.md)) |
@@ -49,6 +50,7 @@ Load the module by listing it in `LILLA_EXTENSIONS`
 | `dashboard_public_routes` | Public routes mounted outside session auth (OAuth callbacks and the like). Paths must live under `/oauth/{name}`; validating `state` is the extension's job |
 | `http_routes` | Routes added to the shared HTTP server (a separate port from the dashboard), as `HttpRoute(method, path, handler, auth)`. No path prefix restriction; `auth` is `bearer` (default) / `public` / `deferred` ([The shared HTTP server](http-server.md)) |
 | `config_model` | The one YAML section model this extension adds, or `None`. It lives at `extensions.<name with hyphens as underscores>` (`cfg.extensions.google_oauth` for `google-oauth`) ([Config composition](extension-config.md)) |
+| `settings_model` | The one model for settings edited on the dashboard (the settings proper), or `None`. Stored in MongoDB's `extension_settings` and read per piece of work with `load_settings()`. Every field needs a default, and it cannot share a field with `config_model()` ([Extension settings managed on screen](extension-settings.md)) |
 | `env_fields` | Secret fields this extension adds to `cfg.env` |
 | `required_env_fields` | `cfg.env` fields this extension reads but does not provide |
 | `required_tool_context_keys` | Tool context keys this extension's tools read but does not provide |
@@ -142,6 +144,44 @@ A client extension that drives `run_conversation()` itself may pass any object a
 it: it is exposed to hooks as `ConversationContext.client_state` and to LLM tools as
 the `client_state` context key.
 
+## Running tools beforehand (`pre_tool_calls`)
+
+A client extension that calls `run_conversation()` itself can pass tools and arguments in
+`pre_tool_calls` when it wants certain tools run before the LLM answers. This is for cases
+where the caller, not the LLM, decides which tool to run (for example, turning on the lights
+when a timer switches phase).
+
+```python
+reply = await run_conversation(
+    llm_tools,
+    client_type="my-client",
+    pre_tool_calls=[
+        {"tool": "llm_workroom_climate", "args": {}},  # args is optional
+    ],
+)
+```
+
+- They run one at a time in the written order, are stacked after the latest user message in
+  the same shape as when the LLM calls a tool itself (an assistant tool call and the tool
+  result), and then the normal tool loop starts. Call IDs are assigned from
+  `pre_tool_call_0` onward
+- Only tools handed to the LLM for that conversation (after narrowing by
+  `allowed_tool_names` and `supported_client_type`) can run. There is no separate allow list
+- A tool that does not exist or is unavailable in that conversation, `args` that is not a
+  dict or lacks a required argument, a malformed element, or an exception while running does
+  not raise; the error is given to the LLM as that tool's result, and the remaining
+  pre-calls continue
+- If you pass `tool_call_notifier`, it is notified before each run just like a normal tool
+  call (depth 0)
+- They do not count toward the tool loop's iteration limit
+- The names of the tools that ran are included in `called_tool_names`, which is passed to a
+  resolver provider's script, from the first LLM call (tools that did not run because of an
+  error are not included)
+- The calls and results are added only to the `messages` sent to the LLM and are not saved
+  to the conversation history (MongoDB)
+- In a conversation without tools (`allowed_tool_names=[]`, during `!disable_tools`, and so
+  on) they are not run; a WARNING is logged and they are ignored
+
 ## Dependencies between extensions
 
 An extension declares the extensions it depends on in the `requires` class attribute.
@@ -210,5 +250,8 @@ The policy for changing the contract:
 ## Related pages
 
 - [Config composition](extension-config.md)
+- [Extension default prompts and overrides](extension-prompt.md)
+- [Overriding an extension's tasks](extension-task-override.md)
+- [Extension settings managed on screen](extension-settings.md)
 - [Dashboard contributions](extension-dashboard.md)
 - [Testing an extension](extension-testing.md)

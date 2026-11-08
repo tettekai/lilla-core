@@ -28,6 +28,7 @@ Including `"*"` in `cors_allowed_origins` allows every origin. Otherwise the req
 | `GET /api/selftest` | Bearer | Self-diagnosis (the `!selftest` equivalent). Add `?full=true` to also check LLM connectivity (which costs money). See the section below |
 | `POST /api/tools/call` | Bearer | Calls an LLM tool directly. Body: `{"tool": "<name>", "parameters": {...}}`. The name may be the YAML stem or the SCHEMA function name. Returns `{"success": true, "tool_name": ..., "data": ...}` or `{"success": false, "tool_name": ..., "error": ...}` |
 | `POST /api/runtask` | Bearer | Runs a task tool by hand (the `!runtask` equivalent). Body: `{"tool": "<name>", "params": {...}}`. Returns `202` without waiting for the run |
+| `GET /api/tasks` | Bearer | Returns the effective schedule (`schedule` / `timezone` / `enabled`) of the loaded scheduled tasks, for an external scheduler. See [Integrating an external scheduler](external-scheduler.md) |
 
 ## Self-diagnosis (`GET /api/selftest`)
 
