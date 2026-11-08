@@ -17,6 +17,7 @@ The index of the lilla-core user documentation.
 - [Channel notes (nightly summary)](channel-notes.md)
 - [Searching history by room name](history-search.md)
 - [Scheduled notifications delegated to the LLM](scheduled-llm.md)
+- [Integrating an external scheduler](external-scheduler.md) — `scheduler.enabled` and `GET /api/tasks`
 - [Timezone](timezone.md) — `ui.timezone`
 - [Choosing the LLM provider per turn](llm-resolver.md) — `type: resolver` in `llm.providers`
 - [Per-provider system prompt additions](llm-provider-prompt.md) — `llm.providers.<key>.prompt`
@@ -40,6 +41,9 @@ The index of the lilla-core user documentation.
 - [Extension basics](extensions.md) — method table, collision rules, locale catalogs, dependencies, compatibility
 - [Writing commands and running them outside Discord](commands.md) — `CommandContext` and `dispatch_command`
 - [Config composition](extension-config.md) — `config_model()` / `env_fields()` / `get_section()`
+- [Extension default prompts and overrides](extension-prompt.md) — `default_prompt()` and `extension_overrides`
+- [Overriding an extension's tasks](extension-task-override.md) — `tasks` in `extension_overrides` (`schedule` / `enabled`)
+- [Extension settings managed on screen](extension-settings.md) — `settings_model()` and `extension_settings`
 - [Dashboard contributions](extension-dashboard.md)
 - [Testing an extension](extension-testing.md) — `lilla_core.testing`
 

@@ -117,10 +117,27 @@ fails; move its entries to `tools.sets.main`.
   expression string) attributes, plus `async def execute(context: dict) -> None`.
 - `schedule` is optional — a tool without it is not registered with the scheduler, but
   can still be run manually via `!runtask`.
+- When `type` is `self`, as with LLM tools, no tool root is searched; the class is read from
+  a `.py` with the same name in the same directory as the YAML (for
+  `${CONFIG_ROOT}/tools/task_foo.yaml`, `${CONFIG_ROOT}/tools/task_foo.py`). If the `.py`
+  is missing, a warning is logged and only that tool is skipped.
 - `type` accepts an import path here too (`type: some_package.tasks.daily_summary`); the
   class is looked up in the imported module the same way as in a file. The trigger kind
   comes from the YAML's file name, not from `type`, so an import-path task tool is still
   a `task` tool and can be run with `!runtask`.
+- To save fetched data to MongoDB, use `save_document(collection, payload, key=None)` from
+  `lilla_core.tool_support.mongodata`. It performs the same write as `!mongodata` (with
+  `key`, an upsert with `$set` on the condition `{key: value}`; without it, an insert;
+  `_id` is excluded), and can write only to collections listed in
+  `commands.mongodata.allowed_collections`. A collection that is not allowed, or a missing
+  `key` field, raises a subclass of `MongoDataError` (`CollectionNotAllowedError` /
+  `KeyFieldMissingError`).
+
+  ```python
+  from lilla_core.tool_support.mongodata import save_document
+
+  await save_document("asken_daily", {"date": "2026-11-02", ...}, key="date")
+  ```
 
 ## The `context` passed to `execute`
 
