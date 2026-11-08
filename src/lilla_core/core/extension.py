@@ -66,6 +66,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
+    from lilla_core.core.file_storage import FileStorage
     from lilla_core.repository.conversation_repository import SavedConversation
 
 logger = logging.getLogger(__name__)
@@ -582,6 +583,15 @@ class Extension:
         """
         return []
 
+    def file_storages(self) -> dict[str, FileStorage]:
+        """この拡張が提供する保存先（`core/file_storage.py` の `FileStorage`）を名前で返す。
+
+        名前は `^[a-z0-9][a-z0-9-]*$` の形で、拡張どうしで重なるとロード時に落ちる。
+        値は `FileStorage` のインスタンスで、拡張の登録時にこのメソッドが呼ばれるため、
+        コンストラクタで外部へ接続しないこと。利用側は `get_file_storage(name)` で引く。
+        """
+        return {}
+
     def startup_repos(self) -> list[StartupRepoFactory]:
         """`on_ready` で `init_collection()` を呼ぶリポジトリファクトリを返す。"""
         return []
@@ -665,6 +675,7 @@ _dashboard_static_mounts: list[DashboardStaticMount] = []
 _dashboard_routes: list[DashboardRoute] = []
 _dashboard_public_routes: list[DashboardRoute] = []
 _http_routes: list[HttpRoute] = []
+_file_storages: dict[str, Any] = {}
 
 
 def _merge_unique(
@@ -1214,6 +1225,29 @@ def _collect_http_routes(extensions: list[Extension]) -> list[HttpRoute]:
     return collected
 
 
+def _collect_file_storages(extensions: list[Extension]) -> dict[str, Any]:
+    """各拡張の `file_storages()` をまとめ、名前の形と値の型を検証する。
+
+    Raises:
+        ValueError: 名前の形が不正な場合、または拡張どうしで名前が重なった場合。
+        TypeError: 値が `FileStorage` のインスタンスでない場合。
+    """
+    from lilla_core.core.file_storage import FileStorage
+
+    merged = _merge_unique(extensions, "file_storages", "file storage")
+    for name, storage in merged.items():
+        if not isinstance(name, str) or not _EXTENSION_NAME_RE.fullmatch(name):
+            raise ValueError(
+                f"File storage name {name!r} must match {_EXTENSION_NAME_RE.pattern}"
+            )
+        if not isinstance(storage, FileStorage):
+            raise TypeError(
+                f"File storage '{name}' must be a FileStorage instance, "
+                f"got {type(storage).__name__}"
+            )
+    return merged
+
+
 def _core_tool_context_keys() -> frozenset[str]:
     """コアが実行時にツール context へ必ず注入するキーの集合を返す。
 
@@ -1242,7 +1276,8 @@ def set_extensions(extensions: list[Extension]) -> None:
         extensions: ロード順に並んだ `Extension` インスタンス。
 
     Raises:
-        TypeError: `Extension` のインスタンスでない要素が含まれる場合。
+        TypeError: `Extension` のインスタンスでない要素が含まれる場合、または
+            `file_storages()` の値が `FileStorage` でない場合。
         ValueError: 名前または貢献キーが衝突している場合、`api_version` がこのコアの
             受け付ける契約バージョンでない場合、契約から外したメソッド
             （`config_models()` など）を上書きしている場合、`config_model()` が
@@ -1255,8 +1290,8 @@ def set_extensions(extensions: list[Extension]) -> None:
             含む）な場合、またはダッシュボードの申告（`name` の形・予約名・ルートのパス接頭辞・
             ページを出すのに静的ディレクトリが無い）が規約に違反している場合、
             共有 HTTP サーバーのルート申告がコアや他の拡張と重なる場合、
-            または `result_deliveries()` の配送関数が `(text, saved)` の 2 引数で
-            呼べない形の場合。
+            `result_deliveries()` の配送関数が `(text, saved)` の 2 引数で
+            呼べない形の場合、または `file_storages()` の名前が不正・重複している場合。
     """
     from lilla_core.core.config import core_env_field_names
 
@@ -1311,6 +1346,7 @@ def set_extensions(extensions: list[Extension]) -> None:
         extensions
     )
     http_routes = _collect_http_routes(extensions)
+    file_storages = _collect_file_storages(extensions)
     _validate_message_catalogs(extensions)
 
     global _extensions
@@ -1341,6 +1377,8 @@ def set_extensions(extensions: list[Extension]) -> None:
     _dashboard_public_routes.extend(public_routes)
     _http_routes.clear()
     _http_routes.extend(http_routes)
+    _file_storages.clear()
+    _file_storages.update(file_storages)
 
     _clear_message_catalog_cache()
 
@@ -1612,6 +1650,16 @@ def get_dashboard_public_routes() -> list[DashboardRoute]:
 def get_http_routes() -> list[HttpRoute]:
     """全拡張の共有 HTTP サーバー向けルートをロード順に返す。"""
     return list(_http_routes)
+
+
+def get_file_storage(name: str) -> FileStorage | None:
+    """名前で保存先（`FileStorage`）を返す。無ければ `None`。"""
+    return _file_storages.get(name)
+
+
+def list_file_storages() -> dict[str, FileStorage]:
+    """登録済みの保存先を「名前 → `FileStorage`」でロード順に返す（コピー）。"""
+    return dict(_file_storages)
 
 
 def get_result_delivery(client_type: str) -> DeliveryFn | None:

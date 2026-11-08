@@ -4,12 +4,11 @@ from __future__ import annotations
 import logging
 import os
 
+from lilla_core.core.file_storage import WRITE_MODES
 from lilla_core.tool_support.tool_result import tool_error, tool_success
 
 logger = logging.getLogger(__name__)
 
-#: `mode` に指定できる値と、`open()` に渡すモード。
-_OPEN_MODES = {"create": "x", "overwrite": "w", "append": "a"}
 
 SCHEMA = {
     "type": "function",
@@ -34,7 +33,7 @@ SCHEMA = {
                 },
                 "mode": {
                     "type": "string",
-                    "enum": list(_OPEN_MODES),
+                    "enum": list(WRITE_MODES),
                     "description": "create / overwrite / append",
                 },
             },
@@ -66,56 +65,22 @@ async def execute(input: dict, context: dict) -> dict:
     dict
         標準形式の結果辞書。`data` は `path` / `mode` / `created`（新しく作ったか）/ `size`。
     """
-    from lilla_core.extensions.files.access import (
-        Access,
-        FileAccessError,
-        resolve_target,
-        split_logical_path,
-    )
-    from lilla_core.extensions.files.tool_support import (
-        NOT_TEXT_MESSAGE,
-        NotTextError,
-        ensure_text_head,
-        run_file_operation,
-    )
+    from lilla_core.extensions.files.storage import write_text
+    from lilla_core.extensions.files.tool_support import run_file_operation
 
     tool_name = SCHEMA["function"]["name"]
     content = input.get("content")
     mode = input.get("mode")
     if not isinstance(content, str):
         return tool_error(tool_name, None, "content を文字列で指定してください。")
-    if mode not in _OPEN_MODES:
+    if mode not in WRITE_MODES:
         return tool_error(
             tool_name, None, "mode は create / overwrite / append のいずれかを指定してください。"
         )
 
     def operation(config, roots) -> dict:
         """ファイルを書く（スレッドで実行する）。"""
-        segments = split_logical_path(input.get("path"))
-        target = resolve_target(roots, segments)
-        if len(segments) < 2 or os.path.isdir(target.real):
-            raise FileAccessError("ディレクトリには書き込めません。ファイルのパスを指定してください。")
-        if target.access is not Access.WRITE:
-            raise FileAccessError("このディレクトリには書き込みが許可されていません。")
-
-        existed = os.path.exists(target.real)
-        if mode == "create" and existed:
-            raise FileAccessError("ファイルが既にあります（上書きするなら mode に overwrite を指定してください）。")
-        if mode == "append" and existed:
-            # Shift_JIS などへ UTF-8 で追記すると文字コードが混ざって読めなくなるため断る。
-            try:
-                ensure_text_head(target.real)
-            except NotTextError:
-                raise FileAccessError(NOT_TEXT_MESSAGE)
-        parent = os.path.dirname(target.real)
-        if os.path.exists(parent) and not os.path.isdir(parent):
-            raise FileAccessError("親のパスがディレクトリではありません。")
-        os.makedirs(parent, exist_ok=True)
-        try:
-            with open(target.real, _OPEN_MODES[mode], encoding="utf-8", newline="") as f:
-                f.write(content)
-        except FileExistsError:
-            raise FileAccessError("ファイルが既にあります（上書きするなら mode に overwrite を指定してください）。")
+        target, existed = write_text(roots, input.get("path"), content, mode)
 
         data = {
             "path": target.logical,

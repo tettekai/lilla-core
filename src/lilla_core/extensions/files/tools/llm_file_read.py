@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import os
 
 from lilla_core.tool_support.tool_result import tool_error, tool_success
 
@@ -70,18 +69,13 @@ async def execute(input: dict, context: dict) -> dict:
         標準形式の結果辞書。`data` は `path` / `content` / `offset` / `total_chars` /
         `truncated`（続きがあるか）/ `next_offset`（続きがあるときだけ）/ `writable`。
     """
-    from lilla_core.extensions.files.access import (
-        Access,
-        FileAccessError,
-        resolve_target,
-        split_logical_path,
-    )
+    from lilla_core.extensions.files.access import Access
+    from lilla_core.extensions.files.storage import read_text
     from lilla_core.extensions.files.tool_support import (
         MAX_READ_FILE_BYTES,
         NOT_TEXT_MESSAGE,
         FileTooLargeError,
         NotTextError,
-        read_text_file,
         run_file_operation,
     )
 
@@ -94,11 +88,8 @@ async def execute(input: dict, context: dict) -> dict:
 
     def operation(config, roots) -> dict:
         """本文を読む（スレッドで実行する）。"""
-        target = resolve_target(roots, split_logical_path(input.get("path")))
-        if os.path.isdir(target.real):
-            raise FileAccessError("ディレクトリは読めません（file_list を使ってください）。")
         try:
-            text = read_text_file(target.real, MAX_READ_FILE_BYTES)
+            target, text = read_text(roots, input.get("path"))
         except NotTextError:
             return tool_error(tool_name, None, NOT_TEXT_MESSAGE)
         except FileTooLargeError:
