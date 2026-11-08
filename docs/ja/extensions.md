@@ -31,12 +31,13 @@ extension = MyExtension()
 | `startup_repos` | `on_ready` で初期化する追加リポジトリファクトリ |
 | `on_message` | `on_message` の冒頭で呼ばれる。`True` を返すと以降の処理を止める |
 | `setup` | `bot.start()` の前に await される起動処理（HTTP サーバー等）。引数は `SetupContext` 1 つ（`tools` / `llm_tools` / `bot` / `config`）で、フィールドの追加は既存の拡張を壊さない |
-| `result_deliveries` | `!toolresult` の配送先を `client_type` ごとに指定 |
+| `result_deliveries` | `!toolresult` の配送先を `client_type` ごとに指定。配送関数は返信本文と、保存済みの会話履歴の `SavedConversation`（`_id`・`time`）を受け取る（[下記](#結果の配送result_deliveries)） |
 | `client_prompt_providers` | `client_type` ごとのシステムプロンプト追記。形は `{client_type: [プロバイダ, ...]}` の加算式で、複数の拡張が同じ `client_type` に足せる。コアがロード順に空行区切りで連結する |
+| `default_prompt` | この拡張のデフォルトのプロンプトを言語ごとに返す（`{"ja": ..., "en": ...}`。特定の言語は必須ではない。既定は `None`）。`client_type` によらず（`task` を除く）システムプロンプトへ入り、MongoDB の `extension_overrides` で拡張ごとに上書きできる（[拡張のデフォルトプロンプトと上書き](extension-prompt.md)） |
 | `conversation_start_hooks` | 会話処理開始前に await される非同期フック。形は `{client_type: [フック, ...]}` でプロンプトと同じく加算式。各フックは `ConversationContext`（`client_type` / `client_state` / `discord_channel_id` / `llm_name`）1 つを受け取る |
 | `tool_context_providers` | ツール実行 context への値の注入 |
 | `tool_roots` | ツールの `.py` を探す追加ディレクトリ |
-| `tool_config_roots` | 拡張が同梱する既定のツール YAML（`llm_*.yaml` / `task_*.yaml`）のディレクトリ。`${CONFIG_ROOT}/tools` に同じ stem の YAML があればそちらが丸ごと勝つ。同梱ツールを止めるにはそこに `enabled: false` の YAML を置く（[ツール契約](tools.md)） |
+| `tool_config_roots` | 拡張が同梱する既定のツール YAML（`llm_*.yaml` / `task_*.yaml`）のディレクトリ。`${CONFIG_ROOT}/tools` に同じ stem の YAML があればそちらが丸ごと勝つ。同梱ツールを止めるにはそこに `enabled: false` の YAML を置く（[ツール契約](tools.md)）。同梱したタスクのスケジュールと定期実行の有効・無効は MongoDB の `extension_overrides` の `tasks` で拡張ごとに上書きできる（[拡張のタスクの上書き](extension-task-override.md)） |
 | `locale_dirs` | 拡張が同梱する UI 文言カタログ（`{locale}.yaml`）のディレクトリ。カタログのトップレベルキーはその拡張の `name` ただ 1 つでなければならない（[下記](#ロケールカタログ)） |
 | `command_packages` | `@register_command` を探す追加パッケージ（[コマンドの実装と、Discord 以外からの実行](commands.md)） |
 | `dashboard_page` | 観測用ダッシュボードへ足すタブ 1 つ（`DashboardPage(label, group)`）。`group` は `main`（常用ナビ）か `admin`（管理メニュー）。経路は申告せず `name` から導出する（[ダッシュボードへの差し込み](extension-dashboard.md)） |
@@ -45,6 +46,7 @@ extension = MyExtension()
 | `dashboard_public_routes` | 認証の外側に載せる公開ルート（OAuth の戻り先など）。パスは `/oauth/{name}` 配下のみ。`state` の検証は拡張側の責任 |
 | `http_routes` | 共有 HTTP サーバー（ダッシュボードとは別ポート）に足すルート（`HttpRoute(method, path, handler, auth)`）。パスの接頭辞に制約は無く、`auth` は `bearer`（既定）/ `public` / `deferred`（[共有 HTTP サーバー](http-server.md)） |
 | `config_model` | この拡張が足す YAML セクションのモデル 1 つ（足さないなら `None`）。置き場は `extensions.<name のハイフンをアンダースコアにしたもの>`（`google-oauth` なら `cfg.extensions.google_oauth`）（[設定の合成](extension-config.md)） |
+| `settings_model` | ダッシュボードで編集する設定（設定の本体）のモデル 1 つ（持たないなら `None`）。MongoDB の `extension_settings` に保存し、`load_settings()` で処理ごとに読む。全項目に既定値が必要で、`config_model()` と同じ項目は持てない（[画面で管理する拡張の設定](extension-settings.md)） |
 | `env_fields` | この拡張が `cfg.env` に足す秘匿フィールド |
 | `required_env_fields` | 自分では提供しないが読む `cfg.env` のフィールド |
 | `required_tool_context_keys` | 自分では提供しないが、自分のツールが読むツール context のキー |
@@ -63,6 +65,43 @@ env フィールド名・ツール context のキー・結果配送の `client_t
 `client_type="discord"` だけは扱いが 2 点異なります。システムプロンプトはコアが内蔵
 デフォルトを持ち、拡張が 1 つも出していないときだけそれを使います。`!toolresult` の
 配送はコアが持つため拡張は登録できません。
+
+## 結果の配送（`result_deliveries`）
+
+`!toolresult` は外部エージェントの結果からリラの返信を作り、依頼元のクライアントへ届けて
+会話履歴にも残します。依頼元の `client_type` が `discord` 以外なら、拡張が
+`result_deliveries()` で登録した配送関数へ渡します。
+
+```python
+from lilla_core.repository.conversation_repository import SavedConversation
+
+
+async def deliver_via_ws(text: str, saved: SavedConversation) -> None:
+    await broadcast({"id": saved.id, "time": saved.time.isoformat(), "content": text})
+
+
+class MyClientExtension(Extension):
+    name = "my-client"
+
+    def result_deliveries(self):
+        return {"my-client": deliver_via_ws}
+```
+
+- 配送関数の型は `DeliveryFn = Callable[[str, SavedConversation], Awaitable[None]]` です。
+  `text` は届ける返信本文、`saved` はその返信を保存した会話履歴の `_id`（`saved.id`）と
+  `time`（`saved.time`。UTC の timezone-aware な `datetime`）です
+- コアは **保存してから** 配送関数を呼びます。呼ばれた時点で返信はすでに会話履歴にあり、
+  `saved.id` / `saved.time` は `ConversationRepository.list_for_client()` が返す同じ項目の
+  `_id` / `time` と一致します。クライアントは差分取得（`after_id`）と配送の両方で受け取り、
+  `_id` で重複を除けます
+- `(text, saved)` の 2 引数で呼べない形の配送関数（1 引数しか受け取らないものなど）は、
+  ロード時に拡張名と `client_type` を示して失敗します。`*args` で受ける関数や 2 つ目の引数に
+  既定値がある関数はそのまま読み込みます
+- 配送関数が例外を投げても、保存済みの履歴は取り消しません（クライアントは差分取得で拾えます）
+- 保存するタグは `toolresult` / `dirty` で、Discord のメッセージ情報は持ちません
+- `discord` への配送はコアが持ち、送信したメッセージの ID を履歴に残す（`!cleardirty` 用）
+  ため、従来どおり送信してから保存します。配送関数が未登録の `client_type` も Discord
+  への配送になります
 
 ## ロケールカタログ
 
@@ -97,6 +136,40 @@ lilla-habits:
 `client_state` として渡せます（接続中ソケットの集合など）。コアは中身を解釈せず、
 フックには `ConversationContext.client_state` として、LLM ツールには context の
 `client_state` キーとしてそのまま渡します。
+
+## ツールの事前実行（`pre_tool_calls`）
+
+`run_conversation()` を自分で呼ぶクライアント拡張は、LLM に応答させる前に決まったツールを
+実行させたいとき、`pre_tool_calls` に実行するツールと引数を並べて渡せます。LLM にツールを
+呼ぶかどうかを判断させず、呼び出し側が実行するツールを明示したい場面（タイマーの区間が
+切り替わったら照明をつける、など）向けです。
+
+```python
+reply = await run_conversation(
+    llm_tools,
+    client_type="my-client",
+    pre_tool_calls=[
+        {"tool": "llm_workroom_climate", "args": {}},  # args は省略可
+    ],
+)
+```
+
+- 書かれた順に 1 件ずつ実行し、LLM が自分でツールを呼んだときと同じ形（assistant の
+  ツール呼び出しとツールの結果）で、最新の user メッセージのあとに積んでから通常の
+  ツールループに入ります。呼び出し ID は `pre_tool_call_0` から順に振ります
+- 実行できるのは、その会話で LLM に渡すツール（`allowed_tool_names` と
+  `supported_client_type` で絞り込んだ後）だけです。専用の許可リストはありません
+- 存在しない・その会話で使えないツール、`args` が dict でない・必須の引数が無い、
+  要素の形が不正、実行中の例外は、例外にせずそのツールの結果としてエラー内容を
+  LLM に渡し、後続の事前実行も続けます
+- `tool_call_notifier` を渡していれば、通常のツール呼び出しと同じく実行前に
+  通知します（depth は 0）
+- ツールループの往復回数の上限には数えません
+- 実行したツール名は、resolver 型のプロバイダーのスクリプトに渡す `called_tool_names` に
+  最初の LLM 呼び出しから含まれます（エラーで実行しなかったものは含みません）
+- 呼び出しと結果は LLM に渡す `messages` にだけ積み、会話履歴（MongoDB）には保存しません
+- ツールなしの会話（`allowed_tool_names=[]`・`!disable_tools` 中など）では実行せず、
+  WARNING ログを出して無視します
 
 ## 拡張どうしの依存
 
@@ -162,5 +235,8 @@ class MyExtension(Extension):
 ## 関連ページ
 
 - [設定の合成](extension-config.md)
+- [拡張のデフォルトプロンプトと上書き](extension-prompt.md)
+- [拡張のタスクの上書き](extension-task-override.md)
+- [画面で管理する拡張の設定](extension-settings.md)
 - [ダッシュボードへの差し込み](extension-dashboard.md)
 - [拡張のテストの書き方](extension-testing.md)

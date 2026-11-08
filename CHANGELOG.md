@@ -7,6 +7,111 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-08
+
+### Added
+
+- 外部のスケジューラへ時刻の管理を任せるための設定と API を追加した（#309）。
+  - `lilla.yaml` に `scheduler.enabled`（既定 `true`。真偽値のみ）を追加した。`false` にすると APScheduler による定期起動
+    だけを始めず、タスクのロード・共有 HTTP サーバー・`POST /api/runtask`・`!runtask` は従来どおり使える。起動時にだけ読む
+  - 共有 HTTP サーバーに `GET /api/tasks`（Bearer 必須）を追加した。ロード済みの定期タスクごとに、拡張の上書きを重ねた
+    実効の `schedule` / `enabled` と `timezone`（`ui.timezone` の IANA 名。未指定なら `+09:00` 形式の UTC オフセット）を返し、
+    `scheduler_enabled` と `cron_format`（`apscheduler3`）も付ける。上書きは呼ぶたびに DB から読み、読み込み失敗は 503、
+    実効スケジュールを解決できないタスクがあれば 500 で返す（空の一覧にはしない）
+  - 実効値の解決を `lilla_core.services.task_schedules` にまとめ、内部スケジューラ・ダッシュボード・`GET /api/tasks` で共有した
+  - `task_handler.apply_task_overrides()` は内部スケジューラが無効な設定のとき `scheduler_disabled` を返す
+    （ダッシュボードの反映結果にも出る）。`task_handler.is_scheduler_enabled()` を追加した
+  - 拡張の `http_routes()` は `GET /api/tasks` を申告できなくなった（コアのルートと重なるため）
+
+- task ツールなどから `!mongodata` と同じ形で MongoDB へ書き込むヘルパー `lilla_core.tool_support.mongodata.save_document()` を
+  追加した。`key` を渡すと `{key: 値}` を条件に `$set` で upsert し、省略すると insert する。書き込めるのは
+  `commands.mongodata.allowed_collections` に並べたコレクションだけで、`!mongodata` もこの関数で書き込むようにした
+  （コマンドの挙動は変えていない）
+
+- `send_http_request()` に省略可能な引数 `cookie_jar`（`aiohttp.abc.AbstractCookieJar`）を追加した。渡すとそのクッキージャーで
+  セッションを作るため、同じ `aiohttp.CookieJar` を続けて渡せば、ログインで受け取ったセッションクッキーをその後のリクエストへ
+  引き継げる（プロキシの適用は従来どおり）。省略時の挙動は変えていない
+
+- task ツールの YAML でも `type: self` を使えるようにした。LLM ツールと同じく、ツールルートを探索せず YAML と同じディレクトリ・
+  同名の `.py`（`${CONFIG_ROOT}/tools/task_foo.yaml` なら `task_foo.py`）からクラスを読む。ロードはツールを置いてよいディレクトリ
+  （探索ルート・拡張の同梱 YAML ディレクトリ・`${CONFIG_ROOT}/tools`）の配下に限り、外を指すシンボリックリンクは読まない。
+  同名の `.py` が無ければ WARNING を出してそのツールだけスキップする
+
+- `ConversationRepository.list_for_client()` に省略可能な差分取得の引数 `after_id` / `since` を追加した（#288）。
+  `after_id` はそのドキュメントより `(time, _id)` の組で新しいもの（自身は含まない。同じ `time` の後続も含む）、`since` は
+  その時刻以降（境界ちょうどを含む）を返し、どちらかを渡したときは古い順に返す。`after_id` が ObjectId として不正なら
+  `ValueError`、存在しなければ `since` があれば `since` だけで絞り込み、無ければ新しい例外 `ConversationNotFoundError`
+  （`lilla_core.core.exceptions`。`LookupError` の派生）を送出する。引数を省略した場合は従来どおり新しい順
+- `ConversationRepository.save_entry()` と `MemoryManager.add_conversation_entry()` を追加した（#288）。引数は `save()` /
+  `add_conversation()` と同じで、保存したエントリの `_id`（`str`）と `time`（UTC の timezone-aware な `datetime`）を持つ
+  `SavedConversation` を返す。返す `time` は `list_for_client()` が返す値と `==` で一致する。既存の `save()` /
+  `add_conversation()` の引数と戻り値（`_id` の `str`）は変えていない
+
+- `run_conversation()` に任意の引数 `pre_tool_calls`（`[{"tool": str, "args": dict}]`。`args` は省略可）を追加した（#286）。
+  LLM を呼ぶ前に書かれた順にツールを実行し、LLM が自分で呼んだときと同じ形の呼び出しと結果を最新の user メッセージのあとに積んでから
+  通常のツールループに入る。実行できるのはその会話で LLM に渡すツールだけで、使えないツール・不正な引数・実行中の例外はエラーの結果として
+  LLM に渡す（会話は止めない）。往復回数の上限には数えず、会話履歴にも保存しない。実行したツール名は resolver に渡す `called_tool_names` に含める。ツールなしの会話では WARNING ログを出して無視する。
+  渡さなければ従来どおり
+
+- 拡張がデフォルトのプロンプトを持てるようにした（#281）。`Extension.default_prompt()` が言語ごとの本文
+  （`{"ja": "...", "en": "..."}`。特定の言語は必須ではない。既定は `None`）を返すと、`client_type` が `task` 以外の会話で、既存の
+  システムプロンプト・クライアント固有プロンプト・会話プロンプトの後ろ、登録チャンネルの一節の前に、拡張のロード順で
+  空行区切りに注入する。本文は `ui.locale` に一致する言語、無ければ `ja` → `en` → 定義の先頭の言語の順に選ぶ。形が不正（`dict` でない・空・
+  文字列以外を含む）な拡張はロード時に失敗する。メソッドの追加のため `EXTENSION_API_VERSION` は変えていない
+- MongoDB の新しいコレクション `extension_overrides`（`extension` にユニークインデックス。起動時に作成）で、拡張ごとに
+  プロンプトを上書きできるようにした（#281）。ドキュメントの `prompt`（文字列）がデフォルトの全文を置き換え、空文字は
+  「注入しない」を意味する。`prompt` が文字列でない場合と読み込みに失敗した場合は WARNING ログを出してデフォルトを使う。
+  上書きは言語を区別せず、キャッシュもしない（組み立てのたびに読む）。書き込み API・ダッシュボードの編集画面はまだ無い
+- `extension_overrides` の拡張ごとのドキュメントの `tasks` キー（`{"<ツール名>": {"schedule": "<crontab>", "enabled": false}}`）で、
+  拡張が `tool_config_roots()` で同梱したタスクの実行スケジュールと定期実行の有効・無効を、タスクごと・項目ごとに上書きできるようにした
+  （#284）。上書きは起動時にスケジューラへジョブを登録するときに読む（キャッシュしない）。`enabled: false` はジョブを登録しないだけで、
+  ツール YAML の `enabled: false` と違いツールはロードされ `!runtask` で実行できる。不正な値・拡張が同梱していないツール名・読み込みの
+  失敗は、拡張名とツール名を含む WARNING ログを出してデフォルトにフォールバックする（起動は止めない）。コア組み込みのタスクは対象外。
+  稼働中のスケジューラへ再起動なしで反映する非同期関数 `handlers/task_handler.py` の `apply_task_overrides(extension_name, task_name=None)`
+  を追加した（#305 でダッシュボードの編集画面から呼ぶようになった）
+- `loaders/tool_paths.py` に、拡張が同梱したツール YAML の stem と拡張名の対応を返す `resolve_tool_config_owners()` を追加し、
+  `load_all_tools()` の各エントリに同梱した拡張の名前（`extension`。無ければ `None`）を入れるようにした（#284）
+
+- 拡張の設定をダッシュボードで編集し、再起動なしで使える **画面管理の設定** を追加した（#306）。拡張は新しい任意のメソッド
+  `Extension.settings_model()` で設定のモデルを宣言し、値は MongoDB の `extension_settings`（拡張ごとに 1 ドキュメント、起動時に
+  ユニークインデックスを作る）に保存する。読み取りは `services/extension_settings.py` の `load_settings(name, model)`（非同期・呼ぶたびに
+  DB を読む）で、未保存なら宣言した初期値を返し、DB から読めないときは `SettingsUnavailableError`、保存値が不正なときは
+  `InvalidStoredSettingsError` を投げる（初期値で黙って置き換えない）。全項目に既定値が無い・既定値が検証を通らない・`config_model()`
+  と同じ項目を持つ拡張はロード時に失敗し、画面管理の項目を `lilla.yaml` の `extensions.<節名>` に書くと移行先を示して起動時に失敗する。
+  ダッシュボードの Extensions 画面に設定の汎用編集欄と `PUT /api/admin/extensions/{name}/settings` を追加した。`settings_model()` を
+  定義しない拡張の挙動は変わらない
+- 観測用ダッシュボードに、拡張の上書き（`extension_overrides`）を編集する管理画面 **Extensions**（`#/admin/extensions`）を
+  追加した（#305）。ロード済みの拡張ごとに、デフォルトのプロンプト（`ui.locale` に合うデフォルト・上書きの有無・実効値）と、
+  拡張が同梱した定期タスクの `schedule` / `enabled` を編集できる。API はログイン必須の
+  `GET /api/admin/extensions`・`GET /api/admin/extensions/{name}`・`PATCH /api/admin/extensions/{name}/overrides`・
+  `POST /api/admin/extensions/{name}/tasks/apply`。保存はリクエスト全体を検証してから 1 回の更新で行い（不正なら何も保存しない）、
+  指定したキーだけを書き換える。タスクを保存すると稼働中のスケジューラへ再起動なしで反映し、保存の成否と反映の成否を分けて返す
+  （反映に失敗しても成功とは表示せず、再反映できる）。`repository/extension_override_repository.py` に `find_one()` と
+  `update_overrides()` を追加した
+- `handlers/task_handler.py` の `apply_task_overrides()` にキーワード引数 `strict`（既定 `False`）を追加し、結果
+  （`APPLY_APPLIED` / `APPLY_SCHEDULER_NOT_RUNNING` / `APPLY_NOT_FOUND` / `APPLY_FAILED`）を返すようにした。`strict=True` では
+  上書きの読み込みに失敗してもジョブをデフォルトへ戻さず、反映中の例外も `APPLY_FAILED` として返す。状態を読む
+  `is_scheduler_running()` / `get_applied_schedules()` も追加した
+- `services/memory_manager.py` の拡張のデフォルトプロンプトを選ぶ関数を `select_default_prompt()` として公開した
+  （旧名 `_select_default_prompt` も残している）
+
+### Changed
+
+- **BREAKING**: `!toolresult` の結果を Discord 以外の配送先（拡張が `result_deliveries()` で登録したもの）へ届けるときは、
+  先に会話履歴へ保存してから配送関数を呼ぶようにし、配送関数の型 `DeliveryFn` を
+  `Callable[[str], Awaitable[None]]` から `Callable[[str, SavedConversation], Awaitable[None]]` に変えた（#291）。
+  2 つ目の引数は保存したエントリの `_id` と `time` で、`list_for_client()` が返す同じ項目の値と一致する。配送関数が例外を
+  投げても保存済みの履歴は残す。Discord への配送は従来どおり送信してから保存する。`(text, saved)` の 2 引数で呼べない形の配送関数
+  （1 引数のものなど）は、拡張名と `client_type` を示してロード時に失敗する（`*args` や 2 つ目の引数に既定値がある関数は読み込む）。
+  `EXTENSION_API_VERSION` は 2 のまま
+- `start_dashboard_server()` が省略可能な引数 `tools`（task ツールのレジストリ）を受け取るようにし、`bot.py` が渡すようにした（#305）。
+  拡張の名前 `extensions` を予約名（`RESERVED_EXTENSION_NAMES`）に加えた（ダッシュボードの `#/admin/extensions` と衝突するため）
+- `handlers/task_handler.py` の `start_scheduler()` を非同期関数にした（#284。起動時に MongoDB の上書きを読むため）。
+  呼び出し側は `await` が必要
+- 会話履歴の `time` をミリ秒単位に切り捨てて保存するようにした（MongoDB の保存精度と同じ。#288）
+- `ConversationRepository.list_for_client()` の並び順を `(time, _id)` の複合キーにし、同じ `time` のドキュメントの順序を
+  決定的にした（#288）。あわせて起動時に `conversations` へ `(time, _id)` の複合インデックスを作る
+
 ## [0.7.1] - 2026-10-25
 
 ### Added

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
 
@@ -8,7 +9,34 @@ from bson import ObjectId
 from lilla_core.repository.mongo_client import create_mongo_client
 from pymongo import ASCENDING, DESCENDING
 
+from lilla_core.core.exceptions import ConversationNotFoundError
 from lilla_core.utils.datetime_utils import utc_now
+
+
+@dataclass(frozen=True)
+class SavedConversation:
+    """保存した会話履歴エントリの識別情報。
+
+    Attributes:
+        id: 保存したドキュメントの `_id`（ObjectId の文字列）。`list_for_client` の
+            `_id` と同じ値で、`after_id` や `delete()` にそのまま渡せる。
+        time: 保存したドキュメントの `time`（UTC の timezone-aware な datetime。
+            ミリ秒精度）。`list_for_client` が返す同じエントリの `time` と `==` で一致し、
+            `since` にそのまま渡せる。
+    """
+
+    id: str
+    time: datetime
+
+
+def _storage_now() -> datetime:
+    """会話履歴の `time` に保存する現在時刻（UTC・ミリ秒精度）を返す。
+
+    MongoDB（BSON の日時型）はミリ秒精度で保存するため、`utc_now()` のマイクロ秒を
+    ミリ秒単位に切り捨てておく。こうすると保存前の値と読み出した値が `==` で一致する。
+    """
+    now = utc_now()
+    return now.replace(microsecond=now.microsecond // 1000 * 1000)
 
 
 @lru_cache(maxsize=1)
@@ -45,6 +73,8 @@ class ConversationRepository:
         あわせて `(discord_channel_id, time)` の複合インデックスを作成します
         （チャンネル単位・期間指定の取得に使います。`discord_channel_id` を持たない
         既存ドキュメントも通常のインデックスに含まれます）。
+        `list_for_client` の `(time, _id)` の並び替え・差分取得用に `(time, _id)` の
+        複合インデックスも作成します（TTL は `time` の単一インデックスが担います）。
         """
         if self._ttl_hours == 0:
             await self._collection.create_index([("time", ASCENDING)])
@@ -55,6 +85,9 @@ class ConversationRepository:
             )
         await self._collection.create_index(
             [("discord_channel_id", ASCENDING), ("time", ASCENDING)],
+        )
+        await self._collection.create_index(
+            [("time", ASCENDING), ("_id", ASCENDING)],
         )
 
     async def load(self, max_turns: int) -> list[dict]:
@@ -180,17 +213,87 @@ class ConversationRepository:
         ).sort("time", DESCENDING).limit(limit)
         return await cursor.to_list(length=limit)
 
-    async def list_for_client(self, limit: int, offset: int) -> list[dict]:
-        """クライアント向けに会話履歴を新しい順で返す。
+    async def list_for_client(
+        self,
+        limit: int,
+        offset: int,
+        after_id: str | None = None,
+        since: datetime | None = None,
+    ) -> list[dict]:
+        """クライアント向けに会話履歴を返す（全件の新しい順か、差分取得）。
 
-        戻り値は {"_id": str, "time": datetime, "message": {...}} のリスト。
+        並び順は常に `(time, _id)` の複合キーで決まり、同じ `time` のドキュメントの
+        順序も毎回同じになる（`_id` は ObjectId の採番順で、同じプロセスが続けて保存した
+        ものは保存順に大きくなる）。
+
+        - `after_id` / `since` をどちらも省略した場合は従来どおり全件を新しい順
+          （`time` 降順、同時刻は `_id` 降順）にし、`offset` 件飛ばして `limit` 件返す。
+        - どちらかを指定した場合（差分取得）は **古い順**（`time` 昇順、同時刻は
+          `_id` 昇順）で、条件に合うものの先頭から `offset` 件飛ばして `limit` 件返す。
+          古い順にするのは、`limit` で切ったときに「既知の最新件の直後」から欠けなく
+          返すため（新しい順で切ると間が抜ける）と、クライアントが受け取った順に
+          末尾へ追加できるようにするため。続きは最後の要素の `_id` を次の
+          `after_id` に渡せば重複も取りこぼしもなく取れる。
+
+        Args:
+            limit: 返す最大件数。
+            offset: 先頭から飛ばす件数。
+            after_id: このドキュメントより新しいものだけを返す（そのドキュメント自身は
+                **含まない**）。「より新しい」は `(time, _id)` の組で判定し、
+                `time` が大きいもの、または `time` が同じで `_id` が大きいものを返す
+                （同じ時刻に続けて保存された後続ブロックも取りこぼさない）。
+                ObjectId として不正な形式なら `ValueError`。存在しない
+                （TTL で消えた・削除された）場合は、`since` があれば `since` だけで
+                絞り込み、無ければ `ConversationNotFoundError` を送出する
+                （空リストを返すと「新しいものは無い」と区別できず取りこぼすため）。
+            since: この時刻 **以降**（`time >= since`。境界ちょうどを **含む**）のものだけを
+                返す。含めるのは、同じミリ秒に保存された別ブロックを取りこぼさない
+                ためで、`save_entry` が返した `time` を渡すとそのエントリ自身も返る
+                （重複は `_id` で除く想定）。UTC の timezone-aware な値を推奨する。
+                `after_id` と同時に指定した場合は両方の条件を満たすものだけを返す。
+
+        Returns:
+            {"_id": str, "time": datetime, "message": {...}} のリスト。
+
+        Raises:
+            ValueError: `after_id` が ObjectId として不正な形式のとき。
+            ConversationNotFoundError: `after_id` のドキュメントが存在せず、
+                `since` も指定されていないとき。
         """
+        conditions: list[dict] = []
+        if since is not None:
+            conditions.append({"time": {"$gte": since}})
+        if after_id is not None:
+            if not isinstance(after_id, str) or not ObjectId.is_valid(after_id):
+                raise ValueError("after_id is not a valid ObjectId")
+            after_oid = ObjectId(after_id)
+            anchor = await self._collection.find_one({"_id": after_oid}, {"time": 1})
+            if anchor is not None:
+                anchor_time = anchor["time"]
+                conditions.append({
+                    "$or": [
+                        {"time": {"$gt": anchor_time}},
+                        {"time": anchor_time, "_id": {"$gt": after_oid}},
+                    ],
+                })
+            elif since is None:
+                raise ConversationNotFoundError("conversation for after_id was not found")
+
+        if not conditions:
+            mongo_filter: dict = {}
+        elif len(conditions) == 1:
+            mongo_filter = conditions[0]
+        else:
+            mongo_filter = {"$and": conditions}
+
+        incremental = after_id is not None or since is not None
+        direction = ASCENDING if incremental else DESCENDING
         cursor = (
             self._collection.find(
-                {},
+                mongo_filter,
                 {"_id": 1, "message": 1, "time": 1},
             )
-            .sort("time", DESCENDING)
+            .sort([("time", direction), ("_id", direction)])
             .skip(offset)
             .limit(limit)
         )
@@ -213,6 +316,9 @@ class ConversationRepository:
     ) -> str:
         """メッセージを会話履歴に保存し、保存したドキュメントの _id を返します。
 
+        `save_entry` の薄いラッパーで、保存内容は同じ。`time` も必要なら
+        `save_entry` を使う。
+
         Args:
             message: 保存する会話メッセージ（role / content）。
             tags: エントリの分類タグ。空・None の場合はフィールドを保存しない。
@@ -223,9 +329,41 @@ class ConversationRepository:
         Returns:
             保存したドキュメントの _id（文字列）。
         """
+        saved = await self.save_entry(
+            message,
+            tags=tags,
+            discord_channel_id=discord_channel_id,
+            discord_message_ids=discord_message_ids,
+        )
+        return saved.id
+
+    async def save_entry(
+        self,
+        message: dict,
+        tags: list[str] | None = None,
+        discord_channel_id: int | None = None,
+        discord_message_ids: list[int] | None = None,
+    ) -> SavedConversation:
+        """メッセージを会話履歴に保存し、保存したエントリの `_id` と `time` を返します。
+
+        保存するドキュメントの内容と `time` の決め方はこのメソッドだけが持つ。
+        `time` は現在時刻（UTC）をミリ秒単位に切り捨てた値で、保存した値と
+        返す値は同じ（`list_for_client` が返す `time` とも `==` で一致する）。
+
+        Args:
+            message: 保存する会話メッセージ（role / content）。
+            tags: エントリの分類タグ。空・None の場合はフィールドを保存しない。
+            discord_channel_id: 対応する Discord メッセージのチャンネル ID。
+            discord_message_ids: 対応する Discord メッセージの ID リスト
+                （長文が複数チャンクに分割された場合に備えてリストで持つ）。
+
+        Returns:
+            `SavedConversation`。`id` は保存したドキュメントの `_id`（文字列）、
+            `time` は保存した `time`（UTC の timezone-aware な datetime。ミリ秒精度）。
+        """
         doc: dict = {
             "message": message,
-            "time": utc_now(),
+            "time": _storage_now(),
         }
         if tags:
             doc["tags"] = tags
@@ -234,7 +372,7 @@ class ConversationRepository:
         if discord_message_ids:
             doc["discord_message_ids"] = discord_message_ids
         result = await self._collection.insert_one(doc)
-        return str(result.inserted_id)
+        return SavedConversation(id=str(result.inserted_id), time=doc["time"])
 
     async def find_latest_by_tag(self, tag: str) -> dict | None:
         """指定タグを持つ会話履歴のうち最新の 1 件を返します。

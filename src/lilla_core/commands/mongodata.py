@@ -11,6 +11,11 @@ import logging
 from lilla_core.commands.attachment_body import resolve_command_body
 from lilla_core.commands.registry import register_command
 from lilla_core.core.error_notify import notify_error
+from lilla_core.tool_support.mongodata import (
+    CollectionNotAllowedError,
+    KeyFieldMissingError,
+    save_document,
+)
 from lilla_core.ui.messages import t
 
 logger = logging.getLogger(__name__)
@@ -40,11 +45,6 @@ async def handle_mongodata(ctx, arg: str, tools: dict, bot) -> None:
         tools: ツールレジストリ（未使用）。
         bot: Discord クライアント。エラー通知に使用する。
     """
-    from lilla_core.core.config import get_config
-    from lilla_core.repository.mongo_client import create_mongo_client
-
-    config = get_config()
-
     body_text = await resolve_command_body(ctx, arg, bot, "!mongodata")
     if body_text is None:
         ctx.mark_failed()
@@ -68,15 +68,6 @@ async def handle_mongodata(ctx, arg: str, tools: dict, bot) -> None:
         ctx.mark_failed()
         return
 
-    if collection_name not in config.commands.mongodata.allowed_collections:
-        await notify_error(
-            bot,
-            t("command.mongodata.invalid_request_title"),
-            t("command.mongodata.collection_not_allowed", collection=collection_name),
-        )
-        ctx.mark_failed()
-        return
-
     payload = body.get("payload")
     if not isinstance(payload, dict):
         await notify_error(
@@ -87,37 +78,24 @@ async def handle_mongodata(ctx, arg: str, tools: dict, bot) -> None:
         ctx.mark_failed()
         return
 
-    payload.pop("_id", None)
-
-    key_field = body.get("key")
-
     try:
-        client = create_mongo_client(config.env.mongodb_uri)
-        col = client[config.mongodb.db_name][collection_name]
-
-        if key_field:
-            key_value = payload.get(key_field)
-            if key_value is None:
-                await notify_error(
-                    bot,
-                    t("command.mongodata.invalid_request_title"),
-                    t("command.mongodata.key_field_missing", key_field=key_field),
-                )
-                ctx.mark_failed()
-                return
-            await col.update_one(
-                {key_field: key_value},
-                {"$set": payload},
-                upsert=True,
-            )
-            logger.info(
-                "!mongodata: upsert completed collection=%s %s=%s",
-                collection_name, key_field, key_value,
-            )
-        else:
-            await col.insert_one(payload)
-            logger.info("!mongodata: insert completed collection=%s", collection_name)
-
+        await save_document(collection_name, payload, key=body.get("key"))
+    except CollectionNotAllowedError:
+        await notify_error(
+            bot,
+            t("command.mongodata.invalid_request_title"),
+            t("command.mongodata.collection_not_allowed", collection=collection_name),
+        )
+        ctx.mark_failed()
+        return
+    except KeyFieldMissingError as e:
+        await notify_error(
+            bot,
+            t("command.mongodata.invalid_request_title"),
+            t("command.mongodata.key_field_missing", key_field=e.key),
+        )
+        ctx.mark_failed()
+        return
     except Exception as e:
         await notify_error(bot, t("command.mongodata.db_error_title"), e)
         ctx.mark_failed()

@@ -399,7 +399,7 @@ def discord_bot(
     # `from lilla_core.handlers import task_handler` はパッケージ属性経由のため、
     # 先行テストで実モジュールが読み込まれていると patch.dict が効かない。
     discord_bot_mod.task_handler = MagicMock()
-    discord_bot_mod.task_handler.start_scheduler = MagicMock()
+    discord_bot_mod.task_handler.start_scheduler = AsyncMock()
     yield discord_bot_mod
     _unload_module("lilla_core.bot")
     _unload_module("lilla_core.bot_client")
@@ -1560,15 +1560,26 @@ class TestOnReady:
         for repo in startup_repo_instances:
             repo.init_collection.reset_mock(side_effect=True)
         discord_bot.task_handler.start_scheduler.reset_mock()
+        discord_bot.task_handler.is_scheduler_enabled.return_value = True
 
     async def test_calls_all_repo_init_and_starts_scheduler(self, discord_bot, startup_repo_instances) -> None:
         """全リポジトリの init_collection とスケジューラ起動が呼ばれる。"""
         await discord_bot.on_ready()
         for repo in startup_repo_instances:
             repo.init_collection.assert_called_once()
-        discord_bot.task_handler.start_scheduler.assert_called_once_with(
+        discord_bot.task_handler.start_scheduler.assert_awaited_once_with(
             discord_bot.tools, discord_bot.bot, discord_bot.llm_tools
         )
+
+    async def test_disabled_scheduler_is_not_started(self, discord_bot, startup_repo_instances) -> None:
+        """`scheduler.enabled: false` ならリポジトリだけ初期化し、スケジューラは起こさない。"""
+        discord_bot.task_handler.is_scheduler_enabled.return_value = False
+
+        await discord_bot.on_ready()
+
+        for repo in startup_repo_instances:
+            repo.init_collection.assert_called_once()
+        discord_bot.task_handler.start_scheduler.assert_not_called()
 
     async def test_one_failure_does_not_block_others_or_scheduler(
         self, discord_bot, startup_repo_instances, mock_conversation_repo_instance

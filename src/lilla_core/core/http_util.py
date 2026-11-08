@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import aiohttp
+from aiohttp.abc import AbstractCookieJar
 
 from lilla_core.core.config import get_config
 
@@ -122,6 +123,7 @@ async def send_http_request(
     body: str | bytes | None = None,
     allow_redirects: bool = True,
     http_error_log_level: int = logging.ERROR,
+    cookie_jar: AbstractCookieJar | None = None,
 ) -> str:
     """
     非同期HTTPリクエストを送信します。
@@ -142,6 +144,10 @@ async def send_http_request(
     http_error_log_level は HTTP エラー（上記のしきい値以上のステータス）を記録する
     ログレベル（既定 ERROR）。失敗しても送り直す呼び出し側（LLM 送信の再試行など）が、
     途中の失敗を WARNING に下げるために使う。
+
+    cookie_jar を渡すと、そのクッキージャーでセッションを組み立てる（既定は呼び出しごとに
+    空のジャー）。同じ ``aiohttp.CookieJar`` を複数の呼び出しに渡すと、ログインで受け取った
+    セッションクッキーをその後のリクエストへ引き継げる。ジャーの寿命は呼び出し側が持つ。
     """
     proxy, auth = _resolve_proxy(url)
 
@@ -165,7 +171,7 @@ async def send_http_request(
         elif form_data is not None:
             logger.debug("Request body (form): %s", _mask_secret_keys(form_data))
 
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(cookie_jar=cookie_jar) as session:
         async with session.request(
             method=method.upper(),
             url=url,

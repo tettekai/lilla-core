@@ -2029,3 +2029,174 @@ class TestSkillListInjection:
         await conversation_service.run_conversation(tools)
 
         section_builder.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# TestPreToolCalls
+# ---------------------------------------------------------------------------
+
+
+class TestPreToolCalls:
+    """`run_conversation` の `pre_tool_calls`（LLM を呼ぶ前のツールの事前実行）のテスト。"""
+
+    @pytest.fixture
+    def tools(self, conversation_service, monkeypatch: pytest.MonkeyPatch) -> dict:
+        """関数名を持つ 2 つのツールと、許可リストで schema を絞る `build_tools_param`。"""
+        monkeypatch.setattr(
+            conversation_service,
+            "build_tools_param",
+            lambda x, client_type="discord", allowed_names=None: [
+                entry["schema"]
+                for name, entry in x.items()
+                if allowed_names is None or name in allowed_names
+            ],
+        )
+        return {
+            name: {
+                "schema": {"type": "function", "function": {"name": name, "parameters": {}}},
+                "execute": AsyncMock(),
+            }
+            for name in ("climate", "light")
+        }
+
+    @pytest.fixture
+    def sent_messages(self, conversation_service, monkeypatch: pytest.MonkeyPatch) -> list:
+        """LLM へ送った messages を呼び出しごとに写して記録する（最終応答を返す）。"""
+        sent: list = []
+
+        async def _chat(messages, **kwargs):
+            sent.append([dict(m) for m in messages])
+            return {
+                "content": "reply", "tool_calls": None, "finish_reason": "stop",
+                "raw_message": {"role": "assistant", "content": "reply"},
+            }
+
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", _chat)
+        return sent
+
+    @pytest.fixture
+    def history(self, mock_memory_manager_instance: MagicMock) -> None:
+        mock_memory_manager_instance.load_conversation_history_with_timestamps.return_value = [
+            {"role": "user", "content": "[May 04 09:10] focus"},
+        ]
+
+    async def test_results_are_appended_before_first_llm_call(
+        self, conversation_service, tools, sent_messages, history,
+        mock_llm_tool_loader: MagicMock, mock_memory_manager_instance: MagicMock,
+    ) -> None:
+        """書かれた順に実行し、user メッセージのあとに呼び出しと結果を積んでから LLM を呼ぶ。"""
+        mock_llm_tool_loader.execute_tool_call.side_effect = [
+            {"success": True, "tool_name": "climate", "data": "24C"},
+            {"success": True, "tool_name": "light", "data": "on"},
+        ]
+
+        result = await conversation_service.run_conversation(
+            tools,
+            pre_tool_calls=[{"tool": "climate"}, {"tool": "light", "args": {"level": 3}}],
+        )
+
+        assert result == "reply"
+        calls = mock_llm_tool_loader.execute_tool_call.await_args_list
+        assert [(c.args[0], c.args[1]) for c in calls] == [("climate", {}), ("light", {"level": 3})]
+        first = sent_messages[0]
+        assert first[0]["role"] == "user"
+        assert [m["role"] for m in first[1:]] == ["assistant", "tool", "assistant", "tool"]
+        assert first[1]["tool_calls"][0]["id"] == "pre_tool_call_0"
+        assert first[1]["tool_calls"][0]["function"]["name"] == "climate"
+        assert first[2] == {"role": "tool", "tool_call_id": "pre_tool_call_0", "content": "24C"}
+        assert first[3]["tool_calls"][0]["function"]["arguments"] == '{"level": 3}'
+        assert first[4]["content"] == "on"
+        # 会話履歴へは保存しない
+        mock_memory_manager_instance.add_conversation.assert_not_awaited()
+
+    async def test_tool_outside_allowed_list_becomes_error_result(
+        self, conversation_service, tools, sent_messages, history,
+        mock_llm_tool_loader: MagicMock,
+    ) -> None:
+        """この回 LLM に渡さないツールは実行せず、エラーの結果として LLM に渡す。"""
+        result = await conversation_service.run_conversation(
+            tools,
+            allowed_tool_names=["climate"],
+            pre_tool_calls=[{"tool": "light"}, {"tool": "climate"}],
+        )
+
+        assert result == "reply"
+        calls = mock_llm_tool_loader.execute_tool_call.await_args_list
+        assert [c.args[0] for c in calls] == ["climate"]
+        assert "この会話で使えません" in sent_messages[0][2]["content"]
+
+    async def test_notifier_is_in_context(
+        self, conversation_service, tools, sent_messages, history,
+        mock_llm_tool_loader: MagicMock,
+    ) -> None:
+        """事前実行の context にも `tool_call_notifier` が載る（通知は execute_tool_call が行う）。"""
+        notifier = AsyncMock()
+
+        await conversation_service.run_conversation(
+            tools, pre_tool_calls=[{"tool": "climate"}], tool_call_notifier=notifier
+        )
+
+        context = mock_llm_tool_loader.execute_tool_call.await_args.args[3]
+        assert context["_tool_call_notifier"] is notifier
+
+    async def test_not_counted_in_iteration_limit(
+        self, conversation_service, tools, history,
+        mock_llm_tool_loader: MagicMock, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """事前実行の件数は往復回数の上限（3）に数えない。"""
+        conversation_service._config.llm.on_tool_call_limit = "message"
+        tool_response = {
+            "content": None, "finish_reason": "tool_calls",
+            "tool_calls": [{
+                "id": "call_1", "type": "function",
+                "function": {"name": "climate", "arguments": "{}"},
+            }],
+            "raw_message": {"role": "assistant", "content": None, "tool_calls": []},
+        }
+        mock_chat = AsyncMock(return_value=tool_response)
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_chat)
+
+        await conversation_service.run_conversation(
+            tools, pre_tool_calls=[{"tool": "climate"}] * 5
+        )
+
+        assert mock_chat.call_count == 3
+        assert mock_llm_tool_loader.execute_tool_call.await_count == 5 + 3
+
+    async def test_ignored_with_warning_without_tools(
+        self, conversation_service, tools, history,
+        mock_llm_tool_loader: MagicMock, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """ツールなしの会話では実行せず WARNING ログを出す。"""
+        with caplog.at_level("WARNING"):
+            await conversation_service.run_conversation(
+                tools, allowed_tool_names=[], pre_tool_calls=[{"tool": "climate"}]
+            )
+
+        mock_llm_tool_loader.execute_tool_call.assert_not_awaited()
+        assert any("pre tool call" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.parametrize("pre_tool_calls", [None, []])
+    async def test_absent_keeps_previous_behavior(
+        self, conversation_service, tools, sent_messages, history,
+        mock_llm_tool_loader: MagicMock, pre_tool_calls,
+    ) -> None:
+        """渡さない・空リストなら何も実行せず、履歴だけで LLM を呼ぶ。"""
+        await conversation_service.run_conversation(tools, pre_tool_calls=pre_tool_calls)
+
+        mock_llm_tool_loader.execute_tool_call.assert_not_awaited()
+        assert sent_messages[0] == [{"role": "user", "content": "[May 04 09:10] focus"}]
+
+    async def test_pre_called_tools_are_passed_to_resolver(
+        self, conversation_service, tools, sent_messages, history,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """実行した事前実行のツール名は、最初の LLM 呼び出しから resolver に渡る（エラー分は除く）。"""
+        mock_resolve = AsyncMock(return_value="concrete")
+        monkeypatch.setattr(conversation_service, "resolve_llm_name", mock_resolve)
+
+        await conversation_service.run_conversation(
+            tools, pre_tool_calls=[{"tool": "climate"}, {"tool": "missing"}]
+        )
+
+        assert mock_resolve.await_args_list[0].kwargs["called_tool_names"] == ("climate",)

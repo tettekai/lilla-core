@@ -15,6 +15,7 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [部屋のノート（深夜要約）](channel-notes.md)
 - [会話履歴の部屋名検索](history-search.md)
 - [スケジュール実行で LLM に委譲する通知](scheduled-llm.md)
+- [外部スケジューラとの連携](external-scheduler.md) — `scheduler.enabled` と `GET /api/tasks`
 - [タイムゾーン](timezone.md) — `ui.timezone`
 - [LLM プロバイダーの回しごと選択](llm-resolver.md) — `llm.providers` の `type: resolver`
 - [プロバイダーごとのシステムプロンプト追記](llm-provider-prompt.md) — `llm.providers.<キー>.prompt`
@@ -38,6 +39,9 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [拡張の基本](extensions.md) — メソッド表、衝突ルール、ロケールカタログ、依存、互換性
 - [コマンドの実装と、Discord 以外からの実行](commands.md) — `CommandContext` と `dispatch_command`
 - [設定の合成](extension-config.md) — `config_model()` / `env_fields()` / `get_section()`
+- [拡張のデフォルトプロンプトと上書き](extension-prompt.md) — `default_prompt()` と `extension_overrides`
+- [拡張のタスクの上書き](extension-task-override.md) — `extension_overrides` の `tasks`（`schedule` / `enabled`）
+- [画面で管理する拡張の設定](extension-settings.md) — `settings_model()` と `extension_settings`
 - [ダッシュボードへの差し込み](extension-dashboard.md)
 - [拡張のテストの書き方](extension-testing.md) — `lilla_core.testing`
 

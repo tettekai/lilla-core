@@ -54,6 +54,7 @@ YAML セクションを読む依存は `requires` で表す）。汎用の `vali
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 import os
 import re
@@ -64,6 +65,8 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
+
+    from lilla_core.repository.conversation_repository import SavedConversation
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +127,7 @@ CORE_HTTP_ROUTES = frozenset(
         ("GET", "/api/selftest"),
         ("POST", "/api/tools/call"),
         ("POST", "/api/runtask"),
+        ("GET", "/api/tasks"),
     }
 )
 
@@ -165,12 +169,13 @@ RESERVED_EXTENSION_NAMES = frozenset(
         "skills",
         "usage",
         "logs",
+        "extensions",
     }
 )
 
 # 型エイリアス（可読性向上目的のためだけ）
 StartupRepoFactory = Callable[[], Any]
-DeliveryFn = Callable[[str], Awaitable[None]]
+DeliveryFn = Callable[[str, "SavedConversation"], Awaitable[None]]
 PromptProvider = Callable[[], str]
 ConversationStartHook = Callable[["ConversationContext"], Awaitable[None]]
 ContextValueProvider = Callable[[], Any]
@@ -445,6 +450,26 @@ class Extension:
         """
         return None
 
+    def settings_model(self) -> type[BaseModel] | None:
+        """ダッシュボードで編集する設定（画面管理の設定本体）のモデルを返す（持たないなら `None`）。
+
+        `config_model()`（`lilla.yaml` の `extensions:` 下・起動時に確定）とは別の
+        設定で、MongoDB の `extension_settings` に拡張ごとに 1 ドキュメントで保存し、
+        観測用ダッシュボードの Extensions 画面で編集する。読み出しは
+        `services/extension_settings.py` の `load_settings(name, model)`（非同期・
+        呼ぶたびに DB を読む）で、保存の直後に始まる処理から新しい値を使える。
+
+        - 全フィールドに既定値が必要で、それが「保存していないときの初期値」になる
+          （未設定を表すなら `str | None = None` のように書く）。既定値がモデルの検証を
+          通らない・既定値の無いフィールドがある場合はロード時に落とす
+        - 1 つの項目の担当は YAML か画面のどちらか一方だけ。`config_model()` と同じ
+          名前のフィールドを持つとロード時に落とし、ここで宣言した項目を `lilla.yaml` の
+          `extensions.<節名>` に書くと、画面へ移った旨を示して起動時に落とす
+        - 複数行の入力欄にしたい文字列は `Field(json_schema_extra={"multiline": True})`
+          と書く（画面の表示だけに使う）
+        """
+        return None
+
     def env_fields(self) -> dict[str, str]:
         """この拡張が足す秘匿フィールドを「フィールド名 -> OS 環境変数名」で返す。
 
@@ -566,7 +591,16 @@ class Extension:
         return {}
 
     def result_deliveries(self) -> dict[str, DeliveryFn]:
-        """`!toolresult` の結果配送関数を `client_type` ごとに返す。"""
+        """`!toolresult` の結果配送関数を `client_type` ごとに返す。
+
+        配送関数は `async def deliver(text, saved)` の形で、`text` は配送する返信本文、
+        `saved` はその返信を会話履歴へ保存した結果の `SavedConversation`（`id` と `time`。
+        `list_for_client` が返す同じエントリの `_id` / `time` と一致する）。コアは
+        保存してから配送関数を呼ぶため、呼ばれた時点で履歴にはすでに載っている。
+        配送関数が例外を投げても保存済みの履歴は消さない（クライアントは差分取得で拾える）。
+        `(text, saved)` の 2 引数で呼べない形の配送関数は、ロード時に `ValueError` で落とす。
+        `"discord"` はコアが配送を持つ予約キーで、ここでは使えない。
+        """
         return {}
 
     def client_prompt_providers(self) -> dict[str, list[PromptProvider]]:
@@ -576,6 +610,22 @@ class Extension:
         ロード順に連結し、各プロバイダの戻り値を空行区切りで追記する。
         """
         return {}
+
+    def default_prompt(self) -> dict[str, str] | None:
+        """この拡張のデフォルトのプロンプトを言語ごとに返す（持たないなら `None`）。
+
+        戻り値は `{"ja": "...", "en": "..."}` の形で、特定の言語は必須にしない
+        （英語だけの拡張も書ける）。1 拡張が持てるプロンプトは 1 つだけ。コアは
+        システムプロンプトの組み立てのたびに、MongoDB の `extension_overrides` に
+        この拡張（`name`）の `prompt` の上書きがあればそれを、無ければ
+        `ui.locale` → `ja` → `en` → 定義の先頭の順に最初に見つかった言語の本文を
+        選び、ロード順に連結して注入する（`client_type` が `"task"` のときは注入しない）。
+        `client_prompt_providers()` と違い、`client_type` によらず全会話に入る。
+
+        形（空でない `dict` であること・キーと値が文字列であること）は
+        ロード時に検証し、違反は fail-fast する。
+        """
+        return None
 
     def conversation_start_hooks(self) -> dict[str, list[ConversationStartHook]]:
         """`run_conversation` の冒頭で呼ばれるフックを `client_type` ごとにリストで返す。
@@ -603,11 +653,13 @@ class Extension:
 
 _extensions: list[Extension] = []
 _config_models: dict[str, Any] = {}
+_settings_models: dict[str, Any] = {}
 _env_fields: dict[str, str] = {}
 _tool_context_providers: dict[str, ContextValueProvider] = {}
 _result_deliveries: dict[str, DeliveryFn] = {}
 _client_prompt_providers: dict[str, list[PromptProvider]] = {}
 _conversation_start_hooks: dict[str, list[ConversationStartHook]] = {}
+_default_prompts: list[tuple[str, dict[str, str]]] = []
 _dashboard_pages: list[DashboardPageEntry] = []
 _dashboard_static_mounts: list[DashboardStaticMount] = []
 _dashboard_routes: list[DashboardRoute] = []
@@ -681,6 +733,33 @@ def _merge_lists(
                 )
             merged.setdefault(key, []).extend(values)
     return merged
+
+
+def _validate_delivery_signatures(extensions: list[Extension]) -> None:
+    """`result_deliveries()` の配送関数がコアの呼び方 `delivery(text, saved)` で呼べるか検証する。
+
+    `inspect.signature(fn).bind()` に本文と `SavedConversation` の代わりのダミーを渡し、
+    `TypeError` になる（確実に呼べない）ものだけをロード時に落とす。`*args` で受ける関数や
+    2 つ目の引数に既定値がある関数は `bind` を通るので読み込む。シグネチャを取れない
+    呼び出し可能オブジェクト（`inspect.signature` が `ValueError` / `TypeError`）は検査しない。
+
+    Raises:
+        ValueError: 配送関数が 2 つの位置引数で呼べない形の場合。
+    """
+    for ext in extensions:
+        for client_type, fn in ext.result_deliveries().items():
+            try:
+                signature = inspect.signature(fn)
+            except (ValueError, TypeError):
+                continue
+            try:
+                signature.bind("", object())
+            except TypeError as exc:
+                raise ValueError(
+                    f"Extension '{ext.name}' provides a result delivery for client_type "
+                    f"'{client_type}' that cannot be called as delivery(text, saved); "
+                    f"a delivery function must accept two arguments (text, saved): {exc}"
+                ) from exc
 
 
 def _validate_api_versions(extensions: list[Extension]) -> None:
@@ -766,6 +845,99 @@ def _collect_config_models(extensions: list[Extension]) -> dict[str, Any]:
             )
         models[section] = model
     return models
+
+
+def _collect_settings_models(extensions: list[Extension]) -> dict[str, Any]:
+    """各拡張の `settings_model()` を検証し、「拡張名 -> モデル」へまとめる。
+
+    Args:
+        extensions: ロード順に並んだ拡張のリスト（`name` は検証済み）。
+
+    Returns:
+        拡張名からモデルクラスへの dict。`settings_model()` が `None` の拡張は含めない。
+
+    Raises:
+        ValueError: `BaseModel` サブクラス以外を返した場合、既定値の無いフィールドが
+            ある場合、既定値（初期値）がモデルの検証を通らない場合、または
+            `config_model()` と同じ名前のフィールドを持つ（担当の二重宣言）場合。
+    """
+    from pydantic import BaseModel, ValidationError
+
+    models: dict[str, Any] = {}
+    for ext in extensions:
+        model = ext.settings_model()
+        if model is None:
+            continue
+        if not (isinstance(model, type) and issubclass(model, BaseModel)):
+            raise ValueError(
+                f"Extension '{ext.name}' settings_model() must return a pydantic "
+                f"BaseModel subclass or None, got {model!r}"
+            )
+        required = sorted(
+            name for name, field in model.model_fields.items() if field.is_required()
+        )
+        if required:
+            raise ValueError(
+                f"Extension '{ext.name}' settings_model() fields must all have defaults "
+                f"(the initial values when nothing is saved): {', '.join(required)}"
+            )
+        try:
+            model.model_validate(model().model_dump())
+        except ValidationError as e:
+            raise ValueError(
+                f"Extension '{ext.name}' settings_model() has invalid default values: {e}"
+            ) from e
+        config_model = ext.config_model()
+        if isinstance(config_model, type) and issubclass(config_model, BaseModel):
+            both = sorted(set(model.model_fields) & set(config_model.model_fields))
+            if both:
+                raise ValueError(
+                    f"Extension '{ext.name}' declares {', '.join(both)} in both "
+                    "config_model() (lilla.yaml) and settings_model() (dashboard); "
+                    "each item must have a single owner"
+                )
+        models[ext.name] = model
+    return models
+
+
+def _collect_default_prompts(
+    extensions: list[Extension],
+) -> list[tuple[str, dict[str, str]]]:
+    """各拡張の `default_prompt()` を検証し、「(拡張名, 言語 -> 本文)」をロード順に並べる。
+
+    Args:
+        extensions: ロード順に並んだ拡張のリスト（`name` は検証済み）。
+
+    Returns:
+        `(name, prompts)` のリスト。`default_prompt()` が `None` の拡張は含めない。
+
+    Raises:
+        ValueError: 戻り値が `dict` でない場合、空の場合、またはキー・値に
+            文字列以外が含まれる場合。
+    """
+    collected: list[tuple[str, dict[str, str]]] = []
+    for ext in extensions:
+        prompts = ext.default_prompt()
+        if prompts is None:
+            continue
+        if not isinstance(prompts, dict):
+            raise ValueError(
+                f"Extension '{ext.name}' default_prompt() must return a dict of "
+                f"language -> prompt or None, got {type(prompts).__name__}"
+            )
+        if not prompts:
+            raise ValueError(
+                f"Extension '{ext.name}' default_prompt() must include at least one "
+                "language (return None to provide no prompt)"
+            )
+        for lang, text in prompts.items():
+            if not isinstance(lang, str) or not isinstance(text, str):
+                raise ValueError(
+                    f"Extension '{ext.name}' default_prompt() must map str languages "
+                    f"to str prompts, got {lang!r}: {type(text).__name__}"
+                )
+        collected.append((ext.name, dict(prompts)))
+    return collected
 
 
 def _validate_names(extensions: list[Extension]) -> None:
@@ -1078,10 +1250,13 @@ def set_extensions(extensions: list[Extension]) -> None:
             `EnvConfig` フィールド名を提供した場合、`requires` の拡張が未ロードか
             自分より後ろに並んでいる場合、または誰も提供していない名前を
             `required_env_fields()` / `required_tool_context_keys()` が要求している場合、
-            `locale_dirs()` のカタログが名前空間の規約に違反している場合、または
-            ダッシュボードの申告（`name` の形・予約名・ルートのパス接頭辞・
+            `locale_dirs()` のカタログが名前空間の規約に違反している場合、
+            `default_prompt()` の形が不正（`dict` でない・空・文字列以外を
+            含む）な場合、またはダッシュボードの申告（`name` の形・予約名・ルートのパス接頭辞・
             ページを出すのに静的ディレクトリが無い）が規約に違反している場合、
-            または共有 HTTP サーバーのルート申告がコアや他の拡張と重なる場合。
+            共有 HTTP サーバーのルート申告がコアや他の拡張と重なる場合、
+            または `result_deliveries()` の配送関数が `(text, saved)` の 2 引数で
+            呼べない形の場合。
     """
     from lilla_core.core.config import core_env_field_names
 
@@ -1096,6 +1271,7 @@ def set_extensions(extensions: list[Extension]) -> None:
     _validate_requires(extensions)
 
     config_models = _collect_config_models(extensions)
+    settings_models = _collect_settings_models(extensions)
     env_fields = _merge_unique(
         extensions, "env_fields", "env field", reserved=core_env_field_names()
     )
@@ -1125,10 +1301,12 @@ def set_extensions(extensions: list[Extension]) -> None:
         "result delivery",
         reserved=_RESERVED_DELIVERY_CLIENT_TYPES,
     )
+    _validate_delivery_signatures(extensions)
     prompts = _merge_lists(extensions, "client_prompt_providers", "client prompt provider")
     start_hooks = _merge_lists(
         extensions, "conversation_start_hooks", "conversation start hook"
     )
+    default_prompts = _collect_default_prompts(extensions)
     dashboard_pages, static_mounts, dash_routes, public_routes = _collect_dashboard(
         extensions
     )
@@ -1139,6 +1317,8 @@ def set_extensions(extensions: list[Extension]) -> None:
     _extensions = list(extensions)
     _config_models.clear()
     _config_models.update(config_models)
+    _settings_models.clear()
+    _settings_models.update(settings_models)
     _env_fields.clear()
     _env_fields.update(env_fields)
     _tool_context_providers.clear()
@@ -1149,6 +1329,8 @@ def set_extensions(extensions: list[Extension]) -> None:
     _client_prompt_providers.update(prompts)
     _conversation_start_hooks.clear()
     _conversation_start_hooks.update(start_hooks)
+    _default_prompts.clear()
+    _default_prompts.extend(default_prompts)
     _dashboard_pages.clear()
     _dashboard_pages.extend(dashboard_pages)
     _dashboard_static_mounts.clear()
@@ -1262,7 +1444,8 @@ def load_extensions(spec: str | None = None) -> list[Extension]:
         AttributeError: モジュールが `extension` 属性を持たない場合。
         TypeError: `extension` が `Extension` インスタンスでない場合。
         ValueError: 名前または貢献キーが衝突している場合、`requires` の依存が
-            満たされない場合、または `required_*()` が誰も提供しない名前を要求した場合。
+            満たされない場合、`required_*()` が誰も提供しない名前を要求した場合、
+            または `default_prompt()` の形が不正な場合。
         pydantic.ValidationError: 合成後のモデルで設定の検証に失敗した場合。
     """
     if spec is None:
@@ -1293,6 +1476,11 @@ def load_extensions(spec: str | None = None) -> list[Extension]:
 def get_extensions() -> list[Extension]:
     """登録済み拡張のリストのコピーをロード順で返す。"""
     return list(_extensions)
+
+
+def get_settings_models() -> dict[str, Any]:
+    """全拡張の `settings_model()` を「拡張名 -> モデル」にまとめた dict のコピーをロード順で返す。"""
+    return dict(_settings_models)
 
 
 def get_config_models() -> dict[str, Any]:
@@ -1438,6 +1626,15 @@ def get_client_prompt_providers(client_type: str) -> list[PromptProvider]:
     （`"discord"` のみ）へフォールバックする。
     """
     return list(_client_prompt_providers.get(client_type, []))
+
+
+def get_default_prompts() -> list[tuple[str, dict[str, str]]]:
+    """デフォルトのプロンプトを持つ拡張の「(拡張名, 言語 -> 本文)」をロード順で返す。
+
+    `default_prompt()` が `None` の拡張は含めない。戻り値はコピーで、書き換えても
+    登録内容には影響しない。
+    """
+    return [(name, dict(prompts)) for name, prompts in _default_prompts]
 
 
 def get_conversation_start_hooks(client_type: str) -> list[ConversationStartHook]:

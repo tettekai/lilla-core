@@ -2,16 +2,23 @@ name: Notify run-claude Routine
 
 # Fire the "run-claude" Claude Code Routine when the run-claude label is
 # added to an Issue. This is a separate, human-triggered path from the
-# Grok Bot auto / auto-now routines (notify-grok-bot-auto-now.yml): those
-# run automatically on low-judgement follow-ups, this one only runs when a
-# person explicitly attaches the label from the Issue screen.
+# auto / auto-now rail (claude.yml): that one runs automatically on
+# low-judgement follow-ups, this one only runs when a person explicitly
+# attaches the label from the Issue screen.
+#
+# Only the repository owner may fire it. Adding a label already needs triage
+# permission, but this keeps a future collaborator or an installed GitHub App
+# with issues:write from starting a Routine. The Issue author is not checked:
+# the owner may choose to run Claude on an Issue someone else wrote.
 on:
   issues:
     types: [labeled]
 
 jobs:
   notify:
-    if: github.event.label.name == 'run-claude'
+    if: |
+      github.event.label.name == 'run-claude' &&
+      github.event.sender.login == github.repository_owner
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

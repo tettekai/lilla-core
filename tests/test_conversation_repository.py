@@ -6,13 +6,18 @@ CLAUDE.md のルールに従い、src/repository 配下のソースのテスト�
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from bson import ObjectId
 from pymongo import DESCENDING
 
-from lilla_core.repository.conversation_repository import ConversationRepository
+from lilla_core.core.exceptions import ConversationNotFoundError
+from lilla_core.repository.conversation_repository import (
+    ConversationRepository,
+    SavedConversation,
+)
 
 _OID = "65f0000000000000000000aa"
 
@@ -326,3 +331,323 @@ async def test_search_returns_documents_in_stored_order() -> None:
     result = await repo.search()
 
     assert [doc["message"]["content"] for doc in result] == ["new", "old"]
+
+
+# ---------------------------------------------------------------------------
+# list_for_client / save_entry
+# ---------------------------------------------------------------------------
+
+_T0 = datetime(2026, 10, 30, 0, 0, 0, tzinfo=timezone.utc)
+
+
+def _match(doc: dict, query: dict) -> bool:
+    """list_for_client が組み立てる範囲のクエリだけを評価する簡易マッチャ。"""
+    for key, cond in query.items():
+        if key == "$and":
+            if not all(_match(doc, sub) for sub in cond):
+                return False
+        elif key == "$or":
+            if not any(_match(doc, sub) for sub in cond):
+                return False
+        elif isinstance(cond, dict):
+            value = doc.get(key)
+            for op, operand in cond.items():
+                if op == "$gt" and not value > operand:
+                    return False
+                if op == "$gte" and not value >= operand:
+                    return False
+        elif doc.get(key) != cond:
+            return False
+    return True
+
+
+class _FakeCursor:
+    """sort / skip / limit / to_list だけを持つメモリ上のカーソル。"""
+
+    def __init__(self, docs: list[dict]) -> None:
+        self._docs = docs
+        self._skip = 0
+        self._limit = 0
+
+    def sort(self, keys: list[tuple[str, int]]) -> "_FakeCursor":
+        for key, direction in reversed(keys):
+            self._docs.sort(key=lambda d: d[key], reverse=direction == DESCENDING)
+        return self
+
+    def skip(self, n: int) -> "_FakeCursor":
+        self._skip = n
+        return self
+
+    def limit(self, n: int) -> "_FakeCursor":
+        self._limit = n
+        return self
+
+    async def to_list(self, length: int | None = None) -> list[dict]:
+        docs = self._docs[self._skip:]
+        return docs[: self._limit] if self._limit else docs
+
+
+class _FakeCollection:
+    """insert_one / find / find_one を持つメモリ上のコレクション。
+
+    BSON の日時がミリ秒精度で保存されるのを真似て、`time` はミリ秒に切り捨てて持つ。
+    """
+
+    def __init__(self) -> None:
+        self.docs: list[dict] = []
+
+    async def insert_one(self, doc: dict) -> MagicMock:
+        stored = dict(doc)
+        stored["_id"] = ObjectId()
+        t = stored["time"]
+        stored["time"] = t.replace(microsecond=t.microsecond // 1000 * 1000)
+        self.docs.append(stored)
+        return MagicMock(inserted_id=stored["_id"])
+
+    def find(self, query: dict, projection: dict | None = None) -> _FakeCursor:
+        return _FakeCursor([dict(d) for d in self.docs if _match(d, query)])
+
+    async def find_one(self, query: dict, projection: dict | None = None) -> dict | None:
+        for doc in self.docs:
+            if _match(doc, query):
+                return dict(doc)
+        return None
+
+
+def _add(collection: _FakeCollection, content: str, time: datetime, oid: str) -> str:
+    """指定の time・_id でドキュメントを直接入れ、_id の文字列を返す。"""
+    collection.docs.append(
+        {"_id": ObjectId(oid), "time": time, "message": {"role": "assistant", "content": content}}
+    )
+    return oid
+
+
+def _contents(result: list[dict]) -> list[str]:
+    """list_for_client の結果から content だけを取り出す。"""
+    return [item["message"]["content"] for item in result]
+
+
+def _same_time_collection() -> tuple[_FakeCollection, dict[str, str]]:
+    """古い順に a(T0) / b,c,d(T0+1s。_id 昇順) / e(T0+2s) を、挿入順を崩して入れる。"""
+    collection = _FakeCollection()
+    t1 = _T0 + timedelta(seconds=1)
+    ids = {
+        "a": _add(collection, "a", _T0, "65f0000000000000000000a0"),
+        "d": _add(collection, "d", t1, "65f0000000000000000000d0"),
+        "b": _add(collection, "b", t1, "65f0000000000000000000b0"),
+        "e": _add(collection, "e", _T0 + timedelta(seconds=2), "65f0000000000000000000e0"),
+        "c": _add(collection, "c", t1, "65f0000000000000000000c0"),
+    }
+    return collection, ids
+
+
+async def test_list_for_client_default_is_newest_first_with_offset_limit() -> None:
+    """引数なしは従来どおり新しい順で offset 件飛ばして limit 件返す。"""
+    collection, _ = _same_time_collection()
+    repo = _make_repo(collection)
+
+    assert _contents(await repo.list_for_client(10, 0)) == ["e", "d", "c", "b", "a"]
+    assert _contents(await repo.list_for_client(2, 1)) == ["d", "c"]
+
+
+async def test_list_for_client_returns_id_time_message() -> None:
+    """戻り値の各要素は _id（str）・time・message を持つ。"""
+    collection, ids = _same_time_collection()
+    repo = _make_repo(collection)
+
+    first = (await repo.list_for_client(1, 0))[0]
+
+    assert first == {
+        "_id": ids["e"],
+        "time": _T0 + timedelta(seconds=2),
+        "message": {"role": "assistant", "content": "e"},
+    }
+
+
+async def test_list_for_client_sorts_by_time_and_id() -> None:
+    """並び替えは (time, _id) の複合キーで、既定は両方とも降順・絞り込みなし。"""
+    collection = _make_collection()
+    cursor = _make_cursor([])
+    cursor.skip = MagicMock(return_value=cursor)
+    collection.find = MagicMock(return_value=cursor)
+    repo = _make_repo(collection)
+
+    await repo.list_for_client(10, 0)
+
+    assert collection.find.call_args[0][0] == {}
+    cursor.sort.assert_called_once_with([("time", DESCENDING), ("_id", DESCENDING)])
+
+
+async def test_list_for_client_same_time_order_is_stable_across_pages() -> None:
+    """同じ time のドキュメントは _id 順に並び、ページの境界で重複も欠けも出ない。"""
+    collection, _ = _same_time_collection()
+    repo = _make_repo(collection)
+
+    pages = [_contents(await repo.list_for_client(2, offset)) for offset in (0, 2, 4)]
+
+    assert pages == [["e", "d"], ["c", "b"], ["a"]]
+    assert _contents(await repo.list_for_client(10, 0)) == _contents(
+        await repo.list_for_client(10, 0)
+    )
+
+
+async def test_list_for_client_after_id_returns_newer_oldest_first() -> None:
+    """after_id 指定時はそれより新しいものだけを古い順に返し、自身は含めない。"""
+    collection, ids = _same_time_collection()
+    repo = _make_repo(collection)
+
+    assert _contents(await repo.list_for_client(10, 0, after_id=ids["a"])) == ["b", "c", "d", "e"]
+    assert await repo.list_for_client(10, 0, after_id=ids["e"]) == []
+
+
+async def test_list_for_client_after_id_keeps_same_time_followers() -> None:
+    """after_id と同じ time の後続（_id が大きいもの）も取りこぼさない。"""
+    collection, ids = _same_time_collection()
+    repo = _make_repo(collection)
+
+    assert _contents(await repo.list_for_client(10, 0, after_id=ids["b"])) == ["c", "d", "e"]
+    assert _contents(await repo.list_for_client(10, 0, after_id=ids["c"])) == ["d", "e"]
+
+
+async def test_list_for_client_after_id_paging_with_last_id() -> None:
+    """limit で切った最後の _id を次の after_id に渡すと続きが欠けなく取れる。"""
+    collection, ids = _same_time_collection()
+    repo = _make_repo(collection)
+
+    first = await repo.list_for_client(2, 0, after_id=ids["a"])
+    second = await repo.list_for_client(2, 0, after_id=first[-1]["_id"])
+
+    assert _contents(first) == ["b", "c"]
+    assert _contents(second) == ["d", "e"]
+
+
+@pytest.mark.parametrize(
+    "bad_id", ["", "not-an-object-id", "65f0000000000000000000zz", "abcdefghijkl"]
+)
+async def test_list_for_client_after_id_invalid_format_raises_value_error(bad_id: str) -> None:
+    """after_id が ObjectId として不正な形式なら ValueError。"""
+    collection, _ = _same_time_collection()
+    repo = _make_repo(collection)
+
+    with pytest.raises(ValueError):
+        await repo.list_for_client(10, 0, after_id=bad_id)
+
+
+async def test_list_for_client_after_id_missing_raises_not_found() -> None:
+    """after_id が存在せず since も無ければ ConversationNotFoundError。"""
+    collection, _ = _same_time_collection()
+    repo = _make_repo(collection)
+
+    with pytest.raises(ConversationNotFoundError):
+        await repo.list_for_client(10, 0, after_id="65f0000000000000000000ff")
+
+
+async def test_list_for_client_after_id_missing_falls_back_to_since() -> None:
+    """after_id が存在しなくても since があれば since だけで絞り込む。"""
+    collection, _ = _same_time_collection()
+    repo = _make_repo(collection)
+
+    result = await repo.list_for_client(
+        10, 0, after_id="65f0000000000000000000ff", since=_T0 + timedelta(seconds=1),
+    )
+
+    assert _contents(result) == ["b", "c", "d", "e"]
+
+
+async def test_list_for_client_since_includes_boundary_oldest_first() -> None:
+    """since は境界ちょうどの time を含み、古い順に返す。"""
+    collection, _ = _same_time_collection()
+    repo = _make_repo(collection)
+
+    at_boundary = await repo.list_for_client(10, 0, since=_T0 + timedelta(seconds=1))
+    after_boundary = await repo.list_for_client(
+        10, 0, since=_T0 + timedelta(seconds=1, milliseconds=1),
+    )
+
+    assert _contents(at_boundary) == ["b", "c", "d", "e"]
+    assert _contents(after_boundary) == ["e"]
+
+
+async def test_list_for_client_after_id_and_since_are_combined() -> None:
+    """after_id と since を両方渡すと、両方を満たすものだけを返す。"""
+    collection, ids = _same_time_collection()
+    repo = _make_repo(collection)
+
+    result = await repo.list_for_client(
+        10, 0, after_id=ids["a"], since=_T0 + timedelta(seconds=2),
+    )
+
+    assert _contents(result) == ["e"]
+
+
+async def test_ensure_indexes_creates_time_id_index() -> None:
+    """ensure_indexes が (time, _id) の複合インデックスを作り、time の TTL も維持する。"""
+    collection = _make_collection()
+    collection.create_index = AsyncMock()
+    repo = _make_repo(collection)
+
+    await repo.ensure_indexes()
+
+    calls = collection.create_index.call_args_list
+    assert [("time", 1), ("_id", 1)] in [call.args[0] for call in calls]
+    ttl = [call for call in calls if call.args[0] == [("time", 1)]]
+    assert ttl[0].kwargs["expireAfterSeconds"] == 72 * 3600
+
+
+async def test_save_entry_returns_inserted_id_and_stored_time() -> None:
+    """save_entry の id / time は採番された _id と insert_one に渡した time に一致する。"""
+    collection = _make_collection()
+    repo = _make_repo(collection)
+    now = datetime(2026, 10, 30, 1, 2, 3, 456789, tzinfo=timezone.utc)
+
+    with patch("lilla_core.repository.conversation_repository.utc_now", return_value=now):
+        saved = await repo.save_entry({"role": "user", "content": "hello"}, tags=["dirty"])
+
+    doc = collection.insert_one.call_args[0][0]
+    assert isinstance(saved, SavedConversation)
+    assert saved.id == _OID
+    assert saved.time == doc["time"]
+    # ミリ秒に切り捨てて保存する
+    assert doc["time"] == datetime(2026, 10, 30, 1, 2, 3, 456000, tzinfo=timezone.utc)
+    assert saved.time.tzinfo is not None
+    assert doc["tags"] == ["dirty"]
+
+
+async def test_save_returns_str_id_via_save_entry() -> None:
+    """save は save_entry と同じ内容を保存し、_id の文字列だけを返す。"""
+    collection = _make_collection()
+    repo = _make_repo(collection)
+
+    result = await repo.save({"role": "user", "content": "hello"}, discord_channel_id=1)
+
+    assert result == _OID
+    assert isinstance(result, str)
+    assert collection.insert_one.call_args[0][0]["discord_channel_id"] == 1
+
+
+async def test_save_entry_matches_list_for_client_entry() -> None:
+    """マイクロ秒を含む現在時刻でも、save_entry の id / time が読み出した値と一致する。"""
+    collection = _FakeCollection()
+    repo = _make_repo(collection)
+    now = datetime(2026, 10, 30, 1, 2, 3, 999999, tzinfo=timezone.utc)
+
+    with patch("lilla_core.repository.conversation_repository.utc_now", return_value=now):
+        saved = await repo.save_entry({"role": "assistant", "content": "x"})
+
+    listed = (await repo.list_for_client(1, 0))[0]
+    assert listed["_id"] == saved.id
+    assert listed["time"] == saved.time
+
+
+async def test_save_entry_values_as_after_id_and_since() -> None:
+    """返した id を after_id に渡すと自身を含まず、time を since に渡すと自身を含む。"""
+    collection = _FakeCollection()
+    repo = _make_repo(collection)
+    now = datetime(2026, 10, 30, 1, 2, 3, 500700, tzinfo=timezone.utc)
+
+    with patch("lilla_core.repository.conversation_repository.utc_now", return_value=now):
+        first = await repo.save_entry({"role": "assistant", "content": "block1"})
+        await repo.save_entry({"role": "assistant", "content": "block2"})
+
+    assert _contents(await repo.list_for_client(10, 0, after_id=first.id)) == ["block2"]
+    assert _contents(await repo.list_for_client(10, 0, since=first.time)) == ["block1", "block2"]

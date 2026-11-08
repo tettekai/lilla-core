@@ -1,6 +1,6 @@
 [project]
 name = "lilla-core"
-version = "0.7.1"
+version = "0.8.0"
 description = "Core runtime of the Lilla agent"
 readme = "README.md"
 license = "MIT"
@@ -24,7 +24,7 @@ dependencies = [
   "python-dotenv==1.2.4",
   "apscheduler==3.11.3",
   "pydantic==2.14.1",
-  "pydantic-settings==2.16.0",
+  "pydantic-settings==2.16.1",
   "pymongo==4.19.0",
   "tiktoken==0.14.0",
   "bcrypt==5.0.0",
@@ -32,8 +32,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-  "pytest==9.1.1",
-  "pytest-asyncio==1.4.0",
+  "pytest==9.2.0",
+  "pytest-asyncio==1.4.1",
 ]
 
 [project.urls]

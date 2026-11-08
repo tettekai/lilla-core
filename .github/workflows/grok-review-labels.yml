@@ -1,0 +1,133 @@
+name: Grok review labels
+
+# Grok（Grok Bot ではなく Grok 本体）は PR にラベルを付けられないため、レビュー本文や
+# PR の会話コメントに書かれたタグを読んで、この workflow がラベルを付ける。
+#
+# 例（行頭に単独で書く。1 行に複数並べてもよい）:
+#   #grok-bot-reviewing
+#   #grok-bot-approved #risk:low
+#
+# 信頼の判定:
+#   - 投稿者がリポジトリオーナーであること。Grok はオーナーのアカウントで投稿するため
+#   - 本文に Grok のフッター（GROK_POST_MARKER）があること。オーナー本人の
+#     コメントでの言及や引用でラベルが変わらないようにするため
+#   フッターは誰でも書けるので、投稿者の確認と組み合わせて初めて意味がある。
+#
+# 付けられるのは ALLOWED_LABELS だけで、それ以外のタグは無視する。引用（> で始まる行）と
+# コードブロックの中は読まない。投稿後の編集（edited）は拾わない。
+#
+# GITHUB_TOKEN で付けたラベルでは他の workflow の labeled イベントは起きない。
+# ラベルを合図に動く workflow を足すときは注意する。
+on:
+  pull_request_review:
+    types: [submitted]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  label:
+    if: |
+      github.actor == github.repository_owner && (
+        github.event_name == 'pull_request_review' ||
+        (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Apply labels from Grok review tags
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const GROK_POST_MARKER = "Posted by Grok Automation";
+            const RISK_LABELS = ["risk:low", "risk:medium", "risk:high"];
+            const ALLOWED_LABELS = ["grok-bot-reviewing", "grok-bot-approved", ...RISK_LABELS];
+            // 同時に付かないもの。付けたら相手を外す
+            const EXCLUSIVE = {
+              "grok-bot-reviewing": ["grok-bot-approved"],
+              "grok-bot-approved": ["grok-bot-reviewing"],
+            };
+            for (const risk of RISK_LABELS) {
+              EXCLUSIVE[risk] = RISK_LABELS.filter((r) => r !== risk);
+            }
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const isReview = context.eventName === "pull_request_review";
+            const post = isReview ? context.payload.review : context.payload.comment;
+            const author = post.user.login;
+            const body = post.body || "";
+            const prNumber = isReview
+              ? context.payload.pull_request.number
+              : context.payload.issue.number;
+
+            // job の if は github.actor を見ている。投稿そのものの作者も確かめる
+            if (author !== context.payload.repository.owner.login) {
+              core.info(`post by ${author} is not from the repository owner; skipping`);
+              return;
+            }
+            if (!body.includes(GROK_POST_MARKER)) {
+              core.info("post has no Grok footer; skipping");
+              return;
+            }
+
+            // コードブロックと引用を除き、タグだけで構成された行からタグを拾う
+            const tags = [];
+            let inFence = false;
+            for (const rawLine of body.split(/\r?\n/)) {
+              const line = rawLine.trim();
+              if (/^(```|~~~)/.test(line)) {
+                inFence = !inFence;
+                continue;
+              }
+              if (inFence || line.startsWith(">") || line === "") {
+                continue;
+              }
+              const tokens = line.split(/\s+/);
+              if (!tokens.every((t) => /^#[a-z0-9:_-]+$/i.test(t))) {
+                continue;
+              }
+              for (const token of tokens) {
+                tags.push(token.slice(1).toLowerCase());
+              }
+            }
+
+            const unknown = tags.filter((t) => !ALLOWED_LABELS.includes(t));
+            if (unknown.length > 0) {
+              core.warning(`ignoring tags not in the allowlist: ${unknown.join(", ")}`);
+            }
+            const wanted = [...new Set(tags.filter((t) => ALLOWED_LABELS.includes(t)))];
+            if (wanted.length === 0) {
+              core.info("no label tags found");
+              return;
+            }
+            // risk が複数書かれていたら最後のものだけを使う
+            const lastRisk = wanted.filter((t) => RISK_LABELS.includes(t)).pop();
+            const toAdd = wanted.filter((t) => !RISK_LABELS.includes(t) || t === lastRisk);
+
+            const { data: current } = await github.rest.issues.listLabelsOnIssue({
+              owner,
+              repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+            const currentNames = current.map((l) => l.name);
+            const toRemove = [
+              ...new Set(toAdd.flatMap((t) => EXCLUSIVE[t] || [])),
+            ].filter((name) => currentNames.includes(name) && !toAdd.includes(name));
+
+            for (const name of toRemove) {
+              try {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: prNumber, name });
+                core.info(`removed ${name}`);
+              } catch (error) {
+                core.warning(`failed to remove ${name}: ${error.message}`);
+              }
+            }
+            await github.rest.issues.addLabels({ owner, repo, issue_number: prNumber, labels: toAdd });
+            core.info(`added ${toAdd.join(", ")} to #${prNumber}`);

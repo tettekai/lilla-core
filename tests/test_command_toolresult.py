@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import importlib
 import sys
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import lilla_core.handlers.command_handler
+from lilla_core.repository.conversation_repository import SavedConversation
 
 # 他のテストが discord をモックした状態で読み込まれていると、チャンネル解決処理が
 # MagicMock の discord を掴んだままになり実例外を捕捉できない。実 discord を
@@ -18,6 +20,12 @@ toolresult = importlib.import_module("lilla_core.commands.toolresult")
 attachment_body = importlib.import_module("lilla_core.commands.attachment_body")
 
 _UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+# 会話履歴へ保存したエントリとして MemoryManager のモックが返す値
+_SAVED = SavedConversation(
+    id="65f0a1b2c3d4e5f6a7b8c9d0",
+    time=datetime(2026, 10, 30, 5, 15, 0, 123000, tzinfo=timezone.utc),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +172,7 @@ class TestHandleToolresult:
         memory_manager_module = importlib.import_module("lilla_core.services.memory_manager")
 
         manager = MagicMock()
-        manager.add_conversation = AsyncMock()
+        manager.add_conversation_entry = AsyncMock(return_value=_SAVED)
         manager.build_system_prompt = AsyncMock(return_value="SYSTEM_PROMPT")
         manager.load_conversation_history_with_timestamps = AsyncMock(
             return_value=[{"role": "user", "content": "[Apr 28 11:22] 前の発言"}]
@@ -279,7 +287,7 @@ class TestHandleToolresult:
         await _run(f"{_UUID}\n結果", bot)
 
         assert dm_channel.send.call_count == 1
-        kwargs = patch_memory_manager.add_conversation.call_args.kwargs
+        kwargs = patch_memory_manager.add_conversation_entry.call_args.kwargs
         assert kwargs["discord_channel_id"] == 888
         assert kwargs["discord_message_ids"] == [1000]
 
@@ -304,7 +312,7 @@ class TestHandleToolresult:
         await _run(f"{_UUID}\n結果", bot)
 
         assert "結果" in dm_channel.send.call_args[0][0]
-        kwargs = patch_memory_manager.add_conversation.call_args.kwargs
+        kwargs = patch_memory_manager.add_conversation_entry.call_args.kwargs
         assert kwargs["discord_channel_id"] == 888
 
     async def test_skips_delivery_without_channel_and_owner(
@@ -323,7 +331,7 @@ class TestHandleToolresult:
 
         await _run(f"{_UUID}\n結果", bot)
 
-        kwargs = patch_memory_manager.add_conversation.call_args.kwargs
+        kwargs = patch_memory_manager.add_conversation_entry.call_args.kwargs
         assert kwargs["discord_channel_id"] is None
         assert kwargs["discord_message_ids"] == []
 
@@ -387,7 +395,7 @@ class TestHandleToolresult:
 
         await _run(f"{_UUID}\n結果です", bot)
 
-        saved = patch_memory_manager.add_conversation.call_args[0][0]
+        saved = patch_memory_manager.add_conversation_entry.call_args[0][0]
         assert saved["role"] == "assistant"
         assert "結果です" in saved["content"]
 
@@ -400,7 +408,7 @@ class TestHandleToolresult:
 
         await _run(f"{_UUID}\n結果です", bot)
 
-        kwargs = patch_memory_manager.add_conversation.call_args.kwargs
+        kwargs = patch_memory_manager.add_conversation_entry.call_args.kwargs
         assert kwargs["tags"] == ["toolresult", "dirty"]
         assert kwargs["discord_channel_id"] == 555
         assert kwargs["discord_message_ids"] == [1000]
@@ -414,7 +422,7 @@ class TestHandleToolresult:
 
         await _run(f"{_UUID}\n" + "あ" * 4000, bot)
 
-        kwargs = patch_memory_manager.add_conversation.call_args.kwargs
+        kwargs = patch_memory_manager.add_conversation_entry.call_args.kwargs
         assert kwargs["discord_message_ids"] == [1000, 1001, 1002]
 
     async def test_lilla_client_result_has_no_discord_message_info(
@@ -426,7 +434,7 @@ class TestHandleToolresult:
 
         await _run(f"{_UUID}\n結果です", MagicMock())
 
-        kwargs = patch_memory_manager.add_conversation.call_args.kwargs
+        kwargs = patch_memory_manager.add_conversation_entry.call_args.kwargs
         assert kwargs["tags"] == ["toolresult", "dirty"]
         assert kwargs["discord_channel_id"] is None
         assert kwargs["discord_message_ids"] is None
@@ -440,7 +448,7 @@ class TestHandleToolresult:
 
         await _run(f"{_UUID}\n結果です", MagicMock())
 
-        saved = patch_memory_manager.add_conversation.call_args[0][0]
+        saved = patch_memory_manager.add_conversation_entry.call_args[0][0]
         assert saved["role"] == "assistant"
         assert "結果です" in saved["content"]
 
@@ -453,9 +461,133 @@ class TestHandleToolresult:
 
         await _run(f"{_UUID}\n結果です", MagicMock())
 
-        saved = patch_memory_manager.add_conversation.call_args[0][0]
+        saved = patch_memory_manager.add_conversation_entry.call_args[0][0]
         assert saved["role"] == "assistant"
         assert "結果です" in saved["content"]
+
+    async def test_saves_before_delivery_for_registered_client_type(
+        self, monkeypatch: pytest.MonkeyPatch, patch_memory_manager: MagicMock
+    ) -> None:
+        """Discord 以外は、配送関数が呼ばれる時点で結果がすでに会話履歴に保存されている。"""
+        _patch_pending_repo(monkeypatch, _make_pending_record(client_type="lilla-client"))
+        delivery = _register_delivery(monkeypatch, "lilla-client")
+        order: list[str] = []
+
+        async def _save(*args, **kwargs):
+            order.append("save")
+            return _SAVED
+
+        async def _deliver(*args):
+            order.append("deliver")
+
+        patch_memory_manager.add_conversation_entry.side_effect = _save
+        delivery.side_effect = _deliver
+
+        await _run(f"{_UUID}\n結果です", MagicMock())
+
+        assert order == ["save", "deliver"]
+
+    async def test_delivery_receives_text_and_saved_conversation(
+        self, monkeypatch: pytest.MonkeyPatch, patch_memory_manager: MagicMock
+    ) -> None:
+        """配送関数は返信本文と、保存した `_id`・`time`（SavedConversation）を受け取る。"""
+        _patch_pending_repo(monkeypatch, _make_pending_record(client_type="lilla-client"))
+        delivery = _register_delivery(monkeypatch, "lilla-client")
+
+        await _run(f"{_UUID}\n結果です", MagicMock())
+
+        text, saved = delivery.await_args[0]
+        assert "結果です" in text
+        assert saved is _SAVED
+        saved_message = patch_memory_manager.add_conversation_entry.call_args[0][0]
+        assert saved_message["content"] == text
+
+    async def test_delivered_id_and_time_match_list_for_client(
+        self, monkeypatch: pytest.MonkeyPatch, patch_memory_manager: MagicMock
+    ) -> None:
+        """配送関数へ渡す `_id`・`time` は `list_for_client` が返す同じ項目の値と一致する。"""
+        from bson import ObjectId
+
+        from lilla_core.repository.conversation_repository import ConversationRepository
+
+        docs: list[dict] = []
+
+        async def _insert_one(doc: dict) -> MagicMock:
+            # BSON の日時と同じくミリ秒精度で持つ
+            stored = dict(doc, _id=ObjectId())
+            t = stored["time"]
+            stored["time"] = t.replace(microsecond=t.microsecond // 1000 * 1000)
+            docs.append(stored)
+            return MagicMock(inserted_id=stored["_id"])
+
+        def _find(query: dict, projection: dict | None = None) -> MagicMock:
+            cursor = MagicMock()
+            cursor.sort = MagicMock(return_value=cursor)
+            cursor.skip = MagicMock(return_value=cursor)
+            cursor.limit = MagicMock(return_value=cursor)
+            cursor.to_list = AsyncMock(return_value=[dict(d) for d in docs])
+            return cursor
+
+        collection = MagicMock()
+        collection.insert_one = AsyncMock(side_effect=_insert_one)
+        collection.find = MagicMock(side_effect=_find)
+        conv_repo = ConversationRepository.__new__(ConversationRepository)
+        conv_repo._collection = collection
+        conv_repo._ttl_hours = 72
+        patch_memory_manager.add_conversation_entry = conv_repo.save_entry
+
+        _patch_pending_repo(monkeypatch, _make_pending_record(client_type="lilla-client"))
+        delivery = _register_delivery(monkeypatch, "lilla-client")
+
+        await _run(f"{_UUID}\n結果です", MagicMock())
+
+        saved = delivery.await_args[0][1]
+        listed = (await conv_repo.list_for_client(10, 0))[0]
+        assert listed["_id"] == saved.id
+        assert listed["time"] == saved.time
+
+    async def test_history_remains_when_delivery_raises(
+        self, monkeypatch: pytest.MonkeyPatch, patch_memory_manager: MagicMock
+    ) -> None:
+        """配送関数が例外を出しても、会話履歴の保存は残る（取り消さない）。"""
+        _patch_pending_repo(monkeypatch, _make_pending_record(client_type="lilla-client"))
+        delivery = _register_delivery(monkeypatch, "lilla-client")
+        delivery.side_effect = RuntimeError("socket closed")
+
+        with pytest.raises(RuntimeError):
+            await _run(f"{_UUID}\n結果です", MagicMock())
+
+        patch_memory_manager.add_conversation_entry.assert_awaited_once()
+        kwargs = patch_memory_manager.add_conversation_entry.call_args.kwargs
+        assert kwargs["tags"] == ["toolresult", "dirty"]
+        patch_memory_manager.delete_conversation.assert_not_called()
+
+    async def test_discord_delivers_before_saving(
+        self, monkeypatch: pytest.MonkeyPatch, patch_memory_manager: MagicMock
+    ) -> None:
+        """Discord は従来どおり送信してから、送信先とメッセージ ID つきで保存する。"""
+        _patch_pending_repo(monkeypatch, _make_pending_record())
+        bot, channel = _make_bot_with_channel()
+        order: list[str] = []
+        original_send = channel.send.side_effect
+
+        async def _send(content):
+            order.append("send")
+            return await original_send(content)
+
+        async def _save(*args, **kwargs):
+            order.append("save")
+            return _SAVED
+
+        channel.send.side_effect = _send
+        patch_memory_manager.add_conversation_entry.side_effect = _save
+
+        await _run(f"{_UUID}\n結果です", bot)
+
+        assert order == ["send", "save"]
+        kwargs = patch_memory_manager.add_conversation_entry.call_args.kwargs
+        assert kwargs["discord_channel_id"] == 555
+        assert kwargs["discord_message_ids"] == [1000]
 
     async def test_skips_history_when_record_not_pending(
         self, monkeypatch: pytest.MonkeyPatch, patch_memory_manager: MagicMock
@@ -466,7 +598,7 @@ class TestHandleToolresult:
 
         await _run(f"{_UUID}\n結果", bot)
 
-        patch_memory_manager.add_conversation.assert_not_called()
+        patch_memory_manager.add_conversation_entry.assert_not_called()
 
     async def test_generates_reply_without_tools(
         self, monkeypatch: pytest.MonkeyPatch, patch_chat_to_llm: AsyncMock
@@ -530,8 +662,8 @@ class TestHandleToolresult:
 
         await _run(f"{_UUID}\n晴れです", bot)
 
-        patch_memory_manager.add_conversation.assert_called_once()
-        saved = patch_memory_manager.add_conversation.call_args[0][0]
+        patch_memory_manager.add_conversation_entry.assert_called_once()
+        saved = patch_memory_manager.add_conversation_entry.call_args[0][0]
         assert saved == {"role": "assistant", "content": "晴れだったよ！"}
         assert "<external_agent_response>" not in saved["content"]
         assert "依頼内容" not in saved["content"]
@@ -566,7 +698,7 @@ class TestToolresultAttachmentBody:
         memory_manager_module = importlib.import_module("lilla_core.services.memory_manager")
 
         manager = MagicMock()
-        manager.add_conversation = AsyncMock()
+        manager.add_conversation_entry = AsyncMock(return_value=_SAVED)
         manager.build_system_prompt = AsyncMock(return_value="SYSTEM_PROMPT")
         manager.load_conversation_history_with_timestamps = AsyncMock(return_value=[])
         monkeypatch.setattr(memory_manager_module, "get_memory_manager", lambda: manager)

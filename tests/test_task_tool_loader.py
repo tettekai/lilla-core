@@ -104,7 +104,7 @@ class TestBuildToolEntry:
     def test_returns_all_keys(self, task_tool_loader) -> None:
         instance = MagicMock()
         entry = task_tool_loader._build_tool_entry(instance, "task_foo", {})
-        assert set(entry.keys()) == {"instance", "description", "category", "trigger", "scheduled"}
+        assert set(entry.keys()) == {"instance", "description", "category", "trigger", "scheduled", "extension"}
 
     def test_instance_is_stored(self, task_tool_loader) -> None:
         instance = MagicMock()
@@ -131,6 +131,12 @@ class TestBuildToolEntry:
         instance = MagicMock(spec=[])  # 属性アクセスで AttributeError になるスペック
         entry = task_tool_loader._build_tool_entry(instance, "task_foo", {})
         assert entry["description"] == ""
+
+    def test_extension_defaults_to_none(self, task_tool_loader) -> None:
+        """拡張名を渡さなければ None、渡せばその値。"""
+        instance = MagicMock()
+        assert task_tool_loader._build_tool_entry(instance, "task_foo", {})["extension"] is None
+        assert task_tool_loader._build_tool_entry(instance, "task_foo", {}, "pack")["extension"] == "pack"
 
     def test_default_category_when_missing(self, task_tool_loader) -> None:
         """category 属性がない instance → 'unknown' がデフォルト"""
@@ -177,6 +183,36 @@ class TestLoadToolConfigsBundled:
         paths = [p for p, _ in task_tool_loader._load_tool_configs(tmp_path)]
 
         assert paths == [str(tmp_path / "tools" / "task_on.yaml")]
+
+
+class TestLoadAllToolsExtensionOwner:
+    """`load_all_tools()` の各エントリが同梱した拡張の名前を持つこと。"""
+
+    def test_entry_has_owning_extension(
+        self, task_tool_loader, tmp_path: Path, make_extension, use_extensions,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """同梱分（利用者が置き換えたものを含む）は拡張名、利用者だけの YAML は None。"""
+        pack = tmp_path / "pack"
+        pack.mkdir()
+        (pack / "task_a.yaml").write_text("type: task_x\n")
+        (pack / "task_b.yaml").write_text("type: task_x\n")
+        (tmp_path / "tools").mkdir()
+        (tmp_path / "tools" / "task_b.yaml").write_text("type: task_x\n")
+        (tmp_path / "tools" / "task_user.yaml").write_text("type: task_x\n")
+        tool_root = tmp_path / "roots"
+        tool_root.mkdir()
+        (tool_root / "task_x.py").touch()
+        use_extensions(make_extension("pack", tool_config_roots=[pack]))
+        monkeypatch.setattr(task_tool_loader, "load_script_class", lambda path, **kw: _make_tool_class())
+
+        result = task_tool_loader.load_all_tools(
+            tool_roots=[tool_root], config_root=tmp_path, class_map={}
+        )
+
+        assert result["task_a"]["extension"] == "pack"
+        assert result["task_b"]["extension"] == "pack"
+        assert result["task_user"]["extension"] is None
 
 
 class TestLoadToolConfigs:
@@ -471,7 +507,7 @@ class TestLoadAllTools:
             tool_roots=[tool_root], config_root=config_root, class_map={}
         )
         entry = result["task_tool"]
-        assert set(entry.keys()) == {"instance", "description", "category", "trigger", "scheduled"}
+        assert set(entry.keys()) == {"instance", "description", "category", "trigger", "scheduled", "extension"}
 
     def test_does_not_mutate_global_tool_class_map(
         self,
@@ -492,3 +528,137 @@ class TestLoadAllTools:
             tool_roots=[tool_root], config_root=config_root, class_map={}
         )
         assert task_tool_loader.tool_class_map == before
+
+
+# ---------------------------------------------------------------------------
+# TestSelfType（type: self）
+# ---------------------------------------------------------------------------
+
+
+class TestSelfType:
+    @pytest.fixture()
+    def config_root(self, tmp_path: Path) -> Path:
+        cr = tmp_path / "config_root"
+        (cr / "tools").mkdir(parents=True)
+        return cr
+
+    @pytest.fixture()
+    def tool_root(self, tmp_path: Path) -> Path:
+        root = tmp_path / "tool_root"
+        root.mkdir()
+        return root
+
+    def test_loads_class_from_same_stem_py(
+        self, task_tool_loader, tool_root: Path, config_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """type: self は YAML と同名の .py を、config_root/tools を含む tool_dirs で読む。"""
+        tools_dir = config_root / "tools"
+        _write_yaml(tools_dir, "task_mine.yaml", "type: self\n")
+        (tools_dir / "task_mine.py").touch()
+        captured: dict = {}
+
+        def fake_load(path, **kw):
+            captured["path"] = path
+            captured["tool_dirs"] = kw.get("tool_dirs")
+            return _make_tool_class()
+
+        monkeypatch.setattr(task_tool_loader, "load_script_class", fake_load)
+        monkeypatch.setattr(
+            task_tool_loader, "find_tool_file", lambda *a, **kw: pytest.fail("must not search tool roots")
+        )
+
+        result = task_tool_loader.load_all_tools(
+            tool_roots=[tool_root], config_root=config_root, class_map={}
+        )
+
+        assert "task_mine" in result
+        assert result["task_mine"]["trigger"] == "task"
+        assert captured["path"] == tools_dir / "task_mine.py"
+        assert tools_dir.resolve() in captured["tool_dirs"]
+        assert tool_root.resolve() in captured["tool_dirs"]
+
+    def test_skips_when_py_missing(
+        self, task_tool_loader, tool_root: Path, config_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """同名の .py が無ければ警告してそのツールだけスキップする。"""
+        _write_yaml(config_root / "tools", "task_mine.yaml", "type: self\n")
+        monkeypatch.setattr(
+            task_tool_loader, "load_script_class", lambda *a, **kw: pytest.fail("must not load")
+        )
+
+        result = task_tool_loader.load_all_tools(
+            tool_roots=[tool_root], config_root=config_root, class_map={}
+        )
+
+        assert result == {}
+
+    def test_cache_key_is_per_file(
+        self, task_tool_loader, tool_root: Path, config_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """type: self の YAML が複数あっても、それぞれ自分の .py のクラスを使う。"""
+        tools_dir = config_root / "tools"
+        for stem in ("task_a", "task_b"):
+            _write_yaml(tools_dir, f"{stem}.yaml", "type: self\n")
+            (tools_dir / f"{stem}.py").touch()
+        classes = {"task_a": _make_tool_class(), "task_b": _make_tool_class()}
+        monkeypatch.setattr(
+            task_tool_loader, "load_script_class", lambda path, **kw: classes[Path(path).stem]
+        )
+
+        result = task_tool_loader.load_all_tools(
+            tool_roots=[tool_root], config_root=config_root, class_map={}
+        )
+
+        assert type(result["task_a"]["instance"]) is classes["task_a"]
+        assert type(result["task_b"]["instance"]) is classes["task_b"]
+
+
+class TestSelfTypeRealLoad:
+    """script_loader を差し替えずに、type: self の実ファイルロードとディレクトリ検査を確かめる。"""
+
+    _SOURCE = (
+        "class MyTask:\n"
+        "    description = 'mine'\n"
+        "    schedule = '0 3 * * *'\n"
+        "    def __init__(self, config, name):\n"
+        "        self.config = config\n"
+        "        self.name = name\n"
+        "    async def execute(self, context):\n"
+        "        return None\n"
+    )
+
+    def test_loads_real_class(self, tmp_path: Path) -> None:
+        from lilla_core.loaders.task_tool_loader import load_all_tools
+
+        tools_dir = tmp_path / "config" / "tools"
+        tools_dir.mkdir(parents=True)
+        (tools_dir / "task_mine.yaml").write_text("type: self\nfoo: bar\n", encoding="utf-8")
+        (tools_dir / "task_mine.py").write_text(self._SOURCE, encoding="utf-8")
+
+        result = load_all_tools(
+            tool_roots=[tmp_path / "tool_root"], config_root=tmp_path / "config", class_map={}
+        )
+
+        entry = result["task_mine"]
+        assert entry["description"] == "mine"
+        assert entry["scheduled"] is True
+        assert entry["instance"].name == "task_mine"
+        assert entry["instance"].config["foo"] == "bar"
+
+    def test_symlink_outside_tool_dirs_is_not_loaded(self, tmp_path: Path) -> None:
+        """同名の .py が外を指すシンボリックリンクならロードしない。"""
+        from lilla_core.loaders.task_tool_loader import load_all_tools
+
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "evil.py").write_text(self._SOURCE, encoding="utf-8")
+        tools_dir = tmp_path / "config" / "tools"
+        tools_dir.mkdir(parents=True)
+        (tools_dir / "task_mine.yaml").write_text("type: self\n", encoding="utf-8")
+        (tools_dir / "task_mine.py").symlink_to(outside / "evil.py")
+
+        result = load_all_tools(
+            tool_roots=[tmp_path / "tool_root"], config_root=tmp_path / "config", class_map={}
+        )
+
+        assert result == {}

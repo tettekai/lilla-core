@@ -110,10 +110,26 @@ tools:
   `async def execute(context: dict) -> None` を持つことが期待されます。
 - `schedule` は省略可能です。未設定のツールはスケジューラには登録されませんが、
   `!runtask` による手動実行は可能です。
+- `type` が `self` の場合は LLM ツールと同じく、ツールルートを探索せず YAML と同じ
+  ディレクトリ・同名の `.py`（`${CONFIG_ROOT}/tools/task_foo.yaml` なら
+  `${CONFIG_ROOT}/tools/task_foo.py`）からクラスを読みます。`.py` が無ければ警告を出して
+  そのツールだけ読み飛ばします。
 - `type` はこちらでも import パスを受け付けます（`type: some_package.tasks.daily_summary`）。
   クラスはファイルから読む場合と同じ規則で、import したモジュールから探します。
   トリガー種別は `type` ではなく YAML のファイル名から判定するため、import パス指定の
   task ツールも `task` ツールのままで、`!runtask` から実行できます。
+- 取得したデータを MongoDB へ保存するときは、`lilla_core.tool_support.mongodata` の
+  `save_document(collection, payload, key=None)` を使えます。`!mongodata` と同じ書き込み
+  （`key` があれば `{key: 値}` を条件に `$set` で upsert、無ければ insert。`_id` は除く）で、
+  書き込めるのは `commands.mongodata.allowed_collections` に並べたコレクションだけです。
+  許可されていないコレクション・`key` のフィールドが無いときは `MongoDataError` の派生
+  （`CollectionNotAllowedError` / `KeyFieldMissingError`）を投げます。
+
+  ```python
+  from lilla_core.tool_support.mongodata import save_document
+
+  await save_document("asken_daily", {"date": "2026-11-02", ...}, key="date")
+  ```
 
 ## `execute` に渡される `context`
 

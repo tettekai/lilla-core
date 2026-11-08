@@ -2092,13 +2092,15 @@ class TestHandleApiDashboardNav:
     async def test_returns_builtin_pages(
         self, dashboard_server, mock_web, monkeypatch
     ) -> None:
-        """拡張が 0 個でも組み込み 6 画面を返す。"""
+        """拡張が 0 個でも組み込み 7 画面を返す。"""
         _patch_dashboard_contributions(monkeypatch, dashboard_server)
 
         await dashboard_server.handle_api_dashboard_nav(_make_request())
 
         pages = self._payload(mock_web)["pages"]
-        assert [p["name"] for p in pages] == ["home", "conversations", "memos", "skills", "usage", "logs"]
+        assert [p["name"] for p in pages] == [
+            "home", "conversations", "memos", "skills", "usage", "logs", "extensions",
+        ]
         assert [p["hash"] for p in pages] == [
             "#/",
             "#/conversations",
@@ -2106,13 +2108,14 @@ class TestHandleApiDashboardNav:
             "#/skills",
             "#/usage",
             "#/admin/logs",
+            "#/admin/extensions",
         ]
         assert all(p["module"] is None for p in pages)
 
     async def test_builtin_groups_split_main_and_admin(
         self, dashboard_server, mock_web, monkeypatch
     ) -> None:
-        """Logs だけが管理メニュー側に入る。"""
+        """Logs と Extensions だけが管理メニュー側に入る。"""
         _patch_dashboard_contributions(monkeypatch, dashboard_server)
 
         await dashboard_server.handle_api_dashboard_nav(_make_request())
@@ -2125,6 +2128,7 @@ class TestHandleApiDashboardNav:
             "skills": "main",
             "usage": "main",
             "logs": "admin",
+            "extensions": "admin",
         }
 
     async def test_extension_pages_follow_builtins_in_load_order(
@@ -2140,7 +2144,9 @@ class TestHandleApiDashboardNav:
         await dashboard_server.handle_api_dashboard_nav(_make_request())
 
         names = [p["name"] for p in self._payload(mock_web)["pages"]]
-        assert names == ["home", "conversations", "memos", "skills", "usage", "logs", "habits", "cal"]
+        assert names == [
+            "home", "conversations", "memos", "skills", "usage", "logs", "extensions", "habits", "cal",
+        ]
 
     async def test_extension_paths_come_from_the_core(
         self, dashboard_server, mock_web, monkeypatch

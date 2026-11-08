@@ -45,6 +45,8 @@ from lilla_core.repository.admin_credential_repository import get_admin_credenti
 from lilla_core.repository.admin_session_repository import get_admin_session_repo
 from lilla_core.repository.channel_summary_repository import get_channel_summary_repo
 from lilla_core.repository.llm_usage_repository import get_llm_usage_repo
+from lilla_core.repository.extension_override_repository import get_extension_override_repo
+from lilla_core.repository.extension_settings_repository import get_extension_settings_repo
 from lilla_core.handlers import message_handler, interaction_handler, task_handler
 from lilla_core.handlers.command_handler import set_command_runtime
 from lilla_core.handlers.dashboard_server import start_dashboard_server
@@ -73,6 +75,8 @@ _CORE_STARTUP_REPOS = [
     get_admin_session_repo,
     get_channel_summary_repo,
     get_llm_usage_repo,
+    get_extension_override_repo,
+    get_extension_settings_repo,
 ]
 
 bot.http.proxy = _config.proxy.resolve_url()
@@ -116,7 +120,13 @@ async def on_ready():
                 "Failed to initialize repository: %s: %s",
                 repo.__class__.__name__, e, exc_info=True,
             )
-    task_handler.start_scheduler(tools, bot, llm_tools)
+    if task_handler.is_scheduler_enabled():
+        await task_handler.start_scheduler(tools, bot, llm_tools)
+    else:
+        logger.info(
+            "[TASK] Internal scheduler is disabled by scheduler.enabled=false; "
+            "scheduled tasks run only via POST /api/runtask or !runtask"
+        )
 
 
 @bot.event
@@ -156,7 +166,7 @@ async def main():
     `exc_info=True` で残す）。それ以外の例外は従来通りそのまま伝播させる。
     """
     await run_setup_hooks(tools, llm_tools, bot)
-    await start_dashboard_server()
+    await start_dashboard_server(tools)
     await start_http_server(tools, llm_tools, bot)
     try:
         await bot.start(_config.env.discord_token)

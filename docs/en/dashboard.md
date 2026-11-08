@@ -41,6 +41,49 @@ dashboard:
 Skills (`#/skills`) lists the skills called with `!skill` and lets you add, edit, delete
 and enable / disable them. See [Skills](skills.md) for the naming rules and how to call them.
 
+## Extensions
+
+Extensions (admin menu, `#/admin/extensions`) edits, for each loaded extension, its
+on-screen managed settings (`extension_settings`, the settings proper) and its overrides
+(`extension_overrides`, which never change the code or the bundled defaults). Only
+extensions that have on-screen settings, a default prompt or a bundled scheduled task are
+listed; sections with nothing to edit are not shown.
+
+- **Settings**: the settings an extension declared with `settings_model()` (these are the
+  settings themselves, not overrides). You can see whether they are saved (the initial
+  values if not), each field's value or unset state, and validation errors. The whole set
+  is validated before saving and is used from the next piece of work the extension starts
+  ([Extension settings managed on screen](extension-settings.md)). If the database cannot
+  be read, the screen says "unreadable" and distinguishes this from "not saved"
+- **Prompt**: shows the default (chosen in the order `ui.locale` → `ja` → `en`), whether
+  an override exists and the text currently in effect, and lets you override the whole
+  prompt with a single string. Saving it empty becomes an override meaning "do not inject
+  this extension's prompt". "Reset to default" only deletes the override and does not copy
+  the default text. Changing `ui.locale` does not translate an override. It takes effect
+  from the next conversation ([Extension default prompts and overrides](extension-prompt.md))
+- **Scheduled tasks**: for each scheduled task the extension bundles and that is loaded,
+  you can override only `schedule` (crontab) and whether the periodic run is enabled. The
+  crontab is interpreted in `ui.timezone`. Disabling only stops the periodic run; manual
+  runs with `!runtask` still work. Tasks not loaded because the tool YAML says
+  `enabled: false` do not appear and cannot be revived from here. Core tasks and other
+  extensions' tasks are out of scope. Saving applies to the scheduler immediately (running
+  jobs are not stopped); if applying fails, the screen shows the failure and "Re-apply"
+  retries ([Overriding an extension's tasks](extension-task-override.md))
+
+A save validates the whole request and writes it in one update; if anything is invalid
+(an unknown key, a wrong type, a task out of scope, a value that is not a crontab), nothing
+is saved. Saving only the prompt does not erase `tasks` (and vice versa).
+
+APIs used by the screen (all require login):
+
+| Method and path | What it does |
+|------|------|
+| `GET /api/admin/extensions` | Loaded extensions, and a marker for whether each is editable |
+| `GET /api/admin/extensions/{name}` | The prompt and task defaults, overrides and effective values, plus the values currently on the scheduler. Also includes the on-screen settings (`settings`: fields, values, whether saved, errors) |
+| `PATCH /api/admin/extensions/{name}/overrides` | Saves overrides. Body: `{"prompt": string \| null, "tasks": {tool_name: {"schedule": string \| null, "enabled": boolean \| null}}}`. Omitted keys are left unchanged and `null` deletes an override. In the response, `saved` says whether saving succeeded and `tasks_apply` the result of applying (`applied` / `scheduler_not_running` / `scheduler_disabled` / `failed`; `null` if no task was changed) |
+| `POST /api/admin/extensions/{name}/tasks/apply` | Re-applies the saved task overrides (503 on failure) |
+| `PUT /api/admin/extensions/{name}/settings` | Saves the whole on-screen settings. Body: `{"values": {field: value}}`. Invalid input returns 400 (`errors` holds a reason per field) and saves nothing. 404 for an extension that declares no settings |
+
 ## Home
 
 Home (`#/`) does not repeat the other lists; it only shows the current state. Each time it

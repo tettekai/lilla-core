@@ -1,6 +1,7 @@
 """`lilla_core.core.extension` の `Extension` とロード・参照 API のテスト。"""
 from __future__ import annotations
 
+import inspect
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -92,6 +93,7 @@ class TestExtensionDefaults:
         assert ext.result_deliveries() == {}
         assert ext.client_prompt_providers() == {}
         assert ext.conversation_start_hooks() == {}
+        assert ext.default_prompt() is None
         assert ext.requires == ()
         assert ext.api_version == ext_module.EXTENSION_API_VERSION
         assert ext.required_env_fields() == []
@@ -824,6 +826,110 @@ class TestAggregatedContributions:
 
         assert ext_module.get_command_packages() == ["pkg.one", "pkg.two", "pkg.three"]
 
+    async def test_result_delivery_receives_text_and_saved_conversation(
+        self, make_extension
+    ) -> None:
+        """登録した配送関数は本文と SavedConversation（`_id`・`time`）の 2 引数で呼べる。"""
+        from datetime import datetime, timezone
+
+        from lilla_core.repository.conversation_repository import SavedConversation
+
+        received: list = []
+
+        async def deliver(text: str, saved: SavedConversation) -> None:
+            received.append((text, saved))
+
+        ext_module.set_extensions([make_extension("a", result_deliveries={"web": deliver})])
+        saved = SavedConversation(
+            id="65f0a1b2c3d4e5f6a7b8c9d0",
+            time=datetime(2026, 10, 30, 5, 15, tzinfo=timezone.utc),
+        )
+
+        await ext_module.get_result_delivery("web")("本文", saved)
+
+        assert received == [("本文", saved)]
+
+    def test_delivery_fn_signature_includes_saved_conversation(self) -> None:
+        """`DeliveryFn` は本文と SavedConversation を受け取る形になっている。"""
+        import typing
+
+        params, _ret = typing.get_args(ext_module.DeliveryFn)
+        assert len(params) == 2
+        assert params[0] is str
+        assert "SavedConversation" in repr(params[1])
+
+    def test_one_arg_delivery_fails_at_load(self, make_extension) -> None:
+        """`(text, saved)` で呼べない 1 引数の配送関数はロード時に落とす。"""
+
+        async def deliver(text: str) -> None:
+            pass
+
+        with pytest.raises(ValueError, match=r"'a'.*'web'.*\(text, saved\)"):
+            ext_module.set_extensions(
+                [make_extension("a", result_deliveries={"web": deliver})]
+            )
+        assert ext_module.get_result_delivery("web") is None
+
+    def test_three_required_args_delivery_fails_at_load(self, make_extension) -> None:
+        """必須の引数が 3 つある配送関数も 2 引数では呼べないので落とす。"""
+
+        async def deliver(text, saved, extra) -> None:
+            pass
+
+        with pytest.raises(ValueError, match="two arguments"):
+            ext_module.set_extensions(
+                [make_extension("a", result_deliveries={"web": deliver})]
+            )
+
+    def test_compatible_delivery_signatures_load(self, make_extension) -> None:
+        """2 引数・`*args`・2 つ目に既定値のある配送関数は読み込める。"""
+
+        async def two_args(text, saved) -> None:
+            pass
+
+        async def var_args(*args) -> None:
+            pass
+
+        async def with_default(text, saved=None) -> None:
+            pass
+
+        ext_module.set_extensions(
+            [
+                make_extension(
+                    "a",
+                    result_deliveries={
+                        "two": two_args,
+                        "var": var_args,
+                        "default": with_default,
+                    },
+                )
+            ]
+        )
+
+        assert ext_module.get_result_delivery("two") is two_args
+        assert ext_module.get_result_delivery("var") is var_args
+        assert ext_module.get_result_delivery("default") is with_default
+
+    def test_delivery_without_signature_is_not_checked(self, make_extension) -> None:
+        """シグネチャを取れない呼び出し可能オブジェクトは検査せずに読み込む。"""
+
+        class NoSignature:
+            # Signature 以外の `__signature__` は inspect.signature() が TypeError にする
+            __signature__ = "not a signature"
+
+            async def __call__(self, text: str) -> None:
+                pass
+
+        deliver = NoSignature()
+        with pytest.raises((ValueError, TypeError)):
+            inspect.signature(deliver)
+
+        ext_module.set_extensions(
+            [make_extension("a", result_deliveries={"web": deliver})]
+        )
+
+        assert ext_module.get_result_delivery("web") is deliver
+
     def test_lookups_return_empty_when_unregistered(self) -> None:
         """未登録の client_type は、排他の参照では None、加算式の参照では空リスト。"""
         assert ext_module.get_result_delivery("web") is None
@@ -862,6 +968,62 @@ class TestAggregatedContributions:
 # ---------------------------------------------------------------------------
 # TestRunSetupHooks
 # ---------------------------------------------------------------------------
+
+
+class TestDefaultPrompts:
+    """`default_prompt()` の検証と集約。"""
+
+    def test_prompts_are_listed_in_load_order(self, make_extension) -> None:
+        """デフォルトプロンプトを持つ拡張だけが、ロード順に並ぶ。"""
+        ext_module.set_extensions([
+            make_extension("b", default_prompt={"ja": "B", "en": "B-en"}),
+            make_extension("none"),
+            make_extension("a", default_prompt={"ja": "A"}),
+        ])
+
+        assert ext_module.get_default_prompts() == [
+            ("b", {"ja": "B", "en": "B-en"}),
+            ("a", {"ja": "A"}),
+        ]
+
+    def test_returned_list_is_a_copy(self, make_extension) -> None:
+        """戻り値を書き換えても登録内容は変わらない。"""
+        ext_module.set_extensions([make_extension("a", default_prompt={"ja": "A"})])
+
+        ext_module.get_default_prompts()[0][1]["ja"] = "changed"
+
+        assert ext_module.get_default_prompts() == [("a", {"ja": "A"})]
+
+    @pytest.mark.parametrize(
+        "prompts",
+        [
+            "ja only string",
+            ["ja"],
+            {},
+            {"ja": 1},
+            {"ja": "ok", "en": None},
+            {"ja": "ok", 1: "number key"},
+        ],
+    )
+    def test_invalid_shape_fails_fast(self, make_extension, prompts) -> None:
+        """dict でない・空・文字列以外を含む形はロード時に落とす。"""
+        with pytest.raises(ValueError, match="default_prompt"):
+            ext_module.set_extensions([make_extension("bad", default_prompt=prompts)])
+
+    def test_language_other_than_ja_is_not_required(self, make_extension) -> None:
+        """`ja` を持たない（英語だけの）拡張もロードできる。"""
+        ext_module.set_extensions([make_extension("en-only", default_prompt={"en": "x"})])
+
+        assert ext_module.get_default_prompts() == [("en-only", {"en": "x"})]
+
+    def test_invalid_shape_leaves_registry_untouched(self, make_extension) -> None:
+        """検証に失敗したら、以前の登録内容がそのまま残る。"""
+        ext_module.set_extensions([make_extension("a", default_prompt={"ja": "A"})])
+
+        with pytest.raises(ValueError):
+            ext_module.set_extensions([make_extension("bad", default_prompt={})])
+
+        assert ext_module.get_default_prompts() == [("a", {"ja": "A"})]
 
 
 class TestRunSetupHooks:

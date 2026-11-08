@@ -600,6 +600,19 @@ class HttpConfig(BaseModel):
     cors_allowed_origins: list[str] = []
 
 
+class SchedulerConfig(BaseModel):
+    """lilla.yaml の `scheduler:` セクション（内部の定期スケジューラ全体のスイッチ）。
+
+    `enabled: false` にすると APScheduler による定期起動だけを始めない。タスクのロード・
+    共有 HTTP サーバー（`GET /api/tasks` と `POST /api/runtask`）・`!runtask` は
+    止めないため、時刻の管理を外部のスケジューラへ任せられる。起動時にだけ読み、
+    変更は再起動後に効く。節ごと省略でき、既定は `true`（従来どおり）。
+    """
+
+    #: 内部の定期スケジューラを起動するか。`"false"` のような文字列や数値は受け付けない。
+    enabled: StrictBool = True
+
+
 class ExtensionsConfig(BaseModel):
     """lilla.yaml の `extensions:` セクション（拡張が申告した節の置き場）。
 
@@ -621,6 +634,37 @@ class ExtensionsConfig(BaseModel):
     def _treat_null_as_empty(cls, data: Any) -> Any:
         """`extensions:` だけ書いて中身が空（YAML の `null`）の場合を空の節として扱う。"""
         return {} if data is None else data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_dashboard_managed_keys(cls, data: Any) -> Any:
+        """画面管理の設定（`Extension.settings_model()`）の項目が YAML に書かれていたら落とす。
+
+        1 つの項目の担当は YAML か画面のどちらか一方だけで、YAML に残った旧い値を
+        黙って捨てたり優先したりしない。移行先（ダッシュボードの Extensions 画面）を
+        示して起動時に落とす。拡張の登録内容は `core/extension.py` が持つため、
+        循環 import を避けて遅延 import する。
+        """
+        if not isinstance(data, dict):
+            return data
+        from lilla_core.core.extension import get_settings_models
+
+        found: list[str] = []
+        for ext_name, model in get_settings_models().items():
+            section = extension_section_name(ext_name)
+            values = data.get(section)
+            if not isinstance(values, dict):
+                continue
+            found.extend(
+                f"extensions.{section}.{key}" for key in values if key in model.model_fields
+            )
+        if found:
+            raise ValueError(
+                "These settings are managed in the dashboard (Extensions page, stored in "
+                "'extension_settings') and must be removed from lilla.yaml: "
+                + ", ".join(sorted(found))
+            )
+        return data
 
 
 class UiConfig(BaseModel):
@@ -972,6 +1016,7 @@ class AppConfig(BaseSettings):
     commands: CommandsConfig = CommandsConfig()
     dashboard: DashboardConfig = DashboardConfig()
     http: HttpConfig = HttpConfig()
+    scheduler: SchedulerConfig = SchedulerConfig()
     # `LlmConfig()` を直接デフォルト値にすると、クラス定義（モジュール import）の
     # 時点で即座にインスタンス化・検証されてしまい、YAML の内容に関わらず
     # import だけで落ちる。`default_factory` で AppConfig 構築時まで遅延させる。

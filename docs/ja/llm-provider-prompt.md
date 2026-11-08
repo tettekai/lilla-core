@@ -31,7 +31,8 @@ llm:
 ## どこに足されるか
 
 追記は置き換えではなく連結です。共通のシステムプロンプトのあとに空行区切りで足します。
-`client_type` ごとの追記（`prompt.discord` や拡張の `client_prompt_providers()`）が
+`client_type` ごとの追記（`prompt.discord` や拡張の `client_prompt_providers()`）や
+拡張のデフォルトプロンプト（[拡張のデフォルトプロンプトと上書き](extension-prompt.md)）が
 ある場合は、それらを含めたシステムプロンプトのあとにプロバイダーの追記が来ます。
 
 ```

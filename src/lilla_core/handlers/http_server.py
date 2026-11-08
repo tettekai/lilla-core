@@ -4,13 +4,14 @@
 管理画面）とは別のポート・別の認証で、ホストのアプリ（モバイル / デスクトップの
 クライアントなど）やローカルのスクリプトが HTTP で叩く入口になる。
 
-コアが持つのは次の 4 本だけで、クライアント固有のルート（メディア配信・WebSocket など）は
+コアが持つのは次の 5 本だけで、クライアント固有のルート（メディア配信・WebSocket など）は
 拡張が ``Extension.http_routes()`` で申告して載せる。
 
 - ``GET /``: 生存確認（liveness。公開）
 - ``GET /api/selftest``: 自己診断（``!selftest`` 相当。Bearer 必須）
 - ``POST /api/tools/call``: LLM ツールの直接呼び出し（Bearer 必須）
 - ``POST /api/runtask``: task ツールの手動実行（Bearer 必須）
+- ``GET /api/tasks``: 外部スケジューラ向けの定期タスク一覧（Bearer 必須）
 
 認証は既定拒否の Bearer トークン（``auth_middleware``）。ルートごとに申告された
 ``HttpRoute.auth`` を見て、``public`` は素通し、``deferred`` はハンドラ側の別方式に
@@ -38,6 +39,12 @@ from lilla_core.repository.client_token_repository import (
     verify_client_token,
 )
 from lilla_core.services.system_checks import check_mongodb, run_selftest_checks
+from lilla_core.services.task_schedules import (
+    CRON_FORMAT,
+    TaskScheduleError,
+    load_task_schedules,
+    timezone_label,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -311,6 +318,55 @@ async def handle_api_runtask(request: web.Request) -> web.Response:
     return web.Response(status=202, text="Accepted")
 
 
+async def handle_api_tasks(request: web.Request) -> web.Response:
+    """GET /api/tasks - ロード済みの定期タスクの実効スケジュールを返す（Bearer 必須）。
+
+    外部のスケジューラが定期起動を肩代わりするための一覧。各タスクの `schedule` /
+    `enabled` はデフォルトに拡張の上書き（`extension_overrides`）を重ねた実効値で、
+    内部スケジューラと同じ共通処理（`services/task_schedules.py`）で決める。上書きは
+    呼ぶたびに DB から読むため、内部スケジューラが無効・未起動でも最新の値が返る。
+    `enabled: false` のタスクも含める（外部側が登録を外せるように）。
+
+    返すのは連携に要る項目だけで、プロンプト・プロバイダー・送信先などのツール設定は返さない。
+    上書きの読み込みに失敗したら 503、実効スケジュールを解決できないタスクがあれば 500 を
+    返し、どちらも空の一覧で成功したふりはしない。
+
+    Args:
+        request: aiohttp のリクエスト。
+
+    Returns:
+        200 ``{"scheduler_enabled", "cron_format", "tasks": [{"name", "schedule",
+        "timezone", "enabled"}]}``。失敗時は ``{"error": ...}``（500 / 503）。
+    """
+    try:
+        resolved = await load_task_schedules(request.app[TOOLS_KEY])
+    except TaskScheduleError as e:
+        logger.error("[TASK] Cannot list tasks: %s", e)
+        return web.json_response(
+            {"error": "invalid_schedule", "task": e.task_name}, status=500
+        )
+    except Exception as e:
+        logger.error("[TASK] Failed to load task overrides for GET /api/tasks: %s", e)
+        return web.json_response({"error": "overrides_unavailable"}, status=503)
+
+    timezone = timezone_label()
+    return web.json_response(
+        {
+            "scheduler_enabled": get_config().scheduler.enabled,
+            "cron_format": CRON_FORMAT,
+            "tasks": [
+                {
+                    "name": task.name,
+                    "schedule": task.schedule,
+                    "timezone": timezone,
+                    "enabled": task.enabled,
+                }
+                for task in resolved
+            ],
+        }
+    )
+
+
 #: コアが持つルート。`core/extension.py` の `CORE_HTTP_ROUTES` と一致させること
 #: （拡張の申告との重なりはそちらで検査する）。
 _CORE_ROUTES: tuple[HttpRoute, ...] = (
@@ -318,6 +374,7 @@ _CORE_ROUTES: tuple[HttpRoute, ...] = (
     HttpRoute("GET", "/api/selftest", handle_api_selftest),
     HttpRoute("POST", "/api/tools/call", handle_api_tools_call),
     HttpRoute("POST", "/api/runtask", handle_api_runtask),
+    HttpRoute("GET", "/api/tasks", handle_api_tasks),
 )
 
 
