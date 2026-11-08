@@ -6,6 +6,7 @@ import pytest
 from lilla_core.core.file_storage import (
     FileStorageExistsError,
     FileStorageNotFoundError,
+    FileStorageNotTextError,
     FileStoragePathError,
 )
 from lilla_core.extensions.notes import service
@@ -54,6 +55,11 @@ class TestWriteAndRead:
         await service.write_note("a.md", "x" * 100, "overwrite")
         with pytest.raises(NotesTooLargeError):
             await service.write_note("a.md", "y", "append")
+
+    async def test_too_large_is_a_file_storage_not_text_error(self, fake_repo) -> None:
+        """大きすぎるときはコアの `FileStorageNotTextError` としても捕まえられる。"""
+        with pytest.raises(FileStorageNotTextError):
+            await service.write_note("a.md", "x" * 101, "overwrite")
 
     async def test_cannot_write_to_a_directory(self, fake_repo) -> None:
         """配下にノートがあるパスには書けない。"""

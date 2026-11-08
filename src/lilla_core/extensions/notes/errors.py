@@ -9,6 +9,7 @@ from lilla_core.core.file_storage import (
     FileStorageError,
     FileStorageExistsError,
     FileStorageNotFoundError,
+    FileStorageNotTextError,
     FileStoragePathError,
 )
 
@@ -29,5 +30,5 @@ class NotesExistsError(NotesError, FileStorageExistsError):
     """`mode="create"` で、ファイルが既にある。"""
 
 
-class NotesTooLargeError(NotesError):
+class NotesTooLargeError(NotesError, FileStorageNotTextError):
     """書いた後の本文が上限を超える。"""
