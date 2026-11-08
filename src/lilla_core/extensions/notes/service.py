@@ -1,0 +1,307 @@
+"""ノートの業務ロジック（パスの検証・大きさの上限・ファイルとディレクトリの整合）。
+
+`NotesStorage`（コアの `FileStorage`）・LLM ツール・ダッシュボードの API が同じ関数を通る
+ようにし、検証を二重に持たない。設定とリポジトリは呼び出しのたびに引く。
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Any
+
+from lilla_core.core.file_storage import check_write_mode
+
+from .errors import (
+    NotesError,
+    NotesExistsError,
+    NotesNotFoundError,
+    NotesPathError,
+    NotesTooLargeError,
+)
+from .paths import child_path, normalize_path
+
+if TYPE_CHECKING:
+    from lilla_core.extensions.notes import NotesConfig
+    from lilla_core.extensions.notes.repository import Note, NotesRepository, NoteVersion
+
+#: 存在しないパスの文言。
+NOT_FOUND_MESSAGE = "指定したパスは存在しません。"
+#: `create` で既にあるときの文言。
+ALREADY_EXISTS_MESSAGE = "ファイルが既にあります（上書きするなら mode に overwrite を指定してください）。"
+#: ディレクトリへ書こうとしたときの文言。
+WRITE_TO_DIR_MESSAGE = "そのパスはディレクトリです。ファイルのパスを指定してください。"
+#: 親の要素がファイルのときの文言。
+PARENT_IS_FILE_MESSAGE = "親のパス「{parent}」がファイルのため、その下には書けません。"
+#: ファイルを一覧しようとしたときの文言。
+NOT_A_DIR_MESSAGE = "ディレクトリではありません。"
+#: 書いた後の本文が上限を超えるときの文言。
+TOO_LARGE_MESSAGE = "ファイルが大きすぎるため書けません（上限 {limit} 文字）。"
+#: `content` が文字列でないときの文言。
+INVALID_CONTENT_MESSAGE = "content を文字列で指定してください。"
+
+#: 検索で本文を読むノートの上限（超えたら `truncated`）。
+MAX_SEARCH_NOTES = 2000
+#: 検索で返す該当行の上限（超えたら `truncated`）。
+MAX_SEARCH_RESULTS = 50
+#: 該当行として返す文字数の上限（超えた分は切り詰める）。
+MAX_LINE_CHARS = 300
+
+
+@dataclass(frozen=True)
+class Entry:
+    """ディレクトリの直下のエントリ 1 つ。"""
+
+    path: str
+    name: str
+    #: `"file"` か `"dir"`。
+    type: str
+    #: ファイルの文字数（ディレクトリは None）。
+    size: int | None
+    #: 更新日時（ディレクトリは配下の最新）。
+    modified_time: datetime | None
+
+
+@dataclass(frozen=True)
+class WriteResult:
+    """書き込みの結果。"""
+
+    path: str
+    created: bool
+    #: 書いた後の本文の文字数。
+    size: int
+
+
+@dataclass(frozen=True)
+class SearchMatch:
+    """検索で見つかった行 1 つ。"""
+
+    path: str
+    line: int
+    text: str
+
+
+def load_config() -> NotesConfig:
+    """`extensions.notes` セクションを型付きで返す（節が無ければ既定値）。"""
+    from lilla_core.core.config import get_section
+    from lilla_core.extensions.notes import NotesConfig
+
+    return get_section("notes", NotesConfig)
+
+
+def _repo() -> NotesRepository:
+    """リポジトリを返す（テストで差し替えやすいよう関数にしておく）。"""
+    from lilla_core.extensions.notes.repository import get_notes_repo
+
+    return get_notes_repo()
+
+
+def _history_ttl(config: NotesConfig) -> timedelta:
+    """直前の版を残す期間を返す。"""
+    return timedelta(days=config.history_retention_days)
+
+
+def _ancestors(path: str) -> list[str]:
+    """パスの祖先（自分は含まない）を浅い順に返す。"""
+    parts = path.split("/")
+    return ["/".join(parts[:i]) for i in range(1, len(parts))]
+
+
+async def read_note(path: Any) -> Note:
+    """ノートを返す。
+
+    Raises:
+        NotesPathError: パスの形式が正しくない場合。
+        NotesNotFoundError: 無い場合。
+    """
+    note = await _repo().get(normalize_path(path))
+    if note is None:
+        raise NotesNotFoundError(NOT_FOUND_MESSAGE)
+    return note
+
+
+async def write_note(path: Any, content: Any, mode: str = "overwrite") -> WriteResult:
+    """ノートを書く。
+
+    Args:
+        path: 書くパス。
+        content: 書く内容。
+        mode: `create` / `overwrite` / `append`。
+
+    Raises:
+        ValueError: `mode` が正しくない場合。
+        NotesPathError: パスの形式が正しくない・ディレクトリを指す・親がファイルの場合。
+        NotesExistsError: `create` で既にある場合。
+        NotesTooLargeError: 書いた後の本文が上限を超える場合。
+        NotesError: `content` が文字列でない場合。
+    """
+    check_write_mode(mode)
+    normalized = normalize_path(path)
+    if not isinstance(content, str):
+        raise NotesError(INVALID_CONTENT_MESSAGE)
+    config = load_config()
+    repo = _repo()
+
+    for parent in _ancestors(normalized):
+        if await repo.get_meta(parent) is not None:
+            raise NotesPathError(PARENT_IS_FILE_MESSAGE.format(parent=parent))
+    if await repo.has_children(normalized):
+        raise NotesPathError(WRITE_TO_DIR_MESSAGE)
+
+    limit = config.max_content_chars
+    if mode == "append":
+        current = await repo.get_meta(normalized)
+        size = (current.size if current else 0) + len(content)
+    else:
+        size = len(content)
+    if size > limit:
+        raise NotesTooLargeError(TOO_LARGE_MESSAGE.format(limit=limit))
+
+    if mode == "create":
+        from .repository import NoteExistsError
+
+        try:
+            await repo.create(normalized, content)
+        except NoteExistsError:
+            raise NotesExistsError(ALREADY_EXISTS_MESSAGE)
+        created = True
+    elif mode == "overwrite":
+        created = await repo.overwrite(normalized, content, _history_ttl(config))
+    else:
+        created = await repo.append(normalized, content)
+    return WriteResult(path=normalized, created=created, size=size)
+
+
+async def list_entries(path: Any = "") -> list[Entry]:
+    """ディレクトリの直下のエントリを名前順に返す（再帰しない。空文字は最上位）。
+
+    Raises:
+        NotesPathError: パスの形式が正しくない・ファイルを指す場合。
+        NotesNotFoundError: ディレクトリが無い場合（最上位は空でも成功）。
+    """
+    directory = normalize_path(path, allow_empty=True)
+    repo = _repo()
+    metas = await repo.list_under(directory)
+    if directory and not metas:
+        if await repo.get_meta(directory) is not None:
+            raise NotesPathError(NOT_A_DIR_MESSAGE)
+        raise NotesNotFoundError(NOT_FOUND_MESSAGE)
+
+    offset = len(directory) + 1 if directory else 0
+    files: dict[str, Entry] = {}
+    dirs: dict[str, datetime | None] = {}
+    for meta in metas:
+        rest = meta.path[offset:]
+        name, sep, _ = rest.partition("/")
+        if sep:
+            latest = dirs.get(name)
+            if latest is None or (meta.updated_at and meta.updated_at > latest):
+                dirs[name] = meta.updated_at
+        else:
+            files[name] = Entry(
+                path=meta.path,
+                name=name,
+                type="file",
+                size=meta.size,
+                modified_time=meta.updated_at,
+            )
+    entries = list(files.values()) + [
+        Entry(child_path(directory, name), name, "dir", None, modified)
+        for name, modified in dirs.items()
+        if name not in files
+    ]
+    return sorted(entries, key=lambda e: e.name)
+
+
+async def list_all() -> list[Entry]:
+    """すべてのノート（ファイルだけ）をパス順に返す（ダッシュボードのツリー用）。"""
+    return [
+        Entry(m.path, m.path.rsplit("/", 1)[-1], "file", m.size, m.updated_at)
+        for m in await _repo().list_under("")
+    ]
+
+
+async def exists(path: Any) -> bool:
+    """ファイルかディレクトリがあれば True（空文字の最上位は常に True）。
+
+    Raises:
+        NotesPathError: パスの形式が正しくない場合。
+    """
+    normalized = normalize_path(path, allow_empty=True)
+    if not normalized:
+        return True
+    repo = _repo()
+    return await repo.get_meta(normalized) is not None or await repo.has_children(normalized)
+
+
+async def search(
+    path: Any,
+    query: str,
+    max_results: int = MAX_SEARCH_RESULTS,
+) -> tuple[list[SearchMatch], bool]:
+    """配下のノートから `query` を含む行を探す（部分一致・大文字小文字を区別しない）。
+
+    Args:
+        path: 起点のディレクトリかファイル（空文字は全体）。
+        query: 探す文字列（前後の空白を除く。空なら呼び出し側で弾く）。
+        max_results: 返す行の上限。
+
+    Returns:
+        該当行（パス順・行番号順）と、上限で切り詰めたか。
+
+    Raises:
+        NotesPathError: パスの形式が正しくない場合。
+    """
+    directory = normalize_path(path, allow_empty=True)
+    needle = query.strip()
+    folded = needle.casefold()
+    notes, truncated = await _repo().search(directory, needle, MAX_SEARCH_NOTES)
+    matches: list[SearchMatch] = []
+    for note in notes:
+        for number, line in enumerate(note.content.splitlines(), start=1):
+            if folded in line.casefold():
+                if len(matches) >= max_results:
+                    return matches, True
+                matches.append(SearchMatch(note.path, number, line[:MAX_LINE_CHARS]))
+    return matches, truncated
+
+
+async def delete_note(path: Any) -> None:
+    """ノートを削除する（消す前の内容は直前の版に残る）。
+
+    Raises:
+        NotesPathError: パスの形式が正しくない場合。
+        NotesNotFoundError: 無い場合。
+    """
+    if not await _repo().delete(normalize_path(path), _history_ttl(load_config())):
+        raise NotesNotFoundError(NOT_FOUND_MESSAGE)
+
+
+async def get_previous_version(path: Any) -> NoteVersion:
+    """直前の版を返す。
+
+    Raises:
+        NotesPathError: パスの形式が正しくない場合。
+        NotesNotFoundError: 直前の版が無い場合。
+    """
+    version = await _repo().get_version(normalize_path(path))
+    if version is None:
+        raise NotesNotFoundError("直前の版はありません。")
+    return version
+
+
+async def restore_previous_version(path: Any) -> None:
+    """直前の版へ戻す（戻す前の内容は新しい「直前の版」になる）。
+
+    Raises:
+        NotesPathError: パスの形式が正しくない・ディレクトリになっている・親がファイルの場合。
+        NotesNotFoundError: 直前の版が無い場合。
+    """
+    normalized = normalize_path(path)
+    repo = _repo()
+    for parent in _ancestors(normalized):
+        if await repo.get_meta(parent) is not None:
+            raise NotesPathError(PARENT_IS_FILE_MESSAGE.format(parent=parent))
+    if await repo.has_children(normalized):
+        raise NotesPathError(WRITE_TO_DIR_MESSAGE)
+    if not await repo.restore(normalized, _history_ttl(load_config())):
+        raise NotesNotFoundError("直前の版はありません。")
