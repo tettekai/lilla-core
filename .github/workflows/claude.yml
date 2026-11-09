@@ -3,7 +3,7 @@ name: Claude Code
 # 起動経路は 2 つ。
 #   - auto レール（Issue）: Issue の実装を Claude Code に任せる。
 #       * auto-now ラベルを付けた瞬間に、その Issue を対象に起動する
-#       * 毎朝（schedule）、auto が付いていて未着手の Issue を古い順に 1 件だけ起動する
+#       * 毎日深夜（schedule）、auto が付いていて未着手の Issue を古い順に 1 件だけ起動する
 #       * workflow_dispatch（issue_number 指定）で手動でも起動できる（再実行・動作確認用）
 #     Claude はプロンプト付き（agent モード）で動き、develop から切った作業ブランチへの
 #     push と develop 向け PR の作成まで行う。以前は Grok Bot が @claude コメントで
@@ -26,8 +26,10 @@ on:
   pull_request_review:
     types: [submitted]
   schedule:
-    # 毎日 6:00 JST。GitHub の schedule は遅れることがある
-    - cron: "0 21 * * *"
+    # 毎日 2:17 JST（cron は UTC。17:17 UTC = 翌 2:17 JST）。起床後にレビューできるよう
+    # 深夜に回す（前夜はまだ起きていてノイズになる）。GitHub の schedule は毎時 0 分に
+    # 集中して遅れやすいため、0 分を避けて中途半端な分にしている
+    - cron: "17 17 * * *"
   workflow_dispatch:
     inputs:
       issue_number:
@@ -487,7 +489,7 @@ jobs:
         run: pip install -e ".[dev]"
 
       # auto レール: develop から作業ブランチを切り、着手済みの印（auto-started）を
-      # 付ける。実行前に付けるのは、失敗しても翌朝の schedule が同じ Issue を拾い
+      # 付ける。実行前に付けるのは、失敗しても翌日の schedule が同じ Issue を拾い
       # 直して失敗を繰り返さないようにするため。auto-now でのやり直しなら、前回の
       # 失敗で付いた auto-halted を外す（gate は通過済み）
       - name: Prepare auto rail branch
