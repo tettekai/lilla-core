@@ -92,6 +92,13 @@ tools:
 - `supported_client_type` による絞り込みは展開のあとで行います。セットに種別の違う
   ツールが混ざっていても起動は失敗せず、実行時にそのクライアント種別で使えるものだけが
   渡ります
+- LLM が返したツール呼び出しは、その会話で LLM に渡したツール（セットの展開と
+  `supported_client_type` の絞り込みを経たもの）に含まれるものだけを実行します。
+  ロード済みでも渡していないツールの名前を LLM が返した場合（名前の取り違えや
+  プロンプトインジェクションで指定させられた場合など）は実行せず、
+  「ツール '{名前}' はこの会話で使えません」というエラーを結果として LLM に返し、
+  WARNING ログを出します。`llm_expert` の `available_tools` でも同じです。
+  ツールの中から `call_tool` で別のツールを呼ぶ入れ子の呼び出しはこの制限を受けません
 
 スケジュール LLM（[`available_tools`](scheduled-llm.md#ツールの許可リストavailable_tools)）や
 [`llm_expert`](#llm_expert専門家エージェント) の `available_tools` からは、`$main` や

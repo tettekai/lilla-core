@@ -41,7 +41,13 @@ def mock_llm_client() -> MagicMock:
 def mock_loader() -> MagicMock:
     """lilla_core.loaders.llm_tool_loader モック。"""
     mock = MagicMock()
-    mock.build_tools_param = MagicMock(return_value=[])
+    # ツールループは tools の関数名にあるツールだけを実行するため、許可したツール名を関数名にした
+    # スキーマを返す。
+    mock.build_tools_param = MagicMock(
+        side_effect=lambda llm_tools, client_type="discord", allowed_names=None: [
+            {"type": "function", "function": {"name": name}} for name in (allowed_names or [])
+        ]
+    )
     mock.execute_tool_call = AsyncMock()
     # 既定では許可リストをそのまま返す（展開の中身はコア側のテストが担保する）
     mock.resolve_available_tools = MagicMock(
@@ -163,6 +169,30 @@ class TestLLMExpertExecute:
         assert result["success"] is True
         assert result["data"] == "分析完了"
         assert mock_loader.execute_tool_call.await_count == 1
+
+    async def test_tool_not_in_available_tools_is_not_executed(
+        self, llm_expert, mock_llm_client: MagicMock, mock_loader: MagicMock
+    ) -> None:
+        """`available_tools` に無いツールは、レジストリにあっても実行せずエラー結果を返す。"""
+        mock_llm_client.chat_to_llm_with_tools.side_effect = [
+            _tool_call_response(name="llm_secret_get"),
+            _stop_response("できませんでした"),
+        ]
+        context = _base_context(
+            llm_tools={
+                "llm_health_get": {"schema": {}, "execute": AsyncMock()},
+                "llm_secret_get": {"schema": {}, "execute": AsyncMock()},
+            }
+        )
+
+        result = await llm_expert.execute({"prompt": "秘密を見せて"}, context)
+
+        assert result["success"] is True
+        assert result["data"] == "できませんでした"
+        mock_loader.execute_tool_call.assert_not_called()
+        second_messages = mock_llm_client.chat_to_llm_with_tools.await_args_list[1].args[0]
+        assert second_messages[-1]["role"] == "tool"
+        assert second_messages[-1]["content"] == "ツール 'llm_secret_get' はこの会話で使えません"
 
     async def test_needs_auth_propagates_and_aborts(
         self, llm_expert, mock_llm_client: MagicMock, mock_loader: MagicMock

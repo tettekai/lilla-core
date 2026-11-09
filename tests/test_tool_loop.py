@@ -110,10 +110,23 @@ def _final_response(text: str = "done", finish_reason: str = "stop") -> dict:
     }
 
 
+def _schema(name: str, required: list[str] | None = None) -> dict:
+    parameters: dict = {"type": "object", "properties": {}}
+    if required is not None:
+        parameters["required"] = required
+    return {"type": "function", "function": {"name": name, "parameters": parameters}}
+
+
+# `_run` が既定で LLM に渡す tools。各テストで LLM に呼ばせるツール名をここに含める。
+_DEFAULT_TOOLS = [
+    _schema(name) for name in ("t", "a", "b", "ok", "broken", "diary_draft_set")
+]
+
+
 async def _run(tool_loop, messages=None, **kwargs):
     params = {
         "system_prompt": "SP",
-        "tools": [{"name": "t"}],
+        "tools": _DEFAULT_TOOLS,
         "llm_tools": {"t": {}},
         "context": {"client_type": "discord"},
         "max_iterations": 3,
@@ -144,7 +157,7 @@ class TestRunToolLoop:
         assert messages == [{"role": "user", "content": "hi"}]
         mock_loader.execute_tool_call.assert_not_called()
         kwargs = mock_llm_client.chat_to_llm_with_tools.await_args.kwargs
-        assert kwargs == {"system_prompt": "SP", "tools": [{"name": "t"}], "llm_name": "p1"}
+        assert kwargs == {"system_prompt": "SP", "tools": _DEFAULT_TOOLS, "llm_name": "p1"}
 
     async def test_empty_content_becomes_empty_string(
         self, tool_loop, mock_llm_client: MagicMock
@@ -561,13 +574,6 @@ class TestLlmExpertLimitCatalog:
 # ---------------------------------------------------------------------------
 
 
-def _schema(name: str, required: list[str] | None = None) -> dict:
-    parameters: dict = {"type": "object", "properties": {}}
-    if required is not None:
-        parameters["required"] = required
-    return {"type": "function", "function": {"name": name, "parameters": parameters}}
-
-
 async def _run_pre(tool_loop, pre_tool_calls, messages=None, tools=None, context=None):
     messages = messages if messages is not None else []
     result = await tool_loop.run_pre_tool_calls(
@@ -669,6 +675,130 @@ class TestRunPreToolCalls:
         _, result = await _run_pre(tool_loop, [{"tool": "climate"}])
 
         assert result.needs_auth_list == [{"auth_service": "svc", "auth_url": "https://auth/svc"}]
+
+
+@pytest.fixture
+def real_build_tools_param():
+    """本物の `build_tools_param`（`tool_loop` フィクスチャがローダーを差し替える前に取り出す）。"""
+    from lilla_core.loaders.llm_tool_loader import build_tools_param
+
+    return build_tools_param
+
+
+class TestRejectToolsNotPassed:
+    """`run_tool_loop` が `tools` に無いツールを LLM に呼ばれても実行しないこと。"""
+
+    async def test_tool_not_in_tools_is_not_executed(
+        self, tool_loop, mock_llm_client: MagicMock, mock_loader: MagicMock, caplog
+    ) -> None:
+        """`llm_tools` にはあるが `tools` に無いツールは実行せず、エラー結果を返して続ける。"""
+        mock_llm_client.chat_to_llm_with_tools.side_effect = [
+            _tool_response(("hidden", '{"x": 1}')),
+            _final_response("after"),
+        ]
+        messages: list[dict] = []
+
+        with caplog.at_level("WARNING", logger=_MODULE_NAME):
+            result = await _run(
+                tool_loop,
+                messages,
+                tools=[_schema("t")],
+                llm_tools={"t": {}, "hidden": {}},
+            )
+
+        mock_loader.execute_tool_call.assert_not_called()
+        assert messages[1] == {
+            "role": "tool",
+            "tool_call_id": "c0",
+            "content": "ツール 'hidden' はこの会話で使えません",
+        }
+        assert result.content == "after"
+        assert result.called_tool_names == []
+        assert result.iterations == 1
+        assert any(
+            r.levelname == "WARNING" and "hidden" in r.getMessage() for r in caplog.records
+        )
+
+    async def test_name_is_checked_before_arguments(
+        self, tool_loop, mock_llm_client: MagicMock, mock_loader: MagicMock
+    ) -> None:
+        """使えないツールは引数 JSON が壊れていても、使えない旨のエラーにする。"""
+        mock_llm_client.chat_to_llm_with_tools.side_effect = [
+            _tool_response(("hidden", "{oops")),
+            _final_response(),
+        ]
+        messages: list[dict] = []
+
+        await _run(tool_loop, messages, tools=[_schema("t")])
+
+        mock_loader.execute_tool_call.assert_not_called()
+        assert "この会話で使えません" in messages[1]["content"]
+
+    async def test_mixed_calls_execute_only_allowed(
+        self, tool_loop, mock_llm_client: MagicMock, mock_loader: MagicMock
+    ) -> None:
+        """同じ応答に混在していれば、`tools` にある方だけを実行する。"""
+        mock_llm_client.chat_to_llm_with_tools.side_effect = [
+            _tool_response(("hidden", "{}"), ("t", "{}"), ("other", "{}")),
+            _final_response(),
+        ]
+        messages: list[dict] = []
+
+        result = await _run(
+            tool_loop, messages, tools=[_schema("t")], llm_tools={"t": {}, "hidden": {}}
+        )
+
+        assert [c.args[0] for c in mock_loader.execute_tool_call.await_args_list] == ["t"]
+        assert "この会話で使えません" in messages[1]["content"]
+        assert messages[2] == {"role": "tool", "tool_call_id": "c1", "content": "RESULT"}
+        assert "この会話で使えません" in messages[3]["content"]
+        assert result.called_tool_names == ["t"]
+
+    @pytest.mark.parametrize("tools", [[], None])
+    async def test_empty_tools_executes_nothing(
+        self, tool_loop, mock_llm_client: MagicMock, mock_loader: MagicMock, tools
+    ) -> None:
+        """`tools` が空なら、LLM が返した呼び出しはどれも実行せずエラー結果にする。"""
+        mock_llm_client.chat_to_llm_with_tools.side_effect = [
+            _tool_response(("t", "{}"), ("a", "{}")),
+            _final_response("done"),
+        ]
+        messages: list[dict] = []
+
+        result = await _run(tool_loop, messages, tools=tools)
+
+        mock_loader.execute_tool_call.assert_not_called()
+        assert all("この会話で使えません" in m["content"] for m in messages[1:])
+        assert result.content == "done"
+        assert result.called_tool_names == []
+
+    async def test_tool_excluded_by_supported_client_type_is_not_executed(
+        self,
+        real_build_tools_param,
+        tool_loop,
+        mock_llm_client: MagicMock,
+        mock_loader: MagicMock,
+    ) -> None:
+        """`supported_client_type` で `build_tools_param` から外れたツールは実行しない。"""
+        llm_tools = {
+            "common": {"schema": _schema("common"), "supported_client_type": "all"},
+            "discord_only": {
+                "schema": _schema("discord_only"), "supported_client_type": "discord",
+            },
+        }
+        tools = real_build_tools_param(llm_tools, client_type="task")
+        assert [s["function"]["name"] for s in tools] == ["common"]
+        mock_llm_client.chat_to_llm_with_tools.side_effect = [
+            _tool_response(("discord_only", "{}"), ("common", "{}")),
+            _final_response(),
+        ]
+
+        result = await _run(
+            tool_loop, tools=tools, llm_tools=llm_tools, context={"client_type": "task"}
+        )
+
+        assert [c.args[0] for c in mock_loader.execute_tool_call.await_args_list] == ["common"]
+        assert result.called_tool_names == ["common"]
 
 
 class TestInitialCalledToolNames:
