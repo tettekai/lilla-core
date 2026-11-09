@@ -1,0 +1,8 @@
+# Strings shown by the notes extension (English).
+#
+# The only top-level key is the extension name `notes` (core locale catalog rule).
+# When adding a string, add the same key to ja.yaml too.
+
+notes:
+  tool:
+    unexpected_error: "Unexpected error in notes tool {tool}"

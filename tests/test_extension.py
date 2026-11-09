@@ -1638,3 +1638,87 @@ class TestHttpRouteContributions:
         served = {(route.method, route.path) for route in http_server._CORE_ROUTES}
         assert served == set(ext_module.CORE_HTTP_ROUTES)
 
+
+
+# ---------------------------------------------------------------------------
+# TestFileStorageContributions
+# ---------------------------------------------------------------------------
+
+
+class _MemoryStorage:
+    """テスト用の `FileStorage` を作るためのファクトリ（クラスは都度作る）。"""
+
+    @staticmethod
+    def make():
+        """何もしない `FileStorage` のインスタンスを返す。"""
+        from lilla_core.core.file_storage import FileStorage, FileWriteResult
+
+        class _Storage(FileStorage):
+            async def read(self, path):
+                return ""
+
+            async def write(self, path, content, mode="overwrite"):
+                return FileWriteResult(path=path, created=True)
+
+            async def list(self, path=""):
+                return []
+
+            async def exists(self, path):
+                return False
+
+        return _Storage()
+
+
+class TestFileStorageContributions:
+    """`Extension.file_storages()` の集約と検証。"""
+
+    def test_default_is_empty(self) -> None:
+        """既定では何も申告しない。"""
+        assert Extension().file_storages() == {}
+        ext_module.set_extensions([])
+        assert ext_module.list_file_storages() == {}
+        assert ext_module.get_file_storage("notes") is None
+
+    def test_storages_are_registered_in_load_order(self, make_extension) -> None:
+        """申告した保存先を名前で引け、一覧はロード順になる。"""
+        a = _MemoryStorage.make()
+        b = _MemoryStorage.make()
+        ext_module.set_extensions([
+            make_extension("ext-b", file_storages={"storage-b": b}),
+            make_extension("ext-a", file_storages={"storage-a": a}),
+        ])
+
+        assert ext_module.get_file_storage("storage-a") is a
+        assert list(ext_module.list_file_storages()) == ["storage-b", "storage-a"]
+
+    def test_duplicate_names_are_rejected(self, make_extension) -> None:
+        """拡張どうしで名前が重なればロード時に落とす。"""
+        with pytest.raises(ValueError, match="file storage"):
+            ext_module.set_extensions([
+                make_extension("ext-a", file_storages={"same": _MemoryStorage.make()}),
+                make_extension("ext-b", file_storages={"same": _MemoryStorage.make()}),
+            ])
+
+    @pytest.mark.parametrize("name", ["Notes", "a/b", "", "notes_x"])
+    def test_invalid_names_are_rejected(self, make_extension, name: str) -> None:
+        """名前は拡張名と同じ形でなければならない。"""
+        with pytest.raises(ValueError, match="must match"):
+            ext_module.set_extensions([
+                make_extension("ext-a", file_storages={name: _MemoryStorage.make()})
+            ])
+
+    def test_non_storage_values_are_rejected(self, make_extension) -> None:
+        """`FileStorage` 以外の値は落とす。"""
+        with pytest.raises(TypeError, match="FileStorage"):
+            ext_module.set_extensions([
+                make_extension("ext-a", file_storages={"notes": object()})
+            ])
+
+    def test_failed_registration_keeps_previous(self, make_extension) -> None:
+        """検証に失敗したら前の登録を残す。"""
+        storage = _MemoryStorage.make()
+        ext_module.set_extensions([make_extension("ext-a", file_storages={"keep": storage})])
+        with pytest.raises(TypeError):
+            ext_module.set_extensions([make_extension("ext-b", file_storages={"x": 1})])
+
+        assert ext_module.get_file_storage("keep") is storage

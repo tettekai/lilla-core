@@ -33,6 +33,7 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [判定ヘルパー（Jev）](jev.md) — 任意の `lilla_core.tool_support.jev`
 - [Google OAuth / Calendar / Drive（公式拡張パック）](google.md) — `lilla_core.extensions` の同梱拡張
 - [ローカルのファイル読み書き（公式拡張パック）](files.md) — `lilla_core.extensions.files`
+- [ノート置き場（公式拡張パック）](notes.md) — `lilla_core.extensions.notes`
 
 ## 拡張
 
@@ -43,6 +44,7 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [拡張のタスクの上書き](extension-task-override.md) — `extension_overrides` の `tasks`（`schedule` / `enabled`）
 - [画面で管理する拡張の設定](extension-settings.md) — `settings_model()` と `extension_settings`
 - [ダッシュボードへの差し込み](extension-dashboard.md)
+- [保存先の共通インタフェース（FileStorage）](file-storage.md) — `file_storages()` と `get_file_storage()`
 - [拡張のテストの書き方](extension-testing.md) — `lilla_core.testing`
 
 ## リポジトリ
