@@ -152,5 +152,15 @@ class FilesExtension(Extension):
         """エラー通知に出す文言のカタログ（このパッケージの `locales/`）を返す。"""
         return [Path(__file__).resolve().parent / "locales"]
 
+    def file_storages(self) -> dict:
+        """ホワイトリストのディレクトリを保存先 `files` として申告する。
+
+        論理パスは LLM ツールと同じ「ディレクトリの名前/相対パス」。書き込み可能な
+        ディレクトリが無ければ `read_only` になる。
+        """
+        from lilla_core.extensions.files.storage import FilesStorage
+
+        return {"files": FilesStorage()}
+
 
 extension = FilesExtension()

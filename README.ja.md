@@ -42,7 +42,7 @@ python -m lilla_core.bot
 
 公式拡張パックとして Google OAuth（`lilla_core.extensions.google_oauth`）・Google Calendar
 （`lilla_core.extensions.google_calendar`）・Google Drive / Sheets（`lilla_core.extensions.google_drive`）・
-ローカルのファイル読み書き（`lilla_core.extensions.files`）を同梱しています。どれも `LILLA_EXTENSIONS` に並べたときだけ読み込まれます。
+ローカルのファイル読み書き（`lilla_core.extensions.files`）・MongoDB のノート置き場（`lilla_core.extensions.notes`）を同梱しています。どれも `LILLA_EXTENSIONS` に並べたときだけ読み込まれます。
 
 ## 任意の判定ヘルパー（Jev）
 

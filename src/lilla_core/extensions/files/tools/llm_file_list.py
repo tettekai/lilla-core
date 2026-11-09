@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import fnmatch
 import logging
-import os
 
 from lilla_core.tool_support.tool_result import tool_error, tool_success
 
@@ -65,12 +64,10 @@ async def execute(input: dict, context: dict) -> dict:
     from lilla_core.extensions.files.access import (
         Access,
         FileAccessError,
-        access_for,
-        child_logical,
-        is_within,
         resolve_target,
         split_logical_path,
     )
+    from lilla_core.extensions.files.storage import NO_ROOTS_MESSAGE, list_dir
     from lilla_core.extensions.files.tool_support import format_mtime, run_file_operation
 
     tool_name = SCHEMA["function"]["name"]
@@ -82,7 +79,7 @@ async def execute(input: dict, context: dict) -> dict:
         """一覧を組み立てる（スレッドで実行する）。"""
         segments = split_logical_path(input.get("path"))
         if not roots:
-            raise FileAccessError("アクセスが許可されたディレクトリがありません。")
+            raise FileAccessError(NO_ROOTS_MESSAGE)
 
         if not segments:
             entries = [
@@ -96,40 +93,18 @@ async def execute(input: dict, context: dict) -> dict:
             )
 
         target = resolve_target(roots, segments)
-        if not os.path.isdir(target.real):
-            if os.path.exists(target.real):
-                raise FileAccessError("ディレクトリではありません。")
-            raise FileNotFoundError(target.real)
-
-        root_real = target.root.real_path()
+        items, truncated = list_dir(roots, target, pattern, MAX_LIST_ENTRIES)
         entries: list[dict] = []
-        truncated = False
-        with os.scandir(target.real) as it:
-            items = sorted(it, key=lambda e: e.name)
         for item in items:
-            if pattern is not None and not fnmatch.fnmatch(item.name, pattern):
-                continue
-            real = os.path.realpath(item.path)
-            if not is_within(root_real, real):
-                continue
-            if len(entries) >= MAX_LIST_ENTRIES:
-                truncated = True
-                break
-            try:
-                is_dir = item.is_dir()
-                stat = item.stat()
-            except OSError:
-                # 壊れたリンクなど。一覧から外す。
-                continue
             entry = {
-                "path": child_logical(target.logical, item.name),
+                "path": item.path,
                 "name": item.name,
-                "type": "dir" if is_dir else "file",
-                "modified_time": format_mtime(stat.st_mtime),
-                "writable": access_for(roots, real) is Access.WRITE,
+                "type": "dir" if item.is_dir else "file",
+                "modified_time": format_mtime(item.mtime),
+                "writable": item.writable,
             }
-            if not is_dir:
-                entry["size"] = stat.st_size
+            if item.size is not None:
+                entry["size"] = item.size
             entries.append(entry)
 
         data = {

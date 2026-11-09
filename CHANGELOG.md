@@ -7,6 +7,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- テキストファイルの保存先の共通インタフェース `lilla_core.core.file_storage.FileStorage` を追加した（#313）。
+  - `read` / `write`（`mode` は `create` / `overwrite` / `append`）/ `list` / `exists` と `read_only` を持ち、失敗は
+    `FileStorageError` の派生（パス・不在・権限・既存・テキストでない）で分かる
+  - `Extension` に `file_storages()`（「名前 → `FileStorage`」。既定は空）を追加した。名前は拡張名と同じ形で、拡張どうしの
+    重複・`FileStorage` 以外の値はロード時に落とす。利用側は `get_file_storage(name)` / `list_file_storages()` で引く
+  - `files` 拡張が、ホワイトリストのディレクトリを保存先 `files` として申告するようにした（ツールと同じ検証を通る）
+- 公式拡張パックに、MongoDB に保存する汎用のノート置き場 `notes` 拡張（`lilla_core.extensions.notes`）を追加した（#313）。
+  - `files` と同じ形の LLM ツール `llm_notes_list` / `llm_notes_read` / `llm_notes_write` / `llm_notes_search`（YAML を置いた
+    ものだけ有効）と、ダッシュボードの「ノート」画面（ツリー・閲覧・検索・編集・削除・直前の版への復元）を持つ
+  - 保存先 `notes` として `FileStorage` を申告する
+  - 上書き・削除の直前の版を `notes_history` に TTL 付きで 1 件残す。設定は任意の `extensions.notes`
+    （`max_content_chars` / `max_read_chars` / `history_retention_days`）
+
 ### Changed
 
 - LLM が返したツール呼び出しは、その会話で LLM に渡したツール（`tools.sets` / `allowed_tool_names` の展開と
