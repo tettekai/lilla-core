@@ -119,7 +119,7 @@ function renderTree(node) {
     list.append(h('li', {
       class: state.selected === file.path ? 'selected' : '',
       title: file.path,
-      onclick: (ev) => { ev.stopPropagation(); openNote(file.path); },
+      onclick: (ev) => { ev.stopPropagation(); if (confirmDiscard()) openNote(file.path); },
     }, h('span', { class: 'notes-label' }, file.name)));
   }
   return list;
@@ -130,10 +130,10 @@ function renderSide() {
   const side = h('div', { class: 'notes-side' },
     h('form', {
       class: 'notes-row',
-      onsubmit: (ev) => { ev.preventDefault(); runSearch(search.value); },
+      onsubmit: (ev) => { ev.preventDefault(); if (confirmDiscard()) runSearch(search.value); },
     }, search, h('button', { type: 'submit' }, '検索')),
     h('div', { class: 'notes-row' },
-      h('button', { onclick: () => startNew() }, '新規作成'),
+      h('button', { onclick: () => { if (confirmDiscard()) startNew(); } }, '新規作成'),
       h('button', { onclick: () => loadFiles() }, '再読み込み')),
   );
   if (state.items === null) side.append(h('div', { class: 'notes-empty' }, '読み込み中…'));
@@ -162,8 +162,14 @@ function renderMain() {
     );
   } else if (view.kind === 'edit' || view.kind === 'new') {
     const isNew = view.kind === 'new';
-    const pathInput = h('input', { type: 'text', placeholder: 'diary/2026-11-08.md', value: view.path });
-    const text = h('textarea', {});
+    // 再描画（ツリーの開閉・再読み込みなど）で入力が消えないよう、入力のたびに状態へ書き戻す
+    const pathInput = h('input', {
+      type: 'text',
+      placeholder: 'diary/2026-11-08.md',
+      value: view.path,
+      oninput: () => { view.path = pathInput.value; },
+    });
+    const text = h('textarea', { oninput: () => { view.content = text.value; } });
     text.value = view.content;
     main.append(
       isNew ? h('div', { class: 'notes-row' }, pathInput) : h('div', { class: 'notes-title' }, view.path),
@@ -172,7 +178,12 @@ function renderMain() {
         h('button', {
           onclick: () => saveNote(isNew ? pathInput.value : view.path, text.value, isNew),
         }, '保存'),
-        h('button', { onclick: () => (isNew ? showEmpty() : openNote(view.path)) }, 'キャンセル')),
+        h('button', {
+          onclick: () => {
+            if (!confirmDiscard()) return;
+            if (isNew) showEmpty(); else openNote(view.path);
+          },
+        }, 'キャンセル')),
     );
   } else if (view.kind === 'history') {
     const version = view.version;
@@ -208,6 +219,20 @@ function render() {
 function setError(error) {
   if (!state) return;
   state.error = error ? (error.message || String(error)) : '';
+}
+
+/** 編集中・新規作成中に、開いた時点から変わった入力があれば true。 */
+function hasUnsavedChanges() {
+  const view = state && state.view;
+  if (!view || (view.kind !== 'edit' && view.kind !== 'new')) return false;
+  return view.path !== view.initialPath || view.content !== view.initialContent;
+}
+
+/** 未保存の変更があれば、捨ててよいかを確かめる（無ければ確かめずに true）。 */
+function confirmDiscard() {
+  if (!hasUnsavedChanges()) return true;
+  // eslint-disable-next-line no-alert
+  return window.confirm('保存していない変更があります。破棄しますか？');
 }
 
 function showEmpty() {
@@ -246,14 +271,20 @@ async function openNote(path, keepMissing = false) {
 
 function startEdit(note) {
   setError(null);
-  state.view = { kind: 'edit', path: note.path, content: note.content };
+  state.view = {
+    kind: 'edit',
+    path: note.path,
+    content: note.content,
+    initialPath: note.path,
+    initialContent: note.content,
+  };
   render();
 }
 
 function startNew() {
   setError(null);
   state.selected = null;
-  state.view = { kind: 'new', path: '', content: '' };
+  state.view = { kind: 'new', path: '', content: '', initialPath: '', initialContent: '' };
   render();
 }
 
@@ -333,6 +364,13 @@ async function runSearch(query) {
   render();
 }
 
+/** タブを閉じる・再読み込みするときも、未保存の変更があればブラウザに確かめさせる。 */
+function onBeforeUnload(ev) {
+  if (!hasUnsavedChanges()) return;
+  ev.preventDefault();
+  ev.returnValue = '';
+}
+
 export function mount(el, ctx) {
   root = el;
   state = {
@@ -344,11 +382,13 @@ export function mount(el, ctx) {
     error: '',
     view: { kind: 'empty' },
   };
+  window.addEventListener('beforeunload', onBeforeUnload);
   render();
   loadFiles();
 }
 
 export function unmount() {
+  window.removeEventListener('beforeunload', onBeforeUnload);
   if (root) root.replaceChildren();
   root = null;
   state = null;
