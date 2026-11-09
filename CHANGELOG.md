@@ -22,6 +22,16 @@
   - 上書き・削除の直前の版を `notes_history` に TTL 付きで 1 件残す。設定は任意の `extensions.notes`
     （`max_content_chars` / `max_read_chars` / `history_retention_days`）
 
+### Changed
+
+- LLM が返したツール呼び出しは、その会話で LLM に渡したツール（`tools.sets` / `allowed_tool_names` の展開と
+  `supported_client_type` の絞り込みを経た tools パラメータ。`llm_expert` では `available_tools`）に含まれるものだけを
+  実行するようにした（#290）。これまでは読み込んだ全ツールから名前で探して実行していたため、渡していないツールの名前を
+  LLM が返す（取り違えやプロンプトインジェクション）と実行されていた。含まれない呼び出しは引数の解釈より先に弾き、
+  `execute_tool_call` を呼ばずに「ツール '{名前}' はこの会話で使えません」のエラーを tool メッセージで返して WARNING ログを
+  出す（ループは続け、`called_tool_names` には含めない）。拡張が `run_tool_loop` を直接使う場合も同じで、`tools` に
+  渡していないツールは実行されない。ツールの中から `call_tool` で別のツールを呼ぶ入れ子の呼び出しは対象外
+
 ## [0.8.0] - 2026-11-08
 
 ### Added
