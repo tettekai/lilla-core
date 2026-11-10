@@ -101,6 +101,10 @@ Bot の発言へのリアクションの追加・削除を、raw 系のイベン
   絞ります
 - `count_reactions()`: 絵文字ごとの件数を全期間で集計し、`{"emoji", "count"}`（カスタム
   絵文字は `emoji_id` も）を件数の多い順で返します。今の一覧に出ていない古い絵文字も拾えます
+- `get_reactions(conversation_id)`: 会話履歴 1 件の今の `reactions` を `list_for_client()` と
+  同じ要素の形で返します（無ければ空リスト）。重複した追加や付いていない絵文字の削除のように
+  フックが呼ばれない操作のあとに、今の状態を返したいときに使います。会話履歴が無ければ
+  `ConversationNotFoundError`、`conversation_id` が ObjectId として不正な形式なら `ValueError` を送出します
 
 リアクション付きのメッセージは全体のごく一部なので、`reactions` を持つドキュメントだけを
 対象にした部分インデックス（`reactions_time_id`）を起動時に作り、`list_reacted()` と

@@ -565,6 +565,28 @@ class ConversationRepository:
             )
         return reactions
 
+    async def get_reactions(self, conversation_id: str) -> list[dict]:
+        """会話履歴 1 件の今の `reactions` を返す。
+
+        Args:
+            conversation_id: 対象の会話履歴の `_id`（文字列）。
+
+        Returns:
+            `reactions`（`list_for_client` と同じ要素の形）。無い・壊れている場合は空リスト。
+
+        Raises:
+            ValueError: `conversation_id` が ObjectId として不正な形式のとき。
+            ConversationNotFoundError: 対象の会話履歴が存在しないとき。
+        """
+        if not isinstance(conversation_id, str) or not ObjectId.is_valid(conversation_id):
+            raise ValueError("conversation_id is not a valid ObjectId")
+        doc = await self._collection.find_one(
+            {"_id": ObjectId(conversation_id)}, {"_id": 0, "reactions": 1}
+        )
+        if doc is None:
+            raise ConversationNotFoundError("conversation was not found")
+        return _reactions_of(doc)
+
     async def _ensure_exists(self, oid: ObjectId) -> None:
         """`_id` の会話履歴が無ければ `ConversationNotFoundError` を送出する。"""
         if await self._collection.find_one({"_id": oid}, {"_id": 1}) is None:

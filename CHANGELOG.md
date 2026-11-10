@@ -9,6 +9,10 @@
 
 ### Added
 
+- 会話履歴 1 件の今の `reactions` を返す `ConversationRepository.get_reactions(conversation_id)` を追加した（#329）。
+  会話履歴が無ければ `ConversationNotFoundError`、`conversation_id` が ObjectId として不正な形式なら `ValueError` を送出する。
+  利用側がリポジトリの非公開属性 `_collection` を読まずに済むようにするため
+
 - 会話履歴のメッセージに付いたリアクションを保存し、LLM のコンテキストに含めるようにした（#325）。
   - `conversations` の各ドキュメントに `reactions` 配列（`emoji`・カスタム絵文字なら `emoji_id`・`source`・`reacted_at`）を
     保存する。同じメッセージに同じ絵文字は 1 つまで。`message.content` には混ぜない
