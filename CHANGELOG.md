@@ -48,6 +48,13 @@
   出す（ループは続け、`called_tool_names` には含めない）。拡張が `run_tool_loop` を直接使う場合も同じで、`tools` に
   渡していないツールは実行されない。ツールの中から `call_tool` で別のツールを呼ぶ入れ子の呼び出しは対象外
 
+### Removed
+
+- PR のマージを外部の Webhook へ通知する GitHub Actions workflow `notify-grok-bot-merged.yml` を削除した（#330）。
+  受け取り側が GitHub の PR マージイベントを直接受け取る方式に移ったため。Secrets
+  `GROK_BOT_CORE_MERGED_WEBHOOK_URL` / `GROK_BOT_CORE_MERGED_WEBHOOK_AUTHORIZATION` も不要になった。
+  リリース通知（`release.yml`）は変わらない
+
 ## [0.8.0] - 2026-11-08
 
 ### Added
