@@ -268,13 +268,37 @@ Fixes #123
 
 Write the PR title and body in English. Keep it short.
 
+PR 本文は `.github/pull_request_template.md` の形で書く（`gh pr create --body` で作るときも同じ。
+`--body` ではテンプレートが自動で適用されないため、見出しを自分で揃える）。マージ後の確認項目は
+`### Post-merge manual checks` から機械的に拾う（日本語へ訳して本番確認用の TODO リストへ写す）ため、
+見出しの文言を変えない。
+
 ```
 ## Summary
 - what changed, in one or two bullets
 
+## Related issues
+Closes #123
+
 ## Test plan
 - [x] pytest tests/
+
+## Acceptance criteria
+
+### Post-merge manual checks
+- [ ] a check a person does after merge, or "None"
 ```
+
+- `Closes #N` / `Fixes #N`（キーワードの選び方は上の「関連 Issue のクローズ」と同じ）は `## Related issues` に書く。
+  対応する Issue が無ければ `Closes` の行は消す
+- 関連 Issue の受け入れ条件のうち、マージ後に人が確かめる必要がある項目を `### Post-merge manual checks`
+  にチェックリスト（`- [ ]`）で写す。Issue に受け入れ条件が無い場合も、確認すべき項目があれば書く。
+  該当する項目が無ければ `None` と書く
+- 本番環境でしか確かめられない項目（本番での動作確認、`lilla-agent` との同時デプロイ、手作業での設定変更など）は、
+  必ず `### Post-merge manual checks` に入れる
+- テストや CI で確かめられる項目は `### Post-merge manual checks` に書かない（`## Test plan` に書く）
+- PR を作る時点では `### Post-merge manual checks` にチェックを入れない（マージ後に人が確かめる項目のため）
+- レビューでの修正などで変更の範囲が変わったら、`### Post-merge manual checks` の項目も合わせて直す
 
 # コード構成
 
