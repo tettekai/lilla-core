@@ -46,6 +46,13 @@ class TestBotClient:
         assert module.intents.message_content is True
         assert module.bot.intents.message_content is True
 
+    def test_reaction_intents_enabled(self) -> None:
+        """サーバーと DM のリアクションのインテントが有効になっている。"""
+        module = _load_bot_client()
+
+        assert module.bot.intents.guild_reactions is True
+        assert module.bot.intents.dm_reactions is True
+
     def test_exposes_shared_bot_and_intents(self) -> None:
         """bot と intents をモジュール属性として公開している。"""
         module = _load_bot_client()

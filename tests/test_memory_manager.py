@@ -1176,3 +1176,123 @@ class TestChannelSummarySection:
         result = await manager.build_system_prompt(discord_channel_id=100)
         assert "## Channel Note" not in result
         assert _SYSTEM_PROMPT in result
+
+
+class TestRecentReactions:
+    """システムプロンプトの「最近のリアクション」の節のテスト。"""
+
+    @staticmethod
+    def _doc(content, role: str, time: datetime, reactions: list[dict] | None = None) -> dict:
+        """`load_with_time_since` が返す形のドキュメントを作る。"""
+        doc = {"message": {"role": role, "content": content}, "time": time}
+        if reactions is not None:
+            doc["reactions"] = reactions
+        return doc
+
+    async def test_no_section_without_reactions(self, manager, mock_conv_repo) -> None:
+        """リアクションが 1 つも無ければ節を出さない。"""
+        t = datetime(2026, 11, 10, 7, 22, tzinfo=timezone.utc)
+        mock_conv_repo.load_with_time_since.return_value = [
+            self._doc("hello", "user", t),
+            self._doc("hi there", "assistant", t, reactions=[]),
+        ]
+        result = await manager.build_system_prompt()
+        assert "Recent Reactions" not in result
+
+    async def test_section_lists_reactions_in_history(self, manager, mock_conv_repo) -> None:
+        """履歴に含まれるメッセージのリアクションが、発言者・時刻・抜粋・絵文字つきで載る。"""
+        from lilla_core.utils.datetime_utils import local_timezone
+
+        t = datetime(2026, 11, 10, 7, 22, tzinfo=timezone.utc)
+        reacted = datetime(2026, 11, 10, 7, 25, tzinfo=timezone.utc)
+        mock_conv_repo.load_with_time_since.return_value = [
+            self._doc("hello", "user", t),
+            self._doc(
+                "Here is the\nplan for today", "assistant", t,
+                reactions=[
+                    {"emoji": "❤️", "source": "discord", "reacted_at": reacted},
+                    {"emoji": "lilla_smile", "emoji_id": 123456789012345678,
+                     "source": "discord", "reacted_at": reacted},
+                ],
+            ),
+        ]
+        result = await manager.build_system_prompt()
+
+        tz = local_timezone()
+        message_time = t.astimezone(tz).strftime("%b %d %H:%M")
+        reacted_time = reacted.astimezone(tz).strftime("%b %d %H:%M")
+        assert "## Recent Reactions" in result
+        assert (
+            f'- ❤️ on your message [{message_time}] "Here is the plan for today" '
+            f"(reacted {reacted_time})"
+        ) in result
+        assert f"- :lilla_smile: on your message [{message_time}]" in result
+        # 節は最後に置く（前綴キャッシュをなるべく壊さないため）
+        assert result.rstrip().endswith(f"(reacted {reacted_time})")
+
+    async def test_section_does_not_contain_ids(self, manager, mock_conv_repo) -> None:
+        """メッセージやカスタム絵文字の ID は LLM へ渡さない。"""
+        t = datetime(2026, 11, 10, 7, 22, tzinfo=timezone.utc)
+        doc = self._doc(
+            "answer", "assistant", t,
+            reactions=[{"emoji": "party", "emoji_id": 987654321098765432,
+                        "source": "discord", "reacted_at": t}],
+        )
+        doc["_id"] = "65f0000000000000000000aa"
+        mock_conv_repo.load_with_time_since.return_value = [doc]
+        result = await manager.build_system_prompt()
+        assert ":party:" in result
+        assert "987654321098765432" not in result
+        assert "65f0000000000000000000aa" not in result
+
+    async def test_history_messages_do_not_include_reactions(
+        self, manager, mock_conv_repo
+    ) -> None:
+        """会話履歴の各メッセージにはリアクションを混ぜない。"""
+        t = datetime(2026, 11, 10, 7, 22, tzinfo=timezone.utc)
+        mock_conv_repo.load_with_time_since.return_value = [
+            self._doc("answer", "assistant", t,
+                      reactions=[{"emoji": "👍", "source": "discord", "reacted_at": t}]),
+        ]
+        history = await manager.load_conversation_history_with_timestamps()
+        assert history[0]["content"].endswith("answer")
+        assert "👍" not in history[0]["content"]
+        assert set(history[0]) == {"role", "content"}
+
+    async def test_long_excerpt_is_truncated(self, manager, mm_module, mock_conv_repo) -> None:
+        """抜粋は上限の文字数で切り詰める。"""
+        t = datetime(2026, 11, 10, 7, 22, tzinfo=timezone.utc)
+        long_text = "a" * (mm_module.REACTION_EXCERPT_CHARS + 50)
+        mock_conv_repo.load_with_time_since.return_value = [
+            self._doc(long_text, "user", t,
+                      reactions=[{"emoji": "👍", "source": "client", "reacted_at": t}]),
+        ]
+        result = await manager.build_system_prompt()
+        assert '"' + "a" * mm_module.REACTION_EXCERPT_CHARS + '…"' in result
+        assert "on the user's message" in result
+
+    async def test_keeps_latest_reactions_up_to_limit(
+        self, manager, mm_module, mock_conv_repo
+    ) -> None:
+        """件数の上限を超えたら付けた時刻の新しいものを残し、古い順に並べる。"""
+        base = datetime(2026, 11, 10, 0, 0, tzinfo=timezone.utc)
+        limit = mm_module.MAX_REACTIONS_IN_PROMPT
+        docs = [
+            self._doc(f"m{i}", "assistant", base + timedelta(minutes=i),
+                      reactions=[{"emoji": "👍", "source": "discord",
+                                  "reacted_at": base + timedelta(minutes=i, seconds=30)}])
+            for i in range(limit + 5)
+        ]
+        mock_conv_repo.load_with_time_since.return_value = docs
+        result = await manager.build_system_prompt()
+        lines = [line for line in result.splitlines() if line.startswith("- 👍")]
+        assert len(lines) == limit
+        assert '"m5"' in lines[0]
+        assert f'"m{limit + 4}"' in lines[-1]
+
+    async def test_load_failure_does_not_break_prompt(self, manager, mock_conv_repo) -> None:
+        """リアクションの読み込みに失敗しても、システムプロンプトの組み立ては続ける。"""
+        mock_conv_repo.load_with_time_since.side_effect = RuntimeError("mongo down")
+        result = await manager.build_system_prompt()
+        assert "Recent Reactions" not in result
+        assert _SYSTEM_PROMPT in result

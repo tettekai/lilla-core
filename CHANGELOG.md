@@ -9,6 +9,20 @@
 
 ### Added
 
+- 会話履歴のメッセージに付いたリアクションを保存し、LLM のコンテキストに含めるようにした（#325）。
+  - `conversations` の各ドキュメントに `reactions` 配列（`emoji`・カスタム絵文字なら `emoji_id`・`source`・`reacted_at`）を
+    保存する。同じメッセージに同じ絵文字は 1 つまで。`message.content` には混ぜない
+  - 経路に依存しない追加・削除 `lilla_core.services.reactions.add_reaction` / `remove_reaction` と、変更を受け取るフックの
+    登録 `register_reaction_hook` を追加した
+  - Discord の Bot の発言へのリアクションの追加・削除（キャッシュ外のメッセージ・DM を含む）を保存する。Bot 自身と
+    オーナー以外のリアクションは無視する。`bot_client.py` でリアクションのインテントを明示的に有効にした（特権インテントではない）
+  - `ConversationRepository.list_for_client()` の各要素に `reactions`（無ければ空配列）を含めるようにした。既存の項目の形は変えない
+  - リアクション付きのメッセージだけを絵文字で絞り込み・ページングして返す `list_reacted()` と、絵文字ごとの件数を全期間で
+    集計する `count_reactions()` を追加した。`reactions` を持つドキュメントだけの部分インデックスと、`discord_message_ids` の
+    インデックスを起動時に作る
+  - システムプロンプトの末尾に、送る会話履歴に含まれるメッセージへのリアクションだけを載せる「最近のリアクション」
+    （`## Recent Reactions`）の節を足す（対象が無ければ出さない。メッセージの ID は渡さない）
+
 - テキストファイルの保存先の共通インタフェース `lilla_core.core.file_storage.FileStorage` を追加した（#313）。
   - `read` / `write`（`mode` は `create` / `overwrite` / `append`）/ `list` / `exists` と `read_only` を持ち、失敗は
     `FileStorageError` の派生（パス・不在・権限・既存・テキストでない）で分かる

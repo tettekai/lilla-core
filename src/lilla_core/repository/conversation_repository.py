@@ -12,6 +12,54 @@ from pymongo import ASCENDING, DESCENDING
 from lilla_core.core.exceptions import ConversationNotFoundError
 from lilla_core.utils.datetime_utils import utc_now
 
+#: リアクション付きのドキュメントだけを対象にした部分インデックスの名前。
+#: `list_reacted` / `count_reactions` はこの名前で hint を渡して使わせる。
+REACTIONS_INDEX_NAME = "reactions_time_id"
+
+#: `discord_message_ids` から会話履歴を引くためのインデックスの名前。
+DISCORD_MESSAGE_IDS_INDEX_NAME = "discord_message_ids"
+
+
+@dataclass(frozen=True)
+class ReactionEmoji:
+    """リアクションの絵文字。
+
+    標準の絵文字は `name` に文字そのもの（例: `❤️`）を持ち、`id` は `None`。
+    Discord のカスタム絵文字は `name` に名前、`id` に絵文字 ID を持つ。
+    `:heart:` のようなショートコードは入力上の表記なので使わない。
+    異体字（`❤` と `❤️` など）は正規化せず、別の絵文字として扱う。
+
+    Attributes:
+        name: 標準の絵文字なら文字そのもの、カスタム絵文字なら名前。
+        id: カスタム絵文字の ID。標準の絵文字なら `None`。
+    """
+
+    name: str
+    id: int | None = None
+
+    def match_query(self) -> dict:
+        """`reactions` の要素から同じ絵文字を探す条件を返す。
+
+        カスタム絵文字は ID で同一性を判定する（名前は変わりうるため）。標準の絵文字は
+        `emoji` が一致し、`emoji_id` を持たない要素を同じ絵文字とみなす。
+        """
+        if self.id is not None:
+            return {"emoji_id": self.id}
+        return {"emoji": self.name, "emoji_id": None}
+
+    def to_document(self) -> dict:
+        """`reactions` の要素に保存する絵文字の部分（`emoji` と、カスタムなら `emoji_id`）を返す。"""
+        doc: dict = {"emoji": self.name}
+        if self.id is not None:
+            doc["emoji_id"] = self.id
+        return doc
+
+
+def _reactions_of(doc: dict) -> list[dict]:
+    """ドキュメントの `reactions` を返す（無い・壊れている場合は空リスト）。"""
+    reactions = doc.get("reactions")
+    return list(reactions) if isinstance(reactions, list) else []
+
 
 @dataclass(frozen=True)
 class SavedConversation:
@@ -89,6 +137,22 @@ class ConversationRepository:
         await self._collection.create_index(
             [("time", ASCENDING), ("_id", ASCENDING)],
         )
+        # リアクション付きのメッセージは全体のごく一部なので、`reactions` を持つ
+        # ドキュメントだけを対象にした部分インデックスにする（取得・集計が
+        # コレクション全体の走査にならないようにするため）。既存の `(time, _id)` と
+        # キーの向きを変えて別のインデックスとして作る。
+        await self._collection.create_index(
+            [("time", DESCENDING), ("_id", DESCENDING)],
+            name=REACTIONS_INDEX_NAME,
+            partialFilterExpression={"reactions": {"$exists": True}},
+        )
+        # Discord のリアクションイベントから会話履歴を引くため。返信を送った
+        # メッセージにしか付かないので、持つドキュメントだけを対象にする。
+        await self._collection.create_index(
+            [("discord_message_ids", ASCENDING)],
+            name=DISCORD_MESSAGE_IDS_INDEX_NAME,
+            partialFilterExpression={"discord_message_ids": {"$exists": True}},
+        )
 
     async def load(self, max_turns: int) -> list[dict]:
         """会話履歴を新しい順に最大 max_turns 件取得し、時系列順に返します。"""
@@ -113,11 +177,13 @@ class ConversationRepository:
     async def load_with_time_since(self, since: datetime, max_turns: int | None) -> list[dict]:
         """since 以降の会話を時系列順に返す。max_turns を超える場合は末尾（直近）を残す。
 
-        max_turns が None なら件数で切らず、since 以降を全件返す。
+        max_turns が None なら件数で切らず、since 以降を全件返す。各要素は
+        `{"message": {...}, "time": datetime}` で、リアクションがあれば `reactions` も持つ
+        （システムプロンプトの「最近のリアクション」の組み立てに使う）。
         """
         cursor = self._collection.find(
             {"time": {"$gte": since}},
-            {"_id": 0, "message": 1, "time": 1},
+            {"_id": 0, "message": 1, "time": 1, "reactions": 1},
         ).sort("time", ASCENDING)
         docs = await cursor.to_list(length=None)
         if max_turns is not None and len(docs) > max_turns:
@@ -253,14 +319,104 @@ class ConversationRepository:
                 `after_id` と同時に指定した場合は両方の条件を満たすものだけを返す。
 
         Returns:
-            {"_id": str, "time": datetime, "message": {...}} のリスト。
+            {"_id": str, "time": datetime, "message": {...}, "reactions": [...]} のリスト。
+            `reactions` はリアクションが無ければ空リスト（要素の形は `add_reaction` を参照）。
 
         Raises:
             ValueError: `after_id` が ObjectId として不正な形式のとき。
             ConversationNotFoundError: `after_id` のドキュメントが存在せず、
                 `since` も指定されていないとき。
         """
-        conditions: list[dict] = []
+        return await self._list_paged([], limit, offset, after_id, since, hint=None)
+
+    async def list_reacted(
+        self,
+        limit: int,
+        offset: int,
+        emojis: list[str] | None = None,
+        after_id: str | None = None,
+        since: datetime | None = None,
+    ) -> list[dict]:
+        """リアクションの付いたメッセージだけを `list_for_client` と同じ形・並び順で返す。
+
+        並び順・`offset` / `limit`・続きの取り方（`after_id` / `since`）は
+        `list_for_client` と同じ。`after_id` には、この一覧が返した `_id` をそのまま
+        渡せばよい（基準のドキュメントにリアクションが無くなっていても、`(time, _id)`
+        の組で続きを判定する）。取得はリアクション付きのドキュメントだけを対象にした
+        部分インデックス（`REACTIONS_INDEX_NAME`）を使う。
+
+        Args:
+            limit: 返す最大件数。
+            offset: 先頭から飛ばす件数。
+            emojis: 絞り込む絵文字（標準の絵文字なら文字そのもの、カスタム絵文字なら
+                名前）。いずれか 1 つでも付いていれば返す。`None` / 空なら
+                リアクション付きのメッセージをすべて対象にする。
+            after_id: `list_for_client` と同じ。
+            since: `list_for_client` と同じ。
+
+        Returns:
+            `list_for_client` と同じ形のリスト（`reactions` は空にならない）。
+
+        Raises:
+            ValueError: `after_id` が ObjectId として不正な形式のとき。
+            ConversationNotFoundError: `after_id` のドキュメントが存在せず、
+                `since` も指定されていないとき。
+        """
+        conditions: list[dict] = [{"reactions": {"$exists": True}}]
+        if emojis:
+            conditions.append({"reactions.emoji": {"$in": list(emojis)}})
+        return await self._list_paged(
+            conditions, limit, offset, after_id, since, hint=REACTIONS_INDEX_NAME
+        )
+
+    async def count_reactions(self) -> list[dict]:
+        """絵文字ごとの件数を全期間で集計して返す。
+
+        同じメッセージに同じ絵文字は 1 つまでなので、件数はその絵文字が付いた
+        メッセージの数と同じ。リアクション付きのドキュメントだけを対象にした部分
+        インデックス（`REACTIONS_INDEX_NAME`）を使う。
+
+        Returns:
+            `{"emoji": str, "count": int}`（カスタム絵文字は `emoji_id` も持つ）の
+            リスト。件数の多い順（同数は絵文字の名前順）。
+        """
+        pipeline = [
+            {"$match": {"reactions": {"$exists": True}}},
+            {"$unwind": "$reactions"},
+            {
+                "$group": {
+                    "_id": {"emoji": "$reactions.emoji", "emoji_id": "$reactions.emoji_id"},
+                    "count": {"$sum": 1},
+                },
+            },
+            {"$sort": {"count": DESCENDING, "_id.emoji": ASCENDING}},
+        ]
+        cursor = await self._collection.aggregate(pipeline, hint=REACTIONS_INDEX_NAME)
+        rows = await cursor.to_list(length=None)
+        result: list[dict] = []
+        for row in rows:
+            key = row.get("_id") or {}
+            item: dict = {"emoji": key.get("emoji"), "count": row.get("count", 0)}
+            if key.get("emoji_id") is not None:
+                item["emoji_id"] = key["emoji_id"]
+            result.append(item)
+        return result
+
+    async def _list_paged(
+        self,
+        base_conditions: list[dict],
+        limit: int,
+        offset: int,
+        after_id: str | None,
+        since: datetime | None,
+        hint: str | None,
+    ) -> list[dict]:
+        """`list_for_client` / `list_reacted` の共通の取得処理。
+
+        `base_conditions` に差分取得の条件（`after_id` / `since`）を AND で重ね、
+        `(time, _id)` の複合キーで並べて返す（並び順の決め方は `list_for_client` を参照）。
+        """
+        conditions: list[dict] = list(base_conditions)
         if since is not None:
             conditions.append({"time": {"$gte": since}})
         if after_id is not None:
@@ -288,11 +444,14 @@ class ConversationRepository:
 
         incremental = after_id is not None or since is not None
         direction = ASCENDING if incremental else DESCENDING
+        cursor = self._collection.find(
+            mongo_filter,
+            {"_id": 1, "message": 1, "time": 1, "reactions": 1},
+        )
+        if hint is not None:
+            cursor = cursor.hint(hint)
         cursor = (
-            self._collection.find(
-                mongo_filter,
-                {"_id": 1, "message": 1, "time": 1},
-            )
+            cursor
             .sort([("time", direction), ("_id", direction)])
             .skip(offset)
             .limit(limit)
@@ -303,9 +462,86 @@ class ConversationRepository:
                 "_id": str(doc["_id"]),
                 "time": doc["time"],
                 "message": doc.get("message", {}),
+                "reactions": _reactions_of(doc),
             }
             for doc in docs
         ]
+
+    async def find_id_by_discord_message_id(self, discord_message_id: int) -> str | None:
+        """Discord メッセージ ID から、それを `discord_message_ids` に持つ会話履歴の `_id` を返す。
+
+        長文を分割して送った返信は 1 つの履歴に対して複数の Discord メッセージを
+        持つため、どれか 1 つが一致すればその履歴を返す。
+
+        Args:
+            discord_message_id: Discord メッセージの ID。
+
+        Returns:
+            該当する会話履歴の `_id`（文字列）。無ければ None。
+        """
+        doc = await self._collection.find_one(
+            {"discord_message_ids": discord_message_id}, {"_id": 1}
+        )
+        return str(doc["_id"]) if doc else None
+
+    async def add_reaction(
+        self,
+        conversation_id: str,
+        emoji: ReactionEmoji,
+        source: str,
+        reacted_at: datetime,
+    ) -> bool:
+        """会話履歴の `reactions` に絵文字を 1 つ足す。
+
+        同じメッセージに同じ絵文字は 1 つまでで、既に付いていれば何もしない
+        （重複の確認と追加は 1 回の `update_one` で原子的に行う）。要素は
+        `{"emoji": 絵文字, "source": 経路, "reacted_at": 時刻}` で、カスタム絵文字は
+        `emoji_id` も持つ。`message.content` には手を加えない。
+
+        Args:
+            conversation_id: 対象の会話履歴の `_id`（文字列）。
+            emoji: 付ける絵文字。
+            source: 付けた経路（`"discord"` / `"client"` など）。
+            reacted_at: 付けた時刻（UTC）。
+
+        Returns:
+            追加した場合は True。既に付いていた・履歴が無い場合は False。
+        """
+        element = {**emoji.to_document(), "source": source, "reacted_at": reacted_at}
+        result = await self._collection.update_one(
+            {
+                "_id": ObjectId(conversation_id),
+                "reactions": {"$not": {"$elemMatch": emoji.match_query()}},
+            },
+            {"$push": {"reactions": element}},
+        )
+        return result.modified_count > 0
+
+    async def remove_reaction(self, conversation_id: str, emoji: ReactionEmoji) -> bool:
+        """会話履歴の `reactions` から絵文字を取り除く。
+
+        取り除いて空になった `reactions` はフィールドごと消す（部分インデックスと
+        `list_reacted` の対象から外すため）。
+
+        Args:
+            conversation_id: 対象の会話履歴の `_id`（文字列）。
+            emoji: 取り除く絵文字。
+
+        Returns:
+            取り除いた場合は True。付いていなかった・履歴が無い場合は False。
+        """
+        oid = ObjectId(conversation_id)
+        result = await self._collection.update_one(
+            {"_id": oid, "reactions": {"$elemMatch": emoji.match_query()}},
+            {"$pull": {"reactions": emoji.match_query()}},
+        )
+        if result.modified_count == 0:
+            return False
+        await self._collection.update_one(
+            {"_id": oid, "reactions": {"$size": 0}},
+            {"$unset": {"reactions": ""}},
+        )
+        return True
 
     async def save(
         self,
