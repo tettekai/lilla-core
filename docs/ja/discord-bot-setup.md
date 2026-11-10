@@ -13,6 +13,10 @@
 それ以外の特権インテント（Server Members / Presence）は不要です。コアはメンバー情報や
 在席状態を利用していません。
 
+Bot の発言へのリアクションを会話履歴へ保存するため（[リアクション](reactions.md)）、
+`bot_client.py` はリアクションのインテント（`guild_reactions` / `dm_reactions`）も有効に
+しています。これは特権インテントではないため、Developer Portal での設定は要りません。
+
 ## Bot 招待 URL 生成時に付与する Permissions
 
 招待 URL（OAuth2 URL Generator、`bot` スコープ）を生成する際は、最低限以下にチェックを

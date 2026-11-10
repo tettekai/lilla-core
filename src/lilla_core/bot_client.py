@@ -14,5 +14,9 @@ from discord.ext import commands
 
 intents = discord.Intents.default()
 intents.message_content = True
+# Bot の発言へのリアクションを会話履歴へ保存するため（`handlers/reaction_handler.py`）。
+# `Intents.default()` でも有効だが、依存していることを明示しておく（特権インテントではない）。
+intents.guild_reactions = True
+intents.dm_reactions = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)

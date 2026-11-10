@@ -451,7 +451,7 @@ async def test_list_for_client_default_is_newest_first_with_offset_limit() -> No
 
 
 async def test_list_for_client_returns_id_time_message() -> None:
-    """戻り値の各要素は _id（str）・time・message を持つ。"""
+    """戻り値の各要素は _id（str）・time・message と、リアクションが無ければ空の reactions を持つ。"""
     collection, ids = _same_time_collection()
     repo = _make_repo(collection)
 
@@ -461,6 +461,7 @@ async def test_list_for_client_returns_id_time_message() -> None:
         "_id": ids["e"],
         "time": _T0 + timedelta(seconds=2),
         "message": {"role": "assistant", "content": "e"},
+        "reactions": [],
     }
 
 
@@ -651,3 +652,309 @@ async def test_save_entry_values_as_after_id_and_since() -> None:
 
     assert _contents(await repo.list_for_client(10, 0, after_id=first.id)) == ["block2"]
     assert _contents(await repo.list_for_client(10, 0, since=first.time)) == ["block1", "block2"]
+
+
+# ---------------------------------------------------------------------------
+# reactions
+# ---------------------------------------------------------------------------
+
+_REACTED_AT = datetime(2026, 11, 10, 7, 25, tzinfo=timezone.utc)
+
+
+def _make_hintable_cursor(docs: list[dict]) -> MagicMock:
+    """hint / sort / skip / limit がチェーンできるカーソルのモックを返す。"""
+    cursor = _make_cursor(docs)
+    cursor.skip = MagicMock(return_value=cursor)
+    cursor.hint = MagicMock(return_value=cursor)
+    return cursor
+
+
+async def test_ensure_indexes_creates_partial_reactions_index() -> None:
+    """reactions を持つドキュメントだけを対象にした部分インデックスを作る。"""
+    from lilla_core.repository.conversation_repository import REACTIONS_INDEX_NAME
+
+    collection = MagicMock()
+    collection.create_index = AsyncMock()
+    repo = _make_repo(collection)
+
+    await repo.ensure_indexes()
+
+    calls = {
+        call.kwargs.get("name"): call for call in collection.create_index.call_args_list
+    }
+    reactions_call = calls[REACTIONS_INDEX_NAME]
+    assert reactions_call.kwargs["partialFilterExpression"] == {"reactions": {"$exists": True}}
+    assert reactions_call.args[0] == [("time", DESCENDING), ("_id", DESCENDING)]
+    message_ids_call = calls["discord_message_ids"]
+    assert message_ids_call.kwargs["partialFilterExpression"] == {
+        "discord_message_ids": {"$exists": True}
+    }
+
+
+async def test_load_with_time_since_projects_reactions() -> None:
+    """load_with_time_since は reactions も読み出す（message は変えない）。"""
+    collection = MagicMock()
+    collection.find = MagicMock(return_value=_make_cursor([]))
+    repo = _make_repo(collection)
+
+    await repo.load_with_time_since(_T0, None)
+
+    projection = collection.find.call_args[0][1]
+    assert projection["reactions"] == 1
+    assert projection["message"] == 1
+
+
+async def test_add_reaction_pushes_standard_emoji_once() -> None:
+    """標準の絵文字は文字そのものを保存し、同じ絵文字が無いときだけ push して変更後を返す。"""
+    from pymongo import ReturnDocument
+
+    from lilla_core.repository.conversation_repository import ReactionEmoji
+
+    element = {"emoji": "❤️", "source": "discord", "reacted_at": _REACTED_AT}
+    collection = MagicMock()
+    collection.find_one_and_update = AsyncMock(return_value={"reactions": [element]})
+    collection.find_one = AsyncMock()
+    repo = _make_repo(collection)
+
+    result = await repo.add_reaction(_OID, ReactionEmoji("❤️"), "discord", _REACTED_AT)
+
+    assert result == [element]
+    call = collection.find_one_and_update.call_args
+    query, update = call.args
+    assert query == {
+        "_id": ObjectId(_OID),
+        "reactions": {"$not": {"$elemMatch": {"emoji": "❤️", "emoji_id": None}}},
+    }
+    assert update == {"$push": {"reactions": element}}
+    assert call.kwargs["return_document"] == ReturnDocument.AFTER
+    assert call.kwargs["projection"] == {"_id": 0, "reactions": 1}
+    # 変更できたときは存在確認をしない
+    collection.find_one.assert_not_called()
+
+
+async def test_add_reaction_stores_custom_emoji_name_and_id() -> None:
+    """カスタム絵文字は名前と ID を保存し、重複は ID で判定する。"""
+    from lilla_core.repository.conversation_repository import ReactionEmoji
+
+    collection = MagicMock()
+    collection.find_one_and_update = AsyncMock(return_value={"reactions": []})
+    repo = _make_repo(collection)
+
+    await repo.add_reaction(_OID, ReactionEmoji("lilla_smile", 123), "discord", _REACTED_AT)
+
+    query, update = collection.find_one_and_update.call_args.args
+    assert query["reactions"] == {"$not": {"$elemMatch": {"emoji_id": 123}}}
+    assert update["$push"]["reactions"] == {
+        "emoji": "lilla_smile", "emoji_id": 123, "source": "discord", "reacted_at": _REACTED_AT,
+    }
+
+
+async def test_add_reaction_duplicate_returns_none() -> None:
+    """既に同じ絵文字が付いていれば（一致しなければ）、存在を確かめて None を返す。"""
+    from lilla_core.repository.conversation_repository import ReactionEmoji
+
+    collection = MagicMock()
+    collection.find_one_and_update = AsyncMock(return_value=None)
+    collection.find_one = AsyncMock(return_value={"_id": ObjectId(_OID)})
+    repo = _make_repo(collection)
+
+    assert await repo.add_reaction(_OID, ReactionEmoji("👍"), "client", _REACTED_AT) is None
+    assert collection.find_one.call_args.args[0] == {"_id": ObjectId(_OID)}
+
+
+async def test_add_reaction_missing_conversation_raises() -> None:
+    """会話履歴が無ければ ConversationNotFoundError を送出する。"""
+    from lilla_core.repository.conversation_repository import ReactionEmoji
+
+    collection = MagicMock()
+    collection.find_one_and_update = AsyncMock(return_value=None)
+    collection.find_one = AsyncMock(return_value=None)
+    repo = _make_repo(collection)
+
+    with pytest.raises(ConversationNotFoundError):
+        await repo.add_reaction(_OID, ReactionEmoji("👍"), "client", _REACTED_AT)
+
+
+async def test_remove_reaction_returns_remaining_reactions() -> None:
+    """取り除いて残りがあれば変更後の reactions を返し、フィールドは消さない。"""
+    from pymongo import ReturnDocument
+
+    from lilla_core.repository.conversation_repository import ReactionEmoji
+
+    remaining = {"emoji": "❤️", "source": "client", "reacted_at": _REACTED_AT}
+    collection = MagicMock()
+    collection.find_one_and_update = AsyncMock(return_value={"reactions": [remaining]})
+    collection.update_one = AsyncMock()
+    repo = _make_repo(collection)
+
+    assert await repo.remove_reaction(_OID, ReactionEmoji("👍")) == [remaining]
+    call = collection.find_one_and_update.call_args
+    assert call.args == (
+        {"_id": ObjectId(_OID), "reactions": {"$elemMatch": {"emoji": "👍", "emoji_id": None}}},
+        {"$pull": {"reactions": {"emoji": "👍", "emoji_id": None}}},
+    )
+    assert call.kwargs["return_document"] == ReturnDocument.AFTER
+    collection.update_one.assert_not_called()
+
+
+async def test_remove_reaction_unsets_empty_array_and_returns_empty_list() -> None:
+    """最後の 1 つを取り除いたら空リストを返し、空になった reactions をフィールドごと消す。"""
+    from lilla_core.repository.conversation_repository import ReactionEmoji
+
+    collection = MagicMock()
+    collection.find_one_and_update = AsyncMock(return_value={"reactions": []})
+    collection.update_one = AsyncMock()
+    repo = _make_repo(collection)
+
+    assert await repo.remove_reaction(_OID, ReactionEmoji("👍")) == []
+    assert collection.update_one.call_args.args == (
+        {"_id": ObjectId(_OID), "reactions": {"$size": 0}},
+        {"$unset": {"reactions": ""}},
+    )
+
+
+async def test_remove_reaction_not_attached_returns_none_without_unset() -> None:
+    """付いていなければ None を返し、空配列の掃除もしない。"""
+    from lilla_core.repository.conversation_repository import ReactionEmoji
+
+    collection = MagicMock()
+    collection.find_one_and_update = AsyncMock(return_value=None)
+    collection.find_one = AsyncMock(return_value={"_id": ObjectId(_OID)})
+    collection.update_one = AsyncMock()
+    repo = _make_repo(collection)
+
+    assert await repo.remove_reaction(_OID, ReactionEmoji("👍")) is None
+    collection.update_one.assert_not_called()
+
+
+async def test_remove_reaction_missing_conversation_raises() -> None:
+    """会話履歴が無ければ ConversationNotFoundError を送出する。"""
+    from lilla_core.repository.conversation_repository import ReactionEmoji
+
+    collection = MagicMock()
+    collection.find_one_and_update = AsyncMock(return_value=None)
+    collection.find_one = AsyncMock(return_value=None)
+    repo = _make_repo(collection)
+
+    with pytest.raises(ConversationNotFoundError):
+        await repo.remove_reaction(_OID, ReactionEmoji("👍"))
+
+
+async def test_find_id_by_discord_message_id() -> None:
+    """discord_message_ids のどれかに一致する履歴の _id を返し、無ければ None。"""
+    collection = MagicMock()
+    collection.find_one = AsyncMock(return_value={"_id": ObjectId(_OID)})
+    repo = _make_repo(collection)
+
+    assert await repo.find_id_by_discord_message_id(42) == _OID
+    assert collection.find_one.call_args[0][0] == {"discord_message_ids": 42}
+
+    collection.find_one = AsyncMock(return_value=None)
+    assert await repo.find_id_by_discord_message_id(43) is None
+
+
+async def test_list_for_client_includes_reactions() -> None:
+    """list_for_client は保存済みの reactions をそのまま返し、message は変えない。"""
+    reaction = {"emoji": "❤️", "source": "discord", "reacted_at": _REACTED_AT}
+    doc = {
+        "_id": ObjectId(_OID),
+        "time": _T0,
+        "message": {"role": "assistant", "content": "hello"},
+        "reactions": [reaction],
+    }
+    collection = MagicMock()
+    collection.find = MagicMock(return_value=_make_hintable_cursor([doc]))
+    repo = _make_repo(collection)
+
+    result = await repo.list_for_client(10, 0)
+
+    assert result == [{
+        "_id": _OID,
+        "time": _T0,
+        "message": {"role": "assistant", "content": "hello"},
+        "reactions": [reaction],
+    }]
+    assert collection.find.call_args[0][1]["reactions"] == 1
+
+
+async def test_list_reacted_uses_partial_index_and_filters() -> None:
+    """list_reacted は reactions を持つものだけを、部分インデックスを使って新しい順に返す。"""
+    from lilla_core.repository.conversation_repository import REACTIONS_INDEX_NAME
+
+    cursor = _make_hintable_cursor([])
+    collection = MagicMock()
+    collection.find = MagicMock(return_value=cursor)
+    repo = _make_repo(collection)
+
+    await repo.list_reacted(20, 5)
+
+    assert collection.find.call_args[0][0] == {"reactions": {"$exists": True}}
+    cursor.hint.assert_called_once_with(REACTIONS_INDEX_NAME)
+    cursor.sort.assert_called_once_with([("time", DESCENDING), ("_id", DESCENDING)])
+    cursor.skip.assert_called_once_with(5)
+    cursor.limit.assert_called_once_with(20)
+
+
+async def test_list_reacted_filters_by_multiple_emojis() -> None:
+    """絵文字を複数指定すると、いずれかが付いたものに絞る。"""
+    cursor = _make_hintable_cursor([])
+    collection = MagicMock()
+    collection.find = MagicMock(return_value=cursor)
+    repo = _make_repo(collection)
+
+    await repo.list_reacted(10, 0, emojis=["❤️", "lilla_smile"])
+
+    assert collection.find.call_args[0][0] == {
+        "$and": [
+            {"reactions": {"$exists": True}},
+            {"reactions.emoji": {"$in": ["❤️", "lilla_smile"]}},
+        ]
+    }
+
+
+async def test_list_reacted_paging_matches_list_for_client() -> None:
+    """after_id で続きを取るときは list_for_client と同じく古い順・(time, _id) で判定する。"""
+    anchor_time = _T0
+    cursor = _make_hintable_cursor([])
+    collection = MagicMock()
+    collection.find = MagicMock(return_value=cursor)
+    collection.find_one = AsyncMock(return_value={"_id": ObjectId(_OID), "time": anchor_time})
+    repo = _make_repo(collection)
+
+    await repo.list_reacted(10, 0, after_id=_OID)
+
+    query = collection.find.call_args[0][0]
+    assert query["$and"][0] == {"reactions": {"$exists": True}}
+    assert query["$and"][1] == {
+        "$or": [
+            {"time": {"$gt": anchor_time}},
+            {"time": anchor_time, "_id": {"$gt": ObjectId(_OID)}},
+        ],
+    }
+    from pymongo import ASCENDING
+    cursor.sort.assert_called_once_with([("time", ASCENDING), ("_id", ASCENDING)])
+
+
+async def test_count_reactions_groups_by_emoji_with_partial_index() -> None:
+    """絵文字ごとの件数を部分インデックスを使って全期間で集計する。"""
+    from lilla_core.repository.conversation_repository import REACTIONS_INDEX_NAME
+
+    rows = [
+        {"_id": {"emoji": "❤️"}, "count": 5},
+        {"_id": {"emoji": "lilla_smile", "emoji_id": 123}, "count": 2},
+    ]
+    agg_cursor = MagicMock()
+    agg_cursor.to_list = AsyncMock(return_value=rows)
+    collection = MagicMock()
+    collection.aggregate = AsyncMock(return_value=agg_cursor)
+    repo = _make_repo(collection)
+
+    result = await repo.count_reactions()
+
+    assert result == [
+        {"emoji": "❤️", "count": 5},
+        {"emoji": "lilla_smile", "emoji_id": 123, "count": 2},
+    ]
+    pipeline = collection.aggregate.call_args[0][0]
+    assert pipeline[0] == {"$match": {"reactions": {"$exists": True}}}
+    assert collection.aggregate.call_args.kwargs["hint"] == REACTIONS_INDEX_NAME
