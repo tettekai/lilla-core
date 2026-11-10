@@ -107,6 +107,15 @@ class TestHandleRawReaction:
         await env.handler.handle_raw_reaction(_payload(name=None, emoji_id=5), env.bot, added=True)
         env.repo.find_id_by_discord_message_id.assert_not_called()
 
+    async def test_history_deleted_after_lookup_is_ignored(self, env, caplog) -> None:
+        """引いた直後に履歴が消えた（ConversationNotFoundError）ときは WARNING を出さない。"""
+        from lilla_core.core.exceptions import ConversationNotFoundError
+
+        env.add.side_effect = ConversationNotFoundError("gone")
+        with caplog.at_level("WARNING"):
+            await env.handler.handle_raw_reaction(_payload(), env.bot, added=True)
+        assert "Failed to apply Discord reaction" not in caplog.text
+
     async def test_failure_is_swallowed(self, env, caplog) -> None:
         """保存の失敗はイベント処理の外へ出さず WARNING ログに留める。"""
         env.add.side_effect = RuntimeError("mongo down")

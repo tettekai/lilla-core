@@ -13,7 +13,9 @@
   - `conversations` の各ドキュメントに `reactions` 配列（`emoji`・カスタム絵文字なら `emoji_id`・`source`・`reacted_at`）を
     保存する。同じメッセージに同じ絵文字は 1 つまで。`message.content` には混ぜない
   - 経路に依存しない追加・削除 `lilla_core.services.reactions.add_reaction` / `remove_reaction` と、変更を受け取るフックの
-    登録 `register_reaction_hook` を追加した
+    登録 `register_reaction_hook` を追加した。対象の会話履歴が無ければ `ConversationNotFoundError` を送出し、重複した追加・
+    付いていない絵文字の削除（`False`）と区別できる。フックへ渡す `ReactionChange` は変更後のそのメッセージの
+    `reactions` 全体を持つ
   - Discord の Bot の発言へのリアクションの追加・削除（キャッシュ外のメッセージ・DM を含む）を保存する。Bot 自身と
     オーナー以外のリアクションは無視する。`bot_client.py` でリアクションのインテントを明示的に有効にした（特権インテントではない）
   - `ConversationRepository.list_for_client()` の各要素に `reactions`（無ければ空配列）を含めるようにした。既存の項目の形は変えない

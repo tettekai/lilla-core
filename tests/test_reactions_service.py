@@ -28,8 +28,8 @@ def reactions_module(monkeypatch):
     reactions = _fresh_reactions_module(monkeypatch)
 
     repo = MagicMock()
-    repo.add_reaction = AsyncMock(return_value=True)
-    repo.remove_reaction = AsyncMock(return_value=True)
+    repo.add_reaction = AsyncMock(return_value=[{"emoji": "❤️", "source": "client"}])
+    repo.remove_reaction = AsyncMock(return_value=[])
     monkeypatch.setattr(reactions, "get_conversation_repo", lambda: repo)
     reactions.clear_reaction_hooks()
     reactions._test_repo = repo
@@ -60,10 +60,12 @@ class TestAddReaction:
         assert change.time == args[3]
         assert change.time.tzinfo is not None
         assert change.time.microsecond % 1000 == 0
+        # 変更後の reactions 全体をそのまま渡す
+        assert change.reactions == [{"emoji": "❤️", "source": "client"}]
 
     async def test_duplicate_does_not_notify(self, reactions_module) -> None:
-        """重複した追加（リポジトリが False）はフックを呼ばない。"""
-        reactions_module._test_repo.add_reaction.return_value = False
+        """重複した追加（リポジトリが None）は False を返し、フックを呼ばない。"""
+        reactions_module._test_repo.add_reaction.return_value = None
         hook = MagicMock()
         reactions_module.register_reaction_hook(hook)
 
@@ -73,6 +75,21 @@ class TestAddReaction:
 
         assert result is False
         hook.assert_not_called()
+
+    async def test_missing_conversation_raises(self, reactions_module) -> None:
+        """会話履歴が無ければ ConversationNotFoundError を伝え、フックを呼ばない。"""
+        from lilla_core.core.exceptions import ConversationNotFoundError
+
+        reactions_module._test_repo.add_reaction.side_effect = ConversationNotFoundError("x")
+        hook = MagicMock()
+        reactions_module.register_reaction_hook(hook)
+
+        with pytest.raises(ConversationNotFoundError):
+            await reactions_module.add_reaction(
+                _OID, reactions_module.ReactionEmoji("👍"), "client"
+            )
+        hook.assert_not_called()
+        assert reactions_module.ConversationNotFoundError is ConversationNotFoundError
 
     @pytest.mark.parametrize("bad_id", ["", "not-an-id", None])
     async def test_invalid_conversation_id_raises(self, reactions_module, bad_id) -> None:
@@ -107,10 +124,26 @@ class TestRemoveReaction:
         reactions_module._test_repo.remove_reaction.assert_awaited_once_with(_OID, emoji)
         assert [c.action for c in received] == ["removed"]
         assert received[0].emoji == emoji
+        # 最後の 1 つを取り除いたら空リスト
+        assert received[0].reactions == []
+
+    async def test_missing_conversation_raises(self, reactions_module) -> None:
+        """会話履歴が無ければ ConversationNotFoundError を伝え、フックを呼ばない。"""
+        from lilla_core.core.exceptions import ConversationNotFoundError
+
+        reactions_module._test_repo.remove_reaction.side_effect = ConversationNotFoundError("x")
+        hook = MagicMock()
+        reactions_module.register_reaction_hook(hook)
+
+        with pytest.raises(ConversationNotFoundError):
+            await reactions_module.remove_reaction(
+                _OID, reactions_module.ReactionEmoji("👍"), "client"
+            )
+        hook.assert_not_called()
 
     async def test_missing_does_not_notify(self, reactions_module) -> None:
-        """付いていなければフックを呼ばない。"""
-        reactions_module._test_repo.remove_reaction.return_value = False
+        """付いていなければ（リポジトリが None）False を返し、フックを呼ばない。"""
+        reactions_module._test_repo.remove_reaction.return_value = None
         hook = MagicMock()
         reactions_module.register_reaction_hook(hook)
 

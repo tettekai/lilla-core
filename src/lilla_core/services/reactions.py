@@ -18,6 +18,7 @@ from typing import Any, Awaitable, Callable, Literal
 
 from bson import ObjectId
 
+from lilla_core.core.exceptions import ConversationNotFoundError
 from lilla_core.repository.conversation_repository import ReactionEmoji, get_conversation_repo
 from lilla_core.utils.datetime_utils import utc_now
 
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "REACTION_SOURCE_DISCORD",
+    "ConversationNotFoundError",
     "ReactionChange",
     "ReactionEmoji",
     "ReactionHook",
@@ -50,6 +52,10 @@ class ReactionChange:
         emoji: 変更された絵文字。
         source: 変更した経路（`"discord"` / `"client"` など）。
         time: 変更した時刻（UTC）。追加なら保存した `reacted_at` と同じ値。
+        reactions: 変更後のそのメッセージの `reactions` 全体（`list_for_client` と同じ
+            要素の形）。更新と同じ操作で原子的に取得した値で、最後の 1 つを取り除いた
+            ときは空リスト。差分を積み上げずにこの一覧をそのまま配れば、複数の経路から
+            同時に付け外しされても食い違わない。
     """
 
     action: Literal["added", "removed"]
@@ -57,6 +63,7 @@ class ReactionChange:
     emoji: ReactionEmoji
     source: str
     time: datetime
+    reactions: list[dict]
 
 
 #: フックの型。同期関数でも非同期関数でもよい。
@@ -115,17 +122,19 @@ async def add_reaction(conversation_id: str, emoji: ReactionEmoji, source: str) 
         source: 付けた経路（`"discord"` / `"client"` など）。
 
     Returns:
-        追加した場合は True。既に付いていた・履歴が無い場合は False。
+        追加した場合は True。既に付いていた場合は False。
 
     Raises:
         ValueError: 絵文字の名前が空のとき、または `conversation_id` が不正な形式のとき。
+        ConversationNotFoundError: 対象の会話履歴が存在しないとき。
     """
     _validate(conversation_id, emoji, source)
     now = _storage_now()
-    added = await get_conversation_repo().add_reaction(conversation_id, emoji, source, now)
-    if added:
-        await _notify(ReactionChange("added", conversation_id, emoji, source, now))
-    return added
+    reactions = await get_conversation_repo().add_reaction(conversation_id, emoji, source, now)
+    if reactions is None:
+        return False
+    await _notify(ReactionChange("added", conversation_id, emoji, source, now, reactions))
+    return True
 
 
 async def remove_reaction(conversation_id: str, emoji: ReactionEmoji, source: str) -> bool:
@@ -140,16 +149,20 @@ async def remove_reaction(conversation_id: str, emoji: ReactionEmoji, source: st
         source: 取り除いた経路（フックへ渡す）。
 
     Returns:
-        取り除いた場合は True。付いていなかった・履歴が無い場合は False。
+        取り除いた場合は True。付いていなかった場合は False。
 
     Raises:
         ValueError: 絵文字の名前が空のとき、または `conversation_id` が不正な形式のとき。
+        ConversationNotFoundError: 対象の会話履歴が存在しないとき。
     """
     _validate(conversation_id, emoji, source)
-    removed = await get_conversation_repo().remove_reaction(conversation_id, emoji)
-    if removed:
-        await _notify(ReactionChange("removed", conversation_id, emoji, source, _storage_now()))
-    return removed
+    reactions = await get_conversation_repo().remove_reaction(conversation_id, emoji)
+    if reactions is None:
+        return False
+    await _notify(
+        ReactionChange("removed", conversation_id, emoji, source, _storage_now(), reactions)
+    )
+    return True
 
 
 def emoji_from_discord(partial_emoji: Any) -> ReactionEmoji | None:

@@ -51,9 +51,16 @@ await remove_reaction(conversation_id, ReactionEmoji("lilla_smile", 1234), "clie
 
 `conversation_id` は `ConversationRepository.list_for_client()` の `_id` と同じ値です。
 戻り値は実際に変わったかどうか（重複した追加・付いていない絵文字の削除は `False`）です。
+対象の会話履歴が存在しないときは `ConversationNotFoundError`（`lilla_core.core.exceptions`。
+`lilla_core.services.reactions` からも import できます）を送出するので、独自クライアントでは
+「存在しないメッセージ」としてエラーを返し、`False`（変更なし）は正常として扱えます。
 
 実際に変わったときは、`register_reaction_hook()` で登録したフックが `ReactionChange`
-（`action`（`added` / `removed`）・`conversation_id`・`emoji`・`source`・`time`）を受け取ります。
+（`action`（`added` / `removed`）・`conversation_id`・`emoji`・`source`・`time`・`reactions`）を
+受け取ります。`reactions` は変更後のそのメッセージのリアクション全体（`list_for_client()` の
+`reactions` と同じ形。最後の 1 つを取り除いたら空リスト）で、更新と同じ操作で原子的に読んだ
+値です。複数のクライアントや Discord から同時に付け外しされても食い違わないよう、通知では
+差分（`action`）を積み上げるより、この一覧をそのまま配ることをおすすめします。
 WebSocket で接続中のクライアントへの通知などは、拡張の `setup()` でフックを登録して行って
 ください（同期関数・非同期関数のどちらでもよく、フックの失敗は WARNING ログだけで、保存と
 他のフックは止めません）。

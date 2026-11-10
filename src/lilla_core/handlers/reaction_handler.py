@@ -59,6 +59,12 @@ async def handle_raw_reaction(payload, bot, added: bool) -> None:
             await reactions.remove_reaction(
                 conversation_id, emoji, reactions.REACTION_SOURCE_DISCORD
             )
+    except reactions.ConversationNotFoundError:
+        # 引いた直後に履歴が消えた場合。付け外しの対象が無いだけなので何もしない
+        logger.debug(
+            "Conversation for Discord message %s disappeared before applying reaction",
+            payload.message_id,
+        )
     except Exception as e:
         logger.warning(
             "Failed to apply Discord reaction (added=%s, message_id=%s): %s: %s",

@@ -7,7 +7,7 @@ from functools import lru_cache
 
 from bson import ObjectId
 from lilla_core.repository.mongo_client import create_mongo_client
-from pymongo import ASCENDING, DESCENDING
+from pymongo import ASCENDING, DESCENDING, ReturnDocument
 
 from lilla_core.core.exceptions import ConversationNotFoundError
 from lilla_core.utils.datetime_utils import utc_now
@@ -490,12 +490,12 @@ class ConversationRepository:
         emoji: ReactionEmoji,
         source: str,
         reacted_at: datetime,
-    ) -> bool:
-        """会話履歴の `reactions` に絵文字を 1 つ足す。
+    ) -> list[dict] | None:
+        """会話履歴の `reactions` に絵文字を 1 つ足し、変更後の `reactions` を返す。
 
         同じメッセージに同じ絵文字は 1 つまでで、既に付いていれば何もしない
-        （重複の確認と追加は 1 回の `update_one` で原子的に行う）。要素は
-        `{"emoji": 絵文字, "source": 経路, "reacted_at": 時刻}` で、カスタム絵文字は
+        （重複の確認・追加・変更後の取得は 1 回の `find_one_and_update` で原子的に行う）。
+        要素は `{"emoji": 絵文字, "source": 経路, "reacted_at": 時刻}` で、カスタム絵文字は
         `emoji_id` も持つ。`message.content` には手を加えない。
 
         Args:
@@ -505,43 +505,70 @@ class ConversationRepository:
             reacted_at: 付けた時刻（UTC）。
 
         Returns:
-            追加した場合は True。既に付いていた・履歴が無い場合は False。
+            追加した場合は変更後の `reactions`（`list_for_client` と同じ要素の形）。
+            既に付いていた場合は None。
+
+        Raises:
+            ConversationNotFoundError: 対象の会話履歴が存在しないとき。
         """
+        oid = ObjectId(conversation_id)
         element = {**emoji.to_document(), "source": source, "reacted_at": reacted_at}
-        result = await self._collection.update_one(
+        doc = await self._collection.find_one_and_update(
             {
-                "_id": ObjectId(conversation_id),
+                "_id": oid,
                 "reactions": {"$not": {"$elemMatch": emoji.match_query()}},
             },
             {"$push": {"reactions": element}},
+            projection={"_id": 0, "reactions": 1},
+            return_document=ReturnDocument.AFTER,
         )
-        return result.modified_count > 0
+        if doc is None:
+            await self._ensure_exists(oid)
+            return None
+        return _reactions_of(doc)
 
-    async def remove_reaction(self, conversation_id: str, emoji: ReactionEmoji) -> bool:
-        """会話履歴の `reactions` から絵文字を取り除く。
+    async def remove_reaction(
+        self, conversation_id: str, emoji: ReactionEmoji
+    ) -> list[dict] | None:
+        """会話履歴の `reactions` から絵文字を取り除き、変更後の `reactions` を返す。
 
         取り除いて空になった `reactions` はフィールドごと消す（部分インデックスと
-        `list_reacted` の対象から外すため）。
+        `list_reacted` の対象から外すため）。その場合の戻り値は空リスト。
 
         Args:
             conversation_id: 対象の会話履歴の `_id`（文字列）。
             emoji: 取り除く絵文字。
 
         Returns:
-            取り除いた場合は True。付いていなかった・履歴が無い場合は False。
+            取り除いた場合は変更後の `reactions`（空になったら空リスト）。
+            付いていなかった場合は None。
+
+        Raises:
+            ConversationNotFoundError: 対象の会話履歴が存在しないとき。
         """
         oid = ObjectId(conversation_id)
-        result = await self._collection.update_one(
+        doc = await self._collection.find_one_and_update(
             {"_id": oid, "reactions": {"$elemMatch": emoji.match_query()}},
             {"$pull": {"reactions": emoji.match_query()}},
+            projection={"_id": 0, "reactions": 1},
+            return_document=ReturnDocument.AFTER,
         )
-        if result.modified_count == 0:
-            return False
-        await self._collection.update_one(
-            {"_id": oid, "reactions": {"$size": 0}},
-            {"$unset": {"reactions": ""}},
-        )
-        return True
+        if doc is None:
+            await self._ensure_exists(oid)
+            return None
+        reactions = _reactions_of(doc)
+        if not reactions:
+            # 取り除いた直後に別の追加が入っていれば `$size: 0` に一致しないので消さない
+            await self._collection.update_one(
+                {"_id": oid, "reactions": {"$size": 0}},
+                {"$unset": {"reactions": ""}},
+            )
+        return reactions
+
+    async def _ensure_exists(self, oid: ObjectId) -> None:
+        """`_id` の会話履歴が無ければ `ConversationNotFoundError` を送出する。"""
+        if await self._collection.find_one({"_id": oid}, {"_id": 1}) is None:
+            raise ConversationNotFoundError("conversation was not found")
 
     async def save(
         self,
