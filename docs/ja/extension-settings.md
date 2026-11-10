@@ -33,7 +33,7 @@ class DiarySettings(BaseModel):
         default=None,
         title="テンプレート",
         description="日記の Markdown 本文",
-        json_schema_extra={"multiline": True},
+        json_schema_extra={"multiline": True, "required_on_save": True},
     )
     day_rollover: str = Field(default="04:00", title="日付の切り替わり", pattern=r"^\d{2}:\d{2}$")
 
@@ -62,6 +62,24 @@ class DiaryExtension(Extension):
 - 画面の入力欄は項目の型から決まります。今対応しているのは文字列（`multiline` で複数行）・
   真偽値・数値と、それぞれの未設定（`None`）です。`title` / `description` は画面の見出しと説明に、
   `pattern` やバリデータは保存時の検証に使います。
+
+### 保存時入力必須（`required_on_save`）
+
+`json_schema_extra` に `"required_on_save": True` を書くと、その項目は **画面から保存するときだけ**
+入力が必要になります。上の例の `template` のように、「まだ設定していない」状態は読み取りでは
+許すが、利用者に「未設定」を選ばせたくない項目に使います。
+
+| 場面 | `required_on_save` の項目 |
+|------|------|
+| 初期値（未保存）・既存の保存値が `None` | そのまま読めます。`load_settings()` も起動も失敗せず、不正な保存値扱いもしません（自動で書き換えたり消したりもしません） |
+| 画面の表示 | 「未設定」チェックを出さず、入力欄を常に編集できます。値が `None` のときは空の入力欄に「未設定です。入力が必要です」と出ます |
+| 保存（`PUT .../settings`） | 省略・`null`・空文字・空白だけの文字列を項目ごとのエラー（`this setting is required`）で拒否し、何も保存しません |
+
+- 設定は一式で保存するため、ほかの項目だけを変えて保存するときにもこの項目の入力が必要です。
+- 型の nullable（`None` を取れるか）・JSON Schema の required（キーを省略できるか）とは別の概念です。
+  モデルの型は `str | None = None` のままにし、読み取りで必須にはしません。`None` のときの動作
+  （下書きを作れないなど）は拡張が実行時に扱います。
+- この宣言の無い nullable 項目は、従来どおり「未設定」チェックで `null` を保存できます。
 
 ## 読み取り
 

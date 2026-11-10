@@ -19,6 +19,11 @@
 - DB から読めない: `SettingsUnavailableError`
 - 保存値が今のモデルに合わない: `InvalidStoredSettingsError`（初期値で黙って置き換えない。
   画面で正しい値を保存し直すまで続く）
+
+項目の `json_schema_extra` に `{"required_on_save": True}`（`REQUIRED_ON_SAVE_KEY`）を
+書くと「保存時入力必須」になる。初期値の `None` や既存の保存値の `None` はそのまま
+読めるが、画面から一式を保存するときだけ、その項目の省略・`null`・空文字・空白だけの
+文字列を拒否する（画面には「未設定」の選択肢を出さない）。
 """
 from __future__ import annotations
 
@@ -29,6 +34,9 @@ from pydantic import BaseModel, ValidationError
 from lilla_core.core.extension import get_settings_models
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
+
+REQUIRED_ON_SAVE_KEY = "required_on_save"
+"""項目の `json_schema_extra` に書く「保存時入力必須」のキー。"""
 
 
 class ExtensionSettingsError(Exception):
@@ -92,6 +100,29 @@ def _format_errors(error: ValidationError) -> list[dict[str, str]]:
     ]
 
 
+def _field_extra(field: Any) -> dict:
+    """項目の `json_schema_extra`（dict でなければ空）を返す。"""
+    extra = field.json_schema_extra
+    return extra if isinstance(extra, dict) else {}
+
+
+def is_required_on_save(field: Any) -> bool:
+    """項目が「保存時入力必須」（`json_schema_extra` の `required_on_save`）を宣言しているか。"""
+    return _field_extra(field).get(REQUIRED_ON_SAVE_KEY) is True
+
+
+def _required_on_save_errors(model: type[BaseModel], values: dict) -> list[dict[str, str]]:
+    """保存時入力必須の項目の省略・`null`・空や空白だけの文字列をエラーにする。"""
+    errors = []
+    for name, field in model.model_fields.items():
+        if not is_required_on_save(field):
+            continue
+        value = values.get(name)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            errors.append({"field": name, "message": "this setting is required"})
+    return errors
+
+
 def _validate(model: type[BaseModel], values: Any) -> tuple[BaseModel | None, list[dict[str, str]]]:
     """値の一式をモデルで検証する。未知のキーもエラーにする（モデルの `extra` 設定によらない）。"""
     if not isinstance(values, dict):
@@ -151,17 +182,26 @@ def validate_settings(name: str, values: Any) -> BaseModel:
 
     Args:
         name: 拡張名（設定を宣言していること）。
-        values: 設定の一式（項目名 -> 値）。省略した項目は初期値になる。
+        values: 設定の一式（項目名 -> 値）。省略した項目は初期値になる（保存時入力必須の
+            項目は省略・`null`・空や空白だけの文字列を拒否する）。
 
     Returns:
         検証済みのモデル。
 
     Raises:
         ValueError: 拡張が設定を宣言していない場合。
-        SettingsValidationError: 一式がオブジェクトでない・未知の項目・型や検証規則の違反。
+        SettingsValidationError: 一式がオブジェクトでない・未知の項目・型や検証規則の違反・
+            保存時入力必須の項目が空。
     """
     declared = _declared_model(name, None)
     instance, errors = _validate(declared, values)
+    if isinstance(values, dict) and not any(e["message"] == "unknown setting" for e in errors):
+        # 保存時入力必須の違反を先に挙げ、同じ項目のモデル側のエラー（空白の拒否など）は重ねない
+        required_errors = _required_on_save_errors(declared, values)
+        if required_errors:
+            reported = {e["field"] for e in required_errors}
+            errors = required_errors + [e for e in errors if e["field"] not in reported]
+            instance = None
     if instance is None:
         raise SettingsValidationError(f"Invalid settings for extension '{name}'", errors)
     return instance
@@ -189,7 +229,8 @@ def describe_fields(model: type[BaseModel]) -> list[dict]:
     """画面の汎用編集欄に出す項目の説明を、モデルの定義順に返す。
 
     各要素は `name` / `title` / `description` / `type`（JSON Schema の型。`string` など）/
-    `nullable`（未設定 `null` を取れるか）/ `multiline` / `default` / `pattern`。
+    `nullable`（未設定 `null` を取れるか）/ `required_on_save`（保存時に入力が必要か。
+    真なら画面は「未設定」の選択肢を出さない）/ `multiline` / `default` / `pattern`。
     """
     schema = model.model_json_schema()
     properties = schema.get("properties", {})
@@ -203,7 +244,7 @@ def describe_fields(model: type[BaseModel]) -> list[dict]:
             (variant for variant in variants if isinstance(variant, dict) and variant.get("type") not in (None, "null")),
             {},
         )
-        extra = field.json_schema_extra if isinstance(field.json_schema_extra, dict) else {}
+        extra = _field_extra(field)
         fields.append(
             {
                 "name": name,
@@ -211,6 +252,7 @@ def describe_fields(model: type[BaseModel]) -> list[dict]:
                 "description": field.description or "",
                 "type": main.get("type", "string"),
                 "nullable": nullable,
+                "required_on_save": is_required_on_save(field),
                 "multiline": bool(extra.get("multiline")),
                 "default": model().model_dump(mode="json")[name],
                 "pattern": main.get("pattern"),

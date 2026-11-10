@@ -439,9 +439,13 @@
                     <label class="ext-setting-label">
                       <span x-text="field.title"></span>
                       <code class="ext-sub" x-text="field.name"></code>
+                      <span class="badge level-warning" x-show="field.required_on_save">必須</span>
                     </label>
                     <div class="ext-sub" x-show="field.description" x-text="field.description"></div>
-                    <label class="memo-toggle" x-show="field.nullable">
+                    <div class="ext-sub ext-error-text" x-show="settingsMissingRequired(field)">
+                      未設定です。入力が必要です
+                    </div>
+                    <label class="memo-toggle" x-show="settingsCanUnset(field)">
                       <input type="checkbox" x-model="exts.settingsUnset[field.name]">
                       未設定
                     </label>

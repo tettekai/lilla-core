@@ -9,6 +9,13 @@
 
 ### Added
 
+- 画面管理の拡張設定（`settings_model()`）の項目に、`json_schema_extra={"required_on_save": True}` で「保存時入力必須」を
+  宣言できるようにした（#311）。
+  - ダッシュボードの Extensions 画面はその項目に「未設定」チェックを出さず、入力欄を常に編集できるようにし、値が
+    未設定なら「入力が必要」と表示する。項目の説明（`fields`）に `required_on_save` を足した
+  - 保存（`PUT /api/admin/extensions/{name}/settings`）では、その項目の省略・`null`・空・空白だけの文字列を項目ごとの
+    エラーで拒否し、何も保存しない。初期値や既存の保存値の `None` は従来どおり読める（読み取り・起動では必須にしない）
+  - 宣言の無い nullable 項目は従来どおり未設定（`null`）を保存できる
 - テキストファイルの保存先の共通インタフェース `lilla_core.core.file_storage.FileStorage` を追加した（#313）。
   - `read` / `write`（`mode` は `create` / `overwrite` / `append`）/ `list` / `exists` と `read_only` を持ち、失敗は
     `FileStorageError` の派生（パス・不在・権限・既存・テキストでない）で分かる

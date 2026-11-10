@@ -313,3 +313,93 @@ class TestDetail:
     async def test_extension_without_settings(self, diary, repo) -> None:
         """設定を宣言していない拡張は `None`。"""
         assert await svc.build_settings_detail("plain") is None
+
+
+class JournalSettings(BaseModel):
+    """保存時入力必須の本文と、任意の未設定を取れる項目を持つ設定。"""
+
+    template: str | None = Field(
+        default=None, json_schema_extra={"multiline": True, "required_on_save": True}
+    )
+    note: str | None = None
+    limit: int = 10
+
+    @field_validator("template")
+    @classmethod
+    def _not_blank(cls, value: str | None) -> str | None:
+        """空・空白だけの本文は拒否する（未設定は `None`）。"""
+        if value is not None and not value.strip():
+            raise ValueError("template must not be blank")
+        return value
+
+
+@pytest.fixture
+def journal(make_extension, use_extensions):
+    """保存時入力必須の項目を持つ `journal` を登録する。"""
+    use_extensions(make_extension("journal", settings_model=JournalSettings))
+
+
+class TestRequiredOnSave:
+    """`json_schema_extra` の `required_on_save`（保存時入力必須）。"""
+
+    def test_describe_fields_exposes_flag(self) -> None:
+        """宣言した項目だけ `required_on_save` が真。`nullable` は型のまま返す。"""
+        fields = {field["name"]: field for field in svc.describe_fields(JournalSettings)}
+
+        assert fields["template"]["required_on_save"] is True
+        assert fields["template"]["nullable"] is True
+        assert fields["note"]["required_on_save"] is False
+        assert fields["limit"]["required_on_save"] is False
+
+    async def test_load_initial_and_stored_none_are_allowed(self, journal, repo) -> None:
+        """初期値・既存の保存値の `None` は不正扱いしない（読み取りは必須化しない）。"""
+        assert (await svc.load_settings("journal", JournalSettings)).template is None
+
+        repo.doc = {"extension": "journal", "values": {"template": None, "note": None, "limit": 10}}
+        assert (await svc.load_settings("journal", JournalSettings)).template is None
+
+        detail = await svc.build_settings_detail("journal")
+        assert detail["error"] is None
+        assert detail["values"]["template"] is None
+
+    @pytest.mark.parametrize(
+        "values",
+        [
+            {},
+            {"note": "x"},
+            {"template": None},
+            {"template": ""},
+            {"template": "  \n"},
+        ],
+    )
+    async def test_save_rejects_missing_or_blank(self, journal, repo, values) -> None:
+        """省略・null・空・空白だけは項目のエラーにし、何も保存しない。"""
+        with pytest.raises(SettingsValidationError) as excinfo:
+            await svc.save_settings("journal", values)
+
+        template_errors = [e for e in excinfo.value.errors if e["field"] == "template"]
+        assert template_errors == [{"field": "template", "message": "this setting is required"}]
+        repo.save.assert_not_awaited()
+
+    async def test_save_reports_other_errors_together(self, journal, repo) -> None:
+        """必須の違反と他の項目の違反を一緒に返す。"""
+        with pytest.raises(SettingsValidationError) as excinfo:
+            await svc.save_settings("journal", {"template": None, "limit": "x"})
+
+        assert {e["field"] for e in excinfo.value.errors} == {"template", "limit"}
+        repo.save.assert_not_awaited()
+
+    async def test_save_with_body_and_optional_unset(self, journal, repo) -> None:
+        """本文があれば保存でき、宣言の無い nullable 項目は従来どおり null で保存できる。"""
+        await svc.save_settings("journal", {"template": "# body", "note": None})
+
+        repo.save.assert_awaited_once_with(
+            "journal", {"template": "# body", "note": None, "limit": 10}
+        )
+
+    async def test_unknown_key_is_reported_alone(self, journal, repo) -> None:
+        """未知のキーがあるときはそれだけを返す（従来どおり）。"""
+        with pytest.raises(SettingsValidationError) as excinfo:
+            await svc.save_settings("journal", {"bogus": 1})
+
+        assert excinfo.value.errors == [{"field": "bogus", "message": "unknown setting"}]

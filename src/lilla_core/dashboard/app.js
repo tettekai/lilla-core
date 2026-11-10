@@ -820,7 +820,8 @@ function dashboardApp() {
       if (settings && settings.values) {
         for (const field of settings.fields) {
           const value = settings.values[field.name];
-          unset[field.name] = field.nullable && (value === null || value === undefined);
+          // 保存時入力必須の項目は「未設定」を選べないので、未設定の値も空の入力欄にする
+          unset[field.name] = this.settingsCanUnset(field) && (value === null || value === undefined);
           draft[field.name] = value === null || value === undefined ? '' : value;
         }
       }
@@ -828,6 +829,16 @@ function dashboardApp() {
       this.exts.settingsUnset = unset;
       this.exts.settingsErrors =
         settings && settings.error && settings.error.errors ? settings.error.errors : [];
+    },
+
+    settingsCanUnset(field) {
+      return Boolean(field.nullable && !field.required_on_save);
+    },
+
+    settingsMissingRequired(field) {
+      if (!field.required_on_save) return false;
+      const value = this.exts.settingsDraft[field.name];
+      return value === null || value === undefined || String(value).trim() === '';
     },
 
     settingsFieldErrors(name) {
@@ -841,7 +852,7 @@ function dashboardApp() {
       const values = {};
       for (const field of settings.fields) {
         let value = this.exts.settingsDraft[field.name];
-        if (field.nullable && this.exts.settingsUnset[field.name]) {
+        if (this.settingsCanUnset(field) && this.exts.settingsUnset[field.name]) {
           value = null;
         } else if ((field.type === 'integer' || field.type === 'number') && value !== '') {
           value = Number(value);
