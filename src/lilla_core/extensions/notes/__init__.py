@@ -1,4 +1,7 @@
-"""MongoDB に保存する汎用のノート置き場（公式拡張パックの `notes` 拡張）。
+"""MongoDB に保存する汎用のノート置き場（標準機能の `notes` 拡張）。
+
+コアの `load_extensions()` が `LILLA_EXTENSIONS` によらず常に読み込む（`BUILTIN_EXTENSION_MODULES`）。
+パッケージは公式拡張パックと同じ場所にあるが、並べたときだけ有効になる拡張ではない。
 
 設定なしで使えるテキストの置き場所で、中身は「パス + 本文 + 更新日時」を持つ仮想の
 ファイルシステム。LLM からは `files` 拡張と同じ形のツール（`llm_notes_list` /

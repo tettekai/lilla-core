@@ -8,6 +8,10 @@
 import できなければ公式拡張パック（`lilla_core.extensions.google_oauth`）を
 補ってもう一度だけ試す短縮名記法にも対応する（`_import_extension_module()`）。
 
+`BUILTIN_EXTENSION_MODULES` に挙げた拡張（ノート置き場 `notes`）は標準機能で、
+`LILLA_EXTENSIONS` に並べなくても `load_extensions()` が常に先頭へ読み込む。
+`LILLA_EXTENSIONS` に残っていたら、二重登録にせず警告して読み飛ばす。
+
 `Extension` は Adapter 型で、全メソッドに「何もしない」デフォルトがある。
 拡張は使うものだけをオーバーライドする。
 
@@ -73,6 +77,11 @@ logger = logging.getLogger(__name__)
 
 #: 拡張モジュールの import パスを並べる環境変数名（カンマ区切り）。
 EXTENSIONS_ENV_VAR = "LILLA_EXTENSIONS"
+
+#: `LILLA_EXTENSIONS` によらず `load_extensions()` が常に読み込む標準機能のモジュール。
+#: 実装は公式拡張パックと同じ `Extension` 契約で書かれており、コア本体はモジュールを
+#: 直接 import せず、ここに挙げた import パスを文字列で読む。
+BUILTIN_EXTENSION_MODULES: tuple[str, ...] = ("lilla_core.extensions.notes",)
 
 #: 各拡張モジュールが `Extension` インスタンスを export する属性名。
 EXTENSION_ATTR = "extension"
@@ -1421,6 +1430,27 @@ def reset_extensions() -> None:
     set_extensions([])
 
 
+def _names_builtin_module(module_path: str) -> bool:
+    """`LILLA_EXTENSIONS` の 1 項目が標準機能のモジュールを指すか（短縮名も含む）を返す。"""
+    candidates = {module_path}
+    if "." not in module_path:
+        candidates.add(f"{_OFFICIAL_EXTENSION_PACKAGE_PREFIX}{module_path}")
+    return any(path in BUILTIN_EXTENSION_MODULES for path in candidates)
+
+
+def _extension_of(module: ModuleType, module_path: str) -> Any:
+    """モジュールが export する `extension` 属性を返す（無ければ `AttributeError`）。
+
+    型の検査は `set_extensions()` が行うため、ここでは属性の有無だけを見る。
+    """
+    if not hasattr(module, EXTENSION_ATTR):
+        raise AttributeError(
+            f"Extension module '{module_path}' must export "
+            f"a single '{EXTENSION_ATTR}' attribute"
+        )
+    return getattr(module, EXTENSION_ATTR)
+
+
 def _import_extension_module(module_path: str) -> ModuleType:
     """`LILLA_EXTENSIONS` の 1 項目を、公式拡張パックの短縮名にも対応して import する。
 
@@ -1461,7 +1491,7 @@ def load_extensions(spec: str | None = None) -> list[Extension]:
 
     登録のあと、拡張が申告した YAML セクションと秘匿フィールドを
     `compose_config()` で `AppConfig` へ合成し、`set_config()` でプロセスの設定に
-    据える。拡張が 0 個、または申告が空なら素の `AppConfig` になる。
+    据える。`LILLA_EXTENSIONS` が空でも標準機能の拡張（後述）は載る。
 
     コアの他の初期化（`get_config()` / コマンド・ツールのロード）より前に
     呼ぶこと。ここで組んだ設定インスタンスを以降の `get_config()` が返すため。
@@ -1471,11 +1501,16 @@ def load_extensions(spec: str | None = None) -> list[Extension]:
     （`_import_extension_module`）。公式拡張パック向けの短縮記法で、`.` を含む
     パス（第三者パックや、すでにフルパスで書いた公式拡張）には適用しない。
 
+    `BUILTIN_EXTENSION_MODULES` の拡張（標準機能のノート置き場 `notes`）は `spec` に
+    よらず常に先頭へ読み込む（他の拡張が `requires` で依存しても並び順を気にせずに
+    済むため）。`spec` に同じ拡張が書かれていたら（短縮名・フルパスのどちらでも）、
+    二重登録で落とさずに WARNING を出して読み飛ばす。
+
     Args:
         spec: カンマ区切りの import パス。`None` なら `LILLA_EXTENSIONS` を読む。
 
     Returns:
-        ロード順に並んだ `Extension` インスタンスのリスト。
+        ロード順に並んだ `Extension` インスタンスのリスト（先頭は標準機能の拡張）。
 
     Raises:
         ImportError: モジュールを import できない場合（短縮名の解決も失敗した場合を含む）。
@@ -1490,15 +1525,27 @@ def load_extensions(spec: str | None = None) -> list[Extension]:
         spec = os.environ.get(EXTENSIONS_ENV_VAR, "")
 
     module_paths = [part.strip() for part in spec.split(",") if part.strip()]
-    extensions: list[Extension] = []
+    extensions: list[Extension] = [
+        _extension_of(importlib.import_module(path), path)
+        for path in BUILTIN_EXTENSION_MODULES
+    ]
+    builtin_ids = {id(ext) for ext in extensions}
     for module_path in module_paths:
-        module = _import_extension_module(module_path)
-        if not hasattr(module, EXTENSION_ATTR):
-            raise AttributeError(
-                f"Extension module '{module_path}' must export "
-                f"a single '{EXTENSION_ATTR}' attribute"
+        # 標準機能の短縮名・フルパスは import せずに見分ける（短縮名がカレントディレクトリの
+        # 同名パッケージなどに解決されて別物を読むのを避けるため）。
+        if _names_builtin_module(module_path):
+            ext = None
+        else:
+            ext = _extension_of(_import_extension_module(module_path), module_path)
+        if ext is None or id(ext) in builtin_ids:
+            logger.warning(
+                "Extension module '%s' is now a built-in feature and is always loaded; "
+                "skipping it. Remove it from %s.",
+                module_path,
+                EXTENSIONS_ENV_VAR,
             )
-        extensions.append(getattr(module, EXTENSION_ATTR))
+            continue
+        extensions.append(ext)
 
     # コアの他モジュールより先に拡張モジュールを import させるため、`config` の
     # import は拡張の import が終わったここまで遅らせる。

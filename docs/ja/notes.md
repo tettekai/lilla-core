@@ -1,6 +1,7 @@
-# ノート置き場（公式拡張パック）
+# ノート置き場（標準機能）
 
-公式拡張パックの `notes` 拡張は、設定なしで使えるテキストの置き場所です。中身は MongoDB に
+ノート置き場（`notes`）は、設定なしで使えるテキストの置き場所です。lilla-core の **標準機能** で、
+`LILLA_EXTENSIONS` に並べなくても常に有効です。中身は MongoDB に
 「パス + 本文 + 更新日時」を持つ仮想のファイルシステムで、次の 3 通りで使います。
 
 - **LLM から**: [`files` 拡張](files.md) と同じ形のツール（`llm_notes_list` / `llm_notes_read` /
@@ -15,13 +16,26 @@
 
 ## 有効化
 
-```bash
-export LILLA_EXTENSIONS=notes
-# フルパスでも同じ: export LILLA_EXTENSIONS=lilla_core.extensions.notes
+設定は要りません。起動時にコアが常に読み込み（読み込む拡張の先頭に入ります）、`notes`（本体）と
+`notes_history`（直前の版）の 2 つのコレクションへインデックスを作ります。保存先
+`get_file_storage("notes")` とダッシュボードの「ノート」画面も常に使えます。そのため、ほかの拡張は
+`requires` を書かずに notes がある前提で使えます。
+
+実装は `Extension` 契約で書かれた拡張（`name = "notes"`）で、パッケージは公式拡張パックと同じ
+`lilla_core.extensions.notes` に置いていますが、`files` や Google 系のように並べたときだけ有効になる
+拡張ではありません。
+
+### 以前の構成からの移行
+
+以前は `LILLA_EXTENSIONS` に `notes`（または `lilla_core.extensions.notes`）を並べて有効にしていました。
+残っていても起動は失敗せず、二重には読み込みません。その項目を読み飛ばし、次の警告を出します。
+
+```text
+Extension module 'notes' is now a built-in feature and is always loaded; skipping it. Remove it from LILLA_EXTENSIONS.
 ```
 
-他の拡張と並べる場合も順序の制約はありません。起動時に `notes`（本体）と
-`notes_history`（直前の版）の 2 つのコレクションへインデックスを作ります。
+警告が出たら `LILLA_EXTENSIONS` から notes を外してください。データ（`notes` / `notes_history`
+コレクション）と設定（`extensions.notes`）はそのまま使えます。
 
 ## 設定
 

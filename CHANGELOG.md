@@ -7,6 +7,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- ノート置き場 `notes` を、`LILLA_EXTENSIONS` に並べたときだけ有効な公式拡張パックの拡張から、常に有効な標準機能にした（#333）。
+  - `load_extensions()` が `LILLA_EXTENSIONS` によらず notes を先頭に読み込む（設定 `extensions.notes`・保存先 `notes`・ダッシュボードの
+    「ノート」画面・`notes` / `notes_history` の初期化が常に有効）。他の拡張は `requires` を書かずに notes がある前提で使える
+  - `LILLA_EXTENSIONS` に `notes` / `lilla_core.extensions.notes` が残っていても起動は失敗せず、二重には読み込まずに WARNING を出して
+    読み飛ばす（列挙は外してよい）
+  - LLM ツール（`llm_notes_*`）は従来どおり YAML を置いたものだけ有効で、引数・戻り値も変わらない。パッケージは `lilla_core.extensions.notes` のまま
+  - 読み込む拡張の一覧（`load_extensions()` / `get_extensions()` の戻り値）の先頭に、常に `notes` が入る
+
 ### Added
 
 - 会話履歴 1 件の今の `reactions` を返す `ConversationRepository.get_reactions(conversation_id)` を追加した（#329）。

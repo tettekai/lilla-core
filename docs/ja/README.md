@@ -34,7 +34,7 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [判定ヘルパー（Jev）](jev.md) — 任意の `lilla_core.tool_support.jev`
 - [Google OAuth / Calendar / Drive（公式拡張パック）](google.md) — `lilla_core.extensions` の同梱拡張
 - [ローカルのファイル読み書き（公式拡張パック）](files.md) — `lilla_core.extensions.files`
-- [ノート置き場（公式拡張パック）](notes.md) — `lilla_core.extensions.notes`
+- [ノート置き場（標準機能）](notes.md) — 常に有効な `notes`（`lilla_core.extensions.notes`）
 
 ## 拡張
 
