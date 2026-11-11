@@ -822,12 +822,16 @@ function dashboardApp() {
           const value = settings.values[field.name];
           if (field.widget === 'checkbox-group') {
             // 配列の項目は「未設定」を持たない。null も空の選択として扱う
+            // キーが無い（不正な保存値に後から足した項目）ときは初期値から始め、
+            // 意図せず全部オフで保存されないようにする
             unset[field.name] = false;
-            draft[field.name] = Array.isArray(value) ? [...value] : [];
+            const start = value === undefined ? field.default : value;
+            draft[field.name] = Array.isArray(start) ? [...start] : [];
           } else if (!field.supported) {
-            // 汎用フォームで編集できない項目は、保存時にそのまま送り返す
+            // 汎用フォームで編集できない項目は、保存時にそのまま送り返す。
+            // キーが無ければ undefined のままにして送らない（モデルの初期値で埋めさせる）
             unset[field.name] = false;
-            draft[field.name] = value === undefined ? null : value;
+            draft[field.name] = value;
           } else {
             unset[field.name] = field.nullable && (value === null || value === undefined);
             draft[field.name] = value === null || value === undefined ? '' : value;
@@ -883,7 +887,7 @@ function dashboardApp() {
           continue;
         }
         if (!field.supported) {
-          values[field.name] = value === undefined ? null : value;
+          if (value !== undefined) values[field.name] = value;
           continue;
         }
         if (field.nullable && this.exts.settingsUnset[field.name]) {

@@ -184,6 +184,8 @@ class TestWidgetDeclaration:
             (list[str], [], {"widget": "checkbox-group", "choices_from": "nope"}, "unknown choices_from"),
             (list[str], [], {"widget": "checkbox-group", "choices": "a"}, "invalid choices"),
             (list[str], [], {"widget": "checkbox-group", "choices": [{"title": "x"}]}, "invalid choices"),
+            (list[int], [], {"widget": "checkbox-group", "choices": ["1", 2]}, "does not match"),
+            (list[str], [], {"widget": "checkbox-group", "choices": [1]}, "does not match"),
         ],
     )
     def test_rejects_invalid_widget(

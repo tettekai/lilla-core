@@ -22,10 +22,11 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Callable, TypeVar
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 from pydantic.fields import FieldInfo
 
 from lilla_core.core.extension import get_settings_models, list_file_storages
@@ -279,13 +280,34 @@ def _normalize_choices(choices: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+def _check_choice_values(name: str, field: FieldInfo, choices: list[dict[str, Any]]) -> None:
+    """静的な選択肢の各 `value` が項目の要素の型に合うかを確かめる。
+
+    画面は `value` を JSON の型のまま送るため、送られたときと同じ形（1 要素の配列の JSON）を
+    strict で検証する（`list[int]` に `"1"` を書いた宣言ミスを保存時ではなくロード時に見つける）。
+
+    Raises:
+        ValueError: 要素の型に合わない `value` がある場合。
+    """
+    adapter = TypeAdapter(field.annotation)
+    for choice in choices:
+        value = choice["value"]
+        try:
+            adapter.validate_json(json.dumps([value]), strict=True)
+        except (ValidationError, TypeError, ValueError) as e:
+            raise ValueError(
+                f"Settings field '{name}' has a choice value {value!r} "
+                f"that does not match the item type: {e}"
+            ) from e
+
+
 def validate_widgets(model: type[BaseModel]) -> None:
     """モデルの各項目の `widget` 宣言を検証する（拡張のロード時に呼ぶ）。
 
     Raises:
         ValueError: 未知の `widget`、または `checkbox-group` の宣言が不正な場合
             （スカラー要素の配列でない・`choices` と `choices_from` がどちらも無い／両方ある・
-            未知の `choices_from`・`choices` の形が不正）。
+            未知の `choices_from`・`choices` の形が不正・`choices` の値が要素の型に合わない）。
     """
     schema = model.model_json_schema()
     properties = schema.get("properties", {})
@@ -319,9 +341,10 @@ def validate_widgets(model: type[BaseModel]) -> None:
             )
         if has_static:
             try:
-                _normalize_choices(extra["choices"])
+                choices = _normalize_choices(extra["choices"])
             except ValueError as e:
                 raise ValueError(f"Settings field '{name}' has invalid choices: {e}") from e
+            _check_choice_values(name, field, choices)
 
 
 def describe_fields(model: type[BaseModel]) -> list[dict]:
