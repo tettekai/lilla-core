@@ -840,6 +840,54 @@ async def test_remove_reaction_missing_conversation_raises() -> None:
         await repo.remove_reaction(_OID, ReactionEmoji("👍"))
 
 
+async def test_get_reactions_returns_stored_reactions() -> None:
+    """存在する会話履歴の reactions を list_for_client と同じ要素の形で返す。"""
+    reactions = [
+        {"emoji": "❤️", "source": "discord", "reacted_at": _REACTED_AT},
+        {"emoji": "lilla_smile", "emoji_id": 123, "source": "client", "reacted_at": _REACTED_AT},
+    ]
+    collection = MagicMock()
+    collection.find_one = AsyncMock(return_value={"reactions": reactions})
+    repo = _make_repo(collection)
+
+    assert await repo.get_reactions(_OID) == reactions
+    assert collection.find_one.call_args.args == (
+        {"_id": ObjectId(_OID)}, {"_id": 0, "reactions": 1},
+    )
+
+
+@pytest.mark.parametrize("doc", [{}, {"reactions": None}, {"reactions": "broken"}])
+async def test_get_reactions_returns_empty_list_without_reactions(doc: dict) -> None:
+    """reactions が無い・壊れているドキュメントでは空リストを返す。"""
+    collection = MagicMock()
+    collection.find_one = AsyncMock(return_value=doc)
+    repo = _make_repo(collection)
+
+    assert await repo.get_reactions(_OID) == []
+
+
+async def test_get_reactions_missing_conversation_raises() -> None:
+    """会話履歴が無ければ ConversationNotFoundError を送出する。"""
+    collection = MagicMock()
+    collection.find_one = AsyncMock(return_value=None)
+    repo = _make_repo(collection)
+
+    with pytest.raises(ConversationNotFoundError):
+        await repo.get_reactions(_OID)
+
+
+@pytest.mark.parametrize("bad_id", ["", "not-an-object-id", "65f0000000000000000000a"])
+async def test_get_reactions_invalid_id_raises_value_error(bad_id: str) -> None:
+    """conversation_id が ObjectId として不正なら DB を読まずに ValueError を送出する。"""
+    collection = MagicMock()
+    collection.find_one = AsyncMock()
+    repo = _make_repo(collection)
+
+    with pytest.raises(ValueError):
+        await repo.get_reactions(bad_id)
+    collection.find_one.assert_not_called()
+
+
 async def test_find_id_by_discord_message_id() -> None:
     """discord_message_ids のどれかに一致する履歴の _id を返し、無ければ None。"""
     collection = MagicMock()
