@@ -703,4 +703,5 @@ tr.clickable:hover { background: var(--bg-secondary); }
 .ext-setting { display: flex; flex-direction: column; gap: 4px; }
 .ext-setting-label { align-items: baseline; display: flex; font-weight: 600; gap: 8px; }
 .ext-setting-input { width: 40ch; }
+.ext-choices { display: flex; flex-direction: column; gap: 4px; }
 .ext-error-text { color: var(--error); }

@@ -20,6 +20,36 @@ from lilla_core.services.extension_settings import (
 from lilla_core.testing import use_extensions as compose_with, write_minimal_lilla_yaml
 
 
+class DiaryYamlConfigBase(BaseModel):
+    """入れ子のモデル（汎用フォームの対象外）。"""
+
+    note: str = ""
+
+
+def _storage(read_only: bool = False):
+    """何もしない `FileStorage` を返す（`read_only` だけを指定できる）。"""
+    from lilla_core.core.file_storage import FileStorage, FileWriteResult
+
+    class _Storage(FileStorage):
+        @property
+        def read_only(self) -> bool:
+            return read_only
+
+        async def read(self, path):
+            return ""
+
+        async def write(self, path, content, mode="overwrite"):
+            return FileWriteResult(path=path, created=True)
+
+        async def list(self, path=""):
+            return []
+
+        async def exists(self, path):
+            return False
+
+    return _Storage()
+
+
 class DiarySettings(BaseModel):
     """テスト用の画面管理の設定（未設定を取れる複数行の文字列と、時刻の文字列）。"""
 
@@ -35,6 +65,21 @@ class DiarySettings(BaseModel):
         if value is not None and not value.strip():
             raise ValueError("template must not be blank")
         return value
+
+
+class JournalSettings(BaseModel):
+    """チェックボックス群（静的・動的な選択肢）と、汎用フォームで扱えない項目を持つ設定。"""
+
+    storages: list[str] = Field(
+        default=["notes"],
+        json_schema_extra={"widget": "checkbox-group", "choices_from": "writable_file_storages"},
+    )
+    levels: list[int] = Field(
+        default=[1],
+        json_schema_extra={"widget": "checkbox-group", "choices": [1, {"value": 2, "title": "Two"}]},
+    )
+    tags: list[str] = []
+    nested: DiaryYamlConfigBase = DiaryYamlConfigBase()
 
 
 class DiaryYamlConfig(BaseModel):
@@ -119,6 +164,47 @@ class TestDeclaration:
             use_extensions(
                 make_extension("diary", settings_model=DiarySettings, config_model=Both)
             )
+
+
+class TestWidgetDeclaration:
+    """`json_schema_extra` の `widget` 宣言のロード時の検証。"""
+
+    @pytest.mark.parametrize(
+        ("annotation", "default", "extra", "match"),
+        [
+            (list[str], [], {"widget": "tags"}, "unknown widget 'tags'"),
+            (str, "", {"widget": "checkbox-group", "choices": ["a"]}, "not a list of scalar"),
+            (list[str], [], {"widget": "checkbox-group"}, "exactly one of"),
+            (
+                list[str],
+                [],
+                {"widget": "checkbox-group", "choices": ["a"], "choices_from": "writable_file_storages"},
+                "exactly one of",
+            ),
+            (list[str], [], {"widget": "checkbox-group", "choices_from": "nope"}, "unknown choices_from"),
+            (list[str], [], {"widget": "checkbox-group", "choices": "a"}, "invalid choices"),
+            (list[str], [], {"widget": "checkbox-group", "choices": [{"title": "x"}]}, "invalid choices"),
+        ],
+    )
+    def test_rejects_invalid_widget(
+        self, make_extension, use_extensions, annotation, default, extra, match
+    ) -> None:
+        """未知の部品・配列でない・選択肢の宣言漏れや重複・未知のプロバイダはロード時に落とす。"""
+        from pydantic import create_model
+
+        model = create_model(
+            "Bad", value=(annotation, Field(default=default, json_schema_extra=extra))
+        )
+        with pytest.raises(ValueError, match=match):
+            use_extensions(make_extension("diary", settings_model=model))
+
+    def test_accepts_valid_widgets(self, make_extension, use_extensions) -> None:
+        """静的・動的な選択肢のチェックボックス群は登録できる。"""
+        from lilla_core.core.extension import get_settings_models
+
+        use_extensions(make_extension("journal", settings_model=JournalSettings))
+
+        assert get_settings_models() == {"journal": JournalSettings}
 
 
 class TestYamlRejection:
@@ -224,6 +310,27 @@ class TestSaveSettings:
 
         repo.save.assert_awaited_once_with("diary", {"template": "# body\n", "day_rollover": "04:00"})
 
+    async def test_empty_list_is_kept(self, make_extension, use_extensions, repo) -> None:
+        """全部オフ（`[]`）は初期値に戻さず、読み直しても `[]` のまま。"""
+        use_extensions(make_extension("journal", settings_model=JournalSettings))
+
+        await svc.save_settings("journal", {"storages": [], "levels": []})
+        loaded = await svc.load_settings("journal", JournalSettings)
+
+        assert repo.save.await_args.args[1]["storages"] == []
+        assert loaded.storages == []
+        assert loaded.levels == []
+
+    async def test_value_outside_dynamic_choices_is_saved(
+        self, make_extension, use_extensions, repo
+    ) -> None:
+        """今の動的な候補に無い値でも、モデルの検証を通れば拒否しない。"""
+        use_extensions(make_extension("journal", settings_model=JournalSettings))
+
+        await svc.save_settings("journal", {"storages": ["gone"]})
+
+        assert repo.save.await_args.args[1]["storages"] == ["gone"]
+
     async def test_explicit_unset_is_allowed(self, diary, repo) -> None:
         """未設定（`None`）は空の本文と区別して保存できる。"""
         await svc.save_settings("diary", {"template": None})
@@ -272,6 +379,82 @@ class TestDetail:
         assert fields["day_rollover"]["multiline"] is False
         assert fields["day_rollover"]["default"] == "04:00"
         assert fields["day_rollover"]["pattern"] == r"^\d{2}:\d{2}$"
+
+    def test_describe_fields_has_no_widget_by_default(self) -> None:
+        """`widget` の無い項目は `widget` / `items_type` / `choices` が `None` で、扱える。"""
+        fields = {field["name"]: field for field in svc.describe_fields(DiarySettings)}
+
+        assert fields["template"]["widget"] is None
+        assert fields["template"]["items_type"] is None
+        assert fields["template"]["choices"] is None
+        assert fields["template"]["supported"] is True
+
+    def test_describe_checkbox_group(self) -> None:
+        """チェックボックス群は部品・要素の型・静的な選択肢を返し、動的な選択肢は解決しない。"""
+        fields = {field["name"]: field for field in svc.describe_fields(JournalSettings)}
+
+        storages = fields["storages"]
+        assert storages["type"] == "array"
+        assert storages["widget"] == "checkbox-group"
+        assert storages["items_type"] == "string"
+        assert storages["choices"] is None
+        assert storages["choices_from"] == "writable_file_storages"
+        assert storages["default"] == ["notes"]
+        assert storages["supported"] is True
+        levels = fields["levels"]
+        assert levels["items_type"] == "integer"
+        assert levels["choices"] == [{"value": 1, "title": "1"}, {"value": 2, "title": "Two"}]
+
+    def test_type_alone_does_not_pick_a_widget(self) -> None:
+        """`widget` の無い配列・入れ子のモデルは部品を推測せず、未対応にする。"""
+        fields = {field["name"]: field for field in svc.describe_fields(JournalSettings)}
+
+        assert fields["tags"]["type"] == "array"
+        assert fields["tags"]["widget"] is None
+        assert fields["tags"]["supported"] is False
+        assert fields["nested"]["type"] == "object"
+        assert fields["nested"]["supported"] is False
+
+    async def test_detail_resolves_writable_file_storages(
+        self, make_extension, use_extensions, repo
+    ) -> None:
+        """`writable_file_storages` は書き込める保存先だけを登録順に選択肢にする。"""
+        use_extensions(
+            make_extension(
+                "journal",
+                settings_model=JournalSettings,
+                file_storages={
+                    "zeta": _storage(),
+                    "archive": _storage(read_only=True),
+                    "alpha": _storage(),
+                },
+            )
+        )
+
+        detail = await svc.build_settings_detail("journal")
+
+        fields = {field["name"]: field for field in detail["fields"]}
+        assert fields["storages"]["choices"] == [
+            {"value": "zeta", "title": "zeta"},
+            {"value": "alpha", "title": "alpha"},
+        ]
+        assert fields["levels"]["choices"][1] == {"value": 2, "title": "Two"}
+
+    async def test_detail_survives_provider_failure(
+        self, make_extension, use_extensions, repo, monkeypatch
+    ) -> None:
+        """選択肢のプロバイダが失敗しても、空の候補で詳細を返す。"""
+        use_extensions(make_extension("journal", settings_model=JournalSettings))
+
+        def _boom():
+            raise RuntimeError("boom")
+
+        monkeypatch.setitem(svc.CHOICE_PROVIDERS, "writable_file_storages", _boom)
+
+        detail = await svc.build_settings_detail("journal")
+
+        fields = {field["name"]: field for field in detail["fields"]}
+        assert fields["storages"]["choices"] == []
 
     async def test_unsaved(self, diary, repo) -> None:
         """未保存なら初期値を値として返し、`stored` は偽。"""

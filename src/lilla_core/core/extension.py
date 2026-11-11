@@ -879,7 +879,8 @@ def _collect_settings_models(extensions: list[Extension]) -> dict[str, Any]:
     Raises:
         ValueError: `BaseModel` サブクラス以外を返した場合、既定値の無いフィールドが
             ある場合、既定値（初期値）がモデルの検証を通らない場合、または
-            `config_model()` と同じ名前のフィールドを持つ（担当の二重宣言）場合。
+            `config_model()` と同じ名前のフィールドを持つ（担当の二重宣言）場合、
+            または `json_schema_extra` の `widget` の宣言が不正な場合。
     """
     from pydantic import BaseModel, ValidationError
 
@@ -907,6 +908,13 @@ def _collect_settings_models(extensions: list[Extension]) -> dict[str, Any]:
             raise ValueError(
                 f"Extension '{ext.name}' settings_model() has invalid default values: {e}"
             ) from e
+        # 循環 import を避けるため関数内で import する（services 側がこのモジュールを読む）
+        from lilla_core.services.extension_settings import validate_widgets
+
+        try:
+            validate_widgets(model)
+        except ValueError as e:
+            raise ValueError(f"Extension '{ext.name}' settings_model(): {e}") from e
         config_model = ext.config_model()
         if isinstance(config_model, type) and issubclass(config_model, BaseModel):
             both = sorted(set(model.model_fields) & set(config_model.model_fields))
