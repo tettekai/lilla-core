@@ -12,7 +12,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from lilla_core.handlers import dashboard_extensions, task_handler
 
@@ -24,6 +24,39 @@ class DiarySettings(BaseModel):
 
     template: str | None = None
     day_rollover: str = "04:00"
+
+
+class JournalSettings(BaseModel):
+    """チェックボックス群（書き込める保存先から選ぶ）を持つ設定。"""
+
+    storages: list[str] = Field(
+        default=["notes"],
+        json_schema_extra={"widget": "checkbox-group", "choices_from": "writable_file_storages"},
+    )
+
+
+def _storage(read_only: bool = False):
+    """何もしない `FileStorage` を返す（`read_only` だけを指定できる）。"""
+    from lilla_core.core.file_storage import FileStorage, FileWriteResult
+
+    class _Storage(FileStorage):
+        @property
+        def read_only(self) -> bool:
+            return read_only
+
+        async def read(self, path):
+            return ""
+
+        async def write(self, path, content, mode="overwrite"):
+            return FileWriteResult(path=path, created=True)
+
+        async def list(self, path=""):
+            return []
+
+        async def exists(self, path):
+            return False
+
+    return _Storage()
 
 
 def _tool(schedule: str, extension: str | None) -> dict:
@@ -374,4 +407,62 @@ class TestAuthentication:
             await client.close()
         repo.update_overrides.assert_not_awaited()
         apply.assert_not_awaited()
+        settings_repo.save.assert_not_awaited()
+
+
+class TestCheckboxGroupSettings:
+    """チェックボックス群の項目の詳細と保存。"""
+
+    @pytest.fixture(autouse=True)
+    def journal(self, make_extension, use_extensions):
+        """`journal`（書き込める保存先・読み取り専用の保存先つき）を登録する。"""
+        use_extensions(
+            make_extension(
+                "journal",
+                settings_model=JournalSettings,
+                file_storages={"daily": _storage(), "archive": _storage(read_only=True)},
+            )
+        )
+
+    async def test_detail_resolves_choices(self, client) -> None:
+        """詳細の項目には解決済みの選択肢（書き込める保存先だけ）が入る。"""
+        data = await (await client.get("/api/admin/extensions/journal")).json()
+
+        field = data["settings"]["fields"][0]
+        assert field["widget"] == "checkbox-group"
+        assert field["items_type"] == "string"
+        assert field["choices"] == [{"value": "daily", "title": "daily"}]
+        assert data["settings"]["values"] == {"storages": ["notes"]}
+
+    async def test_empty_list_round_trips(self, client, settings_repo) -> None:
+        """`[]` を保存すると、読み直しても初期値に戻らず `[]` のまま。"""
+        res = await client.put(
+            "/api/admin/extensions/journal/settings", json={"values": {"storages": []}}
+        )
+
+        assert res.status == 200
+        assert (await res.json())["settings"]["values"] == {"storages": []}
+        settings_repo.save.assert_awaited_once_with("journal", {"storages": []})
+        data = await (await client.get("/api/admin/extensions/journal")).json()
+        assert data["settings"]["stored"] is True
+        assert data["settings"]["values"] == {"storages": []}
+
+    async def test_value_outside_choices_is_accepted(self, client, settings_repo) -> None:
+        """今の候補に無い値でも、モデルの検証を通れば保存して値を落とさない。"""
+        res = await client.put(
+            "/api/admin/extensions/journal/settings",
+            json={"values": {"storages": ["daily", "gone"]}},
+        )
+
+        assert res.status == 200
+        data = await (await client.get("/api/admin/extensions/journal")).json()
+        assert data["settings"]["values"] == {"storages": ["daily", "gone"]}
+
+    async def test_wrong_item_type_is_rejected(self, client, settings_repo) -> None:
+        """モデルの規則（要素の型）に反する値は 400 で、何も保存しない。"""
+        res = await client.put(
+            "/api/admin/extensions/journal/settings", json={"values": {"storages": "daily"}}
+        )
+
+        assert res.status == 400
         settings_repo.save.assert_not_awaited()

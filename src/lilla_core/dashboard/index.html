@@ -441,22 +441,49 @@
                       <code class="ext-sub" x-text="field.name"></code>
                     </label>
                     <div class="ext-sub" x-show="field.description" x-text="field.description"></div>
-                    <label class="memo-toggle" x-show="field.nullable">
+                    <label class="memo-toggle" x-show="field.nullable && isPlainSettingField(field)">
                       <input type="checkbox" x-model="exts.settingsUnset[field.name]">
                       未設定
                     </label>
-                    <template x-if="field.type === 'boolean'">
+                    <template x-if="field.widget === 'checkbox-group'">
+                      <div class="ext-choices">
+                        <template x-for="(choice, index) in (field.choices || [])" :key="'c' + index">
+                          <label class="memo-toggle">
+                            <input type="checkbox" :checked="settingChoiceChecked(field, choice.value)"
+                              @change="toggleSettingChoice(field, choice.value, $event.target.checked)">
+                            <span x-text="choice.title"></span>
+                          </label>
+                        </template>
+                        <template x-for="(value, index) in settingUnknownChoices(field)" :key="'u' + index">
+                          <label class="memo-toggle">
+                            <input type="checkbox" checked
+                              @change="toggleSettingChoice(field, value, $event.target.checked)">
+                            <span x-text="String(value)"></span>
+                            <span class="ext-sub ext-warning-text">（今の候補にありません。外すと保存時に消えます）</span>
+                          </label>
+                        </template>
+                        <div class="ext-sub" x-show="(field.choices || []).length === 0 && settingUnknownChoices(field).length === 0">
+                          選べる候補がありません
+                        </div>
+                      </div>
+                    </template>
+                    <template x-if="!field.supported">
+                      <div class="ext-sub ext-warning-text">
+                        この項目の型はこのフォームでは未対応です（保存しても今の値のまま変わりません）
+                      </div>
+                    </template>
+                    <template x-if="isPlainSettingField(field) && field.type === 'boolean'">
                       <label class="memo-toggle">
                         <input type="checkbox" x-model="exts.settingsDraft[field.name]"
                           :disabled="exts.settingsUnset[field.name]">
                         有効
                       </label>
                     </template>
-                    <template x-if="field.type !== 'boolean' && field.multiline">
+                    <template x-if="isPlainSettingField(field) && field.type !== 'boolean' && field.multiline">
                       <textarea class="memo-input ext-prompt" rows="12" x-model="exts.settingsDraft[field.name]"
                         :disabled="exts.settingsUnset[field.name]"></textarea>
                     </template>
-                    <template x-if="field.type !== 'boolean' && !field.multiline">
+                    <template x-if="isPlainSettingField(field) && field.type !== 'boolean' && !field.multiline">
                       <input class="ext-cron ext-setting-input"
                         :type="field.type === 'integer' || field.type === 'number' ? 'number' : 'text'"
                         x-model="exts.settingsDraft[field.name]" :disabled="exts.settingsUnset[field.name]"

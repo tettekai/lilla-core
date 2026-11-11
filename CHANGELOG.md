@@ -19,6 +19,15 @@
 
 ### Added
 
+- ダッシュボードの拡張設定（`settings_model()`）の汎用フォームに、選択肢から複数を選ぶ入力部品（チェックボックス群）を追加した（#335）。
+  - `Field` の `json_schema_extra` に `widget: "checkbox-group"` と、静的な `choices`（`{value, title}` か値だけのリスト）または
+    動的な `choices_from` を書く。最初の `choices_from` は `writable_file_storages`（`read_only` が偽の保存先）。部品は型から推測しない
+  - `describe_fields()` が `widget` / `items_type` / `choices` / `choices_from` / `supported` を返し、`build_settings_detail()` が
+    `choices_from` を今の候補へ解決する。全部オフは `[]` を明示して保存し、今の候補に無い保存値は落とさずに注意つきで残す
+  - `widget` の宣言が不正（未知の部品・スカラーの配列でない・`choices` と `choices_from` が無い／両方ある・未知の `choices_from`）な
+    `settings_model()` は拡張のロード時に落とす
+  - `widget` の無い配列・入れ子のモデルは、テキスト入力に落とさず「このフォームでは未対応」と表示する（保存時は今の値をそのまま送る）
+
 - 会話履歴 1 件の今の `reactions` を返す `ConversationRepository.get_reactions(conversation_id)` を追加した（#329）。
   会話履歴が無ければ `ConversationNotFoundError`、`conversation_id` が ObjectId として不正な形式なら `ValueError` を送出する。
   利用側がリポジトリの非公開属性 `_collection` を読まずに済むようにするため
