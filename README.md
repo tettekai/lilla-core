@@ -45,10 +45,12 @@ it needs, and exposes itself from its module as `extension = MyExtension()`.
 
 Google OAuth (`lilla_core.extensions.google_oauth`), Google Calendar
 (`lilla_core.extensions.google_calendar`), Google Drive / Sheets
-(`lilla_core.extensions.google_drive`), local file read / write (`lilla_core.extensions.files`),
-and a MongoDB-backed notes store (`lilla_core.extensions.notes`)
+(`lilla_core.extensions.google_drive`), and local file read / write (`lilla_core.extensions.files`)
 ship with the core as an official extension pack. Each is
 loaded only when listed in `LILLA_EXTENSIONS`.
+
+The MongoDB-backed notes store (`notes`) is a built-in feature and is always enabled, without
+listing it in `LILLA_EXTENSIONS` (LLM tools, the dashboard "Notes" page, and the `notes` storage).
 
 ## Optional decision helper (Jev)
 

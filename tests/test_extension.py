@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -115,6 +116,13 @@ class TestExtensionDefaults:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def no_builtin_extensions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """標準機能の拡張を外し、`LILLA_EXTENSIONS` の解釈だけを検証できるようにする。"""
+    monkeypatch.setattr(ext_module, "BUILTIN_EXTENSION_MODULES", ())
+
+
+@pytest.mark.usefixtures("no_builtin_extensions")
 class TestLoadExtensions:
     def test_empty_spec_loads_nothing(self) -> None:
         """未設定・空なら 0 個（コア単体起動）。"""
@@ -711,6 +719,7 @@ class TestRequiredToolContextKeys:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("no_builtin_extensions")
 class TestLoadExtensionsComposesConfig:
     """`load_extensions()` が申告を合成してプロセスの設定に据えること。"""
 
@@ -758,6 +767,67 @@ class TestLoadExtensionsComposesConfig:
         ext_module.load_extensions("")
 
         assert type(config_module().get_config()) is config_module().AppConfig
+
+
+# ---------------------------------------------------------------------------
+# TestBuiltinExtensions
+# ---------------------------------------------------------------------------
+
+
+class TestBuiltinExtensions:
+    """標準機能の拡張（`notes`）は `LILLA_EXTENSIONS` によらず常に読み込まれる。"""
+
+    def test_builtin_modules_are_notes_only(self) -> None:
+        """標準機能は notes だけ（他の公式拡張パックの拡張は並べたときだけ有効）。"""
+        assert ext_module.BUILTIN_EXTENSION_MODULES == ("lilla_core.extensions.notes",)
+
+    def test_empty_spec_loads_notes(self) -> None:
+        """空でも notes が読み込まれ、保存先・画面・起動時リポジトリ・設定が有効になる。"""
+        loaded = ext_module.load_extensions("")
+
+        assert [e.name for e in loaded] == ["notes"]
+        assert ext_module.get_file_storage("notes") is not None
+        assert [p.name for p in ext_module.get_dashboard_pages()] == ["notes"]
+        assert len(ext_module.get_startup_repos()) == 1
+        notes_cfg = config_module().get_config().extensions.notes
+        assert notes_cfg.max_content_chars == 1_000_000
+
+    def test_notes_is_loaded_before_listed_extensions(
+        self, register_module, make_extension
+    ) -> None:
+        """notes は先頭に入り、並べた拡張はその後ろにロード順で続く。"""
+        dependent = make_extension("a")
+        dependent.requires = ("notes",)
+        register_module("pack_a", extension=dependent)
+
+        loaded = ext_module.load_extensions("pack_a")
+
+        assert [e.name for e in loaded] == ["notes", "a"]
+
+    @pytest.mark.parametrize("entry", ["notes", "lilla_core.extensions.notes"])
+    def test_listed_notes_is_skipped_with_warning(
+        self, entry: str, register_module, make_extension, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """`LILLA_EXTENSIONS` に notes が残っていても二重登録にせず、警告して読み飛ばす。"""
+        register_module("pack_a", extension=make_extension("a"))
+
+        with caplog.at_level(logging.WARNING, logger=ext_module.__name__):
+            loaded = ext_module.load_extensions(f"pack_a,{entry}")
+
+        assert [e.name for e in loaded] == ["notes", "a"]
+        assert any(
+            "built-in feature" in r.getMessage() and entry in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_other_extension_named_notes_still_conflicts(
+        self, register_module, make_extension
+    ) -> None:
+        """notes と同名の別の拡張は、従来どおり名前の衝突で落ちる。"""
+        register_module("other_notes", extension=make_extension("notes"))
+
+        with pytest.raises(ValueError, match="Duplicate extension name"):
+            ext_module.load_extensions("other_notes")
 
 
 # ---------------------------------------------------------------------------

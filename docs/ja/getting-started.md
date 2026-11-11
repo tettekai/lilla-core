@@ -74,6 +74,7 @@ python -m lilla_core.bot
 拡張の書き方は [拡張の基本](extensions.md) を参照してください。公式拡張パック
 （`lilla_core.extensions` 配下）はモジュール名だけの短縮記法でも指定できます
 （[Google OAuth / Google Calendar](google.md#有効化)）。
+標準機能のノート置き場（[`notes`](notes.md)）は `LILLA_EXTENSIONS` に書かなくても常に読み込まれます。
 
 ## テスト
 
