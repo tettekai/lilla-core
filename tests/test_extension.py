@@ -782,13 +782,13 @@ class TestBuiltinExtensions:
         assert ext_module.BUILTIN_EXTENSION_MODULES == ("lilla_core.extensions.notes",)
 
     def test_empty_spec_loads_notes(self) -> None:
-        """空でも notes が読み込まれ、保存先・画面・起動時リポジトリ・設定が有効になる。"""
+        """空でも notes が読み込まれ、保存先・画面・設定が有効になる（MongoDB のリポジトリは持たない）。"""
         loaded = ext_module.load_extensions("")
 
         assert [e.name for e in loaded] == ["notes"]
         assert ext_module.get_file_storage("notes") is not None
         assert [p.name for p in ext_module.get_dashboard_pages()] == ["notes"]
-        assert len(ext_module.get_startup_repos()) == 1
+        assert ext_module.get_startup_repos() == []
         notes_cfg = config_module().get_config().extensions.notes
         assert notes_cfg.max_content_chars == 1_000_000
 

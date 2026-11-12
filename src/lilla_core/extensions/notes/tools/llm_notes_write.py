@@ -38,7 +38,7 @@ SCHEMA = {
 
 
 async def execute(input: dict, context: dict) -> dict:
-    """ノートを書く。`overwrite` の前の内容は直前の版として一定期間残る。
+    """ノートを書く。1 回の書き込みが 1 コミットで、前の内容は Git の履歴に残る。
 
     Parameters
     ----------

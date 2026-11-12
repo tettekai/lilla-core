@@ -54,13 +54,3 @@ class TestHelpers:
         """親が空なら名前だけ。"""
         assert paths.child_path("", "a") == "a"
         assert paths.child_path("a", "b") == "a/b"
-
-    def test_prefix_regex_escapes(self) -> None:
-        """正規表現の記号はエスケープする。"""
-        import re
-
-        pattern = re.compile(paths.prefix_regex("a.b(c)"))
-        assert pattern.match("a.b(c)/x")
-        assert not pattern.match("aXb(c)/x")
-        assert not pattern.match("a.b(c)")
-        assert paths.prefix_regex("") == "^"

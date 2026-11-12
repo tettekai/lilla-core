@@ -5,10 +5,10 @@
 | GET | `/api/notes/files` | すべてのノートの一覧（本文なし。ツリー用） |
 | GET | `/api/notes/file?path=` | ノート 1 件（本文つき） |
 | PUT | `/api/notes/file` | 書く（`{"path", "content", "mode"}`。`mode` は `create` か `overwrite`、既定 `overwrite`） |
-| DELETE | `/api/notes/file?path=` | 削除する（消す前の内容は直前の版に残る） |
+| DELETE | `/api/notes/file?path=` | 削除する（消す前の内容は Git の履歴に残り、直前の版として読める） |
 | GET | `/api/notes/search?q=&path=` | 本文の部分一致検索 |
-| GET | `/api/notes/history?path=` | 直前の版 |
-| POST | `/api/notes/history/restore` | 直前の版へ戻す（`{"path"}`） |
+| GET | `/api/notes/history?path=` | 直前の版（最後の変更の前の内容） |
+| POST | `/api/notes/history/restore` | 直前の版へ戻す（`{"path"}`。新しいコミットとして書く） |
 
 パスに `/` が入るため、パス変数ではなくクエリ・ボディで受け取る。検証は LLM ツールと
 同じ `service.py` を通す。失敗は `{"error": 文言}` で返す（パスの不正 400・不在 404・

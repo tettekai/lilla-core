@@ -187,10 +187,10 @@ function renderMain() {
     );
   } else if (view.kind === 'history') {
     const version = view.version;
-    const reason = { overwrite: '上書き', delete: '削除', restore: '復元' }[version.reason] || version.reason;
+    const reason = { create: '作成', overwrite: '上書き', append: '追記', delete: '削除', restore: '復元' }[version.reason] || version.reason;
     main.append(
       h('div', { class: 'notes-title' }, `${version.path}（直前の版）`),
-      h('div', { class: 'notes-meta' }, `${reason}の前の内容 · 保存 ${fmt(version.saved_at)}`),
+      h('div', { class: 'notes-meta' }, `${reason}の前の内容 · 変更 ${fmt(version.saved_at)}`),
       h('div', { class: 'notes-row' },
         h('button', { onclick: () => restore(version.path) }, 'この版に戻す'),
         h('button', { onclick: () => openNote(version.path, true) }, '戻る')),

@@ -9,6 +9,15 @@
 
 ### Changed
 
+- **BREAKING**: ノート置き場 `notes` の保存先を MongoDB から、ディスク上の bare Git リポジトリ（dulwich。作業ツリーなし）に変えた（#338）。
+  - 置き場所は新しい設定 `extensions.notes.repo_path`（絶対パス。既定 `/app/data/notes.git`）。無いか空のディレクトリなら起動時に `main` を持つ bare リポジトリを作る。読み取り専用のコンテナでは、書き込めるボリュームをマウントする必要がある
+  - リポジトリを開けなくてもボットは止めず、ERROR ログを出して起動を続ける（ノートの操作だけがそのつど失敗する）
+  - 1 回の書き込みが 1 コミットになり、作成・更新日時はコミットの時刻から決める。書き込みは 1 つずつ順番に処理する。検索は最新の `main` を順に読む部分一致
+  - 「直前の版」は、そのファイルを最後に変えたコミットの 1 つ前の内容を Git から読む。復元も新しいコミットとして書く。LLM ツール・ダッシュボードの API・保存先 `notes` の形は変わらない
+  - `notes` / `notes_history` コレクションは使わなくなった（データの移行はしない）。`extensions.notes.history_retention_days` は廃止し、残っていると消すよう案内して起動時に落ちる
+  - 新しい設定 `extensions.notes.deletion_alert_lines`（既定 50）。上書き・削除・復元で消える行がこの数以上なら、WARNING ログとエラー通知チャンネルへ、パス・行数・コミットのハッシュと差分の `.patch` 添付で知らせる（書き込みは止めない）
+  - 依存に `dulwich` を追加した
+- `core/error_notify.py` に、エラーではない知らせをエラー通知チャンネルへ送る `notify_warning(bot, message, *, attachment_name=None, attachment_text=None)` を追加した（WARNING ログつき・テキストの添付可・例外は投げない）
 - ノート置き場 `notes` を、`LILLA_EXTENSIONS` に並べたときだけ有効な公式拡張パックの拡張から、常に有効な標準機能にした（#333）。
   - `load_extensions()` が `LILLA_EXTENSIONS` によらず notes を先頭に読み込む（設定 `extensions.notes`・保存先 `notes`・ダッシュボードの
     「ノート」画面・`notes` / `notes_history` の初期化が常に有効）。他の拡張は `requires` を書かずに notes がある前提で使える

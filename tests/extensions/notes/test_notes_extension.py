@@ -41,11 +41,33 @@ class TestNotesExtensionDeclaration:
         routes = notes.extension.dashboard_routes()
         assert routes and all(r.path.startswith("/api/notes/") for r in routes)
 
-    def test_startup_repos(self) -> None:
-        """リポジトリのファクトリを返す。"""
-        from lilla_core.extensions.notes.repository import get_notes_repo
+    def test_no_startup_repos(self) -> None:
+        """MongoDB のコレクションは使わない。"""
+        assert notes.extension.startup_repos() == []
 
-        assert notes.extension.startup_repos() == [get_notes_repo]
+    async def test_setup_initializes_repository(self, tmp_path: Path, monkeypatch) -> None:
+        """`setup()` が `repo_path` に bare リポジトリを作る。"""
+        from lilla_core.extensions.notes import repository
+        from lilla_core.extensions.notes.repository import NotesRepository
+
+        repo = NotesRepository(tmp_path / "notes.git")
+        monkeypatch.setattr(repository, "get_notes_repo", lambda: repo)
+        await notes.extension.setup(None)
+        assert (tmp_path / "notes.git" / "HEAD").is_file()
+
+    async def test_setup_failure_does_not_stop_startup(self, tmp_path: Path, monkeypatch, caplog) -> None:
+        """開けなくても例外を投げず、ERROR ログだけを出す。"""
+        import logging
+
+        from lilla_core.extensions.notes import repository
+        from lilla_core.extensions.notes.repository import NotesRepository
+
+        path = tmp_path / "notes.git"
+        path.write_text("not a directory")
+        monkeypatch.setattr(repository, "get_notes_repo", lambda: NotesRepository(path))
+        with caplog.at_level(logging.ERROR):
+            await notes.extension.setup(None)
+        assert any("notes repository" in r.getMessage() for r in caplog.records)
 
 
 class TestNotesConfig:
@@ -56,7 +78,8 @@ class TestNotesConfig:
         config = notes.NotesConfig()
         assert config.max_content_chars == notes.DEFAULT_MAX_CONTENT_CHARS
         assert config.max_read_chars == notes.DEFAULT_MAX_READ_CHARS
-        assert config.history_retention_days == notes.DEFAULT_HISTORY_RETENTION_DAYS
+        assert config.repo_path == notes.DEFAULT_REPO_PATH
+        assert config.deletion_alert_lines == notes.DEFAULT_DELETION_ALERT_LINES
 
     @pytest.mark.parametrize(
         "values",
@@ -64,7 +87,8 @@ class TestNotesConfig:
             {"max_content_chars": 0},
             {"max_content_chars": notes.MAX_CONTENT_CHARS_LIMIT + 1},
             {"max_read_chars": 0},
-            {"history_retention_days": 0},
+            {"deletion_alert_lines": 0},
+            {"repo_path": "relative/notes.git"},
             {"unknown": 1},
         ],
     )
@@ -72,6 +96,12 @@ class TestNotesConfig:
         """範囲外・未知の項目は落とす。"""
         with pytest.raises(ValidationError):
             notes.NotesConfig(**values)
+
+
+    def test_rejects_removed_history_retention_days(self) -> None:
+        """廃止した `history_retention_days` は移行先を示して落とす。"""
+        with pytest.raises(ValidationError, match="history_retention_days"):
+            notes.NotesConfig(history_retention_days=30)
 
 
 class TestComposition:
@@ -123,3 +153,6 @@ class TestComposition:
 
         for catalog in catalogs.values():
             assert "{tool}" in catalog["notes"]["tool"]["unexpected_error"]
+            alert = catalog["notes"]["alert"]["large_deletion"]
+            assert all(f"{{{key}}}" in alert for key in ("path", "removed", "added", "commit"))
+            assert catalog["notes"]["alert"]["patch_truncated"]
