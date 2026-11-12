@@ -49,7 +49,7 @@ Google OAuth (`lilla_core.extensions.google_oauth`), Google Calendar
 ship with the core as an official extension pack. Each is
 loaded only when listed in `LILLA_EXTENSIONS`.
 
-The MongoDB-backed notes store (`notes`) is a built-in feature and is always enabled, without
+The Git-backed notes store (`notes`) is a built-in feature and is always enabled, without
 listing it in `LILLA_EXTENSIONS` (LLM tools, the dashboard "Notes" page, and the `notes` storage).
 
 ## Optional decision helper (Jev)

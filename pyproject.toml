@@ -28,6 +28,7 @@ dependencies = [
   "pymongo==4.19.0",
   "tiktoken==0.14.0",
   "bcrypt==5.0.0",
+  "dulwich==1.2.21",
 ]
 
 [project.optional-dependencies]

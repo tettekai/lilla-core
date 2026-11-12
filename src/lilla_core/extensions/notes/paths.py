@@ -73,8 +73,3 @@ def normalize_path(path: Any, *, allow_empty: bool = False) -> str:
 def child_path(parent: str, name: str) -> str:
     """親のパスの下に名前を足したパスを返す（親が空なら名前だけ）。"""
     return f"{parent}/{name}" if parent else name
-
-
-def prefix_regex(directory: str) -> str:
-    """ディレクトリの配下を表す MongoDB の `$regex`（先頭一致）を返す。空なら全件。"""
-    return f"^{re.escape(directory + '/')}" if directory else "^"

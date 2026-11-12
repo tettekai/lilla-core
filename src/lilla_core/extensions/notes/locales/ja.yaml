@@ -6,3 +6,6 @@
 notes:
   tool:
     unexpected_error: "ノートのツール {tool} で想定外のエラー"
+  alert:
+    large_deletion: "ノート `{path}` で {removed} 行が消えました（+{added} / -{removed}、コミット `{commit}`）。差分を添付します。"
+    patch_truncated: "（長いため以降を省略しました）"

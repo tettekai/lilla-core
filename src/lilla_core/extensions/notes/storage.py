@@ -12,7 +12,7 @@ from . import service
 
 
 class NotesStorage(FileStorage):
-    """MongoDB のノートを保存先として扱う `FileStorage`（コンストラクタでは接続しない）。
+    """Git リポジトリのノートを保存先として扱う `FileStorage`（コンストラクタでは接続しない）。
 
     論理パスは `/` 区切りの相対パス（例: `diary/2026-11-08.md`）。`size` は文字数。
     """
@@ -22,7 +22,7 @@ class NotesStorage(FileStorage):
         return (await service.read_note(path)).content
 
     async def write(self, path: str, content: str, mode: str = "overwrite") -> FileWriteResult:
-        """ノートを書く（`overwrite` の前の内容は直前の版に残る）。"""
+        """ノートを書く（1 回の書き込みが 1 コミット。前の内容は Git の履歴に残る）。"""
         result = await service.write_note(path, content, mode)
         return FileWriteResult(path=result.path, created=result.created)
 

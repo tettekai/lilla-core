@@ -7,7 +7,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 
 @pytest.fixture
-async def client(fake_repo):
+async def client(notes_repo):
     """ノート画面の API だけを載せたテスト用クライアント。"""
     from lilla_core.extensions.notes.dashboard_api import build_routes
 

@@ -1,12 +1,14 @@
-"""ノートの業務ロジック（パスの検証・大きさの上限・ファイルとディレクトリの整合）。
+"""ノートの業務ロジック（パスの検証・大きさの上限・ファイルとディレクトリの整合・大量削除の通知）。
 
 `NotesStorage`（コアの `FileStorage`）・LLM ツール・ダッシュボードの API が同じ関数を通る
-ようにし、検証を二重に持たない。設定とリポジトリは呼び出しのたびに引く。
+ようにし、検証を二重に持たない。設定とリポジトリは呼び出しのたびに引く。書き込みは
+リポジトリの `write_lock` の中で「検査 → コミット」を行い、1 つずつ順番に処理する。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
+import logging
 from typing import TYPE_CHECKING, Any
 
 from lilla_core.core.file_storage import check_write_mode
@@ -19,6 +21,8 @@ from .errors import (
     NotesTooLargeError,
 )
 from .paths import child_path, normalize_path
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from lilla_core.extensions.notes import NotesConfig
@@ -36,6 +40,8 @@ PARENT_IS_FILE_MESSAGE = "親のパス「{parent}」がファイルのため、�
 NOT_A_DIR_MESSAGE = "ディレクトリではありません。"
 #: 書いた後の本文が上限を超えるときの文言。
 TOO_LARGE_MESSAGE = "ファイルが大きすぎるため書けません（上限 {limit} 文字）。"
+#: 直前の版が無いときの文言。
+NO_PREVIOUS_VERSION_MESSAGE = "直前の版はありません。"
 #: `content` が文字列でないときの文言。
 INVALID_CONTENT_MESSAGE = "content を文字列で指定してください。"
 
@@ -45,6 +51,8 @@ MAX_SEARCH_NOTES = 2000
 MAX_SEARCH_RESULTS = 50
 #: 該当行として返す文字数の上限（超えた分は切り詰める）。
 MAX_LINE_CHARS = 300
+#: 大量削除の通知に添付するパッチの文字数の上限（超えた分は切り詰める）。
+MAX_ALERT_PATCH_CHARS = 200_000
 
 
 @dataclass(frozen=True)
@@ -95,15 +103,23 @@ def _repo() -> NotesRepository:
     return get_notes_repo()
 
 
-def _history_ttl(config: NotesConfig) -> timedelta:
-    """直前の版を残す期間を返す。"""
-    return timedelta(days=config.history_retention_days)
-
-
 def _ancestors(path: str) -> list[str]:
     """パスの祖先（自分は含まない）を浅い順に返す。"""
     parts = path.split("/")
     return ["/".join(parts[:i]) for i in range(1, len(parts))]
+
+
+async def _check_file_path(repo: NotesRepository, path: str) -> None:
+    """ファイルとして書けるパスか（祖先がファイルでない・配下にノートが無い）を確かめる。
+
+    Raises:
+        NotesPathError: 書けない場合。
+    """
+    for parent in _ancestors(path):
+        if await repo.get_meta(parent) is not None:
+            raise NotesPathError(PARENT_IS_FILE_MESSAGE.format(parent=parent))
+    if await repo.has_children(path):
+        raise NotesPathError(WRITE_TO_DIR_MESSAGE)
 
 
 async def read_note(path: Any) -> Note:
@@ -120,7 +136,7 @@ async def read_note(path: Any) -> Note:
 
 
 async def write_note(path: Any, content: Any, mode: str = "overwrite") -> WriteResult:
-    """ノートを書く。
+    """ノートを書く（1 回の書き込みが 1 コミット。内容が変わらなければコミットしない）。
 
     Args:
         path: 書くパス。
@@ -141,34 +157,21 @@ async def write_note(path: Any, content: Any, mode: str = "overwrite") -> WriteR
     config = load_config()
     repo = _repo()
 
-    for parent in _ancestors(normalized):
-        if await repo.get_meta(parent) is not None:
-            raise NotesPathError(PARENT_IS_FILE_MESSAGE.format(parent=parent))
-    if await repo.has_children(normalized):
-        raise NotesPathError(WRITE_TO_DIR_MESSAGE)
-
-    limit = config.max_content_chars
-    if mode == "append":
-        current = await repo.get_meta(normalized)
-        size = (current.size if current else 0) + len(content)
-    else:
-        size = len(content)
-    if size > limit:
-        raise NotesTooLargeError(TOO_LARGE_MESSAGE.format(limit=limit))
-
-    if mode == "create":
-        from .repository import NoteExistsError
-
-        try:
-            await repo.create(normalized, content)
-        except NoteExistsError:
+    async with repo.write_lock:
+        await _check_file_path(repo, normalized)
+        current = await repo.get(normalized)
+        if mode == "create" and current is not None:
             raise NotesExistsError(ALREADY_EXISTS_MESSAGE)
-        created = True
-    elif mode == "overwrite":
-        created = await repo.overwrite(normalized, content, _history_ttl(config))
-    else:
-        created = await repo.append(normalized, content)
-    return WriteResult(path=normalized, created=created, size=size)
+        before = current.content if current is not None else None
+        after = (before or "") + content if mode == "append" else content
+        if len(after) > config.max_content_chars:
+            raise NotesTooLargeError(TOO_LARGE_MESSAGE.format(limit=config.max_content_chars))
+        reason = "create" if current is None else mode
+        result = await repo.commit({normalized: after}, f"{reason}: {normalized}")
+
+    if result.commit_id is not None and before is not None and mode != "append":
+        await _alert_if_large_deletion(normalized, before, after, result.commit_id, config)
+    return WriteResult(path=normalized, created=current is None, size=len(after))
 
 
 async def list_entries(path: Any = "") -> list[Entry]:
@@ -238,7 +241,7 @@ async def search(
     query: str,
     max_results: int = MAX_SEARCH_RESULTS,
 ) -> tuple[list[SearchMatch], bool]:
-    """配下のノートから `query` を含む行を探す（部分一致・大文字小文字を区別しない）。
+    """最新の `main` の配下のノートから `query` を含む行を探す（部分一致・大文字小文字を区別しない）。
 
     Args:
         path: 起点のディレクトリかファイル（空文字は全体）。
@@ -266,18 +269,26 @@ async def search(
 
 
 async def delete_note(path: Any) -> None:
-    """ノートを削除する（消す前の内容は直前の版に残る）。
+    """ノートを削除する（消す前の内容は Git の履歴に残り、直前の版として読める）。
 
     Raises:
         NotesPathError: パスの形式が正しくない場合。
         NotesNotFoundError: 無い場合。
     """
-    if not await _repo().delete(normalize_path(path), _history_ttl(load_config())):
-        raise NotesNotFoundError(NOT_FOUND_MESSAGE)
+    normalized = normalize_path(path)
+    config = load_config()
+    repo = _repo()
+    async with repo.write_lock:
+        current = await repo.get(normalized)
+        if current is None:
+            raise NotesNotFoundError(NOT_FOUND_MESSAGE)
+        result = await repo.commit({normalized: None}, f"delete: {normalized}")
+    if result.commit_id is not None:
+        await _alert_if_large_deletion(normalized, current.content, "", result.commit_id, config)
 
 
 async def get_previous_version(path: Any) -> NoteVersion:
-    """直前の版を返す。
+    """直前の版（最後の変更の前の内容）を Git の履歴から返す。
 
     Raises:
         NotesPathError: パスの形式が正しくない場合。
@@ -285,23 +296,106 @@ async def get_previous_version(path: Any) -> NoteVersion:
     """
     version = await _repo().get_version(normalize_path(path))
     if version is None:
-        raise NotesNotFoundError("直前の版はありません。")
+        raise NotesNotFoundError(NO_PREVIOUS_VERSION_MESSAGE)
     return version
 
 
 async def restore_previous_version(path: Any) -> None:
-    """直前の版へ戻す（戻す前の内容は新しい「直前の版」になる）。
+    """直前の版へ戻す（新しいコミットとして書く。戻す前の内容が新しい「直前の版」になる）。
 
     Raises:
         NotesPathError: パスの形式が正しくない・ディレクトリになっている・親がファイルの場合。
         NotesNotFoundError: 直前の版が無い場合。
+        NotesTooLargeError: 直前の版が今の上限を超える場合。
     """
     normalized = normalize_path(path)
+    config = load_config()
     repo = _repo()
-    for parent in _ancestors(normalized):
-        if await repo.get_meta(parent) is not None:
-            raise NotesPathError(PARENT_IS_FILE_MESSAGE.format(parent=parent))
-    if await repo.has_children(normalized):
-        raise NotesPathError(WRITE_TO_DIR_MESSAGE)
-    if not await repo.restore(normalized, _history_ttl(load_config())):
-        raise NotesNotFoundError("直前の版はありません。")
+    async with repo.write_lock:
+        await _check_file_path(repo, normalized)
+        version = await repo.get_version(normalized)
+        if version is None:
+            raise NotesNotFoundError(NO_PREVIOUS_VERSION_MESSAGE)
+        if len(version.content) > config.max_content_chars:
+            raise NotesTooLargeError(TOO_LARGE_MESSAGE.format(limit=config.max_content_chars))
+        current = await repo.get(normalized)
+        result = await repo.commit({normalized: version.content}, f"restore: {normalized}")
+    if result.commit_id is not None and current is not None:
+        await _alert_if_large_deletion(
+            normalized, current.content, version.content, result.commit_id, config
+        )
+
+
+@dataclass(frozen=True)
+class DiffStats:
+    """書き込みの差分の行数とパッチ。"""
+
+    added: int
+    removed: int
+    patch: str
+
+
+def diff_stats(path: str, before: str, after: str) -> DiffStats:
+    """書き込み前後の差分（追加・削除の行数と unified diff）を返す。"""
+    import difflib
+
+    lines = list(
+        difflib.unified_diff(
+            before.splitlines(keepends=True),
+            after.splitlines(keepends=True),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}" if after else "/dev/null",
+        )
+    )
+    added = sum(1 for line in lines if line.startswith("+") and not line.startswith("+++"))
+    removed = sum(1 for line in lines if line.startswith("-") and not line.startswith("---"))
+    patch = "".join(line if line.endswith("\n") else line + "\n" for line in lines)
+    return DiffStats(added, removed, patch)
+
+
+def _resolve_bot() -> Any:
+    """通知に使う Discord クライアント（共有インスタンス）を返す（無ければ None）。"""
+    try:
+        from lilla_core.bot_client import bot
+    except Exception:  # 通知先が無くても書き込みは成功させる
+        return None
+    return bot
+
+
+async def _alert_if_large_deletion(
+    path: str, before: str, after: str, commit_id: str, config: NotesConfig
+) -> None:
+    """消えた行が閾値以上なら、統計・コミットハッシュ・パッチをエラー通知チャンネルへ知らせる。
+
+    書き込みはもう終わっているので、通知の失敗は WARNING ログだけで呼び出し元へ伝えない。
+    """
+    threshold = config.deletion_alert_lines
+    # 消えうる行数が閾値に届かなければ差分を取らない（大きなファイルの diff は重いため）
+    if len(before.splitlines()) < threshold:
+        return
+    try:
+        import asyncio
+
+        stats = await asyncio.to_thread(diff_stats, path, before, after)
+        if stats.removed < threshold:
+            return
+        from lilla_core.core.error_notify import notify_warning
+        from lilla_core.ui.messages import t
+
+        patch = stats.patch
+        if len(patch) > MAX_ALERT_PATCH_CHARS:
+            patch = patch[:MAX_ALERT_PATCH_CHARS] + "\n" + t("notes.alert.patch_truncated") + "\n"
+        await notify_warning(
+            _resolve_bot(),
+            t(
+                "notes.alert.large_deletion",
+                path=path,
+                removed=stats.removed,
+                added=stats.added,
+                commit=commit_id,
+            ),
+            attachment_name=f"notes-{commit_id[:12]}.patch",
+            attachment_text=patch,
+        )
+    except Exception as e:  # 通知の失敗で書き込みの結果を変えない
+        logger.warning("Failed to send large deletion alert for notes commit %s: %s", commit_id, e)

@@ -1,10 +1,10 @@
-"""MongoDB に保存する汎用のノート置き場（標準機能の `notes` 拡張）。
+"""ディスク上の bare Git リポジトリに保存する汎用のノート置き場（標準機能の `notes` 拡張）。
 
 コアの `load_extensions()` が `LILLA_EXTENSIONS` によらず常に読み込む（`BUILTIN_EXTENSION_MODULES`）。
 パッケージは公式拡張パックと同じ場所にあるが、並べたときだけ有効になる拡張ではない。
 
 設定なしで使えるテキストの置き場所で、中身は「パス + 本文 + 更新日時」を持つ仮想の
-ファイルシステム。LLM からは `files` 拡張と同じ形のツール（`llm_notes_list` /
+ファイルシステムで、1 回の書き込みが 1 コミットになる。LLM からは `files` 拡張と同じ形のツール（`llm_notes_list` /
 `llm_notes_read` / `llm_notes_write` / `llm_notes_search`。YAML を置いたものだけ有効）で
 読み書きし、人は観測用ダッシュボードの「ノート」画面で閲覧・検索・編集する。コードからは
 コアの `FileStorage`（`get_file_storage("notes")`）として使える。
@@ -14,22 +14,30 @@
 """
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from lilla_core.core.extension import DashboardPage, DashboardRoute, Extension
+from lilla_core.core.extension import DashboardPage, DashboardRoute, Extension, SetupContext
 
 #: 1 ファイルの本文の上限（文字数）の既定値。
 DEFAULT_MAX_CONTENT_CHARS = 1_000_000
-#: 1 ファイルの本文の上限の最大値（UTF-8 で 1 文字 4 バイトでも MongoDB の 16MB に収まる値）。
+#: 1 ファイルの本文の上限の最大値。
 MAX_CONTENT_CHARS_LIMIT = 3_000_000
 #: `llm_notes_read` で一度に返す本文の上限（文字数）の既定値。
 DEFAULT_MAX_READ_CHARS = 100_000
-#: 直前の版を残す日数の既定値。
-DEFAULT_HISTORY_RETENTION_DAYS = 30
+#: リポジトリのディレクトリの既定値（コンテナ内のパス。ホスト側はボリュームでマウントする）。
+DEFAULT_REPO_PATH = Path("/app/data/notes.git")
+#: 大きく消える変更を通知する、1 回の書き込みで消える行数の既定値。
+DEFAULT_DELETION_ALERT_LINES = 50
+#: Git に移して意味がなくなった項目と、その案内。
+_REMOVED_KEYS = {
+    "history_retention_days": (
+        "extensions.notes.history_retention_days was removed: notes history is now kept "
+        "as Git commits in extensions.notes.repo_path. Remove the key from lilla.yaml."
+    ),
+}
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
 
@@ -45,8 +53,28 @@ class NotesConfig(BaseModel):
     )
     #: `llm_notes_read` で一度に返す本文の上限（文字数）。超えた分は `offset` で続きを読む。
     max_read_chars: int = Field(default=DEFAULT_MAX_READ_CHARS, gt=0)
-    #: 上書き・削除の直前の版を残す日数。
-    history_retention_days: int = Field(default=DEFAULT_HISTORY_RETENTION_DAYS, ge=1)
+    #: ノートを保存する bare Git リポジトリのディレクトリ（絶対パス）。無ければ起動時に作る。
+    repo_path: Path = DEFAULT_REPO_PATH
+    #: 1 回の書き込みで消える行がこの数以上ならエラー通知チャンネルへ知らせる（書き込みは止めない）。
+    deletion_alert_lines: int = Field(default=DEFAULT_DELETION_ALERT_LINES, ge=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_keys(cls, data: Any) -> Any:
+        """廃止した項目が残っていたら、移行先を示して落とす（黙って捨てない）。"""
+        if isinstance(data, dict):
+            for key, message in _REMOVED_KEYS.items():
+                if key in data:
+                    raise ValueError(message)
+        return data
+
+    @field_validator("repo_path")
+    @classmethod
+    def _check_repo_path(cls, value: Path) -> Path:
+        """リポジトリのパスは絶対パスだけを受け付ける。"""
+        if not value.is_absolute():
+            raise ValueError("extensions.notes.repo_path must be an absolute path")
+        return value
 
 
 class NotesExtension(Extension):
@@ -58,11 +86,23 @@ class NotesExtension(Extension):
         """YAML セクションのモデルを返す（節名は `extensions.notes`）。"""
         return NotesConfig
 
-    def startup_repos(self) -> list[Callable[[], Any]]:
-        """起動時にインデックスを作るリポジトリのファクトリを返す。"""
+    async def setup(self, ctx: SetupContext) -> None:
+        """リポジトリを開く（無ければ `main` を持つ bare リポジトリを作る）。
+
+        notes は標準機能で常に読み込まれるため、開けなくても（書き込めないパス・Git 以外の
+        ディレクトリなど）ボット全体は止めず、ERROR ログを出して起動を続ける。ノートの
+        読み書きはそのつど開き直し、開けなければその操作だけが失敗する。
+        """
+        import logging
+
         from lilla_core.extensions.notes.repository import get_notes_repo
 
-        return [get_notes_repo]
+        try:
+            await get_notes_repo().init_repository()
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Failed to open notes repository; notes stay unavailable until it can be opened"
+            )
 
     def tool_roots(self) -> list[Path]:
         """LLM ツール（このパッケージの `tools/`）の探索先を返す。
