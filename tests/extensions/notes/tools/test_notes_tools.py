@@ -17,13 +17,21 @@ class TestNotesWrite:
     async def test_validation_errors(self, notes_repo, load_tool) -> None:
         """不正な引数・パス・既存は `tool_error`。"""
         tool = load_tool("llm_notes_write")
-        assert (await tool.execute({"path": "a.md", "content": 1, "mode": "create"}, {}))["success"] is False
-        assert (await tool.execute({"path": "a.md", "content": "x", "mode": "bad"}, {}))["success"] is False
+        assert (await tool.execute({"path": "user/a.md", "content": 1, "mode": "create"}, {}))["success"] is False
+        assert (await tool.execute({"path": "user/a.md", "content": "x", "mode": "bad"}, {}))["success"] is False
         bad_path = await tool.execute({"path": "../a", "content": "x", "mode": "create"}, {})
         assert bad_path["success"] is False and "相対パス" in bad_path["error"]
-        await tool.execute({"path": "a.md", "content": "x", "mode": "create"}, {})
-        exists = await tool.execute({"path": "a.md", "content": "x", "mode": "create"}, {})
+        await tool.execute({"path": "user/a.md", "content": "x", "mode": "create"}, {})
+        exists = await tool.execute({"path": "user/a.md", "content": "x", "mode": "create"}, {})
         assert exists["success"] is False and "既に" in exists["error"]
+
+    async def test_rejects_root_and_unknown_top_level(self, notes_repo, load_tool) -> None:
+        """ルート直下・許可リスト外のトップレベルへは書けず、書ける場所を案内する。"""
+        tool = load_tool("llm_notes_write")
+        for path in ("a.md", "other/a.md"):
+            result = await tool.execute({"path": path, "content": "x", "mode": "create"}, {})
+            assert result["success"] is False and "diary/、user/" in result["error"]
+        assert await service.list_entries("") == []
 
     async def test_unexpected_error_is_notified(self, notes_repo, load_tool, notify, monkeypatch) -> None:
         """想定外の例外は汎用の文言にして通知へ流す。"""
@@ -33,7 +41,7 @@ class TestNotesWrite:
             raise RuntimeError("git down secret")
 
         monkeypatch.setattr(notes_repo, "commit", boom)
-        result = await tool.execute({"path": "a.md", "content": "x", "mode": "create"}, {})
+        result = await tool.execute({"path": "user/a.md", "content": "x", "mode": "create"}, {})
         assert result["success"] is False
         assert "secret" not in result["error"]
         notify.assert_awaited_once()
@@ -45,11 +53,11 @@ class TestNotesRead:
     async def test_reads_with_offset(self, notes_repo, load_tool) -> None:
         """`max_read_chars`（10）で切り詰め、`next_offset` で続きを読める。"""
         tool = load_tool("llm_notes_read")
-        await service.write_note("a.md", "0123456789abcdef", "create")
-        first = await tool.execute({"path": "a.md"}, {})
+        await service.write_note("user/a.md", "0123456789abcdef", "create")
+        first = await tool.execute({"path": "user/a.md"}, {})
         assert first["data"]["content"] == "0123456789"
         assert first["data"]["truncated"] is True
-        rest = await tool.execute({"path": "a.md", "offset": first["data"]["next_offset"]}, {})
+        rest = await tool.execute({"path": "user/a.md", "offset": first["data"]["next_offset"]}, {})
         assert rest["data"]["content"] == "abcdef"
         assert rest["data"]["truncated"] is False
         assert "next_offset" not in rest["data"]
@@ -58,8 +66,8 @@ class TestNotesRead:
         """無い・不正な offset は `tool_error`。"""
         tool = load_tool("llm_notes_read")
         assert (await tool.execute({"path": "none.md"}, {}))["success"] is False
-        assert (await tool.execute({"path": "a.md", "offset": -1}, {}))["success"] is False
-        assert (await tool.execute({"path": "a.md", "limit": True}, {}))["success"] is False
+        assert (await tool.execute({"path": "user/a.md", "offset": -1}, {}))["success"] is False
+        assert (await tool.execute({"path": "user/a.md", "limit": True}, {}))["success"] is False
 
 
 class TestNotesList:
@@ -97,9 +105,9 @@ class TestNotesSearch:
     async def test_searches(self, notes_repo, load_tool) -> None:
         """該当行を `files` と同じ形で返す。"""
         tool = load_tool("llm_notes_search")
-        await service.write_note("a.md", "x\nHello\n", "create")
+        await service.write_note("user/a.md", "x\nHello\n", "create")
         result = await tool.execute({"path": "", "query": "hello"}, {})
-        assert result["data"]["matches"] == [{"path": "a.md", "line": 2, "text": "Hello"}]
+        assert result["data"]["matches"] == [{"path": "user/a.md", "line": 2, "text": "Hello"}]
         assert result["data"]["truncated"] is False
 
     async def test_requires_query(self, notes_repo, load_tool) -> None:

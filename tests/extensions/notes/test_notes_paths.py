@@ -54,3 +54,24 @@ class TestHelpers:
         """親が空なら名前だけ。"""
         assert paths.child_path("", "a") == "a"
         assert paths.child_path("a", "b") == "a/b"
+
+
+class TestCheckWritablePath:
+    """書き込めるパスの検査。"""
+
+    @pytest.mark.parametrize("path", ["diary/a.md", "user/a.md", "user/x/y.md"])
+    def test_accepts_allowed_dirs(self, path: str) -> None:
+        """許可したトップレベルディレクトリの配下は通す。"""
+        paths.check_writable_path(path)
+
+    @pytest.mark.parametrize("path", ["a.md", "diary", "user", "other/a.md", "USER/a.md"])
+    def test_rejects_others(self, path: str) -> None:
+        """ルート直下のファイル・許可リスト外のトップレベルは `FileStoragePathError`。"""
+        with pytest.raises(FileStoragePathError):
+            paths.check_writable_path(path)
+
+    def test_message_lists_allowed_dirs(self, monkeypatch) -> None:
+        """文言は許可リストから組み立てる。"""
+        monkeypatch.setitem(paths.WRITABLE_TOP_LEVEL_DIRS, "system", {"ja": "x", "en": "x"})
+        with pytest.raises(NotesPathError, match="diary/、user/、system/"):
+            paths.check_writable_path("a.md")

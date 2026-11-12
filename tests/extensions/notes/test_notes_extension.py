@@ -41,6 +41,25 @@ class TestNotesExtensionDeclaration:
         routes = notes.extension.dashboard_routes()
         assert routes and all(r.path.startswith("/api/notes/") for r in routes)
 
+    def test_default_prompt_lists_writable_dirs(self) -> None:
+        """デフォルトのプロンプト（ja / en）にルート直下へ書けないことと、書けるディレクトリが出る。"""
+        prompt = notes.extension.default_prompt()
+        assert set(prompt) == {"ja", "en"}
+        assert "ルート直下" in prompt["ja"] and "root" in prompt["en"]
+        for text in prompt.values():
+            assert "`diary/`" in text and "`user/`" in text
+
+    def test_default_prompt_follows_allow_list(self, monkeypatch) -> None:
+        """許可リストに名前を足すと、プロンプトにも出る。"""
+        from lilla_core.extensions.notes import paths
+
+        monkeypatch.setitem(
+            paths.WRITABLE_TOP_LEVEL_DIRS, "system", {"ja": "システム用", "en": "for the system"}
+        )
+        prompt = notes.extension.default_prompt()
+        assert "- `system/`: システム用" in prompt["ja"]
+        assert "- `system/`: for the system" in prompt["en"]
+
     def test_no_startup_repos(self) -> None:
         """MongoDB のコレクションは使わない。"""
         assert notes.extension.startup_repos() == []

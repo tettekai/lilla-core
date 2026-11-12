@@ -50,9 +50,9 @@ class TestNotesDashboardApi:
 
     async def test_search(self, client) -> None:
         """部分一致で検索できる。q が空なら 400。"""
-        await client.put("/api/notes/file", json={"path": "a.md", "content": "Hello"})
+        await client.put("/api/notes/file", json={"path": "user/a.md", "content": "Hello"})
         res = await client.get("/api/notes/search", params={"q": "hell"})
-        assert (await res.json())["matches"] == [{"path": "a.md", "line": 1, "text": "Hello"}]
+        assert (await res.json())["matches"] == [{"path": "user/a.md", "line": 1, "text": "Hello"}]
         res = await client.get("/api/notes/search", params={"q": " "})
         assert res.status == 400
 
@@ -60,8 +60,8 @@ class TestNotesDashboardApi:
         "payload, status",
         [
             ({"path": "../a", "content": "x"}, 400),
-            ({"path": "a.md", "content": "x", "mode": "append"}, 400),
-            ({"path": "a.md", "content": "x" * 101}, 413),
+            ({"path": "user/a.md", "content": "x", "mode": "append"}, 400),
+            ({"path": "user/a.md", "content": "x" * 101}, 413),
         ],
     )
     async def test_write_errors(self, client, payload, status) -> None:
@@ -70,10 +70,25 @@ class TestNotesDashboardApi:
         assert res.status == status
         assert "error" in await res.json()
 
+    @pytest.mark.parametrize("path", ["a.md", "other/a.md"])
+    async def test_rejects_root_and_unknown_top_level(self, client, path) -> None:
+        """ルート直下・許可リスト外のトップレベルへの作成は 400。"""
+        res = await client.put("/api/notes/file", json={"path": path, "content": "x", "mode": "create"})
+        assert res.status == 400
+        assert "diary/、user/" in (await res.json())["error"]
+
+    async def test_existing_root_file_can_be_read_and_deleted(self, client, notes_repo) -> None:
+        """ルート直下の既存ファイルは閲覧・削除できる。"""
+        await notes_repo.commit({"old.md": "legacy"}, "create: old.md")
+        res = await client.get("/api/notes/file", params={"path": "old.md"})
+        assert (await res.json())["content"] == "legacy"
+        res = await client.delete("/api/notes/file", params={"path": "old.md"})
+        assert res.status == 204
+
     async def test_create_conflict(self, client) -> None:
         """create で既にあれば 409。"""
-        await client.put("/api/notes/file", json={"path": "a.md", "content": "x", "mode": "create"})
-        res = await client.put("/api/notes/file", json={"path": "a.md", "content": "y", "mode": "create"})
+        await client.put("/api/notes/file", json={"path": "user/a.md", "content": "x", "mode": "create"})
+        res = await client.put("/api/notes/file", json={"path": "user/a.md", "content": "y", "mode": "create"})
         assert res.status == 409
 
     async def test_invalid_body(self, client) -> None:
@@ -85,5 +100,5 @@ class TestNotesDashboardApi:
 
     async def test_missing_history(self, client) -> None:
         """直前の版が無ければ 404。"""
-        res = await client.get("/api/notes/history", params={"path": "a.md"})
+        res = await client.get("/api/notes/history", params={"path": "user/a.md"})
         assert res.status == 404
