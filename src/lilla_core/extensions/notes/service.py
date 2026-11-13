@@ -20,7 +20,7 @@ from .errors import (
     NotesPathError,
     NotesTooLargeError,
 )
-from .paths import child_path, normalize_path
+from .paths import check_writable_path, child_path, normalize_path
 
 logger = logging.getLogger(__name__)
 
@@ -145,13 +145,15 @@ async def write_note(path: Any, content: Any, mode: str = "overwrite") -> WriteR
 
     Raises:
         ValueError: `mode` が正しくない場合。
-        NotesPathError: パスの形式が正しくない・ディレクトリを指す・親がファイルの場合。
+        NotesPathError: パスの形式が正しくない・書ける場所の外（ルート直下・許可されていない
+            トップレベル）・ディレクトリを指す・親がファイルの場合。
         NotesExistsError: `create` で既にある場合。
         NotesTooLargeError: 書いた後の本文が上限を超える場合。
         NotesError: `content` が文字列でない場合。
     """
     check_write_mode(mode)
     normalized = normalize_path(path)
+    check_writable_path(normalized)
     if not isinstance(content, str):
         raise NotesError(INVALID_CONTENT_MESSAGE)
     config = load_config()
@@ -304,11 +306,13 @@ async def restore_previous_version(path: Any) -> None:
     """直前の版へ戻す（新しいコミットとして書く。戻す前の内容が新しい「直前の版」になる）。
 
     Raises:
-        NotesPathError: パスの形式が正しくない・ディレクトリになっている・親がファイルの場合。
+        NotesPathError: パスの形式が正しくない・書ける場所の外（ルート直下・許可されていない
+            トップレベル）・ディレクトリになっている・親がファイルの場合。
         NotesNotFoundError: 直前の版が無い場合。
         NotesTooLargeError: 直前の版が今の上限を超える場合。
     """
     normalized = normalize_path(path)
+    check_writable_path(normalized)
     config = load_config()
     repo = _repo()
     async with repo.write_lock:

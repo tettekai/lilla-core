@@ -115,6 +115,36 @@ class NotesExtension(Extension):
         """文言カタログ（このパッケージの `locales/`）を返す。"""
         return [_PACKAGE_DIR / "locales"]
 
+    def default_prompt(self) -> dict[str, str] | None:
+        """ノートの書ける場所を LLM へ伝えるデフォルトのプロンプトを返す（`ja` / `en`）。
+
+        本文は `paths.WRITABLE_TOP_LEVEL_DIRS` から組み立てるため、予約名を足すと説明も追従する。
+        """
+        from lilla_core.extensions.notes.paths import WRITABLE_TOP_LEVEL_DIRS
+
+        ja_lines = "\n".join(
+            f"- `{name}/`: {usage['ja']}" for name, usage in WRITABLE_TOP_LEVEL_DIRS.items()
+        )
+        en_lines = "\n".join(
+            f"- `{name}/`: {usage['en']}" for name, usage in WRITABLE_TOP_LEVEL_DIRS.items()
+        )
+        return {
+            "ja": (
+                "## ノート（notes）の書き込み先\n"
+                "notes のルート直下にはファイルもディレクトリも作れません。"
+                "書き込み（notes_write）は、次のトップレベルディレクトリの配下だけにしてください"
+                "（それ以外のパスは失敗します）。読み取り・一覧・検索はどこでもできます。\n"
+                f"{ja_lines}"
+            ),
+            "en": (
+                "## Where to write notes\n"
+                "You cannot create files or directories directly under the notes root. "
+                "Write (notes_write) only under the following top-level directories "
+                "(any other path fails). Reading, listing and searching work anywhere.\n"
+                f"{en_lines}"
+            ),
+        }
+
     def file_storages(self) -> dict:
         """ノートを保存先 `notes` として申告する。"""
         from lilla_core.extensions.notes.storage import NotesStorage
