@@ -41,24 +41,41 @@ class TestNotesExtensionDeclaration:
         routes = notes.extension.dashboard_routes()
         assert routes and all(r.path.startswith("/api/notes/") for r in routes)
 
-    def test_default_prompt_lists_writable_dirs(self) -> None:
+    def test_declares_user_dir(self) -> None:
+        """notes 自身が宣言するトップレベルは `user/` だけ（`diary/` は持たない）。"""
+        assert list(notes.extension.notes_directories()) == ["user"]
+
+    def test_default_prompt_lists_writable_dirs(self, declare_notes_dirs) -> None:
         """デフォルトのプロンプト（ja / en）にルート直下へ書けないことと、書けるディレクトリが出る。"""
+        declare_notes_dirs({})
         prompt = notes.extension.default_prompt()
         assert set(prompt) == {"ja", "en"}
         assert "ルート直下" in prompt["ja"] and "root" in prompt["en"]
         for text in prompt.values():
-            assert "`diary/`" in text and "`user/`" in text
+            assert "`user/`" in text and "diary" not in text
 
-    def test_default_prompt_follows_allow_list(self, monkeypatch) -> None:
-        """許可リストに名前を足すと、プロンプトにも出る。"""
+    def test_default_prompt_follows_declarations(self, declare_notes_dirs) -> None:
+        """拡張が宣言したディレクトリと用途が ja / en でプロンプトに出る。"""
+        declare_notes_dirs({"system": {"ja": "システム用", "en": "for the system"}})
+        prompt = notes.extension.default_prompt()
+        assert "- `user/`: " in prompt["ja"] and "- `system/`: システム用" in prompt["ja"]
+        assert "- `system/`: for the system" in prompt["en"]
+
+    def test_registered_default_prompt_includes_declarations(self, declare_notes_dirs) -> None:
+        """登録時に集めたデフォルトのプロンプトにも、同じ登録で宣言したディレクトリが入る。"""
+        from lilla_core.core.extension import get_default_prompts
+
+        declare_notes_dirs({"system": {"ja": "システム用", "en": "for the system"}})
+        prompts = dict(get_default_prompts())
+        assert "- `system/`: システム用" in prompts["notes"]["ja"]
+
+    def test_default_prompt_has_no_paths(self) -> None:
+        """用途の説明には具体的なファイルのパスやパスの形を書かない。"""
         from lilla_core.extensions.notes import paths
 
-        monkeypatch.setitem(
-            paths.WRITABLE_TOP_LEVEL_DIRS, "system", {"ja": "システム用", "en": "for the system"}
-        )
-        prompt = notes.extension.default_prompt()
-        assert "- `system/`: システム用" in prompt["ja"]
-        assert "- `system/`: for the system" in prompt["en"]
+        for usage in paths.CORE_WRITABLE_TOP_LEVEL_DIRS.values():
+            for text in usage.values():
+                assert "/" not in text and "{" not in text
 
     def test_no_startup_repos(self) -> None:
         """MongoDB のコレクションは使わない。"""

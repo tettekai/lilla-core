@@ -692,6 +692,7 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
 | `http_routes` | `get_http_routes` | 共有 HTTP サーバー（`handlers/http_server.py`）へ足すルート（`HttpRoute(method, path, handler, auth)`）。パスの接頭辞に制約は無い。`auth` は `bearer`（既定）/ `public` / `deferred`（ハンドラ側で別方式の認証。WebSocket など）。ハンドラにはコアのレジストリを渡さない。公開にするかは申告する拡張が決める |
 | `settings_model` | `get_settings_models`（全件。「拡張名 → モデル」） | ダッシュボードで編集する設定（設定の本体）のモデル 1 つ（持たないなら `None`）。値は MongoDB の `extension_settings` に保存し、`services/extension_settings.py` の `load_settings(name, model)` で処理ごとに読む。全フィールドに既定値（＝未保存時の初期値）が必要で、既定値が検証を通らない・`config_model()` と同名のフィールドを持つ（担当の二重宣言）とロード時に落とす（`_collect_settings_models`）。項目を `lilla.yaml` の `extensions.<節名>` に書くと `ExtensionsConfig._reject_dashboard_managed_keys` が移行先を示して落とす |
 | `file_storages` | `get_file_storage` / `list_file_storages` | テキストファイルの保存先（`core/file_storage.py` の `FileStorage`）を「名前 → 実装」で申告する。名前は拡張名と同じ形で、拡張どうしの重複・`FileStorage` 以外の値はロード時に落とす。利用側は実装を import せず名前で引く |
+| `notes_directories` | `get_notes_directories`（全件。「名前 → 用途」） | ノート置き場 `notes` で書き込むトップレベルディレクトリと用途（`{"ja": ..., "en": ...}`。両方必須）。notes の書き込みの許可リストは notes 自身の `user/` と全拡張の宣言を合わせたもの（`extensions/notes/paths.py` の `writable_top_level_dirs()`）で、パスの検証・notes のデフォルトのプロンプト・エラー文がこれを使う。名前はノートのパスの 1 要素の形（`_is_valid_notes_directory_name`）でなければならず、notes の `user` を含む拡張どうしの重複とあわせてロード時に落とす（`_collect_notes_directories`）。`default_prompt()` の収集中は同じ登録の宣言が見える。用途には具体的なファイルのパスやパスの形を書かない |
 | `config_model` | `get_config_models`（全件。「導いた節名 → モデル」） | `extensions:` の下に足す YAML セクションのモデル 1 つ（足さないなら `None`）。節名は `name` のハイフンをアンダースコアにしたもの（`cfg.extensions.<節名>` で読む。コア確定の節と同名でもよい）。`BaseModel` サブクラス以外・数字始まりの `name` での申告はロード時に落とす |
 | `env_fields` | `get_env_fields`（全件） | `EnvConfig` に足すフィールド名 → OS 環境変数名 |
 | `required_env_fields` | `set_extensions` の検証 | 自分では提供しないが読む `EnvConfig` のフィールド名（コア確定のフィールドは常に利用可） |
@@ -711,6 +712,7 @@ YAML 由来の必須セクション（`discord.my_user_id`）を持つ `tests/fi
   下に置かれるので、コア確定の節と同名でも構わない）
 - ツール実行 context プロバイダのキー（コアが注入する共通キーとの重複も落とす）
 - `file_storages()` の名前
+- `notes_directories()` の名前（notes 自身の `user` との重複も落とす。`_collect_notes_directories` が検出）
 - `result_deliveries` の `client_type`（`client_prompt_providers` / `conversation_start_hooks` は
   加算式で、同じ `client_type` に複数の拡張が足せる。値がリストでない場合だけ落とす）
 - `command_packages` 経由で登録されるコマンド名（`register_command` が検出）

@@ -10,9 +10,9 @@ class TestNotesWrite:
     async def test_writes(self, notes_repo, load_tool) -> None:
         """書いた結果を `files` と同じ形で返す。"""
         tool = load_tool("llm_notes_write")
-        result = await tool.execute({"path": "diary/a.md", "content": "abc", "mode": "create"}, {})
+        result = await tool.execute({"path": "user/a.md", "content": "abc", "mode": "create"}, {})
         assert result["success"] is True
-        assert result["data"] == {"path": "diary/a.md", "mode": "create", "created": True, "size": 3}
+        assert result["data"] == {"path": "user/a.md", "mode": "create", "created": True, "size": 3}
 
     async def test_validation_errors(self, notes_repo, load_tool) -> None:
         """不正な引数・パス・既存は `tool_error`。"""
@@ -30,7 +30,7 @@ class TestNotesWrite:
         tool = load_tool("llm_notes_write")
         for path in ("a.md", "other/a.md"):
             result = await tool.execute({"path": path, "content": "x", "mode": "create"}, {})
-            assert result["success"] is False and "diary/、user/" in result["error"]
+            assert result["success"] is False and "user/" in result["error"]
         assert await service.list_entries("") == []
 
     async def test_unexpected_error_is_notified(self, notes_repo, load_tool, notify, monkeypatch) -> None:
@@ -76,18 +76,18 @@ class TestNotesList:
     async def test_lists(self, notes_repo, load_tool) -> None:
         """直下のエントリと、パターンでの絞り込み。"""
         tool = load_tool("llm_notes_list")
-        await service.write_note("diary/a.md", "x", "create")
-        await service.write_note("diary/b.txt", "yy", "create")
-        await service.write_note("diary/2026/c.md", "z", "create")
-        result = await tool.execute({"path": "diary"}, {})
+        await service.write_note("user/a.md", "x", "create")
+        await service.write_note("user/b.txt", "yy", "create")
+        await service.write_note("user/2026/c.md", "z", "create")
+        result = await tool.execute({"path": "user"}, {})
         data = result["data"]
-        assert data["path"] == "diary"
+        assert data["path"] == "user"
         assert [(e["name"], e["type"]) for e in data["entries"]] == [
             ("2026", "dir"), ("a.md", "file"), ("b.txt", "file"),
         ]
         assert "size" not in data["entries"][0]
         assert data["entries"][2]["size"] == 2
-        filtered = await tool.execute({"path": "diary", "pattern": "*.md"}, {})
+        filtered = await tool.execute({"path": "user", "pattern": "*.md"}, {})
         assert [e["name"] for e in filtered["data"]["entries"]] == ["a.md"]
 
     async def test_errors(self, notes_repo, load_tool) -> None:

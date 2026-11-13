@@ -49,6 +49,7 @@ extension = MyExtension()
 | `dashboard_routes` | セッション認証の内側に足す HTTP ルート（`DashboardRoute`）。パスは `/api/{name}` 配下のみ |
 | `dashboard_public_routes` | 認証の外側に載せる公開ルート（OAuth の戻り先など）。パスは `/oauth/{name}` 配下のみ。`state` の検証は拡張側の責任 |
 | `http_routes` | 共有 HTTP サーバー（ダッシュボードとは別ポート）に足すルート（`HttpRoute(method, path, handler, auth)`）。パスの接頭辞に制約は無く、`auth` は `bearer`（既定）/ `public` / `deferred`（[共有 HTTP サーバー](http-server.md)） |
+| `notes_directories` | ノート置き場 `notes` で書き込むトップレベルディレクトリと用途（`ja` / `en`）を「名前 → 用途」で宣言する。宣言したディレクトリの配下だけに書ける（[ノート置き場](notes.md)） |
 | `file_storages` | テキストファイルの保存先（`FileStorage` の実装）を「名前 → 実装」で申告する。利用側は `get_file_storage(name)` / `list_file_storages()` で引く（[保存先の共通インタフェース](file-storage.md)） |
 | `config_model` | この拡張が足す YAML セクションのモデル 1 つ（足さないなら `None`）。置き場は `extensions.<name のハイフンをアンダースコアにしたもの>`（`google-oauth` なら `cfg.extensions.google_oauth`）（[設定の合成](extension-config.md)） |
 | `settings_model` | ダッシュボードで編集する設定（設定の本体）のモデル 1 つ（持たないなら `None`）。MongoDB の `extension_settings` に保存し、`load_settings()` で処理ごとに読む。全項目に既定値が必要で、`config_model()` と同じ項目は持てない（[画面で管理する拡張の設定](extension-settings.md)） |
@@ -62,7 +63,7 @@ extension = MyExtension()
 
 貢献キーは **拡張どうし** で衝突してはいけません。`Extension.name`・YAML セクション名・
 env フィールド名・ツール context のキー・結果配送の `client_type`・コマンド名・複数ルートに
-またがる同名ツールファイル・共有 HTTP サーバーのメソッドとパス（コアのルートとの重なりも含む）・保存先（`file_storages`）の名前の
+またがる同名ツールファイル・共有 HTTP サーバーのメソッドとパス（コアのルートとの重なりも含む）・保存先（`file_storages`）の名前・notes のトップレベルディレクトリ（`notes_directories`）の名前の
 いずれも、静かに勝者を決めず起動時に fail-fast します。
 クライアント固有プロンプトと会話開始フックだけは設計上の例外で、`client_type` ごとの
 リストをロード順に連結するため、複数の拡張が同じクライアントへ足せます。

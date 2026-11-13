@@ -72,3 +72,33 @@ def load_tool():
     yield _load
     for stem in loaded:
         sys.modules.pop(stem, None)
+
+
+@pytest.fixture
+def declare_notes_dirs():
+    """notes 拡張と、指定したディレクトリを宣言するテスト用の拡張を登録する関数を返す。
+
+    登録内容はテストの終わりに元へ戻す。
+    """
+    from lilla_core.core import extension as ext_module
+    from lilla_core.core.extension import Extension
+
+    previous = ext_module.get_extensions()
+
+    def _declare(dirs: dict[str, dict[str, str]], name: str = "journal-ext") -> None:
+        class _Declaring(Extension):
+            def notes_directories(self):
+                return dirs
+
+        declaring = _Declaring()
+        declaring.name = name
+        ext_module.set_extensions([notes.extension, declaring])
+
+    yield _declare
+    ext_module.set_extensions(previous)
+
+
+@pytest.fixture
+def journal_dir(declare_notes_dirs) -> None:
+    """拡張が `journal/` を宣言した状態にする。"""
+    declare_notes_dirs({"journal": {"ja": "日誌用", "en": "for the journal"}})

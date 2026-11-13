@@ -9,10 +9,16 @@
 
 ### Changed
 
+- ノート置き場 `notes` の書き込めるトップレベルディレクトリを、拡張が宣言できるようにした（#343）。
+  - `Extension` に `notes_directories()` を追加した（既定は空）。「ディレクトリ名 → `{"ja": 用途, "en": 用途}`」を返すと、そのディレクトリの配下へ書ける。名前の形（ノートのパスの要素 1 つ）・用途の形が不正なものと、notes の `user` やほかの拡張と重なる名前は起動時に落ちる
+  - notes 自身が持つ許可リストは `user/` だけになり、**`diary/` を外した**。`diary/` へ書く拡張（日記の拡張など）は `notes_directories()` で `diary` を宣言しないと書き込みが失敗する（既存の `diary/` のノートは読み取り・一覧・検索・削除ができる）
+  - 許可リストは `user/` と、ロード済みの拡張が宣言したディレクトリを合わせたもの。パスの検証・notes のデフォルトのプロンプト・エラー文はこれを使う。プロンプトの用途の説明には具体的なファイルのパスやパスの形を書かない
+  - `lilla_core/extensions/notes/paths.py` の `WRITABLE_TOP_LEVEL_DIRS` は無くなり、notes 自身の分は `CORE_WRITABLE_TOP_LEVEL_DIRS`、合わせた許可リストは `writable_top_level_dirs()` で読む。宣言の一覧は `core/extension.py` の `get_notes_directories()` で引ける
+  - エラー文・ツールの説明のパスの例を `user/memo.md` にした
 - ノート置き場 `notes` のルート直下への新規作成を禁止し、書き込めるトップレベルディレクトリを `diary/` と `user/` に限った（#341）。
   - ルート直下のファイルと、許可リストに無いトップレベルディレクトリへの書き込み（作成・上書き・追記・直前の版への復元）は、LLM ツール・ダッシュボード・保存先 `notes` のどこからでもパスの誤りとして失敗する。`diary/` と `user/` の配下は人も LLM もこれまでどおり書ける
   - 既存のルート直下のファイルは読み取り・一覧・検索ができ、ダッシュボードから削除できる（自動では移さない）
-  - 許可リストは `lilla_core/extensions/notes/paths.py` の `WRITABLE_TOP_LEVEL_DIRS` だけに持つ（設定項目・拡張からの登録 API は無い）
+  - 許可リストは `lilla_core/extensions/notes/paths.py` の `WRITABLE_TOP_LEVEL_DIRS` だけに持つ（設定項目・拡張からの登録 API は無い。#343 で拡張が宣言する形に変えた）
   - notes 拡張にデフォルトのプロンプト（`ja` / `en`）を足した。ルート直下へは書けないことと書けるディレクトリを許可リストから組み立てて伝え、`client_type` が `task` 以外の会話に入る
 - ノート置き場 `notes` の保存先を MongoDB から、ディスク上の bare Git リポジトリ（dulwich。作業ツリーなし）に変えた（#338）。
   - 置き場所は新しい設定 `extensions.notes.repo_path`（絶対パス。既定 `/app/data/notes.git`）。無いか空のディレクトリなら起動時に `main` を持つ bare リポジトリを作る。読み取り専用のコンテナでは、書き込めるボリュームをマウントする必要がある

@@ -9,7 +9,7 @@
 
 | 名前 | 拡張 | 論理パス |
 |------|------|----------|
-| `notes` | [`notes`](notes.md) | `diary/2026-11-08.md` のような `/` 区切りの相対パス |
+| `notes` | [`notes`](notes.md) | `user/memo.md` のような `/` 区切りの相対パス |
 | `files` | [`files`](files.md) | 「ディレクトリの名前/相対パス」（LLM ツールと同じ）。書き込み可能なディレクトリが無ければ `read_only` |
 
 ## 使う側
@@ -21,7 +21,7 @@ from lilla_core.core.file_storage import FileStorageError
 storage = get_file_storage("notes")  # 無ければ None
 if storage is not None:
     try:
-        await storage.write("diary/2026-11-08.md", text, mode="overwrite")
+        await storage.write("user/memo.md", text, mode="overwrite")
     except FileStorageError as e:
         ...  # str(e) は利用者や LLM へそのまま見せてよい文言
 

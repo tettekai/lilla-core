@@ -1,6 +1,6 @@
 """ノートの論理パスの規則。
 
-パスは `/` 区切りの相対パス（例: `diary/2026-11-08.md`）。保存前に Unicode を NFC へ
+パスは `/` 区切りの相対パス（例: `user/memo.md`）。保存前に Unicode を NFC へ
 正規化する（macOS 由来の NFD で同じ名前が 2 つできるのを防ぐ）。日本語の名前は許す。
 
 拒否するもの: 文字列以外・空（ファイルを指す場合）・先頭や末尾の `/`・空の要素
@@ -8,9 +8,12 @@
 取り除かず、空白だけの要素や前後に空白のある要素も拒否する（見分けにくい同名を防ぐ）。
 
 書き込み（作成・上書き・追記・復元）はさらに `check_writable_path` を通し、ルート直下の
-ファイルと、`WRITABLE_TOP_LEVEL_DIRS` に無いトップレベルディレクトリへの書き込みを拒否する
-（あとからシステム用のトップレベル名を予約できるようにするため）。読み取り・一覧・検索・
-削除にはこの規則をかけない（既存のルート直下のファイルも読めて、ダッシュボードから消せる）。
+ファイルと、書き込みの許可リスト（`writable_top_level_dirs()`）に無いトップレベル
+ディレクトリへの書き込みを拒否する。許可リストは notes 自身の `user/`（`CORE_WRITABLE_TOP_LEVEL_DIRS`）と、
+ロード済みの拡張が `Extension.notes_directories()` で宣言したディレクトリを合わせたもので、
+notes はどの拡張がどのディレクトリを使うかを知らない。読み取り・一覧・検索・削除には
+この規則をかけない（既存のルート直下のファイルや、宣言していた拡張を外したあとの
+ディレクトリの中身も読めて、ダッシュボードから消せる）。
 """
 from __future__ import annotations
 
@@ -27,19 +30,15 @@ MAX_SEGMENT_CHARS = 255
 
 #: パスの形式が正しくないときの文言（LLM・画面へそのまま返す）。
 INVALID_PATH_MESSAGE = (
-    "path は `/` 区切りの相対パスで指定してください（例: diary/2026-11-08.md）。"
+    "path は `/` 区切りの相対パスで指定してください（例: user/memo.md）。"
     "先頭・末尾の /、空の要素、. や ..、\\、制御文字は使えません。"
 )
 
-#: 書き込める（ファイル・ディレクトリを作れる）トップレベルディレクトリの名前と、その用途。
-#: 許可リストはここ 1 か所だけに持ち、パスの検証（`check_writable_path`）と拡張の
-#: デフォルトのプロンプト（`NotesExtension.default_prompt()`）はここを参照する。
-#: 予約名を足すときはこの辞書に名前を足す（用途は `ja` / `en` の両方を書く）。
-WRITABLE_TOP_LEVEL_DIRS: dict[str, dict[str, str]] = {
-    "diary": {
-        "ja": "日記用。清書は diary/{日付}.md に置く",
-        "en": "for the diary; the clean copy goes to diary/{date}.md",
-    },
+#: notes 自身が持つ書き込めるトップレベルディレクトリの名前と、その用途（`ja` / `en`）。
+#: `NotesExtension.notes_directories()` がこれを宣言し、ほかの拡張の宣言と同じ規則で
+#: 重複を検査させる。ほかの拡張が使うディレクトリはここに足さず、その拡張に宣言させる。
+#: 用途には具体的なファイルのパスやパスの形を書かない。
+CORE_WRITABLE_TOP_LEVEL_DIRS: dict[str, dict[str, str]] = {
     "user": {
         "ja": "利用者が自由に置くメモ用。用途もパスの切り方も自由",
         "en": "free-form notes for the user; any purpose and layout",
@@ -47,12 +46,31 @@ WRITABLE_TOP_LEVEL_DIRS: dict[str, dict[str, str]] = {
 }
 
 
+def writable_top_level_dirs() -> dict[str, dict[str, str]]:
+    """書き込めるトップレベルディレクトリの名前と用途を返す（`user/` が先頭、続けて拡張の宣言をロード順）。
+
+    宣言の検証（名前の形・重複）は拡張の登録時（`set_extensions()`）に済んでおり、ここは
+    登録済みの宣言を読むだけ。拡張の登録は起動時に 1 回だけ行うため、起動後に
+    許可リストが変わることはない。notes 自身が登録されていない（テストなど）ときも
+    `user/` は書ける。
+    """
+    from lilla_core.core.extension import get_notes_directories
+
+    merged = {name: dict(usage) for name, usage in CORE_WRITABLE_TOP_LEVEL_DIRS.items()}
+    for name, usage in get_notes_directories().items():
+        merged.setdefault(name, usage)
+    return merged
+
+
 def writable_top_level_message() -> str:
-    """書ける場所の外へ書こうとしたときの文言（LLM・画面へそのまま返す）を返す。"""
-    names = "、".join(f"{name}/" for name in WRITABLE_TOP_LEVEL_DIRS)
+    """書ける場所の外へ書こうとしたときの文言（LLM・画面へそのまま返す）を返す。
+
+    例は常に書ける notes 自身の `user/` を使い、拡張が宣言したディレクトリには依存しない。
+    """
+    names = "、".join(f"{name}/" for name in writable_top_level_dirs())
     return (
         "ルート直下や、許可されていないトップレベルディレクトリには書けません。"
-        f"書けるのは次のディレクトリの配下だけです: {names}（例: diary/2026-11-08.md）。"
+        f"書けるのは次のディレクトリの配下だけです: {names}（例: user/memo.md）。"
     )
 
 
@@ -113,7 +131,7 @@ def check_writable_path(path: str) -> None:
         NotesPathError: ルート直下のファイル、または許可リストに無いトップレベルの場合。
     """
     top, sep, _ = path.partition("/")
-    if not sep or top not in WRITABLE_TOP_LEVEL_DIRS:
+    if not sep or top not in writable_top_level_dirs():
         raise NotesPathError(writable_top_level_message())
 
 

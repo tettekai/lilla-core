@@ -165,7 +165,7 @@ function renderMain() {
     // 再描画（ツリーの開閉・再読み込みなど）で入力が消えないよう、入力のたびに状態へ書き戻す
     const pathInput = h('input', {
       type: 'text',
-      placeholder: 'diary/2026-11-08.md',
+      placeholder: 'user/memo.md',
       value: view.path,
       oninput: () => { view.path = pathInput.value; },
     });

@@ -62,6 +62,7 @@ import inspect
 import logging
 import os
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -601,6 +602,22 @@ class Extension:
         """
         return {}
 
+    def notes_directories(self) -> dict[str, dict[str, str]]:
+        """ノート置き場（`notes`）で書き込むトップレベルディレクトリと、その用途を返す。
+
+        戻り値は「ディレクトリ名 → `{"ja": 用途, "en": 用途}`」の形（`ja` / `en` の両方が必須で、
+        ほかの言語のキーは持てない）。notes の書き込みは、ロード済みの拡張が宣言した
+        ディレクトリ（notes 自身の `user/` を含む）の配下だけに許される。用途は notes の
+        デフォルトのプロンプトへそのまま載るため、具体的なファイルのパスやパスの形には
+        触れず、何に使うディレクトリかだけを書く（パスの形を伝えたいなら自分の
+        `default_prompt()` に書く）。
+
+        名前はノートのパスの 1 要素として正しい形（空・`.` / `..`・`/` / `\\`・制御文字・
+        前後の空白・NFC でない文字列・255 文字超を含まない）でなければならず、違反と、
+        ほかの拡張（notes を含む）との重複はロード時に `ValueError` で落とす。
+        """
+        return {}
+
     def startup_repos(self) -> list[StartupRepoFactory]:
         """`on_ready` で `init_collection()` を呼ぶリポジトリファクトリを返す。"""
         return []
@@ -685,6 +702,17 @@ _dashboard_routes: list[DashboardRoute] = []
 _dashboard_public_routes: list[DashboardRoute] = []
 _http_routes: list[HttpRoute] = []
 _file_storages: dict[str, Any] = {}
+_notes_directories: dict[str, dict[str, str]] = {}
+#: `set_extensions()` の検証中だけ、これから登録する宣言を `get_notes_directories()` へ見せる。
+#: notes の `default_prompt()` は宣言から本文を組み立てるが、`default_prompt()` は登録前の
+#: 検証で呼ばれるため、確定前の（検証済みの）宣言を参照させる必要がある。
+_pending_notes_directories: dict[str, dict[str, str]] | None = None
+
+#: `notes_directories()` の用途に必須の言語キー。
+_NOTES_DIRECTORY_LANGUAGES = frozenset({"ja", "en"})
+#: notes のパスの要素 1 つの最大の文字数（`extensions/notes/paths.py` の `MAX_SEGMENT_CHARS` と同じ）。
+_NOTES_MAX_SEGMENT_CHARS = 255
+_NOTES_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
 def _merge_unique(
@@ -1265,6 +1293,69 @@ def _collect_file_storages(extensions: list[Extension]) -> dict[str, Any]:
     return merged
 
 
+def _is_valid_notes_directory_name(name: Any) -> bool:
+    """`name` がノートのパスの 1 要素として正しい形か（`notes/paths.py` の `normalize_path` と同じ規則）。
+
+    コア本体は notes のパッケージを import しないため、要素 1 つ分の規則をここにも持つ
+    （同じ規則であることは notes のテストで突き合わせる）。正規化前提の比較ができるよう、
+    NFC 正規化で変わる名前も拒否する。
+    """
+    return (
+        isinstance(name, str)
+        and name not in ("", ".", "..")
+        and unicodedata.normalize("NFC", name) == name
+        and len(name) <= _NOTES_MAX_SEGMENT_CHARS
+        and "/" not in name
+        and "\\" not in name
+        and not _NOTES_CONTROL_RE.search(name)
+        and name == name.strip()
+    )
+
+
+def _collect_notes_directories(extensions: list[Extension]) -> dict[str, dict[str, str]]:
+    """各拡張の `notes_directories()` を検証し、ロード順に 1 つへまとめる。
+
+    Raises:
+        ValueError: 戻り値が `dict` でない場合、名前の形が不正な場合、用途が
+            `ja` / `en` の空でない文字列の組でない場合、または拡張どうし（notes を含む）で
+            名前が重なった場合。
+    """
+    merged: dict[str, dict[str, str]] = {}
+    owners: dict[str, str] = {}
+    for ext in extensions:
+        declared = ext.notes_directories()
+        if not isinstance(declared, dict):
+            raise ValueError(
+                f"Extension '{ext.name}' notes_directories() must return a dict of "
+                f"directory name -> usage, got {type(declared).__name__}"
+            )
+        for name, usage in declared.items():
+            if not _is_valid_notes_directory_name(name):
+                raise ValueError(
+                    f"Extension '{ext.name}' notes_directories() declares an invalid "
+                    f"directory name {name!r}: it must be a single notes path segment "
+                    "(no '/', '\\', '.', '..', control characters, surrounding spaces; "
+                    f"NFC; at most {_NOTES_MAX_SEGMENT_CHARS} characters)"
+                )
+            if (
+                not isinstance(usage, dict)
+                or set(usage) != _NOTES_DIRECTORY_LANGUAGES
+                or not all(isinstance(text, str) and text.strip() for text in usage.values())
+            ):
+                raise ValueError(
+                    f"Extension '{ext.name}' notes_directories() must map '{name}' to a "
+                    "dict with non-empty str 'ja' and 'en' usages (and no other keys)"
+                )
+            if name in owners:
+                raise ValueError(
+                    f"Duplicate notes directory '{name}' declared by extensions "
+                    f"'{owners[name]}' and '{ext.name}'"
+                )
+            owners[name] = ext.name
+            merged[name] = {"ja": usage["ja"], "en": usage["en"]}
+    return merged
+
+
 def _core_tool_context_keys() -> frozenset[str]:
     """コアが実行時にツール context へ必ず注入するキーの集合を返す。
 
@@ -1308,9 +1399,12 @@ def set_extensions(extensions: list[Extension]) -> None:
             ページを出すのに静的ディレクトリが無い）が規約に違反している場合、
             共有 HTTP サーバーのルート申告がコアや他の拡張と重なる場合、
             `result_deliveries()` の配送関数が `(text, saved)` の 2 引数で
-            呼べない形の場合、または `file_storages()` の名前が不正・重複している場合。
+            呼べない形の場合、`file_storages()` の名前が不正・重複している場合、または
+            `notes_directories()` の名前・用途が不正・重複している場合。
     """
     from lilla_core.core.config import core_env_field_names
+
+    global _extensions, _pending_notes_directories
 
     for ext in extensions:
         if not isinstance(ext, Extension):
@@ -1358,7 +1452,12 @@ def set_extensions(extensions: list[Extension]) -> None:
     start_hooks = _merge_lists(
         extensions, "conversation_start_hooks", "conversation start hook"
     )
-    default_prompts = _collect_default_prompts(extensions)
+    notes_directories = _collect_notes_directories(extensions)
+    _pending_notes_directories = notes_directories
+    try:
+        default_prompts = _collect_default_prompts(extensions)
+    finally:
+        _pending_notes_directories = None
     dashboard_pages, static_mounts, dash_routes, public_routes = _collect_dashboard(
         extensions
     )
@@ -1366,7 +1465,6 @@ def set_extensions(extensions: list[Extension]) -> None:
     file_storages = _collect_file_storages(extensions)
     _validate_message_catalogs(extensions)
 
-    global _extensions
     _extensions = list(extensions)
     _config_models.clear()
     _config_models.update(config_models)
@@ -1396,6 +1494,8 @@ def set_extensions(extensions: list[Extension]) -> None:
     _http_routes.extend(http_routes)
     _file_storages.clear()
     _file_storages.update(file_storages)
+    _notes_directories.clear()
+    _notes_directories.update(notes_directories)
 
     _clear_message_catalog_cache()
 
@@ -1715,6 +1815,20 @@ def get_file_storage(name: str) -> FileStorage | None:
 def list_file_storages() -> dict[str, FileStorage]:
     """登録済みの保存先を「名前 → `FileStorage`」でロード順に返す（コピー）。"""
     return dict(_file_storages)
+
+
+def get_notes_directories() -> dict[str, dict[str, str]]:
+    """拡張が宣言した notes のトップレベルディレクトリを「名前 → 用途（ja / en）」でロード順に返す。
+
+    `set_extensions()` の検証中（`default_prompt()` の収集中）は、これから登録する
+    検証済みの宣言を返す。戻り値はコピーで、書き換えても登録内容には影響しない。
+    """
+    source = (
+        _pending_notes_directories
+        if _pending_notes_directories is not None
+        else _notes_directories
+    )
+    return {name: dict(usage) for name, usage in source.items()}
 
 
 def get_result_delivery(client_type: str) -> DeliveryFn | None:
