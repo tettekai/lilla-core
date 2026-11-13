@@ -14,7 +14,7 @@ from . import service
 class NotesStorage(FileStorage):
     """Git リポジトリのノートを保存先として扱う `FileStorage`（コンストラクタでは接続しない）。
 
-    論理パスは `/` 区切りの相対パス（例: `diary/2026-11-08.md`）。`size` は文字数。
+    論理パスは `/` 区切りの相対パス（例: `user/memo.md`）。`size` は文字数。
     """
 
     async def read(self, path: str) -> str:

@@ -19,7 +19,7 @@ SCHEMA = {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "書くノート（`/` 区切りの相対パス。例: diary/2026-11-08.md）",
+                    "description": "書くノート（`/` 区切りの相対パス。例: user/memo.md）",
                 },
                 "content": {
                     "type": "string",

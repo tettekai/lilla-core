@@ -118,16 +118,16 @@ class NotesExtension(Extension):
     def default_prompt(self) -> dict[str, str] | None:
         """ノートの書ける場所を LLM へ伝えるデフォルトのプロンプトを返す（`ja` / `en`）。
 
-        本文は `paths.WRITABLE_TOP_LEVEL_DIRS` から組み立てるため、予約名を足すと説明も追従する。
+        本文は書き込みの許可リスト（`paths.writable_top_level_dirs()`。notes 自身の `user/` と、
+        ロード済みの拡張が `notes_directories()` で宣言したディレクトリ）から組み立てる。
+        どのディレクトリが書けるかと用途だけを伝え、具体的なファイルのパスやパスの形には
+        触れない（パスの形は宣言した拡張が自分の `default_prompt()` で伝える）。
         """
-        from lilla_core.extensions.notes.paths import WRITABLE_TOP_LEVEL_DIRS
+        from lilla_core.extensions.notes.paths import writable_top_level_dirs
 
-        ja_lines = "\n".join(
-            f"- `{name}/`: {usage['ja']}" for name, usage in WRITABLE_TOP_LEVEL_DIRS.items()
-        )
-        en_lines = "\n".join(
-            f"- `{name}/`: {usage['en']}" for name, usage in WRITABLE_TOP_LEVEL_DIRS.items()
-        )
+        dirs = writable_top_level_dirs()
+        ja_lines = "\n".join(f"- `{name}/`: {usage['ja']}" for name, usage in dirs.items())
+        en_lines = "\n".join(f"- `{name}/`: {usage['en']}" for name, usage in dirs.items())
         return {
             "ja": (
                 "## ノート（notes）の書き込み先\n"
@@ -144,6 +144,16 @@ class NotesExtension(Extension):
                 f"{en_lines}"
             ),
         }
+
+    def notes_directories(self) -> dict[str, dict[str, str]]:
+        """notes 自身が持つ書き込めるトップレベルディレクトリ（`user/`）を宣言する。
+
+        ほかの拡張の宣言と同じ経路で集めるため、拡張が `user` を宣言すると重複として
+        ロード時に落ちる。
+        """
+        from lilla_core.extensions.notes.paths import CORE_WRITABLE_TOP_LEVEL_DIRS
+
+        return {name: dict(usage) for name, usage in CORE_WRITABLE_TOP_LEVEL_DIRS.items()}
 
     def file_storages(self) -> dict:
         """ノートを保存先 `notes` として申告する。"""

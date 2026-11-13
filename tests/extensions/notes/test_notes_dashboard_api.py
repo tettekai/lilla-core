@@ -23,29 +23,29 @@ class TestNotesDashboardApi:
 
     async def test_crud_flow(self, client) -> None:
         """作って、一覧・閲覧・上書き・直前の版・削除・復元ができる。"""
-        res = await client.put("/api/notes/file", json={"path": "diary/a.md", "content": "v1", "mode": "create"})
+        res = await client.put("/api/notes/file", json={"path": "user/a.md", "content": "v1", "mode": "create"})
         assert res.status == 201
-        res = await client.put("/api/notes/file", json={"path": "diary/a.md", "content": "v2"})
+        res = await client.put("/api/notes/file", json={"path": "user/a.md", "content": "v2"})
         assert res.status == 200
 
         res = await client.get("/api/notes/files")
-        assert [i["path"] for i in (await res.json())["items"]] == ["diary/a.md"]
+        assert [i["path"] for i in (await res.json())["items"]] == ["user/a.md"]
 
-        res = await client.get("/api/notes/file", params={"path": "diary/a.md"})
+        res = await client.get("/api/notes/file", params={"path": "user/a.md"})
         body = await res.json()
         assert (body["content"], body["size"]) == ("v2", 2)
 
-        res = await client.get("/api/notes/history", params={"path": "diary/a.md"})
+        res = await client.get("/api/notes/history", params={"path": "user/a.md"})
         assert (await res.json())["content"] == "v1"
 
-        res = await client.delete("/api/notes/file", params={"path": "diary/a.md"})
+        res = await client.delete("/api/notes/file", params={"path": "user/a.md"})
         assert res.status == 204
-        res = await client.get("/api/notes/file", params={"path": "diary/a.md"})
+        res = await client.get("/api/notes/file", params={"path": "user/a.md"})
         assert res.status == 404
 
-        res = await client.post("/api/notes/history/restore", json={"path": "diary/a.md"})
+        res = await client.post("/api/notes/history/restore", json={"path": "user/a.md"})
         assert res.status == 204
-        res = await client.get("/api/notes/file", params={"path": "diary/a.md"})
+        res = await client.get("/api/notes/file", params={"path": "user/a.md"})
         assert (await res.json())["content"] == "v2"
 
     async def test_search(self, client) -> None:
@@ -75,7 +75,7 @@ class TestNotesDashboardApi:
         """ルート直下・許可リスト外のトップレベルへの作成は 400。"""
         res = await client.put("/api/notes/file", json={"path": path, "content": "x", "mode": "create"})
         assert res.status == 400
-        assert "diary/、user/" in (await res.json())["error"]
+        assert "user/" in (await res.json())["error"]
 
     async def test_existing_root_file_can_be_read_and_deleted(self, client, notes_repo) -> None:
         """ルート直下の既存ファイルは閲覧・削除できる。"""

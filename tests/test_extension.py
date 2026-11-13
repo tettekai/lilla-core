@@ -1792,3 +1792,98 @@ class TestFileStorageContributions:
             ext_module.set_extensions([make_extension("ext-b", file_storages={"x": 1})])
 
         assert ext_module.get_file_storage("keep") is storage
+
+
+class TestNotesDirectoryContributions:
+    """`Extension.notes_directories()` の集約と検証。"""
+
+    _USAGE = {"ja": "用途", "en": "usage"}
+
+    def test_default_is_empty(self) -> None:
+        """既定では何も宣言しない。"""
+        assert Extension().notes_directories() == {}
+        ext_module.set_extensions([])
+        assert ext_module.get_notes_directories() == {}
+
+    def test_declarations_are_merged_in_load_order(self, make_extension) -> None:
+        """宣言した名前と用途をロード順にまとめる（コピーを返す）。"""
+        ext_module.set_extensions([
+            make_extension("ext-b", notes_directories={"b": dict(self._USAGE)}),
+            make_extension("ext-a", notes_directories={"a": {"ja": "あ", "en": "a"}}),
+        ])
+        dirs = ext_module.get_notes_directories()
+        assert list(dirs) == ["b", "a"]
+        assert dirs["a"] == {"ja": "あ", "en": "a"}
+        dirs["a"]["ja"] = "changed"
+        assert ext_module.get_notes_directories()["a"]["ja"] == "あ"
+
+    def test_duplicate_names_name_both_extensions(self, make_extension) -> None:
+        """拡張どうしで名前が重なれば、両方の拡張名を出して落とす。"""
+        with pytest.raises(ValueError, match="'diary'.*'ext-a' and 'ext-b'"):
+            ext_module.set_extensions([
+                make_extension("ext-a", notes_directories={"diary": dict(self._USAGE)}),
+                make_extension("ext-b", notes_directories={"diary": dict(self._USAGE)}),
+            ])
+
+    def test_duplicate_with_notes_user_is_rejected(self, make_extension) -> None:
+        """notes 自身の `user` と重なっても落とす。"""
+        from lilla_core.extensions import notes
+
+        with pytest.raises(ValueError, match="'user'.*'notes' and 'ext-a'"):
+            ext_module.set_extensions([
+                notes.extension,
+                make_extension("ext-a", notes_directories={"user": dict(self._USAGE)}),
+            ])
+
+    @pytest.mark.parametrize("name", ["", ".", "..", "a/b", "a\\b", " a", "a\nb", 1])
+    def test_invalid_names_are_rejected(self, make_extension, name) -> None:
+        """パスの 1 要素として正しくない名前は落とす。"""
+        with pytest.raises(ValueError, match="invalid directory name"):
+            ext_module.set_extensions([
+                make_extension("ext-a", notes_directories={name: dict(self._USAGE)})
+            ])
+
+    @pytest.mark.parametrize(
+        "usage",
+        [
+            "用途", {"ja": "用途"}, {"ja": "用途", "en": ""}, {"ja": "用途", "en": 1},
+            {"ja": "用途", "en": "usage", "fr": "x"},
+        ],
+    )
+    def test_invalid_usages_are_rejected(self, make_extension, usage) -> None:
+        """用途は `ja` / `en` の空でない文字列の組だけ。"""
+        with pytest.raises(ValueError, match="'ja' and 'en'"):
+            ext_module.set_extensions([
+                make_extension("ext-a", notes_directories={"diary": usage})
+            ])
+
+    def test_non_dict_is_rejected(self, make_extension) -> None:
+        """戻り値が dict でなければ落とす。"""
+        with pytest.raises(ValueError, match="must return a dict"):
+            ext_module.set_extensions([make_extension("ext-a", notes_directories=["diary"])])
+
+    def test_visible_while_collecting_default_prompts(self, make_extension) -> None:
+        """`default_prompt()` の収集中は、同じ登録の宣言が見える（登録後は確定値、失敗時は前の値）。"""
+        seen: list[dict] = []
+
+        class _Prompting(Extension):
+            name = "prompting"
+
+            def default_prompt(self):
+                seen.append(ext_module.get_notes_directories())
+                return {"ja": "x"}
+
+        ext_module.set_extensions([
+            make_extension("ext-a", notes_directories={"diary": dict(self._USAGE)}),
+            _Prompting(),
+        ])
+        assert list(seen[-1]) == ["diary"]
+
+        with pytest.raises(TypeError):
+            ext_module.set_extensions([
+                make_extension("ext-b", notes_directories={"other": dict(self._USAGE)}),
+                _Prompting(),
+                make_extension("ext-c", file_storages={"x": 1}),
+            ])
+        assert list(seen[-1]) == ["other"]
+        assert list(ext_module.get_notes_directories()) == ["diary"]
