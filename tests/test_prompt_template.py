@@ -1,7 +1,9 @@
 """`lilla_core.services.prompt_template` のテスト。"""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from datetime import datetime
+from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from pydantic import BaseModel, SecretBytes, SecretStr
@@ -9,10 +11,13 @@ from pydantic import BaseModel, SecretBytes, SecretStr
 from lilla_core.services.prompt_template import (
     PromptTemplateError,
     check_syntax,
+    current_hour,
     load_template_settings,
     public_field_names,
     render_extension_prompt,
+    render_or_raw,
     render_prompt,
+    render_template,
     settings_for_template,
     validate_extension_prompt,
 )
@@ -58,6 +63,74 @@ def registered(make_extension, use_extensions):
         make_extension("diary", settings_model=SampleSettings),
         make_extension("plain"),
     )
+
+
+_TZ = ZoneInfo("Asia/Tokyo")
+_NOW = datetime(2026, 11, 14, 20, 45, tzinfo=_TZ)
+
+
+@pytest.fixture(autouse=True)
+def local_tz():
+    """`current_hour` が使うタイムゾーンを固定する（実行環境の OS に左右されないように）。"""
+    with patch("lilla_core.utils.datetime_utils.local_timezone", return_value=_TZ):
+        yield
+
+
+class TestCurrentHour:
+    def test_formats_to_hour(self) -> None:
+        """`YYYY-MM-DD HH:xx` の形で、分は伏せる（曜日は付けない）。"""
+        assert current_hour(_NOW) == "2026-11-14 20:xx"
+
+    def test_converts_aware_datetime_to_local_timezone(self) -> None:
+        """タイムゾーン付きの日時は `local_timezone()` へ合わせてから書式にする。"""
+        utc = datetime(2026, 11, 14, 11, 45, tzinfo=ZoneInfo("UTC"))
+        assert current_hour(utc) == "2026-11-14 20:xx"
+
+    def test_defaults_to_local_now(self) -> None:
+        """省略時は `local_now()` を使う。"""
+        with patch("lilla_core.utils.datetime_utils.local_now", return_value=_NOW):
+            assert current_hour() == "2026-11-14 20:xx"
+
+
+class TestRenderTemplate:
+    def test_injects_current_hour(self) -> None:
+        """共通の変数 `current_hour` を渡す。"""
+        assert render_template("いまは {{ current_hour }}", now=_NOW) == "いまは 2026-11-14 20:xx"
+
+    def test_passes_caller_variables(self) -> None:
+        """呼び出し元の変数も渡せる。"""
+        assert render_template("{{ a }}/{{ current_hour }}", {"a": "x"}, now=_NOW) == (
+            "x/2026-11-14 20:xx"
+        )
+
+    def test_rejects_caller_variable_named_like_common(self) -> None:
+        """共通の変数と同じ名前は呼び出し元の誤りとして ValueError。"""
+        with pytest.raises(ValueError, match="current_hour"):
+            render_template("x", {"current_hour": "y"}, now=_NOW)
+
+    def test_legacy_now_is_undefined(self) -> None:
+        """廃止した `{{now}}` は未定義の名前として失敗する。"""
+        with pytest.raises(PromptTemplateError):
+            render_template("{{now}}", now=_NOW)
+
+
+class TestRenderOrRaw:
+    def test_renders(self) -> None:
+        """展開できれば展開した本文を返す。"""
+        assert render_or_raw("{{ current_hour }}\n", "prompt.system", now=_NOW) == (
+            "2026-11-14 20:xx\n"
+        )
+
+    @pytest.mark.parametrize("text", ["{{ broken", "{{ missing }}"])
+    def test_returns_raw_with_warning_on_failure(self, text, caplog) -> None:
+        """構文エラー・未定義の名前は WARNING を出して本文をそのまま返す。"""
+        with caplog.at_level("WARNING"):
+            assert render_or_raw(text, "prompt.system", now=_NOW) == text
+        assert "prompt.system" in caplog.text
+
+    def test_empty_text_is_returned_as_is(self) -> None:
+        """空の本文は展開しない。"""
+        assert render_or_raw("", "prompt.system") == ""
 
 
 class TestCheckSyntax:
@@ -203,6 +276,15 @@ class TestRenderExtensionPrompt:
         with caplog.at_level("WARNING"):
             assert await render_extension_prompt("diary", "保存先 {{ settings.path }}") == "保存先 y.md"
         assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+    async def test_renders_current_hour_with_settings(self, registered, settings_repo) -> None:
+        """拡張のプロンプトでも共通の `current_hour` が使える。"""
+        settings_repo.doc = {"extension": "diary", "values": {"path": "y.md"}}
+        with patch("lilla_core.utils.datetime_utils.local_now", return_value=_NOW):
+            rendered = await render_extension_prompt(
+                "diary", "{{ current_hour }} {{ settings.path }}"
+            )
+        assert rendered == "2026-11-14 20:xx y.md"
 
     async def test_render_failure_returns_text_with_warning(
         self, registered, settings_repo, caplog,

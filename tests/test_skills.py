@@ -94,6 +94,25 @@ class TestFormatSkillInstruction:
         result = format_skill_instruction("proofread", "本文", "{name} {0}")
         assert result.endswith("追加指示: {name} {0}")
 
+    def test_prompt_is_rendered_but_extra_is_not(self, locale, monkeypatch) -> None:
+        """本文は Jinja2 テンプレートとして展開し、追加指示（利用者の入力）は展開しない。"""
+        from lilla_core.services import prompt_template
+
+        locale("ja")
+        monkeypatch.setattr(prompt_template, "current_hour", lambda now=None: "H")
+        result = format_skill_instruction("proofread", "{{ current_hour }} 時点", "{{ current_hour }}")
+        assert result == (
+            _JA_WRAPPER.format(body="H 時点") + "\n\n追加指示: {{ current_hour }}"
+        )
+
+    def test_prompt_render_failure_keeps_body(self, locale, caplog) -> None:
+        """本文の展開に失敗したら WARNING を出してそのまま入れる。"""
+        locale("ja")
+        with caplog.at_level("WARNING"):
+            result = format_skill_instruction("proofread", "{{ now }}")
+        assert result == _JA_WRAPPER.format(body="{{ now }}")
+        assert "skill 'proofread'" in caplog.text
+
     def test_english_locale(self, locale) -> None:
         """`en` では英語のラッパーとラベルを使う。"""
         locale("en")

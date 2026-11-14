@@ -17,7 +17,9 @@ YAML の項目:
   と書くと `discord.my_user_id` に置き換える
 - `llm_provider` … 必須。`run_conversation` に渡す LLM プロバイダー名
 - `prompt` … 必須。`utils/resource_loader.py` の `load_text_resources` にそのまま
-  渡す source spec（`file:` / `dir:`。リストでもよい）
+  渡す source spec（`file:` / `dir:`。リストでもよい）。読み込んだ本文は Jinja2
+  テンプレートとして展開する（`services/prompt_template.py`。`{{ current_hour }}` は
+  実行時刻を `ui.timezone` で `YYYY-MM-DD HH:xx` にした文字列）
 - `available_tools` … 任意。この実行で LLM に見せるツールの許可リスト（YAML stem と
   `$` + セット名（`$main` など）の並び）。`llm_tool_loader.resolve_available_tools` で
   展開する。空リスト、またはキーが無い場合はどちらもツールなし（`main` セットは継承しない）。
@@ -31,14 +33,10 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from lilla_core.utils.datetime_utils import local_now, local_timezone
+from lilla_core.services.prompt_template import render_or_raw
 
 logger = logging.getLogger(__name__)
 
-#: プロンプト中で現在日時に置き換えるプレースホルダ。
-_NOW_PLACEHOLDER = "{{now}}"
-#: `_NOW_PLACEHOLDER` を置き換える日時の書式（解決済みタイムゾーンの日時）。
-_NOW_FORMAT = "%Y-%m-%d %H:%M"
 #: `target` 中で `discord.my_user_id` に置き換えるプレースホルダ。
 _MY_USER_ID_PLACEHOLDER = "{DISCORD_MY_USER_ID}"
 #: LLM が「今回は通知しない」と伝えるためのマーカー。
@@ -227,11 +225,12 @@ class ScheduledLlmTask:
         )
 
     def _build_prompt(self, context: dict) -> str:
-        """`prompt` の source spec を読み込み、`{{now}}` を現在日時に置き換える。
+        """`prompt` の source spec を読み込み、Jinja2 テンプレートとして展開する。
 
-        基準時刻は context の `now`（無ければ `local_now()`）で、表示は
+        `current_hour` の基準時刻は context の `now`（無ければ今）で、表示は
         `local_timezone()` が解決したタイムゾーン（`ui.timezone`、未指定なら
-        OS のローカル）へ合わせる。
+        OS のローカル）へ合わせる。展開に失敗したら WARNING を出して読み込んだ
+        ままの本文を使う。
 
         Args:
             context: タスク実行コンテキスト。
@@ -243,8 +242,6 @@ class ScheduledLlmTask:
 
         now = context.get("now")
         if not isinstance(now, datetime):
-            now = local_now()
-        if now.tzinfo is not None:
-            now = now.astimezone(local_timezone())
+            now = None
         prompt = load_text_resources(self._prompt_sources)
-        return prompt.replace(_NOW_PLACEHOLDER, now.strftime(_NOW_FORMAT)).strip()
+        return render_or_raw(prompt, f"task '{self.name}' prompt", now=now).strip()

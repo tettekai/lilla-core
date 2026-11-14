@@ -19,6 +19,7 @@ def mock_cfg() -> MagicMock:
     cfg.dashboard.host = "0.0.0.0"
     cfg.dashboard.port = 8765
     cfg.dashboard.cookie_secure = True
+    cfg.ui.timezone = "Asia/Tokyo"
     return cfg
 
 
@@ -943,6 +944,34 @@ class TestHandleApiSkills:
         assert _response_status(mock_web) == 400
         repo.add.assert_not_awaited()
 
+    @pytest.mark.parametrize("prompt", ["{{ broken", "{{ now }}"])
+    async def test_post_rejects_invalid_template(
+        self, dashboard_server, mock_web, monkeypatch, prompt
+    ) -> None:
+        """本文を Jinja2 テンプレートとして展開できない（構文エラー・未定義の名前）なら 400。"""
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+        mock_web.Response.reset_mock()
+
+        await dashboard_server.handle_api_skills(
+            _make_skill_request("POST", {"name": "review", "prompt": prompt})
+        )
+
+        assert _response_status(mock_web) == 400
+        assert "Invalid prompt template" in mock_web.Response.call_args[1]["text"]
+        repo.add.assert_not_awaited()
+
+    async def test_post_accepts_current_hour(self, dashboard_server, mock_web, monkeypatch) -> None:
+        """`{{ current_hour }}` を使う本文は保存できる。"""
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+
+        await dashboard_server.handle_api_skills(
+            _make_skill_request("POST", {"name": "review", "prompt": "今は {{ current_hour }}"})
+        )
+
+        repo.add.assert_awaited_once_with("review", "", "今は {{ current_hour }}")
+
     async def test_post_returns_409_for_duplicate(self, dashboard_server, mock_web, monkeypatch) -> None:
         """同名が既にあれば 409。"""
         repo = _make_mock_skill_repo()
@@ -1012,6 +1041,23 @@ class TestHandleApiSkillDetail:
 
         await dashboard_server.handle_api_skill_detail(
             _make_skill_request("PATCH", {"name": "bad name"}, oid)
+        )
+
+        assert _response_status(mock_web) == 400
+        repo.update.assert_not_awaited()
+
+    async def test_patch_rejects_invalid_template(
+        self, dashboard_server, mock_web, monkeypatch
+    ) -> None:
+        """本文の編集も展開できなければ 400 で保存しない。"""
+        from bson import ObjectId
+        oid = str(ObjectId())
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+        mock_web.Response.reset_mock()
+
+        await dashboard_server.handle_api_skill_detail(
+            _make_skill_request("PATCH", {"prompt": "{% if %}"}, oid)
         )
 
         assert _response_status(mock_web) == 400

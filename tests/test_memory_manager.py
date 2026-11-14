@@ -665,6 +665,22 @@ class TestBuildSystemPrompt:
         assert _LILLA_CLIENT_PROMPT not in result
         assert _SYSTEM_PROMPT in result
 
+    async def test_client_prompt_provider_output_is_rendered(
+        self, manager, make_extension, use_extensions, mock_conv_repo, mock_memo_repo,
+        mock_tool_cache_repo, mock_session_memory, monkeypatch
+    ) -> None:
+        """プロバイダの戻り値は Jinja2 テンプレートとして展開する（`current_hour` だけ）。"""
+        from lilla_core.services import prompt_template
+
+        monkeypatch.setattr(prompt_template, "current_hour", lambda now=None: "H")
+        use_extensions(make_extension(
+            "prompt-pack", client_prompt_providers={"discord": [lambda: "CLIENT {{ current_hour }}"]}
+        ))
+
+        result = await manager.build_system_prompt(client_type="discord")
+
+        assert "CLIENT H" in result
+
     async def test_client_prompt_provider_is_reevaluated_each_call(
         self, manager, make_extension, use_extensions, mock_conv_repo, mock_memo_repo,
         mock_tool_cache_repo, mock_session_memory
