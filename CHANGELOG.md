@@ -7,6 +7,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- ダッシュボードに Jinja2 テンプレートの共通入力部品を足し、スキルの本文の追加欄・編集欄と拡張のプロンプトの上書き欄で使うようにした（#352）。
+  - 「Jinja2 テンプレート」の表示と変数の一覧（`current_hour`、拡張のプロンプトでは秘匿値を除く `settings.名前` も）を出し、クリックで差し込める
+  - 入力中に（約 0.4 秒待ってから）保存時と同じ試しの展開を行い、エラー（構文エラーは行番号つき）か展開後のプレビューを出す。`{# … #}` で消える部分も行番号つきで並べる
+  - プレビュー用の API `POST /api/admin/prompt-preview`（ログイン必須。本文は保存しない）を足した。展開は保存時の検査と同じ関数（`services/prompt_template.py` の `preview_skill_prompt()` / `preview_extension_prompt()`）で行う
+  - 部品は `dashboard/jinja-editor.js` の `Alpine.data('jinjaEditor', …)`。使い方は `docs/ja/dashboard.md`
+  - 保存の形式と保存時の検査の合否は変えていない
+
 ### Changed
 
 - **BREAKING**: 運用者が書くプロンプト全般を Jinja2 のテンプレートとして展開するようにした（#350）。

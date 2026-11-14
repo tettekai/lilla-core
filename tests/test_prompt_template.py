@@ -12,6 +12,7 @@ from lilla_core.services.prompt_template import (
     PromptTemplateError,
     check_syntax,
     current_hour,
+    find_comments,
     load_template_settings,
     public_field_names,
     render_extension_prompt,
@@ -19,6 +20,8 @@ from lilla_core.services.prompt_template import (
     render_prompt,
     render_template,
     settings_for_template,
+    preview_extension_prompt,
+    preview_skill_prompt,
     validate_extension_prompt,
 )
 
@@ -348,3 +351,75 @@ class TestValidateExtensionPrompt:
         """設定を持たない拡張で `settings.名前` を使うと拒否する。"""
         with pytest.raises(PromptTemplateError):
             await validate_extension_prompt("plain", "{{ settings.path }}")
+
+
+class TestFindComments:
+    """コメント（`{# … #}`）の検出。"""
+
+    def test_finds_comments_with_line_numbers(self) -> None:
+        """出てくる順に、始まりの行と中身を返す（空白制御つきも含む）。"""
+        comments = find_comments("a\n{# x\ny #} b {#- z -#}c")
+        assert [(c.line, c.text) for c in comments] == [(2, " x\ny "), (3, " z ")]
+
+    def test_raw_block_is_not_a_comment(self) -> None:
+        """`{% raw %}` の中はコメントにしない（Jinja2 と同じ）。"""
+        assert find_comments("{% raw %}{# no #}{% endraw %}") == []
+
+    def test_syntax_error_is_template_error(self) -> None:
+        """閉じていないコメントは `PromptTemplateError`（行番号つき）。"""
+        with pytest.raises(PromptTemplateError, match="line 1"):
+            find_comments("{# open")
+
+
+class TestPreviewSkillPrompt:
+    """スキルの本文のプレビュー。"""
+
+    def test_renders_with_current_hour(self) -> None:
+        """`current_hour` で展開し、コメントも返す。"""
+        with patch("lilla_core.utils.datetime_utils.local_now", return_value=_NOW):
+            preview = preview_skill_prompt("{{ current_hour }}{# memo #}")
+        assert preview.rendered == "2026-11-14 20:xx"
+        assert [c.text for c in preview.comments] == [" memo "]
+        assert preview.settings_unavailable is False
+
+    def test_settings_is_undefined(self) -> None:
+        """スキルには `settings` を渡さない。"""
+        with pytest.raises(PromptTemplateError):
+            preview_skill_prompt("{{ settings.path }}")
+
+
+class TestPreviewExtensionPrompt:
+    """拡張のプロンプトのプレビュー（保存時の検査と同じ処理）。"""
+
+    async def test_renders_with_settings(self, registered, settings_repo) -> None:
+        """今の設定で展開した本文を返す。"""
+        preview = await preview_extension_prompt("diary", "保存先 {{ settings.path }}")
+        assert preview.rendered == "保存先 {year}/{date}.md"
+        assert preview.settings_unavailable is False
+
+    async def test_secrets_are_not_exposed(self, registered, settings_repo) -> None:
+        """秘匿値は変数に入らないため、参照すると失敗し、全体を出しても含まれない。"""
+        settings_repo.doc = {"extension": "diary", "values": {"api_key": "top-secret"}}
+        with pytest.raises(PromptTemplateError):
+            await preview_extension_prompt("diary", "{{ settings.api_key }}")
+        preview = await preview_extension_prompt("diary", "{{ settings }}")
+        assert "top-secret" not in preview.rendered
+        assert "inner-secret" not in preview.rendered
+
+    async def test_settings_failure_checks_syntax_only(self, registered, settings_repo) -> None:
+        """設定を読めなければ展開を飛ばし、その旨とコメントを返す。"""
+        settings_repo.find_one.side_effect = RuntimeError("db down")
+        preview = await preview_extension_prompt("diary", "{{ settings.missing }}{# c #}")
+        assert preview.rendered is None
+        assert preview.settings_unavailable is True
+        assert [c.text for c in preview.comments] == [" c "]
+        with pytest.raises(PromptTemplateError, match="syntax"):
+            await preview_extension_prompt("diary", "{% if %}")
+
+    async def test_matches_validation(self, registered, settings_repo) -> None:
+        """保存時の検査で落ちる本文はプレビューでも落ちる。"""
+        for text in ["{{ settings.missing }}", "{% if %}", "{{ settings.__class__ }}"]:
+            with pytest.raises(PromptTemplateError):
+                await preview_extension_prompt("diary", text)
+            with pytest.raises(PromptTemplateError):
+                await validate_extension_prompt("diary", text)

@@ -600,13 +600,68 @@ def _check_skill_prompt(prompt: str) -> str | None:
     Returns:
         展開できなければエラーの文言。展開できれば None。
     """
-    from lilla_core.services.prompt_template import PromptTemplateError, render_template
+    from lilla_core.services.prompt_template import PromptTemplateError, preview_skill_prompt
 
     try:
-        render_template(prompt)
+        preview_skill_prompt(prompt)
     except PromptTemplateError as e:
         return f"Invalid prompt template: {e}"
     return None
+
+
+async def handle_api_prompt_preview(request: web.Request) -> web.Response:
+    """POST /api/admin/prompt-preview - Jinja2 テンプレートを試しに展開して返す（保存しない）。
+
+    ボディは ``{"text": str, "target": {"type": "skill"}}`` か
+    ``{"text": str, "target": {"type": "extension", "name": str}}``。展開には保存時の検査と
+    同じ関数（スキルは `preview_skill_prompt()`、拡張のプロンプトは
+    `preview_extension_prompt()`）を使い、スキルの本文は保存時と同じく前後の空白を除いてから
+    展開する。成功なら 200 で ``{"rendered", "comments", "settings_unavailable"}``
+    （設定を読めず試しの展開を飛ばしたときは ``rendered`` が null）、展開できなければ
+    400 で ``{"error": 理由}``（構文エラーは行番号つき）。
+    """
+    from lilla_core.services.extension_overrides import default_prompts_of, find_extension
+    from lilla_core.services.prompt_template import (
+        PromptTemplateError,
+        preview_extension_prompt,
+        preview_skill_prompt,
+    )
+
+    body, ok = await parse_json_body(request)
+    if not ok or not isinstance(body, dict):
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+    text = body.get("text")
+    if not isinstance(text, str):
+        return web.json_response({"error": "text must be a string"}, status=400)
+    target = body.get("target")
+    if not isinstance(target, dict):
+        return web.json_response({"error": "target must be an object"}, status=400)
+
+    target_type = target.get("type")
+    try:
+        if target_type == "skill":
+            preview = preview_skill_prompt(text.strip())
+        elif target_type == "extension":
+            name = target.get("name")
+            if not isinstance(name, str) or find_extension(name) is None:
+                return web.json_response({"error": "Extension is not loaded"}, status=404)
+            if default_prompts_of(name) is None:
+                return web.json_response(
+                    {"error": f"Extension '{name}' has no default prompt"}, status=404
+                )
+            preview = await preview_extension_prompt(name, text)
+        else:
+            return web.json_response(
+                {"error": "target.type must be 'skill' or 'extension'"}, status=400
+            )
+    except PromptTemplateError as e:
+        return web.json_response({"error": str(e)}, status=400)
+
+    return web.json_response({
+        "rendered": preview.rendered,
+        "comments": [{"line": c.line, "text": c.text} for c in preview.comments],
+        "settings_unavailable": preview.settings_unavailable,
+    })
 
 
 async def handle_api_skill_detail(request: web.Request) -> web.Response:
@@ -1181,6 +1236,7 @@ async def start_dashboard_server(tools: dict | None = None) -> None:
     app.router.add_post("/api/skills", handle_api_skills)
     app.router.add_patch("/api/skills/{id}", handle_api_skill_detail)
     app.router.add_delete("/api/skills/{id}", handle_api_skill_detail)
+    app.router.add_post("/api/admin/prompt-preview", handle_api_prompt_preview)
     app.router.add_get("/api/dashboard/nav", handle_api_dashboard_nav)
     app.router.add_get("/api/dashboard/status", handle_api_dashboard_status)
     app.router.add_get("/api/usage", handle_api_usage)

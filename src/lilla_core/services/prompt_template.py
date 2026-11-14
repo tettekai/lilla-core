@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 import types
 import typing
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -292,12 +293,63 @@ async def load_template_settings(name: str) -> dict[str, Any]:
     return settings_for_template(await load_settings(name))
 
 
-async def validate_extension_prompt(name: str, text: str) -> None:
-    """保存しようとしているプロンプトを、今の設定で試しに展開して確かめる。
+@dataclass(frozen=True)
+class TemplateComment:
+    """テンプレートの中の `{# … #}`（展開すると消える部分）1 つ。"""
 
-    構文エラー・未定義の名前・サンドボックスの拒否は `PromptTemplateError` にする。
-    設定を読めない（DB から読めない・保存値が不正）ときは試しの展開を飛ばし、
-    構文だけを確かめる（設定の不調で上書きの保存まで止めないため）。
+    #: コメントが始まる行（1 始まり）。
+    line: int
+    #: `{#` と `#}` の間の文字列（前後の空白も含めてそのまま）。
+    text: str
+
+
+@dataclass(frozen=True)
+class TemplatePreview:
+    """試しに展開した結果（保存時の検査とダッシュボードのプレビューが共有する）。"""
+
+    #: 展開した本文。設定を読めず試しの展開を飛ばしたときは `None`。
+    rendered: str | None
+    #: 展開で消えるコメント（出てくる順）。
+    comments: list[TemplateComment] = field(default_factory=list)
+    #: 設定を読めなかったため構文だけを確かめたか。
+    settings_unavailable: bool = False
+
+
+def find_comments(text: str) -> list[TemplateComment]:
+    """テンプレートの中のコメント（`{# … #}`）を Jinja2 の字句解析で探す。
+
+    `{% raw %}` の中の `{#` などは Jinja2 と同じくコメントにしない。
+
+    Raises:
+        PromptTemplateError: 字句として読めないとき（構文エラー）。
+    """
+    comments: list[TemplateComment] = []
+    try:
+        for lineno, token, value in _ENV.lex(text):
+            if token == "comment":
+                comments.append(TemplateComment(line=lineno, text=value))
+    except TemplateSyntaxError as e:
+        raise PromptTemplateError(f"Template syntax error (line {e.lineno}): {e.message}") from e
+    return comments
+
+
+def preview_skill_prompt(text: str) -> TemplatePreview:
+    """スキルの本文を、実行時と同じ変数（`current_hour`）で試しに展開する。
+
+    保存時の検査（ダッシュボードの Skills API）もこの関数を使い、プレビューと結果をそろえる。
+
+    Raises:
+        PromptTemplateError: 構文エラー・未定義の名前・サンドボックスの拒否など。
+    """
+    rendered = render_template(text)
+    return TemplatePreview(rendered=rendered, comments=find_comments(text))
+
+
+async def preview_extension_prompt(name: str, text: str) -> TemplatePreview:
+    """拡張のプロンプトを、今の設定（秘匿値を除く）で試しに展開する。
+
+    設定を読めない（DB から読めない・保存値が不正）ときは試しの展開を飛ばし、構文だけを
+    確かめて `settings_unavailable=True` を返す（設定の不調で上書きの保存まで止めないため）。
     通らなかった分岐の中は確かめられない（Jinja2 は通った分岐だけを評価する）。
 
     Raises:
@@ -306,6 +358,7 @@ async def validate_extension_prompt(name: str, text: str) -> None:
     from lilla_core.services.extension_settings import ExtensionSettingsError
 
     check_syntax(text)
+    comments = find_comments(text)
     try:
         settings = await load_template_settings(name)
     except ExtensionSettingsError as e:
@@ -313,8 +366,19 @@ async def validate_extension_prompt(name: str, text: str) -> None:
             "Skipping trial render of prompt template of extension '%s'; "
             "settings could not be loaded: %s", name, e,
         )
-        return
-    render_prompt(text, settings)
+        return TemplatePreview(rendered=None, comments=comments, settings_unavailable=True)
+    return TemplatePreview(rendered=render_prompt(text, settings), comments=comments)
+
+
+async def validate_extension_prompt(name: str, text: str) -> None:
+    """保存しようとしているプロンプトを、今の設定で試しに展開して確かめる。
+
+    中身は `preview_extension_prompt()` と同じ（プレビューと保存時の検査をそろえるため）。
+
+    Raises:
+        PromptTemplateError: 構文エラーか、今の設定で展開できないとき。
+    """
+    await preview_extension_prompt(name, text)
 
 
 async def render_extension_prompt(name: str, text: str) -> str:
