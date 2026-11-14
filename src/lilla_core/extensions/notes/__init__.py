@@ -7,7 +7,8 @@
 ファイルシステムで、1 回の書き込みが 1 コミットになる。LLM からは `files` 拡張と同じ形のツール（`llm_notes_list` /
 `llm_notes_read` / `llm_notes_write` / `llm_notes_search`。YAML を置いたものだけ有効）で
 読み書きし、人は観測用ダッシュボードの「ノート」画面で閲覧・検索・編集する。コードからは
-コアの `FileStorage`（`get_file_storage("notes")`）として使える。
+コアの `FileStorage`（`get_file_storage("notes")`）として使える。共有 HTTP サーバーの
+`/notes.git` から Git で clone / fetch / push もできる（push には同じ守りをかける）。
 
 サブモジュール（`service` / `repository` / `storage` / `dashboard_api`）はここから
 トップレベルで import しない（`extension` の生成がモジュール import 時に走るため）。
@@ -19,7 +20,13 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from lilla_core.core.extension import DashboardPage, DashboardRoute, Extension, SetupContext
+from lilla_core.core.extension import (
+    DashboardPage,
+    DashboardRoute,
+    Extension,
+    HttpRoute,
+    SetupContext,
+)
 
 #: 1 ファイルの本文の上限（文字数）の既定値。
 DEFAULT_MAX_CONTENT_CHARS = 1_000_000
@@ -175,6 +182,16 @@ class NotesExtension(Extension):
     def dashboard_routes(self) -> list[DashboardRoute]:
         """ノート画面の API（`/api/notes` 配下。セッション認証の内側）を返す。"""
         from lilla_core.extensions.notes.dashboard_api import build_routes
+
+        return build_routes()
+
+    def http_routes(self) -> list[HttpRoute]:
+        """bare リポジトリの Git smart HTTP（`/notes.git`。clone / fetch / push）を返す。
+
+        認証は共有 HTTP サーバーの既定の Bearer。有効 / 無効の設定は持たず、共有 HTTP
+        サーバーが LAN の中だけで listen している前提で常に載せる（`docs/ja/notes.md`）。
+        """
+        from lilla_core.extensions.notes.git_http import build_routes
 
         return build_routes()
 

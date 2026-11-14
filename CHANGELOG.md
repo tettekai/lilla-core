@@ -39,6 +39,10 @@
 
 ### Added
 
+- ノート置き場 `notes` の bare Git リポジトリを、共有 HTTP サーバーの `/notes.git` から Git の smart HTTP で clone / fetch / push できるようにした（#345）。
+  - 認証は共有 HTTP サーバーの Bearer トークン。Git からは `http.extraHeader` で `Authorization: Bearer <token>` を付ける。有効 / 無効の設定と、読み取り・書き込みの権限の区別は持たない（共有 HTTP サーバーを信頼できるネットワークだけで listen させる前提。理由は `docs/ja/notes.md`）
+  - push は通常の書き込みと同じロックで直列化し、`refs/heads/main` の fast-forward だけを受け付ける。push に含まれる全コミットの追加・変更したファイルに、通常の書き込みと同じパスの規則・書けるトップレベルディレクトリ・本文の上限をかけ、通常ファイル・UTF-8 のテキストに限る。1 つでも満たさなければ push 全体を断り、理由は `git push` の出力に出る
+  - push で消えた行の合計が `deletion_alert_lines` 以上なら、通常の書き込みと同じ大量削除の通知を出す（複数ファイルのときの文言は `notes.alert.large_deletion_files`）
 - ダッシュボードの拡張設定（`settings_model()`）の汎用フォームに、選択肢から複数を選ぶ入力部品（チェックボックス群）を追加した（#335）。
   - `Field` の `json_schema_extra` に `widget: "checkbox-group"` と、静的な `choices`（`{value, title}` か値だけのリスト）または
     動的な `choices_from` を書く。最初の `choices_from` は `writable_file_storages`（`read_only` が偽の保存先）。部品は型から推測しない

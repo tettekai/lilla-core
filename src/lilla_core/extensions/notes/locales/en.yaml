@@ -8,4 +8,5 @@ notes:
     unexpected_error: "Unexpected error in notes tool {tool}"
   alert:
     large_deletion: "{removed} lines were removed from note `{path}` (+{added} / -{removed}, commit `{commit}`). The diff is attached."
+    large_deletion_files: "{removed} lines in total were removed from {files} notes (+{added} / -{removed}, commit `{commit}`). The diff is attached."
     patch_truncated: "(truncated because it is too long)"

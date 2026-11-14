@@ -369,35 +369,58 @@ def _resolve_bot() -> Any:
 async def _alert_if_large_deletion(
     path: str, before: str, after: str, commit_id: str, config: NotesConfig
 ) -> None:
-    """消えた行が閾値以上なら、統計・コミットハッシュ・パッチをエラー通知チャンネルへ知らせる。
+    """1 つのファイルの書き込みで消えた行が閾値以上なら知らせる（`alert_if_large_deletion_changes`）。"""
+    await alert_if_large_deletion_changes([(path, before, after)], commit_id, config)
 
-    書き込みはもう終わっているので、通知の失敗は WARNING ログだけで呼び出し元へ伝えない。
+
+async def alert_if_large_deletion_changes(
+    changes: list[tuple[str, str, str]], commit_id: str, config: NotesConfig
+) -> None:
+    """消えた行の合計が閾値以上なら、統計・コミットハッシュ・パッチをエラー通知チャンネルへ知らせる。
+
+    1 回のコミットで変わったファイル（`(パス, 前, 後)`。削除は後が空文字）をまとめて数える。
+    通常の書き込みは 1 ファイル、Git の push は複数ファイルになりうる。書き込みはもう
+    終わっているので、通知の失敗は WARNING ログだけで呼び出し元へ伝えない。
     """
     threshold = config.deletion_alert_lines
     # 消えうる行数が閾値に届かなければ差分を取らない（大きなファイルの diff は重いため）
-    if len(before.splitlines()) < threshold:
+    if sum(len(before.splitlines()) for _, before, _ in changes) < threshold:
         return
     try:
         import asyncio
 
-        stats = await asyncio.to_thread(diff_stats, path, before, after)
-        if stats.removed < threshold:
+        stats = await asyncio.to_thread(
+            lambda: [diff_stats(path, before, after) for path, before, after in changes]
+        )
+        removed = sum(s.removed for s in stats)
+        if removed < threshold:
             return
+        added = sum(s.added for s in stats)
         from lilla_core.core.error_notify import notify_warning
         from lilla_core.ui.messages import t
 
-        patch = stats.patch
+        patch = "".join(s.patch for s in stats)
         if len(patch) > MAX_ALERT_PATCH_CHARS:
             patch = patch[:MAX_ALERT_PATCH_CHARS] + "\n" + t("notes.alert.patch_truncated") + "\n"
+        if len(changes) == 1:
+            message = t(
+                "notes.alert.large_deletion",
+                path=changes[0][0],
+                removed=removed,
+                added=added,
+                commit=commit_id,
+            )
+        else:
+            message = t(
+                "notes.alert.large_deletion_files",
+                files=len(changes),
+                removed=removed,
+                added=added,
+                commit=commit_id,
+            )
         await notify_warning(
             _resolve_bot(),
-            t(
-                "notes.alert.large_deletion",
-                path=path,
-                removed=stats.removed,
-                added=stats.added,
-                commit=commit_id,
-            ),
+            message,
             attachment_name=f"notes-{commit_id[:12]}.patch",
             attachment_text=patch,
         )
