@@ -1,20 +1,28 @@
-"""拡張のプロンプト本文を Jinja2 テンプレートとして展開する。
+"""運用者が書くプロンプト本文を Jinja2 テンプレートとして展開する。
 
-拡張のデフォルトプロンプト（`Extension.default_prompt()`）と、ダッシュボードで保存した
-上書き（`extension_overrides` の `prompt`）は、会話ごとにここで展開してから注入する。
+対象は運用者が書くプロンプトだけ（`prompt.system` / `prompt.conversation` /
+`prompt.discord`・LLM プロバイダーの `prompt`・`llm_expert` / `task_scheduled_llm` の
+`prompt`・拡張の `client_prompt_providers()` の戻り値・スキルの本文・拡張のプロンプト）。
+会話履歴・ユーザーメモ・ツール結果などのデータは展開しない（データの中の波括弧を
+テンプレートとして解釈させないため）。展開の処理は `render_template()` 1 つに集め、
+各呼び出し元はそれぞれの変数だけを渡す。
 
-- 展開には `SandboxedEnvironment` を使う。上書きの本文はダッシュボードから書き換えられる
-  ため、テンプレートから Python の属性・モジュールへ手が届かないようにする
-- 渡す変数は `settings` だけ。中身はその拡張の画面管理の設定（`settings_model()`）を
-  呼ぶたびに読み直したもので、秘匿値（`SecretStr` / `SecretBytes`）は除く
+- 展開には `SandboxedEnvironment` を使う。本文はダッシュボードから書き換えられるものも
+  あるため、テンプレートから Python の属性・モジュールへ手が届かないようにする
+- どのプロンプトにも共通の変数 `current_hour`（`ui.timezone` の現在日時を
+  `YYYY-MM-DD HH:xx` にした文字列。プロンプトのキャッシュが効くよう時までにする）を渡す
+- 拡張のプロンプトにだけ `settings`（その拡張の画面管理の設定を呼ぶたびに読み直した
+  もの。秘匿値（`SecretStr` / `SecretBytes`）は除く）も渡す
 - 未定義の名前は `StrictUndefined` で失敗にする（黙って空文字にしない）
 - 記法を含まない本文が展開後も変わらないよう、末尾の改行を残す
+- 会話を止めないため、呼び出し元は失敗したら元の本文を使う（`render_or_raw()`）
 """
 from __future__ import annotations
 
 import logging
 import types
 import typing
+from datetime import datetime
 from typing import Any
 
 from jinja2 import StrictUndefined
@@ -35,6 +43,12 @@ _SECRET_TYPES = (SecretStr, SecretBytes)
 
 #: 値から取り除いたことを表す目印（`None` と区別するため）。
 _REMOVED = object()
+
+#: どのプロンプトにも渡す共通の変数の名前（呼び出し元の変数と重ねてはならない）。
+COMMON_VARIABLE_NAMES = frozenset({"current_hour"})
+
+#: `current_hour` の書式。分は伏せる（システムプロンプトの時刻と同じく時まで）。
+_CURRENT_HOUR_FORMAT = "%Y-%m-%d %H:xx"
 
 
 class _SettingsView:
@@ -102,6 +116,25 @@ class PromptTemplateError(ValueError):
     """プロンプトのテンプレートを展開できない（構文エラー・未定義の名前・サンドボックスの拒否など）。"""
 
 
+def current_hour(now: datetime | None = None) -> str:
+    """共通の変数 `current_hour` の値（`2026-11-14 20:xx` の形）を返す。
+
+    Args:
+        now: 基準の日時。省略時は `local_now()`。タイムゾーン付きなら
+            `local_timezone()`（`ui.timezone`）へ合わせてから書式にする。
+
+    Returns:
+        `YYYY-MM-DD HH:xx` の文字列（曜日は付けない）。
+    """
+    from lilla_core.utils.datetime_utils import local_now, local_timezone
+
+    if now is None:
+        now = local_now()
+    elif now.tzinfo is not None:
+        now = now.astimezone(local_timezone())
+    return now.strftime(_CURRENT_HOUR_FORMAT)
+
+
 def check_syntax(text: str) -> None:
     """テンプレートの構文だけを確かめる。
 
@@ -114,10 +147,77 @@ def check_syntax(text: str) -> None:
         raise PromptTemplateError(f"Template syntax error (line {e.lineno}): {e.message}") from e
 
 
-def render_prompt(text: str, settings: dict[str, Any]) -> str:
-    """テンプレートを `settings` で展開する。
+def render_template(
+    text: str,
+    variables: dict[str, Any] | None = None,
+    *,
+    now: datetime | None = None,
+) -> str:
+    """テンプレートを、共通の変数と呼び出し元の変数で展開する（全プロンプト共通の処理）。
 
-    設定値は展開済みの値としてそのまま出力し、値の中の波括弧はもう一度展開しない。
+    共通の変数（`current_hour`）はここで作る。呼び出し元ごとに違う変数（拡張の
+    `settings` など）は `variables` で渡す。値は展開済みの値としてそのまま出力し、
+    値の中の波括弧はもう一度展開しない。
+
+    Args:
+        text: テンプレートの本文。
+        variables: 呼び出し元の変数（共通の変数と同じ名前は使えない）。
+        now: `current_hour` の基準の日時。省略時は今。
+
+    Returns:
+        展開した本文。
+
+    Raises:
+        ValueError: `variables` が共通の変数と同じ名前を含むとき（呼び出し元の誤り）。
+        PromptTemplateError: 構文エラー・未定義の名前・サンドボックスの拒否など、
+            展開のどこかで失敗したとき。
+    """
+    variables = dict(variables or {})
+    reserved = COMMON_VARIABLE_NAMES & variables.keys()
+    if reserved:
+        raise ValueError(f"Template variables overlap common variables: {sorted(reserved)}")
+    check_syntax(text)
+    common = {"current_hour": current_hour(now)}
+    try:
+        return _ENV.from_string(text).render(**common, **variables)
+    except Exception as e:
+        raise PromptTemplateError(f"Failed to render template: {type(e).__name__}: {e}") from e
+
+
+def render_or_raw(
+    text: str,
+    label: str,
+    variables: dict[str, Any] | None = None,
+    *,
+    now: datetime | None = None,
+) -> str:
+    """`render_template()` で展開し、失敗したら WARNING を出して元の本文を返す。
+
+    プロンプトの書き損じで会話やタスクを止めないための入口。空の本文は展開せずそのまま返す。
+
+    Args:
+        text: テンプレートの本文。
+        label: ログに出すプロンプトの名前（`prompt.system`・`skill 'name'` など）。
+        variables: 呼び出し元の変数。
+        now: `current_hour` の基準の日時。省略時は今。
+
+    Returns:
+        展開した本文。失敗したときは `text`。
+    """
+    if not text:
+        return text
+    try:
+        return render_template(text, variables, now=now)
+    except PromptTemplateError as e:
+        logger.warning(
+            "Failed to render prompt template %s; using the template as is: %s", label, e,
+        )
+        return text
+
+
+def render_prompt(text: str, settings: dict[str, Any]) -> str:
+    """拡張のプロンプトを、共通の変数と `settings` で展開する。
+
     `settings` は `_SettingsView` に包んで渡すため、項目名が dict のメソッド名
     （`items` など）と同じでも `settings.名前` は値を返す。
 
@@ -132,11 +232,7 @@ def render_prompt(text: str, settings: dict[str, Any]) -> str:
         PromptTemplateError: 構文エラー・未定義の名前・サンドボックスの拒否など、
             展開のどこかで失敗したとき。
     """
-    check_syntax(text)
-    try:
-        return _ENV.from_string(text).render(settings=_SettingsView(settings))
-    except Exception as e:
-        raise PromptTemplateError(f"Failed to render template: {type(e).__name__}: {e}") from e
+    return render_template(text, {"settings": _SettingsView(settings)})
 
 
 def _mentions_secret(annotation: Any) -> bool:

@@ -9,6 +9,12 @@
 
 ### Changed
 
+- **BREAKING**: 運用者が書くプロンプト全般を Jinja2 のテンプレートとして展開するようにした（#350）。
+  - 対象は `prompt.system` / `prompt.conversation` / `prompt.discord`・LLM プロバイダーの `prompt`・`llm_expert` / `task_scheduled_llm` の `prompt`・拡張の `client_prompt_providers()` が返した本文・スキルの本文（`!skill` と `llm_load_skill`）・拡張のプロンプト。会話履歴・ユーザーメモ・ツール結果・`!skill` の追加指示・スキルの名前と説明などのデータは展開しない
+  - どのプロンプトにも共通の変数 `current_hour`（今の日時を `ui.timezone` で `YYYY-MM-DD HH:xx` にした文字列。例 `2026-11-14 20:xx`）を渡す。拡張のプロンプトにはこれまでどおり `settings` も渡す。展開の処理は `services/prompt_template.py` の `render_template()` 1 つにまとめ、失敗時に元の本文を使う入口として `render_or_raw()` を足した
+  - 展開に失敗したら（構文エラー・未定義の名前など）、どのプロンプトかを含む WARNING を出して展開前の本文をそのまま使う（会話・タスクは止めない）
+  - ダッシュボードの Skills 画面でスキルを追加・編集するときは本文を試しに展開し、展開できなければ 400 で保存しない
+  - **`task_scheduled_llm` の `{{now}}` の置き換えを廃止した**。`{{now}}` は未定義の名前として展開に失敗し、WARNING を出して `{{now}}` が残ったまま LLM へ渡る。移行手順: プロンプトの `{{now}}` を `{{ current_hour }}` に書き換える（分までは入らなくなる）。あわせて、既存のプロンプト・スキルに `{{` / `{%` / `{#` が文字として含まれていないかを確かめ、含まれていれば `{% raw %}…{% endraw %}` で囲む
 - ノート置き場 `notes` の書き込めるトップレベルディレクトリを、拡張が宣言できるようにした（#343）。
   - `Extension` に `notes_directories()` を追加した（既定は空）。「ディレクトリ名 → `{"ja": 用途, "en": 用途}`」を返すと、そのディレクトリの配下へ書ける。名前の形（ノートのパスの要素 1 つ）・用途の形が不正なものと、notes の `user` やほかの拡張と重なる名前は起動時に落ちる
   - notes 自身が持つ許可リストは `user/` だけになり、**`diary/` を外した**。`diary/` へ書く拡張（日記の拡張など）は `notes_directories()` で `diary` を宣言しないと書き込みが失敗する（既存の `diary/` のノートは読み取り・一覧・検索・削除ができる）

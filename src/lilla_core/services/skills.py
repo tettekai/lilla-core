@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 
+from lilla_core.services.prompt_template import render_or_raw
 from lilla_core.ui.messages import t
 
 #: スキル名の最大文字数
@@ -43,9 +44,11 @@ def format_skill_instruction(name: str, prompt: str, extra: str | None = None) -
 
     Args:
         name: スキル名（正規化済み）。
-        prompt: スキルの本文。前後の空白だけを除き、それ以外は加工しない。
+        prompt: スキルの本文。Jinja2 テンプレートとして展開し（`current_hour` だけを渡す。
+            失敗したら WARNING を出してそのまま使う）、前後の空白を除く。
         extra: スキル名の後ろに書かれた追加指示。前後の空白を除いて空なら付けない。
-            複数行でも 1 行目にだけラベルを付け、残りはそのまま続ける。
+            複数行でも 1 行目にだけラベルを付け、残りはそのまま続ける（利用者の入力なので
+            テンプレートとしては展開しない）。
 
     Returns:
         展開後の文字列。
@@ -55,7 +58,7 @@ def format_skill_instruction(name: str, prompt: str, extra: str | None = None) -
             t("command.skill.instruction_start", name=name),
             t("command.skill.instruction_preamble"),
             "",
-            prompt.strip(),
+            render_or_raw(prompt, f"skill '{name}'").strip(),
             t("command.skill.instruction_end"),
         ]
     )

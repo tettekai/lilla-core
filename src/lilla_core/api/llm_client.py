@@ -118,21 +118,23 @@ def _get_provider(llm_name: str | None):
     return _resolve_provider(llm_name)[1]
 
 
-def _load_provider_prompt(provider) -> str:
+def _load_provider_prompt(provider, provider_name: str = "") -> str:
     """実際に送る具体プロバイダーの `prompt`（追記）を読み込んで返す。
 
     `provider` は `_get_provider` が返した具体プロバイダー（resolver 名の直呼びなら
     fallback 先）で、resolver エントリ自身の `prompt` はここへ届かない。
     呼び出しのたびにディスクから解決する（既存のシステムプロンプトと同じ）。
-    未設定なら空文字列。相対パスは `CONFIG_ROOT` 基準で読む。
+    未設定なら空文字列。相対パスは `CONFIG_ROOT` 基準で読む。読み込んだ本文は
+    Jinja2 テンプレートとして展開する（失敗したら WARNING を出して読み込んだまま使う）。
     """
+    from lilla_core.services.prompt_template import render_or_raw
+
     spec = getattr(provider, "prompt", None)
     if not spec or not isinstance(spec, (str, list)):
         return ""
     config_root = get_config().env.config_root
-    return load_text_resources(
-        resolve_llm_provider_prompt_spec(spec, config_root), config_root
-    ).strip()
+    text = load_text_resources(resolve_llm_provider_prompt_spec(spec, config_root), config_root)
+    return render_or_raw(text, f"llm.providers.{provider_name}.prompt").strip()
 
 
 def _resolve_api_key(provider) -> str:
@@ -614,7 +616,7 @@ async def _call(
         provider,
         messages,
         system_prompt=system_prompt,
-        provider_prompt=_load_provider_prompt(provider),
+        provider_prompt=_load_provider_prompt(provider, provider_name),
         tools=tools,
     )
     return await _send(adapter, provider, request, provider_name=provider_name, api=api)

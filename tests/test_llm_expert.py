@@ -25,6 +25,7 @@ def mock_cfg() -> MagicMock:
     cfg = MagicMock()
     cfg.llm.max_tool_call_iterations = 3
     cfg.env.config_root = Path("/tmp/test_config_root")
+    cfg.ui.timezone = "Asia/Tokyo"
     return cfg
 
 

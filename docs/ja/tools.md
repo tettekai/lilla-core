@@ -180,6 +180,9 @@ llm_provider: grok            # 省略可
 available_tools: [llm_health_get]   # `$main` などのツールセット参照も書ける
 ```
 
+`prompt` から読んだ本文は Jinja2 のテンプレートとして展開します（`{{ current_hour }}` など。
+[プロンプトのテンプレート](prompt-template.md)）。
+
 `api: responses` と `grok_tools` を組み合わせると、Responses API の組み込みツールを使った
 単発呼び出しになります（`api: responses` と `available_tools` の併用は未対応です）。
 専門家の中で再認証が必要になった場合は、処理を中断してその要求をそのまま伝えます。

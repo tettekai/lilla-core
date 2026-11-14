@@ -322,6 +322,25 @@ class TestProviderPrompt:
         await llm_client.chat_to_llm("hi", system_prompt="BASE", llm_name="mimo")
         assert self._system(send) == "BASE\n\nMIMO ADDITION"
 
+    async def test_prompt_is_rendered_as_template(self, env) -> None:
+        """追記は Jinja2 テンプレートとして展開してから足す。"""
+        cfg, send, tmp_path = env
+        (tmp_path / "prompts" / "tpl.md").write_text("at {{ current_hour }}", encoding="utf-8")
+        self._use(cfg, {"mimo": self._provider("file:prompts/tpl.md")})
+        with patch("lilla_core.services.prompt_template.current_hour", return_value="H"):
+            await llm_client.chat_to_llm("hi", system_prompt="BASE", llm_name="mimo")
+        assert self._system(send) == "BASE\n\nat H"
+
+    async def test_prompt_render_failure_keeps_text(self, env, caplog) -> None:
+        """展開に失敗したらプロバイダー名を含む WARNING を出し、読み込んだまま足す。"""
+        cfg, send, tmp_path = env
+        (tmp_path / "prompts" / "bad.md").write_text("{{ now }}", encoding="utf-8")
+        self._use(cfg, {"mimo": self._provider("file:prompts/bad.md")})
+        with caplog.at_level("WARNING"):
+            await llm_client.chat_to_llm("hi", system_prompt="BASE", llm_name="mimo")
+        assert self._system(send) == "BASE\n\n{{ now }}"
+        assert "llm.providers.mimo.prompt" in caplog.text
+
     async def test_default_system_prompt_gets_addition(self, env) -> None:
         cfg, send, _ = env
         self._use(cfg, {"mimo": self._provider("file:${config_root}/prompts/mimo.md")})

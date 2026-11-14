@@ -87,3 +87,18 @@ class TestAppConfigPromptProperties:
         with patch.object(_config, "load_text_resources", return_value="LOADED") as loader:
             assert cfg.system_prompt == "LOADED"
             loader.assert_called_once_with("dir:/cfgroot/prompt/system")
+
+    def test_renders_loaded_text_as_template(self, make_config):
+        """読み込んだ本文は Jinja2 テンプレートとして展開する（`current_hour` など）。"""
+        cfg = make_config(system=None)
+        with patch.object(_config, "load_text_resources", return_value="now {{ current_hour }}"), \
+                patch("lilla_core.services.prompt_template.current_hour", return_value="H"):
+            assert cfg.system_prompt == "now H"
+
+    def test_render_failure_keeps_loaded_text(self, make_config, caplog):
+        """展開に失敗したら WARNING を出して読み込んだままの本文を返す。"""
+        cfg = make_config(conversation=None)
+        with patch.object(_config, "load_text_resources", return_value="{{ now }}"), \
+                caplog.at_level("WARNING"):
+            assert cfg.conversation_prompt == "{{ now }}"
+        assert "prompt.conversation" in caplog.text
