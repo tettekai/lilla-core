@@ -37,6 +37,67 @@ _SECRET_TYPES = (SecretStr, SecretBytes)
 _REMOVED = object()
 
 
+class _SettingsView:
+    """テンプレートへ渡す設定の読み取り専用の入れ物。
+
+    Jinja2 の `settings.名前` は dict の属性（`items` / `keys` / `get` など）を先に探すため、
+    dict のまま渡すとメソッド名と同じ項目が値ではなくメソッドに展開される。この入れ物は
+    公開の属性を持たず、`settings.名前` も `settings['名前']` も項目の値だけを返す。
+    入れ子の dict も同じ入れ物に、リストの要素も再帰で包む。無い名前は `AttributeError`
+    （添字なら `KeyError`）にし、`StrictUndefined` で失敗にさせる。
+    """
+
+    __slots__ = ("_data",)
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        """包む dict を受け取る（値は参照のたびに包む）。"""
+        object.__setattr__(self, "_data", data)
+
+    def __getattr__(self, name: str) -> Any:
+        """`settings.名前` で項目の値を返す。"""
+        try:
+            return _wrap(self._data[name])
+        except KeyError:
+            raise AttributeError(name) from None
+
+    def __getitem__(self, name: str) -> Any:
+        """`settings['名前']` で項目の値を返す。"""
+        return _wrap(self._data[name])
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """書き換えを拒否する。"""
+        raise AttributeError("settings is read-only")
+
+    def __contains__(self, name: object) -> bool:
+        """`'名前' in settings` で項目の有無を返す。"""
+        return name in self._data
+
+    def __iter__(self):
+        """項目名を順に返す（`{% for name in settings %}` 用）。"""
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        """項目の数を返す。"""
+        return len(self._data)
+
+    def __bool__(self) -> bool:
+        """項目が 1 つでもあれば真。"""
+        return bool(self._data)
+
+    def __str__(self) -> str:
+        """中身の dict と同じ文字列にする。"""
+        return str(self._data)
+
+
+def _wrap(value: Any) -> Any:
+    """dict を `_SettingsView` に、リスト・タプルの要素を再帰で包む。"""
+    if isinstance(value, dict):
+        return _SettingsView(value)
+    if isinstance(value, (list, tuple)):
+        return [_wrap(item) for item in value]
+    return value
+
+
 class PromptTemplateError(ValueError):
     """プロンプトのテンプレートを展開できない（構文エラー・未定義の名前・サンドボックスの拒否など）。"""
 
@@ -57,6 +118,8 @@ def render_prompt(text: str, settings: dict[str, Any]) -> str:
     """テンプレートを `settings` で展開する。
 
     設定値は展開済みの値としてそのまま出力し、値の中の波括弧はもう一度展開しない。
+    `settings` は `_SettingsView` に包んで渡すため、項目名が dict のメソッド名
+    （`items` など）と同じでも `settings.名前` は値を返す。
 
     Args:
         text: テンプレートの本文。
@@ -71,7 +134,7 @@ def render_prompt(text: str, settings: dict[str, Any]) -> str:
     """
     check_syntax(text)
     try:
-        return _ENV.from_string(text).render(settings=settings)
+        return _ENV.from_string(text).render(settings=_SettingsView(settings))
     except Exception as e:
         raise PromptTemplateError(f"Failed to render template: {type(e).__name__}: {e}") from e
 

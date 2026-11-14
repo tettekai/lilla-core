@@ -112,6 +112,37 @@ class TestRenderPrompt:
         with pytest.raises(PromptTemplateError):
             render_prompt("{{ settings.__class__.__mro__ }}", {})
 
+    @pytest.mark.parametrize("name", ["items", "keys", "values", "get", "update"])
+    def test_dict_method_names_resolve_to_values(self, name) -> None:
+        """dict のメソッド名と同じ項目も、属性でも添字でも値を返す。"""
+        text = "{{ settings.%s }}/{{ settings['%s'] }}" % (name, name)
+        assert render_prompt(text, {name: "v"}) == "v/v"
+
+    def test_nested_values_are_wrapped(self) -> None:
+        """入れ子の dict・リストの中の dict も同じ規則で引ける。"""
+        text = "{{ settings.inner.items }}{% for x in settings.rows %},{{ x.get }}{% endfor %}"
+        settings = {"inner": {"items": "a"}, "rows": [{"get": "b"}, {"get": "c"}]}
+        assert render_prompt(text, settings) == "a,b,c"
+
+    def test_view_supports_membership_iteration_and_truthiness(self) -> None:
+        """`in`・`for`・真偽判定・フィルターが使える。"""
+        text = (
+            "{{ 'path' in settings }} {% for k in settings %}{{ k }};{% endfor %} "
+            "{% if settings.empty %}y{% else %}n{% endif %} {{ settings.tags|join(',') }}"
+        )
+        settings = {"path": "a", "empty": {}, "tags": ["x", "y"]}
+        assert render_prompt(text, settings) == "True path;empty;tags; n x,y"
+
+    def test_view_hides_internals(self) -> None:
+        """入れ物の中身の属性にはテンプレートから届かない。"""
+        with pytest.raises(PromptTemplateError, match="unsafe"):
+            render_prompt("{{ settings._data }}", {})
+
+    def test_nested_undefined_name_fails(self) -> None:
+        """入れ子の無い名前も失敗にする。"""
+        with pytest.raises(PromptTemplateError, match="UndefinedError"):
+            render_prompt("{{ settings.inner.missing }}", {"inner": {}})
+
     def test_syntax_error_is_prompt_template_error(self) -> None:
         """構文エラーも `PromptTemplateError` になる。"""
         with pytest.raises(PromptTemplateError, match="syntax"):
