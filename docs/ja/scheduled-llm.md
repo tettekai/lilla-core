@@ -76,8 +76,9 @@ available_tools:               # 通常会話の一式に、この実行だけ�
 
 ## 実行時のふるまい
 
-1. `prompt` を読み込み、本文中の `{{now}}` を実行時刻（`ui.timezone` の日時、
-   `YYYY-MM-DD HH:MM` 形式）に置き換えます
+1. `prompt` を読み込み、Jinja2 のテンプレートとして展開します（[プロンプトのテンプレート](prompt-template.md)）。
+   `{{ current_hour }}` は実行時刻を `ui.timezone` で `YYYY-MM-DD HH:xx` にした文字列です
+   （以前の `{{now}}` は使えません）
 2. `client_type="task"` の会話として LLM を 1 往復させます。会話履歴・ユーザーメモは
    通常会話と同じものを使い、LLM ツールは `available_tools` で許可したものだけを渡します
 3. 返答が `NO_NOTIFICATION`（前後の空白や `**NO_NOTIFICATION**` のように `*` で

@@ -17,9 +17,9 @@ _NOW = datetime(2026, 9, 28, 21, 30, tzinfo=_TZ)
 
 @pytest.fixture
 def prompt_file(tmp_path: Path) -> Path:
-    """`{{now}}` を含むプロンプトファイルを作る。"""
+    """`{{ current_hour }}` を含むプロンプトファイルを作る。"""
     path = tmp_path / "prompt.md"
-    path.write_text("Now is {{now}}. Anything to report?", encoding="utf-8")
+    path.write_text("Now is {{ current_hour }}. Anything to report?\n", encoding="utf-8")
     return path
 
 
@@ -76,7 +76,7 @@ def wired(mock_cfg, mock_repo, mock_run_conversation, mock_send_to_discord):
     ), patch(
         "lilla_core.services.message_util.send_to_discord", mock_send_to_discord
     ), patch(
-        "lilla_core.builtin_tools.task_scheduled_llm.local_timezone", return_value=_TZ
+        "lilla_core.utils.datetime_utils.local_timezone", return_value=_TZ
     ):
         yield
 
@@ -208,9 +208,9 @@ class TestScheduledLlmTask:
         assert mock_run_conversation.await_args.args[0] == {"a": {}}
         assert kwargs["client_type"] == "task"
         assert kwargs["llm_name"] == "reminder"
-        # `{{now}}` は解決済みタイムゾーンの日時へ置き換わる。
+        # `{{ current_hour }}` は解決済みタイムゾーンの日時（時まで）へ展開される。
         assert kwargs["inject_user_content"] == (
-            "Now is 2026-09-28 21:30. Anything to report?"
+            "Now is 2026-09-28 21:xx. Anything to report?"
         )
         # 会話への追記は send_to_discord に渡したリポジトリが担う。
         mock_send_to_discord.assert_awaited_once_with(
@@ -270,14 +270,39 @@ class TestScheduledLlmTask:
         """context に `now` が無ければ `local_now()` を使う。"""
         task = _make_task(prompt_file)
 
-        with patch(
-            "lilla_core.builtin_tools.task_scheduled_llm.local_now", return_value=_NOW
-        ):
+        with patch("lilla_core.utils.datetime_utils.local_now", return_value=_NOW):
             await task.execute({"discord_client": MagicMock()})
 
         assert mock_run_conversation.await_args.kwargs["inject_user_content"] == (
-            "Now is 2026-09-28 21:30. Anything to report?"
+            "Now is 2026-09-28 21:xx. Anything to report?"
         )
+
+    async def test_converts_context_now_to_local_timezone(
+        self, wired, prompt_file: Path, mock_run_conversation
+    ) -> None:
+        """context の `now` が別のタイムゾーンでも `ui.timezone` の時刻で展開する。"""
+        task = _make_task(prompt_file)
+        utc_now = datetime(2026, 9, 28, 12, 30, tzinfo=ZoneInfo("UTC"))
+
+        await task.execute({"discord_client": MagicMock(), "now": utc_now})
+
+        assert mock_run_conversation.await_args.kwargs["inject_user_content"] == (
+            "Now is 2026-09-28 21:xx. Anything to report?"
+        )
+
+    async def test_legacy_now_placeholder_fails_and_keeps_raw_prompt(
+        self, wired, tmp_path: Path, mock_run_conversation, caplog
+    ) -> None:
+        """廃止した `{{now}}` は未定義の名前として失敗し、WARNING を出して本文のまま送る。"""
+        path = tmp_path / "legacy.md"
+        path.write_text("Now is {{now}}.", encoding="utf-8")
+        task = _make_task(path)
+
+        with caplog.at_level("WARNING"):
+            await task.execute({"discord_client": MagicMock(), "now": _NOW})
+
+        assert mock_run_conversation.await_args.kwargs["inject_user_content"] == "Now is {{now}}."
+        assert "task 'task_scheduled_llm' prompt" in caplog.text
 
     async def test_swallows_exceptions(
         self, wired, prompt_file: Path, mock_run_conversation

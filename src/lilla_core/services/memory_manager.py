@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from lilla_core.core.config import AppConfig, get_config
 from lilla_core.core.extension import get_client_prompt_providers, get_default_prompts
 from lilla_core.services.message_util import format_session_memory_block, prepend_timestamp_prefix
-from lilla_core.services.prompt_template import render_extension_prompt
+from lilla_core.services.prompt_template import render_extension_prompt, render_or_raw
 from lilla_core.services.session_memory_manager import get_session_memory_manager
 from lilla_core.utils.datetime_utils import ensure_utc, local_now
 
@@ -30,7 +30,9 @@ def _resolve_client_prompt(client_type: str) -> str:
     読み直す）ため、戻り値はキャッシュしない。
 
     1. 拡張の `client_prompt_providers()` に `client_type` があれば、全プロバイダを
-       ロード順に評価し、空でない戻り値を空行区切りで連結して使う
+       ロード順に評価し、空でない戻り値をそれぞれ Jinja2 テンプレートとして展開して
+       （`current_hour` だけを渡す。失敗したら WARNING を出してそのまま使う）、
+       空行区切りで連結して使う
     2. 誰も出していなければ、`"discord"` のときだけコア内蔵の
        `discord_client_prompt` を使う
     3. どちらにも該当しなければ何も付けない
@@ -43,7 +45,11 @@ def _resolve_client_prompt(client_type: str) -> str:
     """
     providers = get_client_prompt_providers(client_type)
     if providers:
-        parts = [text for text in (provider() for provider in providers) if text]
+        parts = [
+            render_or_raw(text, f"client prompt for '{client_type}'")
+            for text in (provider() for provider in providers)
+            if text
+        ]
         return "\n\n".join(parts)
     if client_type == "discord":
         return get_config().discord_client_prompt

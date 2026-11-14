@@ -1103,9 +1103,13 @@ class AppConfig(BaseSettings):
         場合は {config_root}/prompt/{subdir} を既定パスとして使用する。いずれも
         load_text_resources に委譲するため、${config_root} の置換や、ディレクトリ・
         ファイルが存在しない場合に空文字列を返す挙動は同ユーティリティに従う。
+        読み込んだ本文は Jinja2 テンプレートとして展開する（`current_hour` などの共通の
+        変数。失敗したら WARNING を出して読み込んだままの本文を返す）。
         """
+        from lilla_core.services.prompt_template import render_or_raw
+
         src = override or f"dir:{self.env.config_root}/prompt/{subdir}"
-        return load_text_resources(src)
+        return render_or_raw(load_text_resources(src), f"prompt.{subdir}")
 
     @property
     def system_prompt(self) -> str:
