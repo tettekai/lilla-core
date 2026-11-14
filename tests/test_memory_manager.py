@@ -946,6 +946,57 @@ class TestExtensionPrompts:
         assert result.index("日記の指示") < result.index("## Current Channel")
 
 
+    async def test_prompt_is_rendered_with_settings(
+        self, manager, make_extension, use_extensions, mock_extension_override_repo, monkeypatch,
+    ) -> None:
+        """本文（上書きを含む）は拡張の設定で Jinja2 として展開してから注入する。"""
+        use_extensions(make_extension("diary", default_prompt={"ja": "保存先 {{ settings.path }}"}))
+        load = AsyncMock(return_value={"path": "diary/a.md"})
+        monkeypatch.setattr("lilla_core.services.prompt_template.load_template_settings", load)
+        result = await manager.build_system_prompt(client_type="web")
+        assert "保存先 diary/a.md" in result
+        load.assert_awaited_once_with("diary")
+
+        mock_extension_override_repo.find_by_extensions.return_value = {
+            "diary": {"extension": "diary", "prompt": "上書き {{ settings.path }}"},
+        }
+        result = await manager.build_system_prompt(client_type="web")
+        assert "上書き diary/a.md" in result
+
+    async def test_render_failure_injects_template_as_is(
+        self, manager, make_extension, use_extensions, monkeypatch, caplog,
+    ) -> None:
+        """展開に失敗したら WARNING を出して展開前の本文を注入する。"""
+        use_extensions(make_extension("diary", default_prompt={"ja": "保存先 {{ settings.missing }}"}))
+        monkeypatch.setattr(
+            "lilla_core.services.prompt_template.load_template_settings",
+            AsyncMock(return_value={}),
+        )
+        with caplog.at_level("WARNING"):
+            result = await manager.build_system_prompt(client_type="web")
+        assert "保存先 {{ settings.missing }}" in result
+        assert any(
+            r.levelname == "WARNING" and "'diary'" in r.getMessage() for r in caplog.records
+        )
+
+    async def test_blank_rendered_prompt_is_not_injected(
+        self, manager, make_extension, use_extensions, monkeypatch,
+    ) -> None:
+        """展開後が空白だけなら注入しない。"""
+        use_extensions(
+            make_extension("diary", default_prompt={"ja": "{% if settings.on %}日記の指示{% endif %}\n"}),
+            make_extension("other", default_prompt={"ja": "ほかの指示"}),
+        )
+        monkeypatch.setattr(
+            "lilla_core.services.prompt_template.load_template_settings",
+            AsyncMock(return_value={"on": False}),
+        )
+        result = await manager.build_system_prompt(client_type="web")
+        assert "日記の指示" not in result
+        assert "ほかの指示" in result
+        assert "\n\n\n\nほかの指示" not in result
+
+
 class TestResolveClientPrompt:
     """クライアント固有プロンプトの解決順（拡張 → コア内蔵 → 何も付けない）。"""
 

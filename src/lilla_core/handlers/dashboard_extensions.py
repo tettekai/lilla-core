@@ -105,7 +105,9 @@ async def handle_update(request: web.Request) -> web.Response:
     """PATCH /api/admin/extensions/{name}/overrides - 上書きを保存する。
 
     リクエスト全体を検証してから 1 回の更新で保存し（不正なら 400 で何も保存しない）、
-    タスクを変えたときだけ稼働中のスケジューラへ反映する。応答の `saved` は保存の成否、
+    タスクを変えたときだけ稼働中のスケジューラへ反映する。プロンプトの上書きは
+    Jinja2 テンプレートとして今の設定で試しに展開し、展開できなければ 400 にする
+    （設定を読めなければ構文だけを確かめる）。応答の `saved` は保存の成否、
     `tasks_apply` は反映の結果（`applied` / `scheduler_not_running` /
     `scheduler_disabled` / `failed`。
     タスクを変えていなければ `None`）で、保存できたが反映に失敗したことを成功と
@@ -118,6 +120,7 @@ async def handle_update(request: web.Request) -> web.Response:
         find_extension,
         parse_update,
     )
+    from lilla_core.services.prompt_template import PromptTemplateError, validate_extension_prompt
 
     name = request.match_info["name"]
     if find_extension(name) is None:
@@ -130,6 +133,12 @@ async def handle_update(request: web.Request) -> web.Response:
         update = parse_update(name, body, tools)
     except OverrideValidationError as e:
         return _error(400, str(e))
+    prompt = update.set_fields.get("prompt")
+    if isinstance(prompt, str):
+        try:
+            await validate_extension_prompt(name, prompt)
+        except PromptTemplateError as e:
+            return _error(400, f"prompt: {e}")
 
     try:
         await get_extension_override_repo().update_overrides(

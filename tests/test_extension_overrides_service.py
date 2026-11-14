@@ -100,6 +100,7 @@ class TestBuildDetail:
             "override": None,
             "invalid": False,
             "effective": PROMPTS["ja"],
+            "template_variables": [],
         }
         task_a = detail["tasks"][0]
         assert task_a["name"] == "task_a"
@@ -170,6 +171,21 @@ class TestBuildDetail:
 
         assert detail["tasks"][0]["in_sync"] is True
 
+    def test_template_variables_list_public_settings(
+        self, make_extension, use_extensions, tools,
+    ) -> None:
+        """`settings.名前` で使える名前（秘匿値の型の項目を除く）を返す。"""
+        from pydantic import BaseModel, SecretStr
+
+        class Settings(BaseModel):
+            path: str = "a.md"
+            token: SecretStr | None = None
+            enabled: bool = True
+
+        use_extensions(make_extension("diary", default_prompt=PROMPTS, settings_model=Settings))
+        detail = self._detail(tools, None)
+        assert detail["prompt"]["template_variables"] == ["path", "enabled"]
+
     def test_extension_without_prompt(self, registered, tools) -> None:
         """プロンプトを持たない拡張はプロンプトの節を持たない。"""
         detail = self._detail(tools, None, name="habits")
@@ -237,6 +253,16 @@ class TestParseUpdate:
         """形・型・未知のキー・対象外のタスク・不正な crontab・空の更新は全体を拒否する。"""
         with pytest.raises(OverrideValidationError):
             svc.parse_update("diary", body, tools)
+
+    def test_prompt_syntax_error_is_rejected(self, registered, tools) -> None:
+        """テンプレートの構文エラーは保存させない。"""
+        with pytest.raises(OverrideValidationError, match="prompt: Template syntax error"):
+            svc.parse_update("diary", {"prompt": "{% if settings.x %}"}, tools)
+
+    def test_prompt_template_is_saved_as_is(self, registered, tools) -> None:
+        """構文が正しければテンプレートのまま保存する（展開はしない）。"""
+        update = svc.parse_update("diary", {"prompt": "{{ settings.path }}"}, tools)
+        assert update.set_fields == {"prompt": "{{ settings.path }}"}
 
     def test_prompt_rejected_for_extension_without_default_prompt(self, registered, tools) -> None:
         """デフォルトのプロンプトを持たない拡張のプロンプトは編集できない。"""

@@ -518,6 +518,20 @@
               会話に入れません。次の会話から使われます。「デフォルトに戻す」は上書きを消すだけで、
               デフォルトの本文はコピーしません（<code>ui.locale</code> を変えても上書きは翻訳されません）。
             </p>
+            <p class="ext-help">
+              本文は Jinja2 のテンプレートとして展開します。<code>{{ settings.名前 }}</code> で設定値を、
+              <code>{% if settings.名前 %}…{% endif %}</code> で条件分岐を書けます。保存時に今の設定で
+              試しに展開し、展開できなければ保存しません。
+              <span x-show="exts.detail.prompt && exts.detail.prompt.template_variables.length > 0">
+                使える名前:
+                <template x-for="v in (exts.detail.prompt ? exts.detail.prompt.template_variables : [])" :key="v">
+                  <code x-text="'settings.' + v" style="margin-right: 4px;"></code>
+                </template>
+              </span>
+              <span x-show="exts.detail.prompt && exts.detail.prompt.template_variables.length === 0">
+                この拡張には設定が無いため、使える名前はありません。
+              </span>
+            </p>
             <div class="ext-warning" x-show="exts.detail.prompt && exts.detail.prompt.invalid">
               保存済みの上書きが文字列ではないため、デフォルトを使っています
             </div>
