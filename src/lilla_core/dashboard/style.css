@@ -705,3 +705,45 @@ tr.clickable:hover { background: var(--bg-secondary); }
 .ext-setting-input { width: 40ch; }
 .ext-choices { display: flex; flex-direction: column; gap: 4px; }
 .ext-error-text { color: var(--error); }
+
+/* ---- Jinja2 テンプレートの入力部品（jinja-editor.js） ---- */
+.jinja-editor { display: flex; flex-direction: column; gap: 6px; max-width: 100%; }
+.jinja-editor-header { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; }
+.jinja-badge {
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--accent);
+  font-size: 11px;
+  padding: 1px 6px;
+}
+.jinja-vars-label { color: var(--text-muted); }
+.jinja-var {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 6px;
+}
+.jinja-var:hover { border-color: var(--accent); }
+.jinja-input { max-width: 100%; }
+.ext-card .jinja-input { width: 100%; }
+.jinja-status { font-size: 12px; min-height: 1.4em; }
+.jinja-status span { white-space: pre-wrap; }
+.jinja-status-checking { color: var(--text-muted); }
+.jinja-status-ok { color: var(--text-muted); }
+.jinja-status-error, .jinja-status-failed { color: var(--error); }
+.jinja-preview summary { color: var(--text-muted); cursor: pointer; font-size: 12px; }
+.jinja-preview pre {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 6px 0;
+  padding: 6px 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.jinja-comments { color: var(--text-muted); font-size: 12px; }
+.jinja-comment code { white-space: pre-wrap; }

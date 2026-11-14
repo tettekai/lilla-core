@@ -348,8 +348,9 @@
         <input type="text" x-model="skills.newName" placeholder="スキル名（例: review）" class="skill-name-input"
           maxlength="64">
         <input type="text" x-model="skills.newDescription" placeholder="説明（任意）" class="skill-description-input">
-        <textarea x-model="skills.newPrompt" placeholder="展開するプロンプト本文..." class="memo-input"
-          rows="5"></textarea>
+        <div class="skill-prompt-editor"
+          x-data="jinjaEditor({ target: { type: 'skill' }, fetch: (u, o) => authedFetch(u, o), rows: 5, placeholder: '展開するプロンプト本文...' })"
+          x-modelable="text" x-model="skills.newPrompt"></div>
         <button @click="addSkill()" :disabled="!skills.newName.trim() || !skills.newPrompt.trim()">追加</button>
       </div>
 
@@ -369,8 +370,11 @@
               <input type="text" x-model="skills.editName" class="skill-name-input" maxlength="64">
               <input type="text" x-model="skills.editDescription" placeholder="説明（任意）"
                 class="skill-description-input">
-              <textarea x-model="skills.editPrompt" @keydown.escape="cancelSkillEdit()"
-                class="memo-input" rows="5"></textarea>
+              <template x-if="skills.editingId === skill._id">
+                <div @keydown.escape="cancelSkillEdit()"
+                  x-data="jinjaEditor({ target: { type: 'skill' }, fetch: (u, o) => authedFetch(u, o), rows: 5 })"
+                  x-modelable="text" x-model="skills.editPrompt"></div>
+              </template>
             </div>
             <div class="memo-actions">
               <span class="memo-time" x-text="formatDate(skill.updated_at)"></span>
@@ -522,13 +526,6 @@
               本文は Jinja2 のテンプレートとして展開します。<code>{{ settings.名前 }}</code> で設定値を、
               <code>{% if settings.名前 %}…{% endif %}</code> で条件分岐を書けます。保存時に今の設定で
               試しに展開し、展開できなければ保存しません。
-              どのプロンプトでも <code>{{ current_hour }}</code>（今の日時を時まで。例: <code>2026-11-14 20:xx</code>）が使えます。
-              <span x-show="exts.detail.prompt && exts.detail.prompt.template_variables.length > 0">
-                設定の名前:
-                <template x-for="v in (exts.detail.prompt ? exts.detail.prompt.template_variables : [])" :key="v">
-                  <code x-text="'settings.' + v" style="margin-right: 4px;"></code>
-                </template>
-              </span>
               <span x-show="exts.detail.prompt && exts.detail.prompt.template_variables.length === 0">
                 この拡張には設定が無いため、<code>settings</code> の名前はありません。
               </span>
@@ -536,7 +533,13 @@
             <div class="ext-warning" x-show="exts.detail.prompt && exts.detail.prompt.invalid">
               保存済みの上書きが文字列ではないため、デフォルトを使っています
             </div>
-            <textarea class="memo-input ext-prompt" rows="12" x-model="exts.promptDraft"></textarea>
+            <div x-data="jinjaEditor({
+                target: () => ({ type: 'extension', name: exts.selected }),
+                variables: () => (exts.detail && exts.detail.prompt ? exts.detail.prompt.template_variables : []).map((v) => 'settings.' + v),
+                fetch: (u, o) => authedFetch(u, o),
+                rows: 12,
+              })"
+              x-modelable="text" x-model="exts.promptDraft"></div>
             <div class="memo-actions">
               <button @click="savePromptOverride()">上書きを保存</button>
               <button x-show="exts.detail.prompt && exts.detail.prompt.overridden"
@@ -652,6 +655,40 @@
 
   </div>
 
+  <!-- Jinja2 テンプレートの共通入力部品（jinja-editor.js の jinjaEditor が init() で複製する） -->
+  <template id="jinja-editor-tpl">
+    <div class="jinja-editor">
+      <div class="jinja-editor-header">
+        <span class="jinja-badge" title="保存時と会話の前に Jinja2 で展開されます">Jinja2 テンプレート</span>
+        <span class="jinja-vars-label">変数（クリックで差し込み）:</span>
+        <template x-for="name in variableNames()" :key="name">
+          <button type="button" class="jinja-var" @click="insertVariable(name)" x-text="name"></button>
+        </template>
+      </div>
+      <textarea x-ref="input" x-model="text" class="memo-input jinja-input" :rows="rows"
+        :placeholder="placeholder" spellcheck="false"></textarea>
+      <div class="jinja-status" :class="'jinja-status-' + status">
+        <span x-show="status === 'checking'">確認中...</span>
+        <span x-show="status === 'ok' && !settingsUnavailable">展開できます</span>
+        <span x-show="status === 'ok' && settingsUnavailable">
+          設定を読めないため、構文だけを確かめました（保存時も同じです）
+        </span>
+        <span x-show="status === 'error' || status === 'failed'" x-text="error"></span>
+      </div>
+      <details class="jinja-preview" x-show="status === 'ok'">
+        <summary>展開後のプレビュー</summary>
+        <pre x-show="rendered !== null" x-text="rendered"></pre>
+        <div x-show="comments.length > 0" class="jinja-comments">
+          <div class="jinja-comments-title">展開で消える部分（<code>{# … #}</code>）:</div>
+          <template x-for="(c, i) in comments" :key="i">
+            <div class="jinja-comment"><span x-text="c.line + ' 行目: '"></span><code x-text="c.text"></code></div>
+          </template>
+        </div>
+      </details>
+    </div>
+  </template>
+
+  <script src="/static/jinja-editor.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

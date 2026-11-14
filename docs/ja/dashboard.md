@@ -35,6 +35,56 @@ dashboard:
 
 Skills（`#/skills`）は `!skill` で呼び出すスキルの一覧・追加・編集・削除・有効 / 無効の
 切り替えを行う画面です。名前の規則と呼び出し方は [スキル](skills.md) を参照してください。
+本文の欄は [Jinja2 テンプレートの入力欄](#jinja2-テンプレートの入力欄) で、入力中に構文と
+展開結果を確かめられます。
+
+## Jinja2 テンプレートの入力欄
+
+Jinja2 のテンプレートとして展開される入力欄（スキルの本文の追加欄・編集欄と、Extensions 画面の
+拡張のプロンプトの上書き欄）には、共通の入力部品を使います。
+
+- 「Jinja2 テンプレート」の表示と、使える変数の一覧を出します。変数をクリックすると、カーソルの
+  位置へ `{{ 名前 }}` を差し込みます。一覧には共通の `current_hour` が必ず入り、拡張のプロンプトでは
+  `settings.名前`（秘匿値の項目は除く）も入ります
+- 入力が止まってから少しして（約 0.4 秒）、サーバーで保存時と同じ試しの展開を行い、結果を出します。
+  展開できなければ理由（構文エラーは行番号つき）を、展開できれば「展開後のプレビュー」に展開した本文を
+  出します。`{# … #}` で展開すると消える部分は、行番号と中身をプレビューの下に並べます
+- 拡張のプロンプトで設定を読めないときは、保存時と同じく構文だけを確かめ、その旨を表示します
+- 構文の色分けはしません。プレビューは確認用で、保存の操作と保存時の検査はこれまでどおりです
+
+展開はブラウザでは行わず、次の API を呼びます（ログイン必須。本文は保存しません）。
+
+| メソッド・パス | 内容 |
+|------|------|
+| `POST /api/admin/prompt-preview` | ボディは `{"text": 本文, "target": {"type": "skill"}}` か `{"text": 本文, "target": {"type": "extension", "name": 拡張名}}`。スキルは保存時と同じく前後の空白を除いてから `current_hour` だけで、拡張のプロンプトは今の設定（秘匿値を除く）でも展開します。成功は 200 で `{"rendered": 展開した本文 \| null, "comments": [{"line", "text"}], "settings_unavailable": 真偽値}`（設定を読めず展開を飛ばしたときは `rendered` が `null`）。展開できなければ 400 で `{"error": 理由}`。未ロードの拡張・デフォルトのプロンプトを持たない拡張は 404 |
+
+### 部品を使う（ダッシュボードの開発者向け）
+
+部品は `src/lilla_core/dashboard/jinja-editor.js` が `Alpine.data('jinjaEditor', …)` として登録し、
+見た目は `index.html` の `<template id="jinja-editor-tpl">` にあります。空の要素に `x-data` で付け、
+本文は `x-modelable="text"` と `x-model` で呼び出し側の値と結びます。
+
+```html
+<div x-data="jinjaEditor({
+       target: () => ({ type: 'extension', name: exts.selected }),
+       variables: () => ['settings.day_rollover'],
+       fetch: (u, o) => authedFetch(u, o),
+       rows: 12,
+     })"
+     x-modelable="text" x-model="exts.promptDraft"></div>
+```
+
+| 引数 | 内容 |
+|------|------|
+| `target` | プレビューで使う変数セット（API の `target` と同じ形）。値か、値を返す関数（選択の切り替えに追従させるとき） |
+| `variables` | 一覧に足す変数名（`current_hour` は部品が先頭に足す）。値か関数 |
+| `fetch` | API を呼ぶ関数。ダッシュボードの `authedFetch` を渡すと、セッション切れのときにログイン画面へ戻る |
+| `rows` / `placeholder` | 入力欄の見た目 |
+
+状態はインスタンスごとに持つため、複数並べても本文・プレビューは混ざりません。要素を外すと
+（`x-if` で消すなど）待機中のプレビューを止めます。一覧の各行で使う編集欄のように、同じ値を
+複数の行が見る場所では `x-if` で編集中の行にだけ部品を置いてください（置いた数だけプレビューを
+問い合わせるため）。
 
 ## Extensions
 
@@ -52,7 +102,8 @@ Extensions（管理メニュー、`#/admin/extensions`）は、ロード済み�
   今効いている本文を見て、文字列 1 つで全体を上書きできます。空にして保存すると「この拡張の
   プロンプトを注入しない」という上書きになります。「デフォルトに戻す」は上書きを消すだけで、
   デフォルトの本文はコピーしません。`ui.locale` を変えても上書きは翻訳されません。次の会話から
-  効きます（[拡張のデフォルトプロンプトと上書き](extension-prompt.md)）
+  効きます（[拡張のデフォルトプロンプトと上書き](extension-prompt.md)）。上書きの欄は
+  [Jinja2 テンプレートの入力欄](#jinja2-テンプレートの入力欄) で、今の設定で展開した結果を確かめられます
 - **定期タスク**: その拡張が同梱し、ロードされている定期タスクごとに、`schedule`（crontab）と
   定期実行の有効 / 無効だけを上書きできます。crontab は `ui.timezone` で解釈します。無効は
   定期実行を止めるだけで、`!runtask` での手動実行はできます。ツール YAML で `enabled: false` に
@@ -73,6 +124,7 @@ Extensions（管理メニュー、`#/admin/extensions`）は、ロード済み�
 | `GET /api/admin/extensions/{name}` | プロンプト・タスクのデフォルト・上書き・実効値と、スケジューラに今載っている値。画面管理の設定（`settings`。項目・値・保存済みか・エラー）も含む |
 | `PATCH /api/admin/extensions/{name}/overrides` | 上書きの保存。ボディは `{"prompt": 文字列 \| null, "tasks": {ツール名: {"schedule": 文字列 \| null, "enabled": 真偽値 \| null}}}` で、省略したキーは変えず、`null` は上書きを消す。応答の `saved` は保存の成否、`tasks_apply` は反映の結果（`applied` / `scheduler_not_running` / `scheduler_disabled` / `failed`。タスクを変えていなければ `null`） |
 | `POST /api/admin/extensions/{name}/tasks/apply` | 保存済みのタスクの上書きの再反映（失敗したら 503） |
+| `POST /api/admin/prompt-preview` | 上書きの本文を試しに展開した結果（[Jinja2 テンプレートの入力欄](#jinja2-テンプレートの入力欄)） |
 | `PUT /api/admin/extensions/{name}/settings` | 画面管理の設定の一式の保存。ボディは `{"values": {項目名: 値}}`。不正なら 400（`errors` に項目ごとの理由）で何も保存しない。設定を宣言していない拡張は 404 |
 
 ## Home
