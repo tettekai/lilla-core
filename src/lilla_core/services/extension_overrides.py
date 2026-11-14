@@ -16,6 +16,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from lilla_core.core.extension import Extension, get_default_prompts, get_extensions
+from lilla_core.services.prompt_template import (
+    PromptTemplateError,
+    check_syntax,
+    public_field_names,
+)
 from lilla_core.services.task_schedules import (
     is_valid_crontab,
     parse_task_overrides,
@@ -109,6 +114,16 @@ def list_editable(tools: dict) -> list[dict]:
     return items
 
 
+def _template_variable_names(name: str) -> list[str]:
+    """プロンプトのテンプレートから `settings.名前` で使える名前の一覧（設定が無ければ空）。"""
+    from lilla_core.services.extension_settings import get_settings_model
+
+    model = get_settings_model(name)
+    if model is None:
+        return []
+    return public_field_names(model)
+
+
 def build_detail(
     name: str,
     tools: dict,
@@ -157,6 +172,7 @@ def build_detail(
             "override": value if overridden and not invalid else None,
             "invalid": invalid,
             "effective": effective,
+            "template_variables": _template_variable_names(name),
         }
 
     entries = task_entries_of(name, tools)
@@ -241,6 +257,10 @@ def parse_update(name: str, body: object, tools: dict) -> OverrideUpdate:
         if value is None:
             unset_fields.append("prompt")
         elif isinstance(value, str):
+            try:
+                check_syntax(value)
+            except PromptTemplateError as e:
+                raise OverrideValidationError(f"prompt: {e}") from e
             set_fields["prompt"] = value
         else:
             raise OverrideValidationError("prompt must be a string or null")

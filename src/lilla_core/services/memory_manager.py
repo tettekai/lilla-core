@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from lilla_core.core.config import AppConfig, get_config
 from lilla_core.core.extension import get_client_prompt_providers, get_default_prompts
 from lilla_core.services.message_util import format_session_memory_block, prepend_timestamp_prefix
+from lilla_core.services.prompt_template import render_extension_prompt
 from lilla_core.services.session_memory_manager import get_session_memory_manager
 from lilla_core.utils.datetime_utils import ensure_utc, local_now
 
@@ -408,7 +409,11 @@ class MemoryManager:
         3. それも無ければ `ja` → `en` → 定義の先頭の言語の順にデフォルトを使う
 
         `prompt` が文字列でない場合と、上書きの読み込み自体が失敗した場合は WARNING
-        ログを出してデフォルトへフォールバックする（応答は止めない）。会話プロンプトと
+        ログを出してデフォルトへフォールバックする（応答は止めない）。
+
+        決めた本文は `services/prompt_template.py` の `render_extension_prompt()` で
+        Jinja2 テンプレートとして展開する（`settings` にその拡張の画面管理の設定を渡す）。
+        展開に失敗したら展開前の本文をそのまま注入する。展開後が空白だけなら注入しない。会話プロンプトと
         同じく、`client_type` が `"task"` のときは何も注入しない。
 
         Args:
@@ -443,8 +448,11 @@ class MemoryManager:
                         "Ignoring prompt override for extension '%s': expected a string, got %s",
                         name, type(value).__name__,
                     )
-            if text.strip():
-                parts.append(text)
+            if not text.strip():
+                continue
+            rendered = await render_extension_prompt(name, text)
+            if rendered.strip():
+                parts.append(rendered)
         return "\n\n".join(parts)
 
     async def _resolve_channel_summary_section(self, discord_channel_id: int | None) -> str:

@@ -196,6 +196,42 @@ class TestUpdate:
         repo.update_overrides.assert_awaited_once_with("diary", {"prompt": ""}, [])
         apply.assert_not_awaited()
 
+    async def test_prompt_template_with_settings_is_saved(self, client, repo, settings_repo) -> None:
+        """今の設定で展開できるテンプレートは保存する。"""
+        res = await client.patch(
+            "/api/admin/extensions/diary/overrides",
+            json={"prompt": "締め {{ settings.day_rollover }}"},
+        )
+        assert res.status == 200
+        repo.update_overrides.assert_awaited_once_with(
+            "diary", {"prompt": "締め {{ settings.day_rollover }}"}, []
+        )
+
+    @pytest.mark.parametrize(
+        "prompt", ["{{ settings.missing }}", "{% if %}", "{{ settings.__class__.__mro__ }}"],
+    )
+    async def test_unrenderable_prompt_is_400(self, client, repo, prompt) -> None:
+        """未定義の名前・構文エラー・サンドボックスの拒否は 400 で保存しない。"""
+        res = await client.patch("/api/admin/extensions/diary/overrides", json={"prompt": prompt})
+        assert res.status == 400
+        assert (await res.json())["error"].startswith("prompt: ")
+        repo.update_overrides.assert_not_awaited()
+
+    async def test_settings_failure_checks_syntax_only(self, client, repo, settings_repo) -> None:
+        """設定を読めなければ試しの展開を飛ばし、構文が正しければ保存する。"""
+        settings_repo.find_one.side_effect = RuntimeError("db down")
+        res = await client.patch(
+            "/api/admin/extensions/diary/overrides", json={"prompt": "{{ settings.missing }}"}
+        )
+        assert res.status == 200
+        repo.update_overrides.assert_awaited_once()
+
+    async def test_detail_lists_template_variables(self, client) -> None:
+        """詳細のプロンプトに、テンプレートで使える名前の一覧が入る。"""
+        res = await client.get("/api/admin/extensions/diary")
+        data = await res.json()
+        assert data["prompt"]["template_variables"] == ["template", "day_rollover"]
+
     async def test_task_save_applies_strictly(self, client, repo, apply) -> None:
         """タスクを保存したら、その拡張の上書きを strict に反映して結果を返す。"""
         res = await client.patch(
