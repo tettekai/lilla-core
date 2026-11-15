@@ -845,10 +845,10 @@ class TestExtensionPrompts:
     async def test_override_replaces_default(
         self, manager, diary, use_extensions, mock_extension_override_repo,
     ) -> None:
-        """上書きがあればデフォルトの全文を置き換える。"""
+        """replace の上書きはデフォルトの全文を置き換える。"""
         use_extensions(diary)
         mock_extension_override_repo.find_by_extensions.return_value = {
-            "diary": {"extension": "diary", "prompt": "上書きした指示"},
+            "diary": {"extension": "diary", "prompt": {"mode": "replace", "text": "上書きした指示"}},
         }
         result = await manager.build_system_prompt(client_type="web")
         assert "上書きした指示" in result
@@ -869,20 +869,28 @@ class TestExtensionPrompts:
     async def test_empty_override_suppresses_prompt(
         self, manager, diary, use_extensions, mock_extension_override_repo,
     ) -> None:
-        """空文字の上書きはその拡張のプロンプトを注入しない。"""
+        """空文字の replace はその拡張のプロンプトを注入しない。"""
         use_extensions(diary)
         mock_extension_override_repo.find_by_extensions.return_value = {
-            "diary": {"extension": "diary", "prompt": ""},
+            "diary": {"extension": "diary", "prompt": {"mode": "replace", "text": ""}},
         }
         result = await manager.build_system_prompt(client_type="web")
         assert "日記の指示" not in result
         assert "Diary rules" not in result
 
-    @pytest.mark.parametrize("value", [1, ["a"], {"ja": "x"}, None])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            1, ["a"], {"ja": "x"}, None, "旧形式の上書き",
+            {"mode": "prepend", "text": "旧形式の上書き"},
+            {"mode": "replace", "text": "旧形式の上書き", "extra": 1},
+            {"mode": "replace", "text": 1},
+        ],
+    )
     async def test_invalid_override_falls_back_with_warning(
         self, manager, diary, use_extensions, mock_extension_override_repo, caplog, value,
     ) -> None:
-        """`prompt` が文字列でなければ WARNING を出してデフォルトを使う。"""
+        """`prompt` が新形式に合わなければ（旧形式の文字列を含む）WARNING を出してデフォルトを使う。"""
         use_extensions(diary)
         mock_extension_override_repo.find_by_extensions.return_value = {
             "diary": {"extension": "diary", "prompt": value},
@@ -890,6 +898,7 @@ class TestExtensionPrompts:
         with caplog.at_level("WARNING"):
             result = await manager.build_system_prompt(client_type="web")
         assert "日記の指示" in result
+        assert "旧形式の上書き" not in result
         assert any(
             r.levelname == "WARNING" and "diary" in r.getMessage() for r in caplog.records
         )
@@ -915,7 +924,7 @@ class TestExtensionPrompts:
             make_extension("alpha", default_prompt={"ja": "A の指示"}),
         )
         mock_extension_override_repo.find_by_extensions.return_value = {
-            "alpha": {"extension": "alpha", "prompt": "A の上書き"},
+            "alpha": {"extension": "alpha", "prompt": {"mode": "replace", "text": "A の上書き"}},
         }
         result = await manager.build_system_prompt(client_type="web")
         assert "Z の指示\n\nA の上書き" in result
@@ -974,7 +983,10 @@ class TestExtensionPrompts:
         load.assert_awaited_once_with("diary")
 
         mock_extension_override_repo.find_by_extensions.return_value = {
-            "diary": {"extension": "diary", "prompt": "上書き {{ settings.path }}"},
+            "diary": {
+                "extension": "diary",
+                "prompt": {"mode": "replace", "text": "上書き {{ settings.path }}"},
+            },
         }
         result = await manager.build_system_prompt(client_type="web")
         assert "上書き diary/a.md" in result
@@ -1011,6 +1023,157 @@ class TestExtensionPrompts:
         assert "日記の指示" not in result
         assert "ほかの指示" in result
         assert "\n\n\n\nほかの指示" not in result
+
+
+class TestExtensionPromptAppend:
+    """拡張のプロンプトの `append` 上書き（既定と追加分を独立して展開してからつなぐ）。"""
+
+    @pytest.fixture
+    def settings(self, monkeypatch):
+        """テンプレートへ渡す設定の読み込みのモック。"""
+        load = AsyncMock(return_value={"path": "diary/a.md", "on": False})
+        monkeypatch.setattr("lilla_core.services.prompt_template.load_template_settings", load)
+        return load
+
+    def _override(self, repo, mode: str, text: str, name: str = "diary") -> None:
+        """上書きの保存値を設定する。"""
+        repo.find_by_extensions.return_value = {
+            name: {"extension": name, "prompt": {"mode": mode, "text": text}},
+        }
+
+    async def test_append_joins_default_and_text(
+        self, manager, mock_cfg, make_extension, use_extensions, mock_extension_override_repo,
+        settings,
+    ) -> None:
+        """既定と追加分をそれぞれ展開して空行でつなぐ。既定は今の locale に追従する。"""
+        use_extensions(make_extension(
+            "diary",
+            default_prompt={"ja": "保存先 {{ settings.path }}", "en": "Save to {{ settings.path }}"},
+        ))
+        self._override(mock_extension_override_repo, "append", "追加 {{ settings.path }}")
+
+        result = await manager.build_system_prompt(client_type="web")
+        assert "保存先 diary/a.md\n\n追加 diary/a.md" in result
+        settings.assert_awaited_once_with("diary")
+
+        mock_cfg.ui.locale = "en"
+        result = await manager.build_system_prompt(client_type="web")
+        assert "Save to diary/a.md\n\n追加 diary/a.md" in result
+
+    async def test_append_follows_changed_default(
+        self, manager, make_extension, use_extensions, mock_extension_override_repo, settings,
+    ) -> None:
+        """append は実行時点の既定と組み合わせ、replace は既定の変更の影響を受けない。"""
+        self._override(mock_extension_override_repo, "append", "追加")
+        use_extensions(make_extension("diary", default_prompt={"ja": "古い既定"}))
+        assert "古い既定\n\n追加" in await manager.build_system_prompt(client_type="web")
+        use_extensions(make_extension("diary", default_prompt={"ja": "新しい既定"}))
+        result = await manager.build_system_prompt(client_type="web")
+        assert "新しい既定\n\n追加" in result
+        assert "古い既定" not in result
+
+        self._override(mock_extension_override_repo, "replace", "置換")
+        result = await manager.build_system_prompt(client_type="web")
+        assert "置換" in result
+        assert "新しい既定" not in result
+
+    async def test_text_cannot_reference_default_set(
+        self, manager, make_extension, use_extensions, mock_extension_override_repo, settings,
+        caplog,
+    ) -> None:
+        """追加分から既定側の `{% set %}` は見えず、追加分だけ展開前の本文になる。"""
+        use_extensions(make_extension(
+            "diary", default_prompt={"ja": "{% set who = 'リラ' %}既定 {{ who }}"},
+        ))
+        self._override(mock_extension_override_repo, "append", "追加 {{ who }}")
+        with caplog.at_level("WARNING"):
+            result = await manager.build_system_prompt(client_type="web")
+        assert "既定 リラ\n\n追加 {{ who }}" in result
+        assert any(
+            r.levelname == "WARNING" and "'diary'" in r.getMessage() for r in caplog.records
+        )
+
+    async def test_default_render_failure_keeps_text_rendered(
+        self, manager, make_extension, use_extensions, mock_extension_override_repo, settings,
+        caplog,
+    ) -> None:
+        """既定側の展開に失敗しても、追加分は展開した結果のまま注入する。"""
+        use_extensions(make_extension("diary", default_prompt={"ja": "既定 {{ settings.missing }}"}))
+        self._override(mock_extension_override_repo, "append", "追加 {{ settings.path }}")
+        with caplog.at_level("WARNING"):
+            result = await manager.build_system_prompt(client_type="web")
+        assert "既定 {{ settings.missing }}\n\n追加 diary/a.md" in result
+        assert any(r.levelname == "WARNING" for r in caplog.records)
+
+    async def test_settings_failure_injects_both_raw(
+        self, manager, make_extension, use_extensions, mock_extension_override_repo, monkeypatch,
+        caplog,
+    ) -> None:
+        """設定を読めなければ、既定も追加分も展開前の本文を使う。"""
+        from lilla_core.services.extension_settings import SettingsUnavailableError
+
+        monkeypatch.setattr(
+            "lilla_core.services.prompt_template.load_template_settings",
+            AsyncMock(side_effect=SettingsUnavailableError("down")),
+        )
+        use_extensions(make_extension("diary", default_prompt={"ja": "既定 {{ settings.path }}"}))
+        self._override(mock_extension_override_repo, "append", "追加 {{ settings.path }}")
+        with caplog.at_level("WARNING"):
+            result = await manager.build_system_prompt(client_type="web")
+        assert "既定 {{ settings.path }}\n\n追加 {{ settings.path }}" in result
+        assert any(
+            r.levelname == "WARNING" and "'diary'" in r.getMessage() for r in caplog.records
+        )
+
+    @pytest.mark.parametrize("text", ["", "  \n", "{% if settings.on %}追加{% endif %}"])
+    async def test_blank_text_leaves_default_only(
+        self, manager, make_extension, use_extensions, mock_extension_override_repo, settings,
+        text,
+    ) -> None:
+        """追加分が空・空白だけ・展開して空白だけなら既定だけで、余分な区切りを足さない。"""
+        use_extensions(
+            make_extension("diary", default_prompt={"ja": "既定の指示"}),
+            make_extension("other", default_prompt={"ja": "ほかの指示"}),
+        )
+        self._override(mock_extension_override_repo, "append", text)
+        result = await manager.build_system_prompt(client_type="web")
+        assert "既定の指示\n\nほかの指示" in result
+
+    async def test_blank_default_leaves_text_only(
+        self, manager, make_extension, use_extensions, mock_extension_override_repo, settings,
+    ) -> None:
+        """既定が展開して空白だけなら、追加分だけになる。"""
+        use_extensions(
+            make_extension("diary", default_prompt={"ja": "{% if settings.on %}既定{% endif %}"}),
+            make_extension("other", default_prompt={"ja": "ほかの指示"}),
+        )
+        self._override(mock_extension_override_repo, "append", "追加")
+        result = await manager.build_system_prompt(client_type="web")
+        assert "追加\n\nほかの指示" in result
+        assert "既定" not in result
+
+    async def test_both_blank_is_not_injected(
+        self, manager, make_extension, use_extensions, mock_extension_override_repo, settings,
+    ) -> None:
+        """既定も追加分も空白だけなら、その拡張のプロンプトは注入しない。"""
+        use_extensions(
+            make_extension("diary", default_prompt={"ja": "{% if settings.on %}既定{% endif %}"}),
+            make_extension("other", default_prompt={"ja": "ほかの指示"}),
+        )
+        self._override(mock_extension_override_repo, "append", " ")
+        result = await manager.build_system_prompt(client_type="web")
+        assert "\n\n\n\nほかの指示" not in result
+        assert "ほかの指示" in result
+
+    async def test_append_not_injected_for_task(
+        self, manager, make_extension, use_extensions, mock_extension_override_repo, settings,
+    ) -> None:
+        """`task` には append の上書きも注入しない。"""
+        use_extensions(make_extension("diary", default_prompt={"ja": "既定の指示"}))
+        self._override(mock_extension_override_repo, "append", "追加")
+        result = await manager.build_system_prompt(client_type="task")
+        assert "既定の指示" not in result
+        assert "追加" not in result
 
 
 class TestResolveClientPrompt:

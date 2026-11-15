@@ -41,7 +41,8 @@ Skills（`#/skills`）は `!skill` で呼び出すスキルの一覧・追加・
 ## Jinja2 テンプレートの入力欄
 
 Jinja2 のテンプレートとして展開される入力欄（スキルの本文の追加欄・編集欄と、Extensions 画面の
-拡張のプロンプトの上書き欄）には、共通の入力部品を使います。
+拡張のプロンプトの上書き欄。後者は下記の [プロンプトの上書きの入力部品](#プロンプトの上書きの入力部品) の中で使う）には、
+共通の入力部品を使います。
 
 - 「Jinja2 テンプレート」の表示と、使える変数の一覧を出します。変数をクリックすると、カーソルの
   位置へ `{{ 名前 }}` を差し込みます。一覧には共通の `current_hour` が必ず入り、拡張のプロンプトでは
@@ -71,7 +72,7 @@ Jinja2 のテンプレートとして展開される入力欄（スキルの本�
        fetch: (u, o) => authedFetch(u, o),
        rows: 12,
      })"
-     x-modelable="text" x-model="exts.promptDraft"></div>
+     x-modelable="text" x-model="skills.newPrompt"></div>
 ```
 
 | 引数 | 内容 |
@@ -86,6 +87,49 @@ Jinja2 のテンプレートとして展開される入力欄（スキルの本�
 複数の行が見る場所では `x-if` で編集中の行にだけ部品を置いてください（置いた数だけプレビューを
 問い合わせるため）。
 
+## プロンプトの上書きの入力部品
+
+デフォルトのプロンプトに「追加するか」「置き換えるか」を選んで本文を書く入力欄には、共通の部品を
+使います。今これを使うのは Extensions 画面のプロンプトの欄だけです。
+
+- 「デフォルトプロンプトに追加」と「デフォルトプロンプトを置き換える」のラジオで、モードを選びます
+- 追加モードのときだけ、入力欄の上にデフォルトの本文を言語つきの読み取り専用で出します
+  （選択・手動でのコピーができます）。置き換えモードでは出しません
+- 入力欄は [Jinja2 テンプレートの入力欄](#jinja2-テンプレートの入力欄) で、入力した本文だけを
+  そのまま渡します（プレビューと保存時の検査は入力した本文だけが対象で、モードは関係しません）
+- モードを切り替えても入力した本文は消えず、デフォルトを自動で差し込むこともしません。
+  専用のコピーボタンはありません
+
+### 部品を使う（ダッシュボードの開発者向け）
+
+部品は `src/lilla_core/dashboard/prompt-override-editor.js` が `Alpine.data('promptOverrideEditor', …)`
+として登録し、見た目は `index.html` の `<template id="prompt-override-editor-tpl">` にあります。
+中で `jinjaEditor` を使うため、使う画面では `jinja-editor.js` とこのファイルの両方を `app.js` より前に
+`<script>` で読み込みます（どちらも `alpine:init` の中で登録します）。空の要素に `x-data` で付け、
+値 `{mode: 'append' | 'replace', text}` を `x-modelable="value"` と `x-model` で呼び出し側の値と結びます。
+
+```html
+<div x-data="promptOverrideEditor({
+       defaultText: () => exts.detail.prompt.default,
+       defaultLocale: () => exts.detail.prompt.default_locale,
+       target: () => ({ type: 'extension', name: exts.selected }),
+       variables: () => ['settings.day_rollover'],
+       fetch: (u, o) => authedFetch(u, o),
+       rows: 12,
+     })"
+     x-modelable="value" x-model="exts.promptDraft"></div>
+```
+
+| 引数 | 内容 |
+|------|------|
+| `defaultText` / `defaultLocale` | 追加モードのときに見せるデフォルトの本文と言語。値か、値を返す関数 |
+| `target` / `variables` / `fetch` / `rows` / `placeholder` | そのまま `jinjaEditor` へ渡す（意味は上の表と同じ）。値か関数 |
+
+呼び出し側の値は常に `{mode, text}` のオブジェクトにしてください（初期値は `{mode: 'append', text: ''}`）。
+拡張名などは部品に持たせず、引数で渡します。状態（ラジオの組を含む）はインスタンスごとに持つため、
+複数並べてもモード・本文・プレビューは混ざりません。要素を外したときの後始末は中の `jinjaEditor` が
+行います。バッジ・説明文・警告・保存やリセットのボタンは部品に含めず、呼び出し側の画面に置きます。
+
 ## Extensions
 
 Extensions（管理メニュー、`#/admin/extensions`）は、ロード済みの拡張の画面管理の設定
@@ -98,12 +142,17 @@ Extensions（管理メニュー、`#/admin/extensions`）は、ロード済み�
   拡張が次に始める処理から使われます（[画面で管理する拡張の設定](extension-settings.md)）。
   データベースから読めないときは「読めない」と表示し、未保存とは区別します
 
-- **プロンプト**: デフォルト（`ui.locale` → `ja` → `en` の順に選んだもの）・上書きの有無・
-  今効いている本文を見て、文字列 1 つで全体を上書きできます。空にして保存すると「この拡張の
-  プロンプトを注入しない」という上書きになります。「デフォルトに戻す」は上書きを消すだけで、
-  デフォルトの本文はコピーしません。`ui.locale` を変えても上書きは翻訳されません。次の会話から
-  効きます（[拡張のデフォルトプロンプトと上書き](extension-prompt.md)）。上書きの欄は
-  [Jinja2 テンプレートの入力欄](#jinja2-テンプレートの入力欄) で、今の設定で展開した結果を確かめられます
+- **プロンプト**: 「デフォルトプロンプトに追加」（デフォルトの後ろに書き足す）か
+  「デフォルトプロンプトを置き換える」（入力した本文だけを使う）を選んで上書きできます。
+  欄は [プロンプトの上書きの入力部品](#プロンプトの上書きの入力部品) で、追加モードのときだけ
+  デフォルト（`ui.locale` → `ja` → `en` の順に選んだもの）を言語つきで出します。編集欄には保存済みの
+  モードと本文が入り（上書きが無ければ追加モード・空の本文）、デフォルトと合わせた全文は入りません。
+  追加モードのデフォルト部分は、拡張のデフォルトの更新や `ui.locale` の変更に追従します（入力した
+  本文は翻訳されません）。置き換えモードで空にして保存すると「この拡張のプロンプトを注入しない」
+  という上書きになります。「デフォルトに戻す」は上書きを消し、編集欄も追加モード・空の本文に戻します。
+  保存済みの値が今の形式に合わない（以前の文字列 1 つの形式など）ときは警告を出してデフォルトを
+  使うので、保存し直すか「デフォルトに戻す」を押してください。次の会話から効きます
+  （[拡張のデフォルトプロンプトと上書き](extension-prompt.md)）
 - **定期タスク**: その拡張が同梱し、ロードされている定期タスクごとに、`schedule`（crontab）と
   定期実行の有効 / 無効だけを上書きできます。crontab は `ui.timezone` で解釈します。無効は
   定期実行を止めるだけで、`!runtask` での手動実行はできます。ツール YAML で `enabled: false` に
@@ -113,7 +162,8 @@ Extensions（管理メニュー、`#/admin/extensions`）は、ロード済み�
   （[拡張のタスクの上書き](extension-task-override.md)）
 
 保存はリクエスト全体を検証してから 1 回の更新で行い、1 か所でも不正（未知のキー・型の違い・
-対象外のタスク・crontab として読めない値）なら何も保存しません。プロンプトだけを保存しても
+対象外のタスク・crontab として読めない値・プロンプトの未知のモード・入力した本文を展開できない）
+なら何も保存しません。プロンプトだけを保存しても
 `tasks` は消えません（逆も同じ）。
 
 画面が使う API（いずれもログイン必須）:
@@ -121,8 +171,8 @@ Extensions（管理メニュー、`#/admin/extensions`）は、ロード済み�
 | メソッド・パス | 内容 |
 |------|------|
 | `GET /api/admin/extensions` | ロード済みの拡張と、編集できるかの目印 |
-| `GET /api/admin/extensions/{name}` | プロンプト・タスクのデフォルト・上書き・実効値と、スケジューラに今載っている値。画面管理の設定（`settings`。項目・値・保存済みか・エラー）も含む |
-| `PATCH /api/admin/extensions/{name}/overrides` | 上書きの保存。ボディは `{"prompt": 文字列 \| null, "tasks": {ツール名: {"schedule": 文字列 \| null, "enabled": 真偽値 \| null}}}` で、省略したキーは変えず、`null` は上書きを消す。応答の `saved` は保存の成否、`tasks_apply` は反映の結果（`applied` / `scheduler_not_running` / `scheduler_disabled` / `failed`。タスクを変えていなければ `null`） |
+| `GET /api/admin/extensions/{name}` | プロンプト・タスクのデフォルト・上書き・実効値と、スケジューラに今載っている値。プロンプトは `default` / `default_locale` / `overridden` / `mode` / `text`（上書きがあるときだけ値を持つ）/ `invalid` / `effective`（デフォルトと入力した本文を展開前のまま空行でつないだ表示用の本文）/ `template_variables`。画面管理の設定（`settings`。項目・値・保存済みか・エラー）も含む |
+| `PATCH /api/admin/extensions/{name}/overrides` | 上書きの保存。ボディは `{"prompt": {"mode": "append" \| "replace", "text": 文字列} \| null, "tasks": {ツール名: {"schedule": 文字列 \| null, "enabled": 真偽値 \| null}}}` で、省略したキーは変えず、`null` は上書きを消す。応答の `saved` は保存の成否、`tasks_apply` は反映の結果（`applied` / `scheduler_not_running` / `scheduler_disabled` / `failed`。タスクを変えていなければ `null`）。`prompt` は `mode` と `text` の両方が必要で、ほかのキーは受け付けない（以前の文字列 1 つの形式も 400）。構文の確認と試しの展開は `text` だけが対象 |
 | `POST /api/admin/extensions/{name}/tasks/apply` | 保存済みのタスクの上書きの再反映（失敗したら 503） |
 | `POST /api/admin/prompt-preview` | 上書きの本文を試しに展開した結果（[Jinja2 テンプレートの入力欄](#jinja2-テンプレートの入力欄)） |
 | `PUT /api/admin/extensions/{name}/settings` | 画面管理の設定の一式の保存。ボディは `{"values": {項目名: 値}}`。不正なら 400（`errors` に項目ごとの理由）で何も保存しない。設定を宣言していない拡張は 404 |

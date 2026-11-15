@@ -518,37 +518,41 @@
                 x-text="exts.detail.prompt && exts.detail.prompt.overridden ? '上書き中' : 'デフォルト'"></span>
             </div>
             <p class="ext-help">
-              文字列 1 つで拡張のプロンプト全体を置き換えます。空にして保存すると、この拡張のプロンプトを
-              会話に入れません。次の会話から使われます。「デフォルトに戻す」は上書きを消すだけで、
-              デフォルトの本文はコピーしません（<code>ui.locale</code> を変えても上書きは翻訳されません）。
+              「デフォルトプロンプトに追加」は、拡張のデフォルトの本文の後ろに入力した本文を空行区切りで
+              書き足します。拡張のデフォルトが更新されたり <code>ui.locale</code> を変えたりすると、
+              デフォルトの部分は自動で追従します（入力した本文は翻訳されません）。
+              「デフォルトプロンプトを置き換える」は、入力した本文だけを使います（空にして保存すると、
+              この拡張のプロンプトを会話に入れません）。どちらも次の会話から使われます。
+              デフォルトを編集のベースにしたいときは、追加モードで表示されるデフォルトをコピーし、
+              置き換えモードで貼り付けてください。「デフォルトに戻す」は上書きを消します。
             </p>
             <p class="ext-help">
               本文は Jinja2 のテンプレートとして展開します。<code>{{ settings.名前 }}</code> で設定値を、
-              <code>{% if settings.名前 %}…{% endif %}</code> で条件分岐を書けます。保存時に今の設定で
-              試しに展開し、展開できなければ保存しません。
+              <code>{% if settings.名前 %}…{% endif %}</code> で条件分岐を書けます。保存時に、入力した本文だけを
+              今の設定で試しに展開し、展開できなければ保存しません。追加モードでも、デフォルトと入力した
+              本文は別々に展開するため、デフォルト側の <code>{% set %}</code> やマクロは使えません。
               <span x-show="exts.detail.prompt && exts.detail.prompt.template_variables.length === 0">
                 この拡張には設定が無いため、<code>settings</code> の名前はありません。
               </span>
             </p>
             <div class="ext-warning" x-show="exts.detail.prompt && exts.detail.prompt.invalid">
-              保存済みの上書きが文字列ではないため、デフォルトを使っています
+              保存済みの上書きが今の形式（モードと本文）に合わないため、デフォルトを使っています。
+              上書きを保存し直すか、「デフォルトに戻す」を押してください
             </div>
-            <div x-data="jinjaEditor({
+            <div x-data="promptOverrideEditor({
+                defaultText: () => (exts.detail && exts.detail.prompt ? exts.detail.prompt.default : ''),
+                defaultLocale: () => (exts.detail && exts.detail.prompt ? exts.detail.prompt.default_locale : ''),
                 target: () => ({ type: 'extension', name: exts.selected }),
                 variables: () => (exts.detail && exts.detail.prompt ? exts.detail.prompt.template_variables : []).map((v) => 'settings.' + v),
                 fetch: (u, o) => authedFetch(u, o),
                 rows: 12,
               })"
-              x-modelable="text" x-model="exts.promptDraft"></div>
+              x-modelable="value" x-model="exts.promptDraft"></div>
             <div class="memo-actions">
               <button @click="savePromptOverride()">上書きを保存</button>
               <button x-show="exts.detail.prompt && exts.detail.prompt.overridden"
                 @click="resetPromptOverride()">デフォルトに戻す</button>
             </div>
-            <details class="ext-default">
-              <summary x-text="'デフォルト（' + ((exts.detail.prompt && exts.detail.prompt.default_locale) || '-') + '）'"></summary>
-              <pre x-text="exts.detail.prompt && exts.detail.prompt.default"></pre>
-            </details>
           </div>
 
           <div class="ext-card" x-show="exts.detail.tasks.length > 0">
@@ -688,7 +692,34 @@
     </div>
   </template>
 
+  <!-- プロンプトの上書きの共通入力部品（prompt-override-editor.js の promptOverrideEditor が init() で複製する） -->
+  <template id="prompt-override-editor-tpl">
+    <div class="prompt-override-editor">
+      <div class="prompt-override-modes" role="radiogroup" aria-label="上書きの方法">
+        <label class="prompt-override-mode">
+          <input type="radio" :name="radioName" value="append"
+            :checked="mode() === 'append'" @change="setMode('append')">
+          デフォルトプロンプトに追加
+        </label>
+        <label class="prompt-override-mode">
+          <input type="radio" :name="radioName" value="replace"
+            :checked="mode() === 'replace'" @change="setMode('replace')">
+          デフォルトプロンプトを置き換える
+        </label>
+      </div>
+      <div class="prompt-override-default" x-show="mode() === 'append'">
+        <div class="prompt-override-default-label">
+          デフォルトプロンプト（<span x-text="defaultLocale()"></span>・読み取り専用）
+        </div>
+        <pre class="prompt-override-default-text" x-text="defaultText()"></pre>
+        <div class="prompt-override-default-label">この後ろに追加する本文:</div>
+      </div>
+      <div x-data="jinjaEditor(editorOptions())" x-modelable="text" x-model="value.text"></div>
+    </div>
+  </template>
+
   <script src="/static/jinja-editor.js"></script>
+  <script src="/static/prompt-override-editor.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>
