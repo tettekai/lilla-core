@@ -105,8 +105,9 @@ async def handle_update(request: web.Request) -> web.Response:
     """PATCH /api/admin/extensions/{name}/overrides - 上書きを保存する。
 
     リクエスト全体を検証してから 1 回の更新で保存し（不正なら 400 で何も保存しない）、
-    タスクを変えたときだけ稼働中のスケジューラへ反映する。プロンプトの上書きは
-    Jinja2 テンプレートとして今の設定で試しに展開し、展開できなければ 400 にする
+    タスクを変えたときだけ稼働中のスケジューラへ反映する。プロンプトの上書き
+    （`{"mode", "text"}`）は、モードによらず入力本文（`text`）だけを Jinja2 テンプレートとして
+    今の設定で試しに展開し、展開できなければ 400 にする
     （設定を読めなければ構文だけを確かめる）。応答の `saved` は保存の成否、
     `tasks_apply` は反映の結果（`applied` / `scheduler_not_running` /
     `scheduler_disabled` / `failed`。
@@ -134,9 +135,10 @@ async def handle_update(request: web.Request) -> web.Response:
     except OverrideValidationError as e:
         return _error(400, str(e))
     prompt = update.set_fields.get("prompt")
-    if isinstance(prompt, str):
+    if isinstance(prompt, dict):
+        # 試し展開は入力本文だけが対象（既定とつないだ本文は確かめない）
         try:
-            await validate_extension_prompt(name, prompt)
+            await validate_extension_prompt(name, prompt["text"])
         except PromptTemplateError as e:
             return _error(400, f"prompt: {e}")
 

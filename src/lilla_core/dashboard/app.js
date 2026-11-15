@@ -115,7 +115,8 @@ function dashboardApp() {
       error: '',
       notice: '',
       applyFailed: false,
-      promptDraft: '',
+      // プロンプトの上書きの編集中の値（{ mode, text }。promptOverrideEditor と結ぶ）
+      promptDraft: { mode: 'append', text: '' },
       taskDrafts: {},
       // 画面管理の設定（設定の本体）の編集中の値。unset は「未設定（null）」にする項目。
       settingsDraft: {},
@@ -802,7 +803,12 @@ function dashboardApp() {
     // 入れ、空欄は「デフォルトを使う」を意味する。
     setExtensionDetail(detail) {
       this.exts.detail = detail;
-      this.exts.promptDraft = detail.prompt ? detail.prompt.effective : '';
+      // プロンプトは保存済みの mode / text を入れる（合成済みの effective は入れない）。
+      // 上書きが無い・不正なら追加モードの空の本文から始める
+      const prompt = detail.prompt;
+      this.exts.promptDraft = prompt && prompt.overridden && !prompt.invalid
+        ? { mode: prompt.mode, text: prompt.text }
+        : { mode: 'append', text: '' };
       const drafts = {};
       for (const task of detail.tasks || []) {
         drafts[task.name] = {
@@ -1006,9 +1012,10 @@ function dashboardApp() {
     },
 
     savePromptOverride() {
-      // 空文字も「何も注入しない」という有効な上書きとして保存する
+      // モードと本文を一緒に保存する（置き換えの空文字は「何も注入しない」という有効な上書き）
+      const draft = this.exts.promptDraft || {};
       this.saveExtensionOverrides(
-        { prompt: this.exts.promptDraft },
+        { prompt: { mode: draft.mode === 'replace' ? 'replace' : 'append', text: draft.text || '' } },
         'プロンプトの上書きを保存しました',
         'プロンプトの上書きを保存できませんでした',
       );

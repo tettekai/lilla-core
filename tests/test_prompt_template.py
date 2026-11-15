@@ -16,6 +16,7 @@ from lilla_core.services.prompt_template import (
     load_template_settings,
     public_field_names,
     render_extension_prompt,
+    render_extension_prompt_parts,
     render_or_raw,
     render_prompt,
     render_template,
@@ -317,6 +318,34 @@ class TestRenderExtensionPrompt:
         settings_repo.doc = {"extension": "diary", "values": {"unknown_key": 1}}
         text = "{{ settings.path }}"
         assert await render_extension_prompt("diary", text) == text
+
+
+class TestRenderExtensionPromptParts:
+    """既定と追加分を独立したテンプレートとして展開する。"""
+
+    async def test_each_part_is_independent(self, registered, settings_repo, caplog) -> None:
+        """失敗した部分だけ展開前の本文になり、ほかの部分は展開した結果のまま。"""
+        settings_repo.doc = {"extension": "diary", "values": {"path": "y.md"}}
+        with caplog.at_level("WARNING"):
+            result = await render_extension_prompt_parts(
+                "diary", ["{% set who = 'a' %}{{ who }} {{ settings.path }}", "{{ who }}"]
+            )
+        assert result == ["a y.md", "{{ who }}"]
+        assert any(
+            r.levelname == "WARNING" and "'diary'" in r.getMessage() for r in caplog.records
+        )
+
+    async def test_settings_failure_returns_all_raw(self, registered, settings_repo) -> None:
+        """設定を読めなければどの部分も展開前の本文を返し、設定は 1 回だけ読む。"""
+        settings_repo.find_one.side_effect = RuntimeError("db down")
+        texts = ["{{ settings.path }}", "{{ current_hour }}"]
+        assert await render_extension_prompt_parts("diary", texts) == texts
+        assert settings_repo.find_one.await_count == 1
+
+    async def test_empty_list(self, registered, settings_repo) -> None:
+        """部分が無ければ設定を読まない。"""
+        assert await render_extension_prompt_parts("diary", []) == []
+        settings_repo.find_one.assert_not_awaited()
 
 
 class TestValidateExtensionPrompt:

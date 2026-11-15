@@ -670,9 +670,6 @@ tr.clickable:hover { background: var(--bg-secondary); }
 
 .ext-prompt { font-family: var(--font-mono); width: 100%; }
 
-.ext-default { margin-top: 8px; }
-.ext-default summary { color: var(--text-muted); cursor: pointer; font-size: 12px; }
-.ext-default pre { white-space: pre-wrap; word-break: break-word; }
 
 .ext-error,
 .ext-notice,
@@ -747,3 +744,23 @@ tr.clickable:hover { background: var(--bg-secondary); }
 }
 .jinja-comments { color: var(--text-muted); font-size: 12px; }
 .jinja-comment code { white-space: pre-wrap; }
+
+/* ---- プロンプトの上書きの入力部品（prompt-override-editor.js） ---- */
+.prompt-override-editor { display: flex; flex-direction: column; gap: 8px; max-width: 100%; }
+.prompt-override-modes { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.prompt-override-mode { align-items: center; cursor: pointer; display: flex; gap: 6px; }
+.prompt-override-default { display: flex; flex-direction: column; gap: 4px; }
+.prompt-override-default-label { color: var(--text-muted); font-size: 12px; }
+.prompt-override-default-text {
+  background: var(--bg-tertiary);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  margin: 0;
+  max-height: 20em;
+  overflow: auto;
+  padding: 6px 8px;
+  user-select: text;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

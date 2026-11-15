@@ -156,13 +156,15 @@ class TestDetail:
 
     async def test_returns_detail(self, client, repo) -> None:
         """プロンプトとタスクのデフォルト・上書き・実効値を返す。"""
-        repo.doc = {"extension": "diary", "prompt": "上書き"}
+        repo.doc = {"extension": "diary", "prompt": {"mode": "append", "text": "追加"}}
 
         res = await client.get("/api/admin/extensions/diary")
 
         assert res.status == 200
         data = await res.json()
-        assert data["prompt"]["effective"] == "上書き"
+        assert data["prompt"]["mode"] == "append"
+        assert data["prompt"]["text"] == "追加"
+        assert data["prompt"]["effective"] == PROMPTS["ja"] + "\n\n追加"
         assert data["prompt"]["default"] == PROMPTS["ja"]
         assert [task["name"] for task in data["tasks"]] == ["task_a"]
         assert data["tasks"][0]["applied_schedule"] == "0 22 * * *"
@@ -187,24 +189,28 @@ class TestUpdate:
 
     async def test_prompt_save_does_not_apply_tasks(self, client, repo, apply) -> None:
         """プロンプトだけの保存はプロンプトのキーだけを書き、スケジューラには触れない。"""
-        res = await client.patch("/api/admin/extensions/diary/overrides", json={"prompt": ""})
+        res = await client.patch(
+            "/api/admin/extensions/diary/overrides", json={"prompt": {"mode": "replace", "text": ""}}
+        )
 
         assert res.status == 200
         data = await res.json()
         assert data["saved"] is True
         assert data["tasks_apply"] is None
-        repo.update_overrides.assert_awaited_once_with("diary", {"prompt": ""}, [])
+        repo.update_overrides.assert_awaited_once_with(
+            "diary", {"prompt": {"mode": "replace", "text": ""}}, []
+        )
         apply.assert_not_awaited()
 
     async def test_prompt_template_with_settings_is_saved(self, client, repo, settings_repo) -> None:
         """今の設定で展開できるテンプレートは保存する。"""
         res = await client.patch(
             "/api/admin/extensions/diary/overrides",
-            json={"prompt": "締め {{ settings.day_rollover }}"},
+            json={"prompt": {"mode": "append", "text": "締め {{ settings.day_rollover }}"}},
         )
         assert res.status == 200
         repo.update_overrides.assert_awaited_once_with(
-            "diary", {"prompt": "締め {{ settings.day_rollover }}"}, []
+            "diary", {"prompt": {"mode": "append", "text": "締め {{ settings.day_rollover }}"}}, []
         )
 
     @pytest.mark.parametrize(
@@ -212,16 +218,82 @@ class TestUpdate:
     )
     async def test_unrenderable_prompt_is_400(self, client, repo, prompt) -> None:
         """未定義の名前・構文エラー・サンドボックスの拒否は 400 で保存しない。"""
-        res = await client.patch("/api/admin/extensions/diary/overrides", json={"prompt": prompt})
+        res = await client.patch(
+            "/api/admin/extensions/diary/overrides",
+            json={"prompt": {"mode": "append", "text": prompt}},
+        )
         assert res.status == 400
         assert (await res.json())["error"].startswith("prompt: ")
         repo.update_overrides.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            "旧形式の文字列",
+            {"mode": "prepend", "text": "x"},
+            {"mode": "append", "text": "x", "extra": 1},
+            {"mode": "append"},
+            {"mode": "append", "text": 1},
+            ["append", "x"],
+        ],
+    )
+    async def test_invalid_prompt_shape_is_400(self, client, repo, prompt) -> None:
+        """旧形式・未知のモードやキー・型の違いは 400 で保存しない。"""
+        res = await client.patch(
+            "/api/admin/extensions/diary/overrides", json={"prompt": prompt}
+        )
+        assert res.status == 400
+        repo.update_overrides.assert_not_awaited()
+
+    async def test_only_input_text_is_validated(
+        self, client, repo, settings_repo, make_extension, use_extensions
+    ) -> None:
+        """append でも試し展開は入力本文だけが対象で、既定の問題では保存を止めない。"""
+        use_extensions(
+            make_extension(
+                "diary",
+                default_prompt={"ja": "既定 {{ settings.missing }}"},
+                settings_model=DiarySettings,
+            ),
+        )
+        res = await client.patch(
+            "/api/admin/extensions/diary/overrides",
+            json={"prompt": {"mode": "append", "text": "追加 {{ current_hour }}"}},
+        )
+        assert res.status == 200
+        repo.update_overrides.assert_awaited_once()
+
+    async def test_reset_prompt_unsets_only_prompt(self, client, repo, apply) -> None:
+        """解除は prompt だけを消し、tasks などには触れない。"""
+        res = await client.patch("/api/admin/extensions/diary/overrides", json={"prompt": None})
+        assert res.status == 200
+        repo.update_overrides.assert_awaited_once_with("diary", {}, ["prompt"])
+        apply.assert_not_awaited()
+
+    async def test_extension_without_default_prompt_is_400(self, client, repo) -> None:
+        """default_prompt() を持たない拡張のプロンプトは上書きできない。"""
+        res = await client.patch(
+            "/api/admin/extensions/plain/overrides",
+            json={"prompt": {"mode": "append", "text": "x"}},
+        )
+        assert res.status == 400
+        repo.update_overrides.assert_not_awaited()
+
+    async def test_prompt_save_failure_is_500(self, client, repo) -> None:
+        """プロンプトの保存に失敗したら 500。"""
+        repo.update_overrides.side_effect = RuntimeError("db down")
+        res = await client.patch(
+            "/api/admin/extensions/diary/overrides",
+            json={"prompt": {"mode": "append", "text": "x"}},
+        )
+        assert res.status == 500
 
     async def test_settings_failure_checks_syntax_only(self, client, repo, settings_repo) -> None:
         """設定を読めなければ試しの展開を飛ばし、構文が正しければ保存する。"""
         settings_repo.find_one.side_effect = RuntimeError("db down")
         res = await client.patch(
-            "/api/admin/extensions/diary/overrides", json={"prompt": "{{ settings.missing }}"}
+            "/api/admin/extensions/diary/overrides",
+            json={"prompt": {"mode": "replace", "text": "{{ settings.missing }}"}},
         )
         assert res.status == 200
         repo.update_overrides.assert_awaited_once()
@@ -265,7 +337,10 @@ class TestUpdate:
         """1 か所でも不正なら 400 で、保存も反映もしない。"""
         res = await client.patch(
             "/api/admin/extensions/diary/overrides",
-            json={"prompt": "ok", "tasks": {"task_core": {"enabled": False}}},
+            json={
+                "prompt": {"mode": "append", "text": "ok"},
+                "tasks": {"task_core": {"enabled": False}},
+            },
         )
 
         assert res.status == 400
@@ -433,7 +508,11 @@ class TestAuthentication:
             for method, path, body in (
                 ("GET", "/api/admin/extensions", None),
                 ("GET", "/api/admin/extensions/diary", None),
-                ("PATCH", "/api/admin/extensions/diary/overrides", {"prompt": "x"}),
+                (
+                    "PATCH",
+                    "/api/admin/extensions/diary/overrides",
+                    {"prompt": {"mode": "append", "text": "x"}},
+                ),
                 ("POST", "/api/admin/extensions/diary/tasks/apply", None),
                 ("PUT", "/api/admin/extensions/diary/settings", {"values": {}}),
             ):

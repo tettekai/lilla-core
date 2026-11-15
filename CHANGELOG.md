@@ -23,6 +23,12 @@
 
 ### Changed
 
+- **BREAKING**: 拡張のプロンプトの上書き（`extension_overrides` の `prompt`）を、「デフォルトプロンプトに追加」と「デフォルトプロンプトを置き換える」から選べるようにした（#312）。
+  - 保存形式を文字列 1 つから `{"mode": "append" | "replace", "text": 文字列}` に変えた。保存するのはモードと入力した本文だけで、デフォルトとの合成は実行時に行う。`append` はその拡張自身の `default_prompt()`（`ui.locale` で選んだもの）と入力した本文を、それぞれ独立した Jinja2 テンプレートとして展開してから空行区切りでつなぐため、拡張のデフォルトの更新や `ui.locale` の変更に追従する（追加分から既定側の `{% set %}` やマクロは参照できない）。`replace` は入力した本文だけを使い、空文字は従来どおり「注入しない」
+  - `PATCH /api/admin/extensions/{name}/overrides` の `prompt` は `{"mode", "text"}` か `null`（解除）になった。文字列・未知のモードやキー・型の違いは 400。保存時の構文チェックと試し展開は、どちらのモードでも入力した本文だけが対象
+  - `GET /api/admin/extensions/{name}` の `prompt` から `override` を外し、`mode` / `text` を足した。`effective` はデフォルトと入力した本文を展開前のまま空行でつないだ表示用の本文
+  - ダッシュボードにプロンプトの上書きの共通入力部品（`dashboard/prompt-override-editor.js` の `Alpine.data('promptOverrideEditor', …)`）を足し、Extensions 画面のプロンプトの欄で使うようにした。追加モードのときだけ入力欄の上にデフォルトの本文（言語つき・読み取り専用）を出し、従来の欄の下の折りたたみの「デフォルト」欄はなくした。`jinjaEditor` とプレビュー API は変えていない
+  - 移行手順: 以前の形式（文字列）の上書きは読み替えず、不正な値として扱って WARNING を出しデフォルトを使う（自動では移行しない）。残っている場合は Extensions 画面で上書きを保存し直すか、「デフォルトに戻す」を押す
 - **BREAKING**: `lilla.yaml` の `tools.sets.main` を必須にした（#354）。
   - `tools:` 節・`tools.sets`・`sets.main` のどれかが無いと、起動時に設定エラーで落ちる。これまでは `main` が無いと黙って「ツールなし」になり、通常会話・`task_scheduled_llm` / `llm_expert` の `$main` がエラーも出さずにツール無しで動いていた
   - ツール無しで動かすなら `main: []` と書く（空のリストは許す）。`$main` の展開で `main` が無いときに空として扱う分岐は消した

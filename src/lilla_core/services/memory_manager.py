@@ -3,13 +3,18 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime, timedelta, timezone, tzinfo
-from functools import lru_cache
+from functools import lru_cache, partial
 from typing import TYPE_CHECKING
 
 from lilla_core.core.config import AppConfig, get_config
 from lilla_core.core.extension import get_client_prompt_providers, get_default_prompts
 from lilla_core.services.message_util import format_session_memory_block, prepend_timestamp_prefix
-from lilla_core.services.prompt_template import render_extension_prompt, render_or_raw
+from lilla_core.services.extension_prompt_override import (
+    InvalidPromptOverrideError,
+    compose_extension_prompt,
+    parse_prompt_override,
+)
+from lilla_core.services.prompt_template import render_extension_prompt_parts, render_or_raw
 from lilla_core.services.session_memory_manager import get_session_memory_manager
 from lilla_core.utils.datetime_utils import ensure_utc, local_now
 
@@ -407,20 +412,22 @@ class MemoryManager:
         """有効な拡張のプロンプトを、拡張のロード順に空行区切りで連結して返す。
 
         対象は `default_prompt()` を持つロード済みの拡張だけ。拡張ごとの本文は
-        次の順に決める（キャッシュせず、呼ぶたびに MongoDB を読む）。
+        次のように決める（キャッシュせず、呼ぶたびに MongoDB を読む）。
 
-        1. `extension_overrides` のドキュメントに `prompt` キーがあり、値が文字列なら
-           それを使う（空文字は「この拡張のプロンプトを注入しない」という上書き）
-        2. 無ければ `ui.locale` に一致する言語のデフォルトを使う
-        3. それも無ければ `ja` → `en` → 定義の先頭の言語の順にデフォルトを使う
+        - 既定は `ui.locale` → `ja` → `en` → 定義の先頭の言語の順に選ぶ
+          （その拡張自身の `default_prompt()` だけが対象）
+        - `extension_overrides` の `prompt`（`{"mode", "text"}`）が無ければ既定だけ、
+          `append` なら既定と追加分、`replace` なら入力本文だけを使う
+          （合成の規則は `services/extension_prompt_override.py`）
 
-        `prompt` が文字列でない場合と、上書きの読み込み自体が失敗した場合は WARNING
-        ログを出してデフォルトへフォールバックする（応答は止めない）。
+        既定と追加分は `render_extension_prompt_parts()` でそれぞれ独立した Jinja2 テンプレート
+        として展開してから空行区切りでつなぐ（`settings` にその拡張の画面管理の設定を渡す）。
+        展開に失敗した部分は展開前の本文を使い、ほかの部分には影響させない。空白だけの部分は
+        つながず、全体が空白だけなら注入しない。
 
-        決めた本文は `services/prompt_template.py` の `render_extension_prompt()` で
-        Jinja2 テンプレートとして展開する（`settings` にその拡張の画面管理の設定を渡す）。
-        展開に失敗したら展開前の本文をそのまま注入する。展開後が空白だけなら注入しない。会話プロンプトと
-        同じく、`client_type` が `"task"` のときは何も注入しない。
+        `prompt` が新形式に合わない場合（旧形式の文字列を含む）と、上書きの読み込み自体が
+        失敗した場合は WARNING ログを出して既定へフォールバックする（応答は止めない）。
+        会話プロンプトと同じく、`client_type` が `"task"` のときは何も注入しない。
 
         Args:
             client_type: 会話のクライアント種別。
@@ -443,22 +450,22 @@ class MemoryManager:
         locale = self._config.ui.locale
         parts: list[str] = []
         for name, prompts in defaults:
-            text = select_default_prompt(prompts, locale)
-            override = overrides.get(name)
-            if override is not None and "prompt" in override:
-                value = override["prompt"]
-                if isinstance(value, str):
-                    text = value
-                else:
+            default_text = select_default_prompt(prompts, locale)
+            override = None
+            doc = overrides.get(name)
+            if doc is not None and "prompt" in doc:
+                try:
+                    override = parse_prompt_override(doc["prompt"])
+                except InvalidPromptOverrideError as e:
                     logger.warning(
-                        "Ignoring prompt override for extension '%s': expected a string, got %s",
-                        name, type(value).__name__,
+                        "Ignoring invalid prompt override for extension '%s'; "
+                        "using the default prompt: %s", name, e,
                     )
-            if not text.strip():
-                continue
-            rendered = await render_extension_prompt(name, text)
-            if rendered.strip():
-                parts.append(rendered)
+            text = await compose_extension_prompt(
+                default_text, override, partial(render_extension_prompt_parts, name)
+            )
+            if text.strip():
+                parts.append(text)
         return "\n\n".join(parts)
 
     async def _resolve_channel_summary_section(self, discord_channel_id: int | None) -> str:

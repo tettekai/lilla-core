@@ -381,21 +381,24 @@ async def validate_extension_prompt(name: str, text: str) -> None:
     await preview_extension_prompt(name, text)
 
 
-async def render_extension_prompt(name: str, text: str) -> str:
-    """拡張のプロンプト本文を、その拡張の設定で展開する（失敗しても例外を投げない）。
+async def render_extension_prompt_parts(name: str, texts: list[str]) -> list[str]:
+    """拡張のプロンプトの部分（既定・追加分）を、それぞれ独立したテンプレートとして展開する。
 
-    設定の読み込みか展開に失敗したら、拡張名を含む WARNING ログを出して `text` を
-    そのまま返す（会話は止めない）。
+    設定はまとめて 1 回だけ読む。読めなければ拡張名を含む WARNING を出し、どの部分も
+    展開前の本文をそのまま返す。部分ごとの展開の失敗は、その部分だけ WARNING を出して
+    展開前の本文を返し、ほかの部分の結果には影響させない（会話は止めない）。
 
     Args:
         name: 拡張名。
-        text: テンプレートの本文（デフォルトか上書き）。
+        texts: 展開する本文のリスト。
 
     Returns:
-        展開した本文。失敗したときは `text`。
+        `texts` と同じ順・同じ数の展開結果。
     """
     from lilla_core.services.extension_settings import ExtensionSettingsError
 
+    if not texts:
+        return []
     try:
         settings = await load_template_settings(name)
     except ExtensionSettingsError as e:
@@ -403,12 +406,31 @@ async def render_extension_prompt(name: str, text: str) -> str:
             "Failed to load settings for prompt template of extension '%s'; "
             "injecting the template as is: %s", name, e,
         )
-        return text
-    try:
-        return render_prompt(text, settings)
-    except PromptTemplateError as e:
-        logger.warning(
-            "Failed to render prompt template of extension '%s'; injecting the template as is: %s",
-            name, e,
-        )
-        return text
+        return list(texts)
+    results: list[str] = []
+    for text in texts:
+        try:
+            results.append(render_prompt(text, settings))
+        except PromptTemplateError as e:
+            logger.warning(
+                "Failed to render prompt template of extension '%s'; "
+                "injecting the template as is: %s", name, e,
+            )
+            results.append(text)
+    return results
+
+
+async def render_extension_prompt(name: str, text: str) -> str:
+    """拡張のプロンプト本文を、その拡張の設定で展開する（失敗しても例外を投げない）。
+
+    設定の読み込みか展開に失敗したら、拡張名を含む WARNING ログを出して `text` を
+    そのまま返す（会話は止めない）。中身は `render_extension_prompt_parts()` の 1 部分分。
+
+    Args:
+        name: 拡張名。
+        text: テンプレートの本文。
+
+    Returns:
+        展開した本文。失敗したときは `text`。
+    """
+    return (await render_extension_prompt_parts(name, [text]))[0]
