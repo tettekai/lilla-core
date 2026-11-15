@@ -463,8 +463,9 @@ class ToolsConfig(BaseModel):
     """lilla.yaml の `tools:` セクション。
 
     `sets` は名前付きツールセット（セット名 → 要素の並び）。要素はツール YAML の stem か、
-    別セットへの `$` + セット名の参照。予約名は `main` だけで、通常会話はこのセットを使う
-    （未設定・空リストならツールなし）。セット名の形式だけをここで検証し、参照の展開・
+    別セットへの `$` + セット名の参照。予約名は `main` だけで、通常会話はこのセットを使う。
+    `main` は必須で（ツール無しで動かすなら `main: []` と書く）、書かれていなければ起動時に
+    落とす（黙ってツール無しにしない）。セット名の形式と `main` の有無だけをここで検証し、参照の展開・
     循環や未知のセット名・未ロードのツール名の検出は `loaders/llm_tool_loader.py` の
     `resolve_available_tools()` / `validate_tool_sets()` が行う。
     """
@@ -545,6 +546,27 @@ class ToolsConfig(BaseModel):
                     f"Invalid tool set name {name!r}: use only ASCII letters, digits, '-' and '_'"
                 )
         return value
+
+    @model_validator(mode="after")
+    def _require_main_set(self) -> "ToolsConfig":
+        """`main` セットが書かれていることを確かめる（空のリストは許す）。
+
+        Returns
+        -------
+        ToolsConfig
+            そのままの値
+
+        Raises
+        ------
+        ValueError
+            `tools.sets.main` が無い場合
+        """
+        if "main" not in self.sets:
+            raise ValueError(
+                "tools.sets.main is required; list the tools for normal conversation, "
+                "or write 'main: []' to run without tools"
+            )
+        return self
 
 
 class MongodataCommandConfig(BaseModel):
@@ -1012,7 +1034,7 @@ class AppConfig(BaseSettings):
     prompt: PromptConfig = PromptConfig()
     bot: BotConfig = BotConfig()
     memory: MemoryConfig = MemoryConfig()
-    tools: ToolsConfig = ToolsConfig()
+    tools: ToolsConfig
     commands: CommandsConfig = CommandsConfig()
     dashboard: DashboardConfig = DashboardConfig()
     http: HttpConfig = HttpConfig()

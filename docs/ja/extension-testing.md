@@ -57,6 +57,6 @@ def test_section(tmp_path):
 抜けるときに（本体で例外が出ても）3 つとも元へ戻します。
 `write_minimal_lilla_yaml(directory, *, my_user_id=..., llm_name=..., extra=...)` は
 コアが必須にしている項目（`discord.my_user_id` と、`llm.default` に対応する
-`llm.providers.<名前>`。あわせて日付が OS のタイムゾーンに左右されないよう
+`llm.providers.<名前>`、ツール無しの `tools.sets.main: []`。あわせて日付が OS のタイムゾーンに左右されないよう
 `ui.timezone: Asia/Tokyo`）を書き、`extra` を同じネストで深いマージして重ねます
 （拡張が必須にしているセクション用）。戻り値は書き出したパスです。

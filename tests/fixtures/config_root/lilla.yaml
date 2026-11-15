@@ -10,3 +10,6 @@ llm:
       type: ollama
       url: http://localhost:11434
       model: dummy
+tools:
+  sets:
+    main: []

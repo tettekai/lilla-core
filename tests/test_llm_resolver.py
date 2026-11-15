@@ -17,6 +17,9 @@ discord:
   channels:
     - name: study
       channel_id: "555"
+tools:
+  sets:
+    main: []
 llm:
   default: {default}
   providers:

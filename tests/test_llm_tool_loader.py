@@ -689,12 +689,17 @@ class TestResolveAvailableTools:
             ["tool_c", "$main"], llm_tools
         ) == ["tool_c", "tool_a", "tool_b"]
 
-    @pytest.mark.parametrize("sets", [{}, {"main": []}, {"other": ["tool_a"]}])
-    def test_unset_main_means_no_tools(self, llm_tool_loader, mock_cfg, sets) -> None:
-        """main セットが無い・空なら `$main` は空に展開される（全件開放にしない）。"""
-        mock_cfg.tools.sets = sets
+    def test_empty_main_means_no_tools(self, llm_tool_loader, mock_cfg) -> None:
+        """main セットが空なら `$main` は空に展開される（全件開放にしない）。"""
+        mock_cfg.tools.sets = {"main": []}
         llm_tools = _tools(tool_a="all", tool_b="discord")
         assert llm_tool_loader.resolve_available_tools(["$main"], llm_tools) == []
+
+    def test_missing_main_is_unknown_set(self, llm_tool_loader, mock_cfg) -> None:
+        """main セットが無ければ他のセットと同じく未知のセットとして落とす（空に読み替えない）。"""
+        mock_cfg.tools.sets = {"other": ["tool_a"]}
+        with pytest.raises(ValueError, match="Unknown tool set"):
+            llm_tool_loader.resolve_available_tools(["$main"], _tools(tool_a="all"))
 
     def test_named_set_expands(self, llm_tool_loader, mock_cfg) -> None:
         """main 以外の名前付きセットも `$` + セット名で展開できる。"""
