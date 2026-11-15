@@ -1,0 +1,3 @@
+type: llm_diary_draft_faircopy_get
+# 通常会話には出さない（スケジュールタスクからのみ使う）
+supported_client_type: task

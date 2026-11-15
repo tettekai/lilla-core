@@ -9,6 +9,11 @@
 
 ### Added
 
+- 公式拡張パックに日記の `diary` 拡張（`lilla_core.extensions.diary`）を足した（#355）。
+  - 日ごとの下書き（MongoDB の `diary_drafts`）を読み書きする LLM ツール 3 つ（`llm_diary_draft_get` / `llm_diary_draft_set` / `llm_diary_draft_faircopy_get`）、既定タスク 2 つ（毎日 22:00 の聞き取り `task_hearing_diary`・毎日 03:30 に notes の `diary/` へ清書を書く `task_write_diary`）、会話向けのプロンプト（ja / en）、ダッシュボードで編集する設定（テンプレート・日付の切り替わり時刻・清書の保存先とパス）を持つ。ツールとタスクの YAML は同梱している
+  - `LILLA_EXTENSIONS` に `diary`（または `lilla_core.extensions.diary`）を並べると読み込む。通常会話で使うには `tools.sets.main` に `llm_diary_draft_get` / `llm_diary_draft_set` を並べる
+  - lilla-agent の `diary` 拡張を移したもので、拡張名・設定の節・コレクション・notes の置き場所は同じ。ツールが返すエラーとダッシュボードに出る設定の検証の文言は英語にした
+  - 説明は `docs/ja/diary.md`
 - ダッシュボードに Jinja2 テンプレートの共通入力部品を足し、スキルの本文の追加欄・編集欄と拡張のプロンプトの上書き欄で使うようにした（#352）。
   - 「Jinja2 テンプレート」の表示と変数の一覧（`current_hour`、拡張のプロンプトでは秘匿値を除く `settings.名前` も）を出し、クリックで差し込める
   - 入力中に（約 0.4 秒待ってから）保存時と同じ試しの展開を行い、エラー（構文エラーは行番号つき）か展開後のプレビューを出す。`{# … #}` で消える部分も行番号つきで並べる
