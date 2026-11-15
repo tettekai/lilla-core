@@ -180,7 +180,7 @@ class TestDefaultPrompt:
 
     @pytest.mark.parametrize("locale", ["ja", "en"])
     def test_holes_are_not_jinja_syntax(self, locale: str) -> None:
-        """穴は `<<名前>>` で書き、Jinja2 の変数の記法は設定の参照にだけ使う（lilla-agent#671）。
+        """穴は `<<名前>>` で書き、Jinja2 の変数の記法は設定の参照にだけ使う。
 
         コアはこの説明を Jinja2 のテンプレートとして展開するため、穴を `{{` で書くと展開に失敗する。
         """
@@ -208,7 +208,7 @@ def _render(locale: str, **values: object) -> str:
 
 
 class TestDefaultPromptRendering:
-    """設定から組み立てる清書の保存先の説明（lilla-agent#665）。"""
+    """設定から組み立てる清書の保存先の説明。"""
 
     @pytest.mark.parametrize("locale", ["ja", "en"])
     def test_default_settings_show_faircopy_path(self, locale: str) -> None:

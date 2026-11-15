@@ -1,4 +1,4 @@
-"""src/diary/repository.py のテスト。
+"""lilla_core/extensions/diary/repository.py のテスト。
 
 日記ドラフトのリポジトリは `src/repository` 配下ではないため、CLAUDE.md のルールに従い
 テストクラスにまとめる。

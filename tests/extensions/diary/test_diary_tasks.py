@@ -339,11 +339,11 @@ class TestNoWriterDependency:
     """拡張のコードは特定の書き出し先に依存しない。"""
 
     def test_no_obsidian_reference(self) -> None:
-        """`src/diary/` のコード・YAML・プロンプトに Obsidian の参照が無い（会話向けの説明は除く）。"""
+        """`lilla_core/extensions/diary/` のコード・YAML・プロンプト（会話向けの説明を含む）に Obsidian の参照が無い。"""
         root = Path(diary.__file__).resolve().parent
         files = [
             p for p in root.rglob("*")
-            if p.is_file() and p.suffix in {".py", ".yaml", ".md"} and p.name != "__init__.py"
+            if p.is_file() and p.suffix in {".py", ".yaml", ".md"}
         ]
 
         assert files

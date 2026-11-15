@@ -1,4 +1,4 @@
-"""`src/diary/locales/` の UI 文言カタログのテスト。
+"""`lilla_core/extensions/diary/locales/` の UI 文言カタログのテスト。
 
 コアの `Extension.locale_dirs()` 契約（トップレベルのキーが拡張名ただ 1 つ）と、
 `ja.yaml` / `en.yaml` を対に保つこと、登録後に `t()` から解決できることを検証する

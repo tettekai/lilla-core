@@ -1,6 +1,6 @@
 """日記（日記ドラフト）の設定・リポジトリ・LLM ツール・会話向けの説明をまとめた拡張。
 
-`habits` / `notion` と同じ型の独立した拡張で、認可も他拡張も必要としないため
+認可も他拡張も必要としない独立した拡張（`files` と同じ）のため
 `requires` を持たない（`LILLA_EXTENSIONS` 内のどこに置いてもよい）。誰からも
 `requires` されていないため、日記を使わない構成では `LILLA_EXTENSIONS` から外してよい
 （そのときは lilla.yaml に `extensions.diary` を書いていれば一緒に消す）。
@@ -301,11 +301,11 @@ class DiaryExtension(Extension):
         return [get_diary_draft_repo]
 
     def tool_roots(self) -> list[Path]:
-        """日記のツール（`src/diary/tools/`）の探索先を返す。"""
+        """日記のツール（`lilla_core/extensions/diary/tools/`）の探索先を返す。"""
         return [_PACKAGE_DIR / "tools"]
 
     def tool_config_roots(self) -> list[Path]:
-        """同梱する既定のツール YAML（`src/diary/tool_configs/`）のディレクトリを返す。
+        """同梱する既定のツール YAML（`lilla_core/extensions/diary/tool_configs/`）のディレクトリを返す。
 
         利用者が `${CONFIG_ROOT}/tools` に同じ stem の YAML を置くと、同梱分は
         丸ごと置き換わる（無効化するなら `enabled: false`）。
@@ -327,7 +327,7 @@ class DiaryExtension(Extension):
         return DiarySettings
 
     def locale_dirs(self) -> list[Path]:
-        """清書タスクの通知に使う文言カタログ（`src/diary/locales/`）を返す。"""
+        """清書タスクの通知に使う文言カタログ（`lilla_core/extensions/diary/locales/`）を返す。"""
         return [_PACKAGE_DIR / "locales"]
 
 

@@ -315,7 +315,7 @@ class TestFaircopy:
 
 
 class TestDoubleBraces:
-    """`{{...}}` は穴ではなくただの文字列で、読み替えない（lilla-agent#678）。"""
+    """`{{...}}` は穴ではなくただの文字列で、読み替えない。"""
 
     def test_template_keeps_double_braces(self):
         text = TEMPLATE + "\n{{memo}}\n"
