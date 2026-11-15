@@ -46,6 +46,9 @@ _CORE_ENV_NAMES = [
 ]
 
 _DUMMY_LLM_YAML = """\
+tools:
+  sets:
+    main: []
 llm:
   default: dummy
   providers:
@@ -191,17 +194,28 @@ class TestBotSectionLegacyKeysAreIgnored:
 class TestToolsConfig:
     """`tools` セクション（名前付きツールセット）。"""
 
-    def test_sets_default_to_empty(self) -> None:
-        """`tools:` を書かなければセットは空（main 未設定＝通常会話はツールなし）。"""
-        assert _config_module.ToolsConfig().sets == {}
-
     @pytest.mark.parametrize(
-        ("raw", "expected"),
-        [({"sets": None}, {}), ({"sets": {"main": None}}, {"main": []})],
+        "raw", [{}, {"sets": None}, {"sets": {}}, {"sets": {"other": ["llm_a"]}}]
     )
-    def test_null_values_mean_empty(self, raw, expected) -> None:
-        """`sets:` や `main:` を空で書いたら空として扱う。"""
-        assert _config_module.ToolsConfig(**raw).sets == expected
+    def test_requires_main_set(self, raw) -> None:
+        """`main` セットが無ければ黙ってツール無しにせず落とす。"""
+        with pytest.raises(ValidationError, match="tools.sets.main is required"):
+            _config_module.ToolsConfig(**raw)
+
+    def test_empty_main_is_allowed(self) -> None:
+        """ツール無しで動かすなら `main: []`（`main:` の空も同じ）と書ける。"""
+        assert _config_module.ToolsConfig(sets={"main": None}).sets == {"main": []}
+        assert _config_module.ToolsConfig(sets={"main": []}).sets == {"main": []}
+
+    def test_missing_tools_section_fails(self, isolated_config_root: Path) -> None:
+        """`tools:` 節そのものが無い lilla.yaml は起動時に落とす。"""
+        _write_yaml(
+            isolated_config_root,
+            'discord:\n  my_user_id: "1"\n'
+            + _DUMMY_LLM_YAML.replace("tools:\n  sets:\n    main: []\n", ""),
+        )
+        with pytest.raises(ValidationError, match="tools"):
+            AppConfig(env={"discord_token": "dummy"}, _env_file=None)
 
     def test_removed_main_available_tools_fails(self) -> None:
         """廃止した `main_available_tools` が残っていたら無視せず落とす。"""
@@ -211,13 +225,13 @@ class TestToolsConfig:
     @pytest.mark.parametrize("name", ["main", "Health", "a-b_c", "123"])
     def test_accepts_valid_set_names(self, name: str) -> None:
         """半角英数字と `-` `_` だけの名前は使える。"""
-        assert name in _config_module.ToolsConfig(sets={name: []}).sets
+        assert name in _config_module.ToolsConfig(sets={"main": [], name: []}).sets
 
     @pytest.mark.parametrize("name", ["", "$main", "a b", "a.b", "日本語"])
     def test_rejects_invalid_set_names(self, name: str) -> None:
         """空文字や `$` などを含む名前は落とす。"""
         with pytest.raises(ValidationError, match="Invalid tool set name"):
-            _config_module.ToolsConfig(sets={name: []})
+            _config_module.ToolsConfig(sets={"main": [], name: []})
 
 
 class TestProxyConfig:
@@ -541,6 +555,7 @@ class TestLlmConfigValidation:
         _write_yaml(
             isolated_config_root,
             'discord:\n  my_user_id: "1"\n'
+            "tools:\n  sets:\n    main: []\n"
             "llm:\n"
             "  default: dummy\n"
             "  providers:\n"

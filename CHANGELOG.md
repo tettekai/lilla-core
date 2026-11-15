@@ -18,6 +18,11 @@
 
 ### Changed
 
+- **BREAKING**: `lilla.yaml` の `tools.sets.main` を必須にした（#354）。
+  - `tools:` 節・`tools.sets`・`sets.main` のどれかが無いと、起動時に設定エラーで落ちる。これまでは `main` が無いと黙って「ツールなし」になり、通常会話・`task_scheduled_llm` / `llm_expert` の `$main` がエラーも出さずにツール無しで動いていた
+  - ツール無しで動かすなら `main: []` と書く（空のリストは許す）。`$main` の展開で `main` が無いときに空として扱う分岐は消した
+  - テスト用ヘルパー `lilla_core.testing.write_minimal_lilla_yaml()` が書く最小構成に `tools.sets.main: []` を足した
+  - 移行手順: `main` を書いていない `lilla.yaml` に `tools:` / `sets:` / `main: []`（または通常会話で使うツールの stem）を足す。テストで `lilla.yaml` を自前で書いている場合も同じ
 - **BREAKING**: 運用者が書くプロンプト全般を Jinja2 のテンプレートとして展開するようにした（#350）。
   - 対象は `prompt.system` / `prompt.conversation` / `prompt.discord`・LLM プロバイダーの `prompt`・`llm_expert` / `task_scheduled_llm` の `prompt`・拡張の `client_prompt_providers()` が返した本文・スキルの本文（`!skill` と `llm_load_skill`）・拡張のプロンプト。会話履歴・ユーザーメモ・ツール結果・`!skill` の追加指示・スキルの名前と説明などのデータは展開しない
   - どのプロンプトにも共通の変数 `current_hour`（今の日時を `ui.timezone` で `YYYY-MM-DD HH:xx` にした文字列。例 `2026-11-14 20:xx`）を渡す。拡張のプロンプトにはこれまでどおり `settings` も渡す。展開の処理は `services/prompt_template.py` の `render_template()` 1 つにまとめ、失敗時に元の本文を使う入口として `render_or_raw()` を足した

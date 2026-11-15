@@ -115,7 +115,7 @@ def write_minimal_lilla_yaml(
     """テスト用の最小構成 `lilla.yaml` を書き出してそのパスを返す。
 
     コアが必須にしている項目（`discord.my_user_id` と、`llm.default` に対応する
-    `llm.providers.<名前>`）だけを書く。`ui.timezone` は「人間側の今日 / いま」が
+    `llm.providers.<名前>`、ツール無しの `tools.sets.main: []`）だけを書く。`ui.timezone` は「人間側の今日 / いま」が
     実行環境の OS タイムゾーンに左右されないよう `Asia/Tokyo` で固定する。
 
     Args:
@@ -142,6 +142,7 @@ def write_minimal_lilla_yaml(
             },
         },
         "ui": {"timezone": "Asia/Tokyo"},
+        "tools": {"sets": {"main": []}},
     }
     if extra:
         content = _deep_merge(content, extra)
