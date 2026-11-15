@@ -1,0 +1,13 @@
+# Discord に見せる文言のカタログ（日本語 / 既定ロケール）。
+#
+# トップレベルのキーは拡張名（`DiaryExtension.name`）と一致させること。呼び出しは
+# `t("diary.faircopy.saved", ...)` の形になる。文言を足すときは en.yaml にも同じキーを入れること。
+
+diary:
+  faircopy:
+    saved: "{date} の日記を清書して保存しました（{storage}: {path}）。"
+    moodscore_missing: "moodscore が未記入です。"
+    settings_error: "日記の清書: 設定を読み込めませんでした"
+    storage_missing: "日記の清書: 保存先 {storage} がロードされていません"
+    storage_read_only: "日記の清書: 保存先 {storage} は書き込めません"
+    write_failed: "日記の清書: {date} の清書を {storage} の {path} に保存できませんでした"

@@ -23,7 +23,7 @@ Bearer 認証・CORS・拡張からのルート登録）だけ。クライアン
 会話 API など）は拡張が `http_routes()` で申告して載せ、コアには持ち込まない。
 
 もう 1 つの例外は **公式拡張パック**（`src/lilla_core/extensions/`）で、特定の外部サービス
-連携（Google OAuth / Google Calendar / Google Drive）とコア単体で使える汎用の拡張（ローカルファイル `files`）をコアのリポジトリに同梱している。ただしこれは
+連携（Google OAuth / Google Calendar / Google Drive）とコア単体で使える汎用の拡張（ローカルファイル `files`・日記 `diary`）をコアのリポジトリに同梱している。ただしこれは
 コア本体ではなく、外部の拡張と同じ `Extension` 契約だけで書いた拡張の実装で、
 `LILLA_EXTENSIONS` に import パス（`lilla_core.extensions.google_oauth` など）を並べた
 ときだけ読み込まれる。コア本体（`extensions/` の外）から公式拡張パックを import しては
@@ -556,7 +556,7 @@ import パス（`lilla_core.builtin_tools.task_scheduled_llm`。`is_import_path`
 コアに同梱する `Extension` の実装。コア本体からは import されず（`tests/extensions/test_official_extension_pack.py`
 が検査する）、`LILLA_EXTENSIONS` に import パスを並べたときだけ読み込まれる。各パッケージの
 `__init__.py` はモジュールの import 時に `extension` を生成するため、サブモジュールを
-トップレベルで import しない。利用者向けの説明は `docs/ja/google.md`（英訳 `docs/en/google.md`）・`docs/ja/files.md`（英訳 `docs/en/files.md`）・`docs/ja/notes.md`。保存先の共通インタフェースは `docs/ja/file-storage.md`。
+トップレベルで import しない。利用者向けの説明は `docs/ja/google.md`（英訳 `docs/en/google.md`）・`docs/ja/files.md`（英訳 `docs/en/files.md`）・`docs/ja/notes.md`・`docs/ja/diary.md`。保存先の共通インタフェースは `docs/ja/file-storage.md`。
 
 | ファイル | 役割 |
 |----------|------|
@@ -597,6 +597,13 @@ import パス（`lilla_core.builtin_tools.task_scheduled_llm`。`is_import_path`
 | `notes/tools/llm_notes_{list,read,write,search}.py` | （LLM ツール。関数名 `notes_list` / `notes_read` / `notes_write` / `notes_search`）引数・戻り値を `files` 拡張の 4 つのツールとそろえる（`size` は文字数、`writable` は常に true）。削除・移動のツールは無い |
 | `notes/dashboard_api.py` | 「ノート」画面の API（`/api/notes` 配下。`files`（一覧）・`file`（GET / PUT（`create` / `overwrite`）/ DELETE）・`search`・`history`・`history/restore`）。パスはクエリ・ボディで受け、失敗は `{"error"}`（400 / 404 / 409 / 413） |
 | `notes/dashboard/page.js` | 「ノート」タブの JS モジュール（`mount(el, ctx)` / `unmount()`）。ツリー・閲覧・検索・編集・削除・直前の版。本文は Markdown をレンダリングせず `textContent` で入れる（innerHTML は使わない） |
+| `diary/__init__.py` | `DiaryExtension`（`name = "diary"`。他の拡張に依存しない）。`extensions.diary` のモデル `DiaryConfig`（項目なし・`extra="forbid"`）と、ダッシュボードで編集する設定 `DiarySettings`（`settings_model()`。`template`（テンプレの本文そのもの。既定は未設定の `None`）/ `day_rollover`（`HH:MM`。既定 `04:00`。`normalize_hhmm`）/ `faircopy_storage`（`["notes"]` か `[]`。`check_faircopy_storages`）/ `faircopy_path`（notes の `diary/` からの相対パス。既定 `{year}/{month}/{date}.md`。`check_faircopy_path`））。申告は `config_model()`・`settings_model()`・`default_prompt()`（ja / en。コアが Jinja2 で `settings` を入れて展開し、清書がオンのときだけ清書の置き場所を足す）・`startup_repos()`（`get_diary_draft_repo`）・`tool_roots()`（`tools/`）・`tool_config_roots()`（`tool_configs/`。LLM ツール 3 つとタスク 2 つの YAML を同梱）・`locale_dirs()`・`notes_directories()`（`diary`）。サブモジュールはトップレベルで import しない（`DiarySettings` のバリデータは `template_rules` を遅延 import する） |
+| `diary/template_rules.py` | テンプレの穴（`<<名前>>`）の正規表現 `HOLE_RE` と、保存時の検証 `check_template`（`DiarySettings` と `service` が共有する） |
+| `diary/service.py` | 業務ロジック。設定の読み取り（`load_diary_settings`。処理ごとに 1 回読み、DB から読めない・保存値が不正なら `DiaryDraftError`）、初期ドラフトの生成（`<<date>>` を曜日付きで埋める）、固定文の検証（`validate_content`）、`day_rollover` 基準の書き込み可能時間帯（`writable_window` / `current_writable_date` / `ensure_writable`）、清書（`make_faircopy`。残った穴を `-`、`<<moodscore>>` は残す）、清書のパス（`render_faircopy_path`）。`DiaryDraftError` のメッセージは `tool_error` としてそのまま LLM へ返す |
+| `diary/repository.py` | `diary_drafts` コレクション（`_id` が `YYYY-MM-DD`、`content` が Markdown 本文）。`create_if_absent`（`$setOnInsert` の upsert）と `set_content`（丸ごと置換） |
+| `diary/tools/llm_diary_draft_{get,set,faircopy_get}.py` | （LLM ツール）下書きの取得（無ければテンプレから作る）・置き換え（時間帯の外・固定文が壊れていれば保存しない）・清書の取得（保存しない。YAML は `supported_client_type: task`） |
+| `diary/tools/task_diary_llm.py` | 聞き取りタスクのクラス `DiaryLlmTask`（`ScheduledLlmTask` の派生）。`task_hearing_diary` だけを受け付け、YAML で省略した `schedule` / `llm_provider` / `prompt`（同梱の `task_prompts/`）/ `target` / `available_tools`（`$main`）を既定値で埋める |
+| `diary/tools/task_diary_faircopy.py` | 清書タスクのクラス `DiaryFaircopyTask`。LLM を通さず、対象日（`current_writable_date`）の清書を `get_file_storage("notes")` で `diary/` の下へ上書きし、書いたパスを `target` へ報告する（`faircopy_storage` がオフなら何もしない。失敗は `notify_error`。文言は `diary.faircopy.*`） |
 
 ### scripts/ — 運用者向け CLI (`src/lilla_core/scripts/`)
 運用者が手動で実行する CLI をパッケージ内に置く。wheel に含まれるため `pip install` しただけの
