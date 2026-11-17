@@ -131,6 +131,7 @@ function dashboardApp() {
       newName: '',
       newDescription: '',
       newPrompt: '',
+      newLlmCallable: false,
       editingId: null,
       editName: '',
       editDescription: '',
@@ -1078,6 +1079,7 @@ function dashboardApp() {
       const name = this.skills.newName.trim();
       const description = this.skills.newDescription.trim();
       const prompt = this.skills.newPrompt.trim();
+      const llm_callable = this.skills.newLlmCallable;
       if (!name || !prompt) return;
       if (!this.isValidSkillName(name)) {
         alert(SKILL_NAME_HINT);
@@ -1087,12 +1089,13 @@ function dashboardApp() {
         const res = await this.authedFetch('/api/skills', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, description, prompt }),
+          body: JSON.stringify({ name, description, prompt, llm_callable }),
         });
         if (res.ok) {
           this.skills.newName = '';
           this.skills.newDescription = '';
           this.skills.newPrompt = '';
+          this.skills.newLlmCallable = false;
           await this.fetchSkills();
         } else {
           await this.alertSkillFailure(res, '追加');
@@ -1103,12 +1106,13 @@ function dashboardApp() {
       }
     },
 
-    async toggleSkill(skill) {
+    // field は 'enabled' か 'llm_callable'。今の値（true 以外はオフ扱い）を反転して保存する。
+    async toggleSkill(skill, field) {
       try {
         const res = await this.authedFetch('/api/skills/' + skill._id, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled: !skill.enabled }),
+          body: JSON.stringify({ [field]: skill[field] !== true }),
         });
         if (res.ok) {
           await this.fetchSkills();

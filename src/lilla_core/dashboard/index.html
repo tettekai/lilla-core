@@ -351,6 +351,10 @@
         <div class="skill-prompt-editor"
           x-data="jinjaEditor({ target: { type: 'skill' }, fetch: (u, o) => authedFetch(u, o), rows: 5, placeholder: '展開するプロンプト本文...' })"
           x-modelable="text" x-model="skills.newPrompt"></div>
+        <label class="memo-toggle">
+          <input type="checkbox" x-model="skills.newLlmCallable">
+          LLM から呼べる
+        </label>
         <button @click="addSkill()" :disabled="!skills.newName.trim() || !skills.newPrompt.trim()">追加</button>
       </div>
 
@@ -379,8 +383,12 @@
             <div class="memo-actions">
               <span class="memo-time" x-text="formatDate(skill.updated_at)"></span>
               <label class="memo-toggle">
-                <input type="checkbox" :checked="skill.enabled" @change="toggleSkill(skill)">
+                <input type="checkbox" :checked="skill.enabled" @change="toggleSkill(skill, 'enabled')">
                 有効
+              </label>
+              <label class="memo-toggle" title="オフにすると !skill での手動呼び出し専用になり、llm_load_skill からは読み込めません">
+                <input type="checkbox" :checked="skill.llm_callable === true" @change="toggleSkill(skill, 'llm_callable')">
+                LLM から呼べる
               </label>
               <button x-show="skills.editingId !== skill._id" @click="startSkillEdit(skill)">編集</button>
               <button x-show="skills.editingId === skill._id" @click="saveSkillEdit(skill)">保存</button>

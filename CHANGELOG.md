@@ -23,6 +23,16 @@
 
 ### Changed
 
+- **BREAKING**: スキルに「LLM から呼べるか」のフラグ `llm_callable`（真偽値）を足し、`llm_load_skill` で読み込めるスキルと
+  システムプロンプトのスキル一覧を、有効かつ `llm_callable` が `true` のものだけにした。`false` のスキルは `!skill` での手動呼び出し専用になる
+  - 未設定（このフラグを持たない既存のスキル）は LLM から呼べない扱いにする（互換の読み替えはしない）。LLM に読み込ませたい既存のスキルは、
+    ダッシュボードの Skills 画面で「LLM から呼べる」をオンにし直す（`llm_load_skill` を使っていなければ対応は不要）
+  - `POST /api/skills` と `PATCH /api/skills/{id}` が `llm_callable`（真偽値。POST で省略すると `false`）を受け付けるようにした。真偽値以外は 400
+  - Skills 画面に「LLM から呼べる」のチェックボックスを足した（追加フォームと各スキル）
+  - `SkillRepository` に `get_llm_callable()` を足し、`add()` / `update()` が `llm_callable` を受け取るようにした。`llm_load_skill` は LLM から呼べないスキルを
+    `tool.load_skill.manual_only` の文言でエラーにする
+  - `!skill`（呼び出し・一覧）と、拡張が使う `get_enabled()` の挙動は変えていない
+
 - **BREAKING**: 拡張のプロンプトの上書き（`extension_overrides` の `prompt`）を、「デフォルトプロンプトに追加」と「デフォルトプロンプトを置き換える」から選べるようにした（#312）。
   - 保存形式を文字列 1 つから `{"mode": "append" | "replace", "text": 文字列}` に変えた。保存するのはモードと入力した本文だけで、デフォルトとの合成は実行時に行う。`append` はその拡張自身の `default_prompt()`（`ui.locale` で選んだもの）と入力した本文を、それぞれ独立した Jinja2 テンプレートとして展開してから空行区切りでつなぐため、拡張のデフォルトの更新や `ui.locale` の変更に追従する（追加分から既定側の `{% set %}` やマクロは参照できない）。`replace` は入力した本文だけを使い、空文字は従来どおり「注入しない」
   - `PATCH /api/admin/extensions/{name}/overrides` の `prompt` は `{"mode", "text"}` か `null`（解除）になった。文字列・未知のモードやキー・型の違いは 400。保存時の構文チェックと試し展開は、どちらのモードでも入力した本文だけが対象

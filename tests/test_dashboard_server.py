@@ -885,7 +885,7 @@ class TestHandleApiSkills:
             )
         )
 
-        repo.add.assert_awaited_once_with("code-review_1", "説明", "本文")
+        repo.add.assert_awaited_once_with("code-review_1", "説明", "本文", False)
         assert mock_web.json_response.call_args[1]["status"] == 201
 
     async def test_post_description_is_optional(
@@ -899,7 +899,7 @@ class TestHandleApiSkills:
             _make_skill_request("POST", {"name": "review", "prompt": "本文"})
         )
 
-        repo.add.assert_awaited_once_with("review", "", "本文")
+        repo.add.assert_awaited_once_with("review", "", "本文", False)
 
     @pytest.mark.parametrize(
         "name",
@@ -970,7 +970,34 @@ class TestHandleApiSkills:
             _make_skill_request("POST", {"name": "review", "prompt": "今は {{ current_hour }}"})
         )
 
-        repo.add.assert_awaited_once_with("review", "", "今は {{ current_hour }}")
+        repo.add.assert_awaited_once_with("review", "", "今は {{ current_hour }}", False)
+
+    async def test_post_accepts_llm_callable(self, dashboard_server, mock_web, monkeypatch) -> None:
+        """`llm_callable` を指定すると、その値で追加する。"""
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+
+        await dashboard_server.handle_api_skills(
+            _make_skill_request("POST", {"name": "review", "prompt": "本文", "llm_callable": True})
+        )
+
+        repo.add.assert_awaited_once_with("review", "", "本文", True)
+
+    @pytest.mark.parametrize("value", ["true", 1, None])
+    async def test_post_rejects_non_bool_llm_callable(
+        self, dashboard_server, mock_web, monkeypatch, value
+    ) -> None:
+        """`llm_callable` が真偽値でなければ 400 で保存しない（null も省略扱いにしない）。"""
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+        mock_web.Response.reset_mock()
+
+        await dashboard_server.handle_api_skills(
+            _make_skill_request("POST", {"name": "review", "prompt": "本文", "llm_callable": value})
+        )
+
+        assert _response_status(mock_web) == 400
+        repo.add.assert_not_awaited()
 
     async def test_post_returns_409_for_duplicate(self, dashboard_server, mock_web, monkeypatch) -> None:
         """同名が既にあれば 409。"""
@@ -1012,7 +1039,12 @@ class TestHandleApiSkillDetail:
         )
 
         repo.update.assert_awaited_once_with(
-            oid, name="review", description=None, prompt="新しい本文", enabled=None
+            oid,
+            name="review",
+            description=None,
+            prompt="新しい本文",
+            enabled=None,
+            llm_callable=None,
         )
         mock_web.Response.assert_called_once_with(status=204)
 
@@ -1028,8 +1060,52 @@ class TestHandleApiSkillDetail:
         )
 
         repo.update.assert_awaited_once_with(
-            oid, name=None, description=None, prompt=None, enabled=False
+            oid,
+            name=None,
+            description=None,
+            prompt=None,
+            enabled=False,
+            llm_callable=None,
         )
+
+    async def test_patch_toggles_llm_callable(
+        self, dashboard_server, mock_web, monkeypatch
+    ) -> None:
+        """LLM から呼べるかだけを切り替えられる。"""
+        from bson import ObjectId
+        oid = str(ObjectId())
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+
+        await dashboard_server.handle_api_skill_detail(
+            _make_skill_request("PATCH", {"llm_callable": True}, oid)
+        )
+
+        repo.update.assert_awaited_once_with(
+            oid,
+            name=None,
+            description=None,
+            prompt=None,
+            enabled=None,
+            llm_callable=True,
+        )
+
+    async def test_patch_rejects_non_bool_llm_callable(
+        self, dashboard_server, mock_web, monkeypatch
+    ) -> None:
+        """llm_callable が真偽値でなければ 400。"""
+        from bson import ObjectId
+        oid = str(ObjectId())
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+        mock_web.Response.reset_mock()
+
+        await dashboard_server.handle_api_skill_detail(
+            _make_skill_request("PATCH", {"llm_callable": "yes"}, oid)
+        )
+
+        assert _response_status(mock_web) == 400
+        repo.update.assert_not_awaited()
 
     async def test_patch_rejects_invalid_name(self, dashboard_server, mock_web, monkeypatch) -> None:
         """名前の規則に合わない編集は 400。"""

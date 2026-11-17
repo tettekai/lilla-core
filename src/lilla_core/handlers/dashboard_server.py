@@ -555,6 +555,7 @@ async def handle_api_skills(request: web.Request) -> web.Response:
 
     ``name`` はスキル名の規則（半角英数字・``_``・``-`` のみ、64 文字以内）に合わなければ
     400 で、小文字に正規化して保存する。同名（大文字小文字を区別しない）が既にあれば 409。
+    ``llm_callable``（LLM から呼べるか。真偽値）は省略すると ``False``（手動専用）。
     """
     from lilla_core.repository.skill_repository import get_skill_repo
 
@@ -585,7 +586,11 @@ async def handle_api_skills(request: web.Request) -> web.Response:
     if error:
         return web.Response(status=400, text=error)
 
-    doc = await repo.add(name, description or "", prompt)
+    llm_callable = body.get("llm_callable", False)
+    if not isinstance(llm_callable, bool):
+        return web.Response(status=400, text="llm_callable must be a boolean")
+
+    doc = await repo.add(name, description or "", prompt, llm_callable)
     if doc is None:
         return web.Response(status=409, text="Skill name already exists")
     return web.json_response(_serialize_doc(doc), status=201)
@@ -668,7 +673,7 @@ async def handle_api_skill_detail(request: web.Request) -> web.Response:
     """PATCH /api/skills/{id} - スキルを更新する。DELETE /api/skills/{id} - スキルを削除する。
 
     PATCH はボディに含まれたフィールド（``name`` / ``description`` / ``prompt`` /
-    ``enabled``）だけを更新する。
+    ``enabled`` / ``llm_callable``）だけを更新する。
     """
     from lilla_core.repository.skill_repository import SkillUpdateResult, get_skill_repo
 
@@ -711,9 +716,17 @@ async def handle_api_skill_detail(request: web.Request) -> web.Response:
     enabled = body.get("enabled")
     if enabled is not None and not isinstance(enabled, bool):
         return web.Response(status=400, text="enabled must be a boolean")
+    llm_callable = body.get("llm_callable")
+    if llm_callable is not None and not isinstance(llm_callable, bool):
+        return web.Response(status=400, text="llm_callable must be a boolean")
 
     result = await repo.update(
-        skill_id, name=name, description=description, prompt=prompt, enabled=enabled
+        skill_id,
+        name=name,
+        description=description,
+        prompt=prompt,
+        enabled=enabled,
+        llm_callable=llm_callable,
     )
     if result is SkillUpdateResult.NOT_FOUND:
         return web.Response(status=404, text="Skill not found")

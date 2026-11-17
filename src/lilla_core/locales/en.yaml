@@ -138,4 +138,5 @@ tool:
     list_truncated: "{count} more skill(s) are not listed. If you know the name, you can still load it with `{tool}`."
     not_found: "Skill '{name}' was not found."
     disabled: "Skill '{name}' is disabled."
+    manual_only: "Skill '{name}' can only be invoked manually (`!skill`)."
     loaded: "Loaded skill '{name}'."
