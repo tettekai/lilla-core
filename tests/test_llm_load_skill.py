@@ -106,6 +106,8 @@ class TestExecute:
 
         assert result["success"] is False
         assert result["error"] == t("tool.load_skill.manual_only", name="a")
+        assert "tool.load_skill.manual_only" not in result["error"]
+        assert "'a'" in result["error"]
 
     async def test_disabled_takes_precedence_over_manual_only(self, repo: MagicMock) -> None:
         """無効で手動専用のスキルは disabled を返す。"""
