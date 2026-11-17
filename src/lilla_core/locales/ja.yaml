@@ -35,6 +35,7 @@ command:
     list_empty: "利用できるスキルはありません。ダッシュボードのスキルページから登録できます。"
     not_found: "スキル '{name}' は見つかりません。"
     disabled: "スキル '{name}' は無効になっています。"
+    manual_only: "スキル '{name}' は手動（`!skill`）でのみ呼び出せます。"
     # 以下は展開したスキルを LLM へ渡すときのラッパー（services/skills.py の format_skill_instruction）
     instruction_start: "[システム指示: スキル「{name}」]"
     instruction_preamble: "以下はユーザーの発言ではなく、システムからの動作指示です。この指示に従って応答してください。"

@@ -19,7 +19,7 @@ def repo(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     """スキルリポジトリを差し替える。"""
     repo = MagicMock()
     repo.find_by_name = AsyncMock(return_value=None)
-    repo.get_enabled = AsyncMock(return_value=[])
+    repo.get_llm_callable = AsyncMock(return_value=[])
     repo_module = MagicMock()
     repo_module.get_skill_repo = MagicMock(return_value=repo)
     monkeypatch.setitem(sys.modules, "lilla_core.repository.skill_repository", repo_module)
@@ -35,7 +35,7 @@ class TestExecute:
     async def test_returns_wrapped_prompt(self, repo: MagicMock) -> None:
         """有効なスキルは `format_skill_instruction`（追加指示なし）で包んで返す。"""
         repo.find_by_name.return_value = {
-            "name": "proofread", "prompt": "校正して", "enabled": True,
+            "name": "proofread", "prompt": "校正して", "enabled": True, "llm_callable": True,
         }
 
         result = await load_skill.execute({"name": "proofread"}, {})
@@ -46,7 +46,7 @@ class TestExecute:
 
     async def test_name_is_case_insensitive(self, repo: MagicMock) -> None:
         """名前は小文字へ正規化して照合する。"""
-        repo.find_by_name.return_value = {"name": "proofread", "prompt": "p"}
+        repo.find_by_name.return_value = {"name": "proofread", "prompt": "p", "llm_callable": True}
 
         result = await load_skill.execute({"name": "ProofRead"}, {})
 
@@ -56,7 +56,7 @@ class TestExecute:
 
     async def test_reason_is_not_in_result(self, repo: MagicMock) -> None:
         """`reason` は省略でき、指定しても結果の本文に含まれない。"""
-        repo.find_by_name.return_value = {"name": "a", "prompt": "body"}
+        repo.find_by_name.return_value = {"name": "a", "prompt": "body", "llm_callable": True}
 
         without = await load_skill.execute({"name": "a"}, {})
         with_reason = await load_skill.execute({"name": "a", "reason": "REASON-TEXT"}, {})
@@ -89,7 +89,7 @@ class TestExecute:
 
     async def test_disabled_is_error(self, repo: MagicMock) -> None:
         """無効なスキルは not_found と区別した disabled の `tool_error`。"""
-        repo.find_by_name.return_value = {"name": "a", "prompt": "p", "enabled": False}
+        repo.find_by_name.return_value = {"name": "a", "prompt": "p", "enabled": False, "llm_callable": True}
 
         result = await load_skill.execute({"name": "a"}, {})
 
@@ -97,13 +97,33 @@ class TestExecute:
         assert result["error"] == t("tool.load_skill.disabled", name="a")
         assert result["error"] != t("tool.load_skill.not_found", name="a")
 
+    @pytest.mark.parametrize("skill_extra", [{"llm_callable": False}, {}, {"llm_callable": "true"}])
+    async def test_manual_only_is_error(self, repo: MagicMock, skill_extra: dict) -> None:
+        """`llm_callable` が True でない（False・未設定・真偽値以外）スキルは manual_only の `tool_error`。"""
+        repo.find_by_name.return_value = {"name": "a", "prompt": "p", **skill_extra}
+
+        result = await load_skill.execute({"name": "a"}, {})
+
+        assert result["success"] is False
+        assert result["error"] == t("tool.load_skill.manual_only", name="a")
+
+    async def test_disabled_takes_precedence_over_manual_only(self, repo: MagicMock) -> None:
+        """無効で手動専用のスキルは disabled を返す。"""
+        repo.find_by_name.return_value = {
+            "name": "a", "prompt": "p", "enabled": False, "llm_callable": False,
+        }
+
+        result = await load_skill.execute({"name": "a"}, {})
+
+        assert result["error"] == t("tool.load_skill.disabled", name="a")
+
     async def test_reads_repository_every_call(self, repo: MagicMock) -> None:
         """キャッシュせず、毎回リポジトリから読むので編集・無効化がすぐ反映される。"""
-        repo.find_by_name.return_value = {"name": "a", "prompt": "old"}
+        repo.find_by_name.return_value = {"name": "a", "prompt": "old", "llm_callable": True}
         first = await load_skill.execute({"name": "a"}, {})
-        repo.find_by_name.return_value = {"name": "a", "prompt": "new"}
+        repo.find_by_name.return_value = {"name": "a", "prompt": "new", "llm_callable": True}
         second = await load_skill.execute({"name": "a"}, {})
-        repo.find_by_name.return_value = {"name": "a", "prompt": "new", "enabled": False}
+        repo.find_by_name.return_value = {"name": "a", "prompt": "new", "enabled": False, "llm_callable": True}
         third = await load_skill.execute({"name": "a"}, {})
 
         assert first["data"] == format_skill_instruction("a", "old")
@@ -249,36 +269,36 @@ class TestFormatSkillListSection:
 
 
 class TestBuildSkillListSection:
-    async def test_uses_enabled_skills(self, repo: MagicMock) -> None:
-        """リポジトリの `get_enabled()` から組み立て、YAML の上限を使う。"""
-        repo.get_enabled.return_value = [{"name": "a"}, {"name": "b"}]
+    async def test_uses_llm_callable_skills(self, repo: MagicMock) -> None:
+        """リポジトリの `get_llm_callable()` から組み立て、YAML の上限を使う。"""
+        repo.get_llm_callable.return_value = [{"name": "a"}, {"name": "b"}]
 
         section = await load_skill.build_skill_list_section(
             "llm_load_skill", {"type": "llm_load_skill", "max_skills": 1}
         )
 
-        repo.get_enabled.assert_awaited_once_with()
+        repo.get_llm_callable.assert_awaited_once_with()
         assert "- a" in section.split("\n")
         assert "- b" not in section.split("\n")
 
     async def test_empty(self, repo: MagicMock) -> None:
-        """有効なスキルが無ければ空文字列。"""
+        """LLM から呼べる有効なスキルが無ければ空文字列。"""
         assert await load_skill.build_skill_list_section("llm_load_skill", {}) == ""
 
     async def test_repository_failure_returns_empty(self, repo: MagicMock) -> None:
         """取得に失敗しても例外にせず空文字列を返す。"""
-        repo.get_enabled.side_effect = RuntimeError("down")
+        repo.get_llm_callable.side_effect = RuntimeError("down")
         assert await load_skill.build_skill_list_section("llm_load_skill", {}) == ""
 
     async def test_not_cached(self, repo: MagicMock) -> None:
         """呼ぶたびに取得する。"""
-        repo.get_enabled.return_value = [{"name": "a"}]
+        repo.get_llm_callable.return_value = [{"name": "a"}]
         await load_skill.build_skill_list_section("llm_load_skill", {})
-        repo.get_enabled.return_value = [{"name": "b"}]
+        repo.get_llm_callable.return_value = [{"name": "b"}]
         section = await load_skill.build_skill_list_section("llm_load_skill", {})
 
         assert "- b" in section.split("\n")
-        assert repo.get_enabled.await_count == 2
+        assert repo.get_llm_callable.await_count == 2
 
 
 class TestLoaderIntegration:
