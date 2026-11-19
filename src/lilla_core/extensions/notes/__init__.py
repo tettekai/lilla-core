@@ -89,6 +89,10 @@ class NotesExtension(Extension):
 
     name = "notes"
 
+    def display_name(self) -> str:
+        """ダッシュボードの設定画面に出す表示名を返す（画面の文言に合わせて日本語の直書き）。"""
+        return "ノート"
+
     def config_model(self) -> type[BaseModel]:
         """YAML セクションのモデルを返す（節名は `extensions.notes`）。"""
         return NotesConfig

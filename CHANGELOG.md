@@ -9,6 +9,8 @@
 
 ### Added
 
+- `Extension.display_name()` を足した（#363）。ダッシュボードの設定画面に出す拡張の表示名で、既定は `None`（`name` を使う）。空でない文字列以外を返すとロード時に落ちる。公式拡張パックと notes には日本語の表示名を付けた（非破壊のため `EXTENSION_API_VERSION` は変えていない）
+- ダッシュボードの設定画面に「全般」（`GET /api/admin/settings/general`）を足した（#363）。表示言語・タイムゾーン・LLM のプロバイダー・ツールの無効化・内部スケジューラ・listen 先・読み込んだ拡張を読み取り専用で出す（正本は `lilla.yaml`。秘匿情報とプロバイダーの URL は出さない）
 - 公式拡張パックに日記の `diary` 拡張（`lilla_core.extensions.diary`）を足した（#355）。
   - 日ごとの下書き（MongoDB の `diary_drafts`）を読み書きする LLM ツール 3 つ（`llm_diary_draft_get` / `llm_diary_draft_set` / `llm_diary_draft_faircopy_get`）、既定タスク 2 つ（毎日 22:00 の聞き取り `task_hearing_diary`・毎日 03:30 に notes の `diary/` へ清書を書く `task_write_diary`）、会話向けのプロンプト（ja / en）、ダッシュボードで編集する設定（テンプレート・日付の切り替わり時刻・清書の保存先とパス）を持つ。ツールとタスクの YAML は同梱している
   - `LILLA_EXTENSIONS` に `diary`（または `lilla_core.extensions.diary`）を並べると読み込む。通常会話で使うには `tools.sets.main` に `llm_diary_draft_get` / `llm_diary_draft_set` を並べる
@@ -22,6 +24,14 @@
   - 保存の形式と保存時の検査の合否は変えていない
 
 ### Changed
+
+- **BREAKING**: ダッシュボードのナビを整理した（#363）。
+  - 組み込みの画面のラベルを日本語にした（ホーム / 会話 / メモ / スキル / 使用量、右上のメニューはログ / 設定 / ログアウト）
+  - 管理画面 Extensions（`#/admin/extensions`）を **設定**（`#/settings`）に置き換えた。左のメニューで「全般」・標準機能（今は ノート、`#/settings/notes`）・「拡張機能」（`#/settings/extensions`。設定する項目の無いものも含むすべての拡張の一覧。公式拡張パックには「公式」の印）を切り替え、各拡張の設定は `#/settings/extensions/{name}` で開く
+  - 拡張の画面と設定の画面を相互にリンクした（`GET /api/dashboard/nav` の拡張の項目に `settings_hash` を足した）
+  - `GET /api/admin/extensions` は編集できない拡張も含むすべての拡張を返し、各要素に `display_name` / `kind` / `settings_hash` / `page_hash` を足した
+  - 拡張の名前 `settings` を予約名に加えた
+  - 移行手順: 古いハッシュ `#/admin/extensions` の別名は置いていない（開くとホームへ戻る）。ブックマークは `#/settings` に張り直す。API のパスは変えていない
 
 - **BREAKING**: スキルに「LLM から呼べるか」のフラグ `llm_callable`（真偽値）を足し、`llm_load_skill` で読み込めるスキルと
   システムプロンプトのスキル一覧を、有効かつ `llm_callable` が `true` のものだけにした。`false` のスキルは `!skill` での手動呼び出し専用になる

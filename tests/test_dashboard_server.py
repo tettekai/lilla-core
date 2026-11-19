@@ -2221,7 +2221,7 @@ class TestHandleApiDashboardNav:
 
         pages = self._payload(mock_web)["pages"]
         assert [p["name"] for p in pages] == [
-            "home", "conversations", "memos", "skills", "usage", "logs", "extensions",
+            "home", "conversations", "memos", "skills", "usage", "logs", "settings",
         ]
         assert [p["hash"] for p in pages] == [
             "#/",
@@ -2230,14 +2230,25 @@ class TestHandleApiDashboardNav:
             "#/skills",
             "#/usage",
             "#/admin/logs",
-            "#/admin/extensions",
+            "#/settings",
         ]
         assert all(p["module"] is None for p in pages)
+
+    async def test_builtin_labels_are_japanese(
+        self, dashboard_server, mock_web, monkeypatch
+    ) -> None:
+        """組み込み画面のラベルは日本語にそろえる（画面の中身と同じ言語）。"""
+        _patch_dashboard_contributions(monkeypatch, dashboard_server)
+
+        await dashboard_server.handle_api_dashboard_nav(_make_request())
+
+        labels = [p["label"] for p in self._payload(mock_web)["pages"]]
+        assert labels == ["ホーム", "会話", "メモ", "スキル", "使用量", "ログ", "設定"]
 
     async def test_builtin_groups_split_main_and_admin(
         self, dashboard_server, mock_web, monkeypatch
     ) -> None:
-        """Logs と Extensions だけが管理メニュー側に入る。"""
+        """ログと設定だけが管理メニュー側に入る。"""
         _patch_dashboard_contributions(monkeypatch, dashboard_server)
 
         await dashboard_server.handle_api_dashboard_nav(_make_request())
@@ -2250,7 +2261,7 @@ class TestHandleApiDashboardNav:
             "skills": "main",
             "usage": "main",
             "logs": "admin",
-            "extensions": "admin",
+            "settings": "admin",
         }
 
     async def test_extension_pages_follow_builtins_in_load_order(
@@ -2267,7 +2278,7 @@ class TestHandleApiDashboardNav:
 
         names = [p["name"] for p in self._payload(mock_web)["pages"]]
         assert names == [
-            "home", "conversations", "memos", "skills", "usage", "logs", "extensions", "habits", "cal",
+            "home", "conversations", "memos", "skills", "usage", "logs", "settings", "habits", "cal",
         ]
 
     async def test_extension_paths_come_from_the_core(
@@ -2288,7 +2299,31 @@ class TestHandleApiDashboardNav:
             "hash": "#/google-oauth",
             "module": "/static/ext/google-oauth/page.js",
             "api_prefix": "/api/google-oauth",
+            "settings_hash": None,
         }
+
+    async def test_extension_page_carries_settings_hash_when_editable(
+        self, dashboard_server, mock_web, monkeypatch
+    ) -> None:
+        """設定画面に編集する項目がある拡張だけ、その設定画面のハッシュを載せる。"""
+        _patch_dashboard_contributions(
+            monkeypatch,
+            dashboard_server,
+            pages=[_page_entry("notes", "ノート"), _page_entry("habits", "習慣")],
+        )
+        items = [
+            {"name": "notes", "editable": True, "settings_hash": "#/settings/notes"},
+            {"name": "habits", "editable": False, "settings_hash": "#/settings/extensions/habits"},
+        ]
+        monkeypatch.setattr(
+            "lilla_core.services.extension_overrides.list_editable", lambda tools: items
+        )
+
+        await dashboard_server.handle_api_dashboard_nav(_make_request())
+
+        pages = {p["name"]: p for p in self._payload(mock_web)["pages"]}
+        assert pages["notes"]["settings_hash"] == "#/settings/notes"
+        assert pages["habits"]["settings_hash"] is None
 
     async def test_admin_extension_page_uses_admin_hash(
         self, dashboard_server, mock_web, monkeypatch
@@ -2315,7 +2350,7 @@ class TestHandleApiDashboardNav:
         await dashboard_server.handle_api_dashboard_nav(_make_request())
         self._payload(mock_web)["pages"][0]["label"] = "Tampered"
 
-        assert dashboard_server._BUILTIN_PAGES[0]["label"] == "Home"
+        assert dashboard_server._BUILTIN_PAGES[0]["label"] == "ホーム"
 
 
 class TestAddExtensionRoutes:

@@ -1279,6 +1279,48 @@ class TestExtensionNameRules:
             ])
 
 
+class TestDisplayName:
+    """`display_name()` の検査と、表示名・種類の判定。"""
+
+    def test_defaults_to_name(self, make_extension) -> None:
+        """`display_name()` を持たない拡張の表示名は `name`。"""
+        ext = make_extension("habits")
+        ext_module.set_extensions([ext])
+
+        assert ext.display_name() is None
+        assert ext_module.extension_display_name(ext) == "habits"
+
+    def test_uses_declared_display_name(self, make_extension) -> None:
+        """宣言した表示名を返す。"""
+        ext = make_extension("habits", display_name="習慣")
+        ext_module.set_extensions([ext])
+
+        assert ext_module.extension_display_name(ext) == "習慣"
+
+    @pytest.mark.parametrize("value", ["", "   ", 1, ["習慣"]])
+    def test_invalid_display_name_is_rejected(self, make_extension, value) -> None:
+        """空文字・空白だけ・文字列以外はロード時に落とす。"""
+        with pytest.raises(ValueError, match="display_name"):
+            ext_module.set_extensions([make_extension("habits", display_name=value)])
+
+    def test_builtin_and_official_follow_the_module(self) -> None:
+        """標準機能はモジュールが `BUILTIN_EXTENSION_MODULES`、公式は `lilla_core.extensions.` の下。"""
+
+        def _ext(module: str):
+            return type("Ext", (Extension,), {"__module__": module, "name": "x"})()
+
+        notes = _ext("lilla_core.extensions.notes")
+        diary = _ext("lilla_core.extensions.diary")
+        outside = _ext("habits")
+
+        assert ext_module.is_builtin_extension(notes) is True
+        assert ext_module.is_official_extension(notes) is False
+        assert ext_module.is_builtin_extension(diary) is False
+        assert ext_module.is_official_extension(diary) is True
+        assert ext_module.is_builtin_extension(outside) is False
+        assert ext_module.is_official_extension(outside) is False
+
+
 # ---------------------------------------------------------------------------
 # TestDashboardPage
 # ---------------------------------------------------------------------------

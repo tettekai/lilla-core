@@ -39,6 +39,7 @@ def register_routes(app: web.Application, tools: dict | None) -> None:
         tools: ツールのレジストリ。`None` なら空（タスクは編集対象にならない）。
     """
     app[TOOLS_KEY] = tools or {}
+    app.router.add_get("/api/admin/settings/general", handle_general)
     app.router.add_get("/api/admin/extensions", handle_list)
     app.router.add_get("/api/admin/extensions/{name}", handle_detail)
     app.router.add_patch("/api/admin/extensions/{name}/overrides", handle_update)
@@ -75,8 +76,15 @@ async def _detail(name: str, tools: dict) -> dict:
     return detail
 
 
+async def handle_general(request: web.Request) -> web.Response:
+    """GET /api/admin/settings/general - 設定画面「全般」の内容（読み取り専用）を返す。"""
+    from lilla_core.services.general_settings import build_general_settings
+
+    return web.json_response(build_general_settings())
+
+
 async def handle_list(request: web.Request) -> web.Response:
-    """GET /api/admin/extensions - ロード済みの拡張を、編集できるかの目印つきで返す。"""
+    """GET /api/admin/extensions - ロード済みの拡張を、表示名・種類・編集できるかの目印つきで返す。"""
     from lilla_core.services.extension_overrides import list_editable
 
     return web.json_response({"items": list_editable(request.app[TOOLS_KEY])})

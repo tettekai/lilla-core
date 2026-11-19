@@ -30,7 +30,7 @@ db.extension_overrides.updateOne(
 )
 ```
 
-ふだんは観測用ダッシュボードの **Extensions** 画面（管理メニュー、`#/admin/extensions`）で
+ふだんは観測用ダッシュボードの **設定** 画面（右上のメニュー、`#/settings`。各拡張の設定）で
 編集します（[観測用ダッシュボード](dashboard.md#extensions)）。上の例のように `mongosh` などで
 直接入れることもできますが、その場合は再起動するか、画面の「再反映」で反映してください。
 
@@ -85,7 +85,7 @@ MongoDB からの読み込み自体に失敗した場合は、WARNING ログを�
 上書きは起動時（Discord への接続完了時にスケジューラを起こすとき）に読みます。キャッシュは
 しません。
 
-ダッシュボードの Extensions 画面で保存すると、保存のあとに稼働中のスケジューラへ再起動なしで
+ダッシュボードの 設定画面で保存すると、保存のあとに稼働中のスケジューラへ再起動なしで
 反映します（`lilla_core.handlers.task_handler.apply_task_overrides(extension_name,
 strict=True)`）。変更の監視やポーリングはしないため、`mongosh` などで直接書き換えたときは
 再起動するか、画面の「再反映」を押してください。

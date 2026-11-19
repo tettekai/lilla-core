@@ -60,6 +60,10 @@ class GoogleCalendarExtension(Extension):
     #: （他の拡張の節を読む依存はコア契約上 `requires` で表す）。
     requires = ("google-oauth",)
 
+    def display_name(self) -> str:
+        """ダッシュボードの設定画面に出す表示名を返す（画面の文言に合わせて日本語の直書き）。"""
+        return "Google カレンダー"
+
     def config_model(self) -> type[BaseModel]:
         """カレンダー用の YAML セクションのモデルを返す（節名は `extensions.google_calendar`）。"""
         return GoogleCalendarConfig

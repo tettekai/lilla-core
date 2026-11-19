@@ -15,7 +15,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from lilla_core.core.extension import Extension, get_default_prompts, get_extensions
+from lilla_core.core.extension import (
+    Extension,
+    extension_display_name,
+    get_dashboard_pages,
+    get_default_prompts,
+    get_extensions,
+    is_builtin_extension,
+    is_official_extension,
+)
 from lilla_core.services.extension_prompt_override import (
     InvalidPromptOverrideError,
     effective_prompt_template,
@@ -33,6 +41,16 @@ from lilla_core.services.task_schedules import (
     scheduled_task_entries,
 )
 from lilla_core.utils.datetime_utils import local_timezone
+
+#: 設定画面（SPA）のハッシュ。標準機能は全般と同じ並びの `#/settings/{name}`、
+#: それ以外は「拡張機能」の下の `#/settings/extensions/{name}` に置く。
+SETTINGS_HASH = "#/settings"
+SETTINGS_EXTENSIONS_HASH = "#/settings/extensions"
+
+#: `list_editable()` の `kind`。標準機能・公式拡張パック・それ以外（外部の拡張）。
+KIND_BUILTIN = "builtin"
+KIND_OFFICIAL = "official"
+KIND_EXTERNAL = "external"
 
 #: 保存リクエストのトップレベルで受け付けるキー。
 _UPDATE_KEYS = frozenset({"prompt", "tasks"})
@@ -89,19 +107,41 @@ def task_entries_of(name: str, tools: dict) -> dict[str, dict]:
     return scheduled_task_entries(tools, name)
 
 
+def extension_kind(ext: Extension) -> str:
+    """拡張の種類（`KIND_BUILTIN` / `KIND_OFFICIAL` / `KIND_EXTERNAL`）を返す。"""
+    if is_builtin_extension(ext):
+        return KIND_BUILTIN
+    if is_official_extension(ext):
+        return KIND_OFFICIAL
+    return KIND_EXTERNAL
+
+
+def settings_hash_of(ext: Extension) -> str:
+    """設定画面でその拡張を開くハッシュを返す。"""
+    if is_builtin_extension(ext):
+        return f"{SETTINGS_HASH}/{ext.name}"
+    return f"{SETTINGS_EXTENSIONS_HASH}/{ext.name}"
+
+
 def list_editable(tools: dict) -> list[dict]:
-    """ロード済みの拡張を、編集できるものの目印つきでロード順に返す。
+    """ロード済みの拡張を、設定画面に出す情報と編集できるかの目印つきでロード順に返す。
+
+    編集する項目が無い拡張も含めて全件を返す（設定画面の一覧はすべての拡張を並べ、
+    項目が無いものは「設定する項目はありません」と出すため）。
 
     Args:
         tools: ツールのレジストリ。
 
     Returns:
-        `name` / `has_prompt` / `task_count` / `has_settings` / `editable` を持つ dict のリスト。
-        `has_settings` は画面管理の設定（`settings_model()`）を宣言しているか。
+        `name` / `display_name` / `kind` / `has_prompt` / `task_count` / `has_settings` /
+        `editable` / `settings_hash` / `page_hash` を持つ dict のリスト。
+        `has_settings` は画面管理の設定（`settings_model()`）を宣言しているか、
+        `page_hash` はダッシュボードに画面を出していればそのハッシュ（無ければ `None`）。
     """
     from lilla_core.core.extension import get_settings_models
 
     settings_models = get_settings_models()
+    page_hashes = {entry.name: entry.hash for entry in get_dashboard_pages()}
     items = []
     for ext in get_extensions():
         has_prompt = default_prompts_of(ext.name) is not None
@@ -110,10 +150,14 @@ def list_editable(tools: dict) -> list[dict]:
         items.append(
             {
                 "name": ext.name,
+                "display_name": extension_display_name(ext),
+                "kind": extension_kind(ext),
                 "has_prompt": has_prompt,
                 "task_count": task_count,
                 "has_settings": has_settings,
                 "editable": has_prompt or task_count > 0 or has_settings,
+                "settings_hash": settings_hash_of(ext),
+                "page_hash": page_hashes.get(ext.name),
             }
         )
     return items

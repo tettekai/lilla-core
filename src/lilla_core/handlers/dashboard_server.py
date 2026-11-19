@@ -102,29 +102,31 @@ _AUTH_EXEMPT_PREFIXES = ("/static/", "/oauth/")
 #: lilla-core が ``RESERVED_EXTENSION_NAMES`` で押さえているので拡張と衝突しない。
 #: ``module`` が None のものは ``index.html`` に DOM を持つ組み込み画面。
 _BUILTIN_PAGES: tuple[dict, ...] = (
-    {"name": "home", "label": "Home", "group": "main", "hash": "#/", "module": None},
+    {"name": "home", "label": "ホーム", "group": "main", "hash": "#/", "module": None},
     {
         "name": "conversations",
-        "label": "Conversations",
+        "label": "会話",
         "group": "main",
         "hash": "#/conversations",
         "module": None,
     },
-    {"name": "memos", "label": "Memos", "group": "main", "hash": "#/memos", "module": None},
-    {"name": "skills", "label": "Skills", "group": "main", "hash": "#/skills", "module": None},
-    {"name": "usage", "label": "Usage", "group": "main", "hash": "#/usage", "module": None},
+    {"name": "memos", "label": "メモ", "group": "main", "hash": "#/memos", "module": None},
+    {"name": "skills", "label": "スキル", "group": "main", "hash": "#/skills", "module": None},
+    {"name": "usage", "label": "使用量", "group": "main", "hash": "#/usage", "module": None},
     {
         "name": "logs",
-        "label": "Admin",
+        "label": "ログ",
         "group": "admin",
         "hash": "#/admin/logs",
         "module": None,
     },
+    # 設定画面は #/settings の下にサブ画面（全般・標準機能・拡張機能）を持つ。
+    # 下の階層のハッシュはフロントが ``#/settings`` からの接頭辞で解決する。
     {
-        "name": "extensions",
-        "label": "Extensions",
+        "name": "settings",
+        "label": "設定",
         "group": "admin",
-        "hash": "#/admin/extensions",
+        "hash": "#/settings",
         "module": None,
     },
 )
@@ -1152,17 +1154,28 @@ async def handle_api_logout(request: web.Request) -> web.Response:
 async def handle_api_dashboard_nav(request: web.Request) -> web.Response:
     """GET /api/dashboard/nav - ナビに並べる画面のカタログを返す。
 
-    組み込みの 5 画面に、拡張が ``Extension.dashboard_page()`` で申告したページを
+    組み込みの 7 画面に、拡張が ``Extension.dashboard_page()`` で申告したページを
     ロード順で足して返す。経路（ハッシュ・API 接頭辞・JS モジュール URL）は
     lilla-core が ``Extension.name`` から導出したものをそのまま載せ、ここでも
-    フロントでも組み立て直さない。
+    フロントでも組み立て直さない。拡張のページには、設定画面に編集する項目が
+    あればそのハッシュを ``settings_hash`` に載せる（無ければ ``None``）。画面の
+    見出しの「設定」リンクに使う。
 
     Args:
-        request: aiohttp のリクエスト（未使用）。
+        request: aiohttp のリクエスト。
 
     Returns:
         ``{"pages": [...]}`` の JSON レスポンス。
     """
+    from lilla_core.handlers.dashboard_extensions import TOOLS_KEY
+    from lilla_core.services.extension_overrides import list_editable
+
+    tools = request.app.get(TOOLS_KEY) or {}
+    settings_hashes = {
+        item["name"]: item["settings_hash"]
+        for item in list_editable(tools)
+        if item["editable"]
+    }
     pages: list[dict] = [dict(page) for page in _BUILTIN_PAGES]
     for entry in get_dashboard_pages():
         pages.append(
@@ -1173,6 +1186,7 @@ async def handle_api_dashboard_nav(request: web.Request) -> web.Response:
                 "hash": entry.hash,
                 "module": entry.module_url,
                 "api_prefix": entry.api_prefix,
+                "settings_hash": settings_hashes.get(entry.name),
             }
         )
     return web.json_response({"pages": pages})
