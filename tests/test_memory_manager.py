@@ -551,7 +551,6 @@ class TestBuildSystemPrompt:
 
     async def test_contains_weekday_en(self, manager, mock_conv_repo, mock_memo_repo, mock_tool_cache_repo, mock_session_memory) -> None:
         """曜日が英語で含まれる。"""
-        import calendar
         from datetime import datetime
         weekday_en = datetime.now().strftime("%A")
         result = await manager.build_system_prompt()

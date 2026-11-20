@@ -24,6 +24,7 @@ Copy `.env.example` and `config.example/` as needed. Secrets belong in environme
 
 ```bash
 pytest tests/
+ruff check .
 ```
 
 Please run the suite before opening a PR when you change code. Docs-only changes do not need a green local run if nothing under `src/` or `tests/` changed, but say so in the PR.
@@ -93,6 +94,7 @@ python -m lilla_core.bot
 
 ```bash
 pytest tests/
+ruff check .
 ```
 
 コードを変えた PR では実行してください。ドキュメントのみの変更なら、その旨を PR に書いてください。

@@ -343,7 +343,10 @@ class TestValidation:
 
     def test_discord_client_prompt_is_not_reserved(self, make_extension) -> None:
         """"discord" のプロンプトは内蔵デフォルトがあるだけで、上書きは許す。"""
-        provider = lambda: "custom"
+        def provider() -> str:
+            """テスト用のプロバイダ。"""
+            return "custom"
+
         ext_module.set_extensions(
             [make_extension("a", client_prompt_providers={"discord": [provider]})]
         )
@@ -686,7 +689,10 @@ class TestRequiredToolContextKeys:
         self, make_extension, use_extensions
     ) -> None:
         """他の拡張が `tool_context_providers()` で提供していれば要求できる。"""
-        provider = lambda: "client"
+        def provider() -> str:
+            """テスト用のプロバイダ。"""
+            return "client"
+
         use_extensions(
             make_extension("consumer", required_tool_context_keys=["google_client"]),
             make_extension("provider", tool_context_providers={"google_client": provider}),

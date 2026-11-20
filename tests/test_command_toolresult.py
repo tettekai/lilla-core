@@ -791,7 +791,6 @@ class TestToolresultAttachmentBody:
         承認後は `command_handler.handle_command(original_message, ...)` で元メッセージ
         ごと渡されるため、本文が correlation_id だけでも添付を読める。
         """
-        from lilla_core.handlers import command_handler
 
         _patch_pending_repo(monkeypatch, _make_pending_record())
         bot, channel = _make_bot_with_channel()

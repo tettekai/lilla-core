@@ -918,7 +918,7 @@ class TestToolCallLimitSummary:
         self, conversation_service, mock_memory_manager_instance, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """tool の data に datetime が含まれていても JSON シリアライズに成功する。"""
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timezone
         import json
 
         dt = datetime(2025, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
