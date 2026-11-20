@@ -145,6 +145,9 @@ function dashboardApp() {
       detail: null,
       detailLoading: false,
       error: '',
+      // 一覧（GET /api/admin/extensions）の取得に失敗したときの文言。1 つの拡張の画面の
+      // error とは分けて持ち、「拡張機能が 0 件」と取得の失敗を区別して出す
+      listError: '',
       notice: '',
       applyFailed: false,
       // プロンプトの上書きの編集中の値（{ mode, text }。promptOverrideEditor と結ぶ）
@@ -859,13 +862,16 @@ function dashboardApp() {
 
     async fetchExtensions() {
       this.exts.loading = true;
+      this.exts.listError = '';
       try {
         const res = await this.authedFetch('/api/admin/extensions');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
         this.exts.items = data.items || [];
       } catch (e) {
         console.error('Failed to fetch extensions', e);
-        this.exts.error = '拡張機能の一覧を取得できませんでした';
+        this.exts.items = [];
+        this.exts.listError = '拡張機能の一覧を取得できませんでした';
       } finally {
         this.exts.loading = false;
       }

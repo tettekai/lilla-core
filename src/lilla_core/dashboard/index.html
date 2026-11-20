@@ -423,7 +423,9 @@
             <h2 class="settings-title">全般</h2>
             <p class="ext-help">
               今の動作の確認用です。値は <code>lilla.yaml</code> に書いたもので、ここでは変えられません
-              （変えるときは <code>lilla.yaml</code> を編集して再起動してください）。秘匿情報は表示しません。
+              （変えるときは <code>lilla.yaml</code> を編集して再起動してください）。ただし「今使っている LLM」と
+              「会話のツール」は <code>!model</code> / <code>!disable_tools</code> で切り替えた実行時の状態で、
+              再起動すると <code>lilla.yaml</code> の値に戻ります。秘匿情報は表示しません。
             </p>
             <div x-show="general.loading && !general.data" class="loading">読み込み中...</div>
             <div x-show="general.error" class="empty">設定を取得できませんでした</div>
@@ -473,7 +475,10 @@
           <div x-show="settingsView.section === 'extension-list'">
             <h2 class="settings-title">拡張機能</h2>
             <div x-show="exts.loading" class="loading">読み込み中...</div>
-            <div x-show="!exts.loading && otherExtensions().length === 0" class="empty">
+            <div class="ext-error" x-show="exts.listError">
+              <span x-text="exts.listError"></span>
+            </div>
+            <div x-show="!exts.loading && !exts.listError && otherExtensions().length === 0" class="empty">
               読み込んでいる拡張機能はありません
             </div>
             <div class="settings-ext-list">
