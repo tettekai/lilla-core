@@ -23,7 +23,9 @@ jobs:
     timeout-minutes: 15
     strategy:
       matrix:
-        python-version: ["3.12"]
+        # 普段（develop / main への push）は開発・既定の実行環境の 3.14 だけで回す。
+        # main 向けの PR（リリース PR）だけ、サポートする最低版の 3.12 でも確かめる。
+        python-version: ${{ fromJSON(github.event_name == 'pull_request' && '["3.12", "3.14"]' || '["3.14"]') }}
 
     steps:
       - name: Check out repository

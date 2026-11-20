@@ -2,7 +2,7 @@
 
 ## 動作要件
 
-- Python 3.12 以上
+- Python 3.12 以上（開発・既定の実行環境は 3.14）
 - MongoDB（会話履歴・ユーザーメモ等の永続化に使用）
 - Discord Bot トークン（Discord 側の設定は [Discord ボットのセットアップ](discord-bot-setup.md) を参照）
 

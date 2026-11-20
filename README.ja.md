@@ -13,7 +13,7 @@ Discord ボットとして常駐し、LLM（Ollama / OpenAI 互換）との tool
 
 ## 動作要件
 
-- Python 3.12 以上
+- Python 3.12 以上（開発・既定の実行環境は 3.14）
 - MongoDB
 - Discord Bot トークン
 

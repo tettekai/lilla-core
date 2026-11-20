@@ -15,7 +15,7 @@ with an LLM (Ollama / OpenAI-compatible), command processing, and replies.
 
 ## Requirements
 
-- Python 3.12 or later
+- Python 3.12 or later (3.14 is used for development and as the default runtime)
 - MongoDB
 - A Discord bot token
 
