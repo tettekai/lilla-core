@@ -6,7 +6,7 @@ Thanks for your interest in contributing. This guide is for humans. For deeper d
 
 ## Development setup
 
-Requirements: Python 3.12+, MongoDB (for a full bot run), a Discord bot token.
+Requirements: Python 3.12+ (3.14 for development and as the default runtime), MongoDB (for a full bot run), a Discord bot token.
 
 ```bash
 pip install -e ".[dev]"
@@ -75,7 +75,7 @@ Open a GitHub issue if something is unclear. Prefer a small, focused PR over a l
 
 ### セットアップ
 
-Python 3.12 以上。ボットを動かす場合は MongoDB と Discord Bot トークンも必要です。
+Python 3.12 以上（開発・既定の実行環境は 3.14）。ボットを動かす場合は MongoDB と Discord Bot トークンも必要です。
 
 ```bash
 pip install -e ".[dev]"

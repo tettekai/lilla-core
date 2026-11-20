@@ -27,6 +27,7 @@
 
 ### Changed
 
+- 開発・既定の実行環境を Python 3.14 にした（#361）。サポートする最低版は 3.12 のまま（`requires-python = ">=3.12"`）。classifier に 3.14 を足し、CI は普段（develop / main への push）は 3.14 だけ、main 向けの PR では 3.12 と 3.14 の両方でテストする
 - **BREAKING**: ダッシュボードのナビを整理した（#363）。
   - 組み込みの画面のラベルを日本語にした（ホーム / 会話 / メモ / スキル / 使用量、右上のメニューはログ / 設定 / ログアウト）
   - 管理画面 Extensions（`#/admin/extensions`）を **設定**（`#/settings`）に置き換えた。左のメニューで「全般」・標準機能（今は ノート、`#/settings/notes`）・「拡張機能」（`#/settings/extensions`。設定する項目の無いものも含むすべての拡張の一覧。公式拡張パックには「公式」の印）を切り替え、各拡張の設定は `#/settings/extensions/{name}` で開く
