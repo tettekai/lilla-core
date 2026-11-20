@@ -5,7 +5,8 @@ Expert インスタンスを生成し、それぞれが独自のシステムプ�
 ツールセットを持つサブエージェントとして振る舞う。
 
 YAML 側で以下を指定する:
-- `prompt`: システムプロンプトの source spec（`dir:` / `file:` プレフィックス、`${config_root}` 展開対応）
+- `prompt`: システムプロンプトの source spec（`dir:` / `file:` プレフィックス、`${config_root}` 展開対応）。
+  読み込んだ本文は Jinja2 テンプレートとして展開する（`services/prompt_template.py`）
 - `llm_provider`: 使用する LLM プロバイダー名（省略可）
 - `available_tools`: Expert が利用可能な LLM ツール名（YAML stem）のリスト。
   `$` + セット名（`$main` など）と書くと `tools.sets` の同名セットに展開される。展開と存在確認は
@@ -32,6 +33,7 @@ from lilla_core.loaders.llm_tool_loader import (
     resolve_available_tools,
 )
 from lilla_core.services.tool_loop import run_tool_loop
+from lilla_core.services.prompt_template import render_or_raw
 from lilla_core.tool_support.tool_result import tool_error, tool_success
 from lilla_core.ui.messages import t
 from lilla_core.utils.resource_loader import load_text_resources
@@ -97,7 +99,7 @@ async def execute(input: dict, context: dict) -> dict:
             tool_name, None, "Expert の prompt ディレクトリが設定されていません"
         )
 
-    system_prompt = load_text_resources(prompt_dir_raw)
+    system_prompt = render_or_raw(load_text_resources(prompt_dir_raw), "llm_expert prompt")
 
     llm_tools = context.get("llm_tools", {})
     available_tools = context.get("available_tools", [])

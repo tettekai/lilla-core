@@ -60,6 +60,9 @@ def isolated_config_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pat
     (tmp_path / "lilla.yaml").write_text(
         'discord:\n'
         '  my_user_id: "1"\n'
+        "tools:\n"
+        "  sets:\n"
+        "    main: []\n"
         "llm:\n"
         "  default: dummy\n"
         "  providers:\n"

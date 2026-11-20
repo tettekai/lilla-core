@@ -33,6 +33,9 @@ _config_module = _load_real_config_module()
 compose_config = _config_module.compose_config
 
 _DUMMY_LLM_YAML = """\
+tools:
+  sets:
+    main: []
 llm:
   default: dummy
   providers:

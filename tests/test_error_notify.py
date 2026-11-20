@@ -128,3 +128,49 @@ class TestNotifyError:
             await error_notify.notify_error(bot, "テスト処理エラー", "boom")
 
         assert any("Failed to notify error channel" in r.message for r in caplog.records)
+
+
+class TestNotifyWarning:
+    async def test_sends_message_with_attachment(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """本文と、テキストの添付ファイルをエラー通知チャンネルへ送る。"""
+        _patch_config(monkeypatch, "111")
+        bot, channel = _make_bot()
+
+        await error_notify.notify_warning(
+            bot, "大量削除", attachment_name="x.patch", attachment_text="-a\n"
+        )
+
+        args, kwargs = channel.send.call_args
+        assert args == ("大量削除",)
+        assert kwargs["file"].filename == "x.patch"
+        assert kwargs["file"].fp.read() == b"-a\n"
+
+    async def test_without_attachment_logs_warning(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """添付が無ければ本文だけを送り、WARNING ログにも出す。"""
+        _patch_config(monkeypatch, "111")
+        bot, channel = _make_bot()
+
+        with caplog.at_level(logging.WARNING, logger="lilla_core.core.error_notify"):
+            await error_notify.notify_warning(bot, "注意")
+
+        channel.send.assert_called_once_with("注意")
+        assert any(r.levelno == logging.WARNING and "注意" in r.getMessage() for r in caplog.records)
+
+    async def test_long_message_is_cut(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Discord の上限を超える本文は切り詰める。"""
+        _patch_config(monkeypatch, "111")
+        bot, channel = _make_bot()
+
+        await error_notify.notify_warning(bot, "x" * 3000)
+
+        assert len(channel.send.call_args.args[0]) == 2000
+
+    async def test_send_failure_is_swallowed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """送信に失敗しても例外を投げない。"""
+        _patch_config(monkeypatch, "111")
+        bot, channel = _make_bot()
+        channel.send = AsyncMock(side_effect=Exception("send failed"))
+
+        await error_notify.notify_warning(bot, "注意", attachment_name="a.txt", attachment_text="x")

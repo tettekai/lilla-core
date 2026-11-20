@@ -33,7 +33,9 @@ python -m lilla_core.bot
 
 `lilla.yaml` には `llm.providers` に少なくとも 1 つの provider を定義し、
 `llm.default` がそのいずれかの provider 名と一致している必要があります。
-一致しない場合は起動時に `ValidationError` で失敗します。回しごとにプロバイダーを
+一致しない場合は起動時に `ValidationError` で失敗します。
+通常会話で LLM に見せるツールの一覧 `tools.sets.main` も必須です（ツール無しで動かすなら
+`main: []`。詳しくは [ツール](tools.md#ツールセットtoolssets)）。回しごとにプロバイダーを
 選ぶ `type: resolver` のエントリについては [LLM プロバイダーの回しごと選択](llm-resolver.md)
 を参照してください。
 
@@ -74,6 +76,7 @@ python -m lilla_core.bot
 拡張の書き方は [拡張の基本](extensions.md) を参照してください。公式拡張パック
 （`lilla_core.extensions` 配下）はモジュール名だけの短縮記法でも指定できます
 （[Google OAuth / Google Calendar](google.md#有効化)）。
+標準機能のノート置き場（[`notes`](notes.md)）は `LILLA_EXTENSIONS` に書かなくても常に読み込まれます。
 
 ## テスト
 

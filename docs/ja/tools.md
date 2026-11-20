@@ -81,8 +81,9 @@ tools:
   `main` が `$health` のように他のセットを含んでもかまいません
 - セット名に使えるのは半角英数字と `-` `_` だけで、大文字小文字は区別します。予約名は
   `main` だけです。空文字や `$` などを含む名前は起動時に失敗します
-- `main` が未設定ならツールなしです。`tools.sets` が無い、`sets.main` が無い、
-  `main: []` はどれも同じ意味です（書き忘れで全ツールが開放されることはありません）
+- `main` は必須です。`tools:` 節・`tools.sets`・`sets.main` のどれかが無いと起動時に
+  失敗します（黙ってツール無しにはしません）。ツール無しで動かすなら `main: []` と
+  書きます
 - 展開は出現順で、重複は最初の出現を残して除きます。LLM に渡す並びはこの順ではなく
   ツールのロード順です
 - 参照が循環している（同じ展開の途中で同じセットに戻る）と起動時に失敗します。
@@ -92,6 +93,13 @@ tools:
 - `supported_client_type` による絞り込みは展開のあとで行います。セットに種別の違う
   ツールが混ざっていても起動は失敗せず、実行時にそのクライアント種別で使えるものだけが
   渡ります
+- LLM が返したツール呼び出しは、その会話で LLM に渡したツール（セットの展開と
+  `supported_client_type` の絞り込みを経たもの）に含まれるものだけを実行します。
+  ロード済みでも渡していないツールの名前を LLM が返した場合（名前の取り違えや
+  プロンプトインジェクションで指定させられた場合など）は実行せず、
+  「ツール '{名前}' はこの会話で使えません」というエラーを結果として LLM に返し、
+  WARNING ログを出します。`llm_expert` の `available_tools` でも同じです。
+  ツールの中から `call_tool` で別のツールを呼ぶ入れ子の呼び出しはこの制限を受けません
 
 スケジュール LLM（[`available_tools`](scheduled-llm.md#ツールの許可リストavailable_tools)）や
 [`llm_expert`](#llm_expert専門家エージェント) の `available_tools` からは、`$main` や
@@ -172,6 +180,9 @@ prompt: dir:${config_root}/prompt/experts/health
 llm_provider: grok            # 省略可
 available_tools: [llm_health_get]   # `$main` などのツールセット参照も書ける
 ```
+
+`prompt` から読んだ本文は Jinja2 のテンプレートとして展開します（`{{ current_hour }}` など。
+[プロンプトのテンプレート](prompt-template.md)）。
 
 `api: responses` と `grok_tools` を組み合わせると、Responses API の組み込みツールを使った
 単発呼び出しになります（`api: responses` と `available_tools` の併用は未対応です）。

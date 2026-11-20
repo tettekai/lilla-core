@@ -16,6 +16,7 @@ _PROJECTION = {
     "description": 1,
     "prompt": 1,
     "enabled": 1,
+    "llm_callable": 1,
     "created_at": 1,
     "updated_at": 1,
 }
@@ -79,18 +80,34 @@ class SkillRepository:
         ).sort("name", ASCENDING)
         return await cursor.to_list(length=None)
 
+    async def get_llm_callable(self) -> list[dict]:
+        """有効で、かつ LLM から呼べるスキルだけを名前順で返す（`llm_load_skill` の一覧用）。
+
+        `llm_callable` が `True` のものだけを対象にし、持たないドキュメントは呼べないものとして扱う。
+        """
+        cursor = self._collection.find(
+            {"enabled": {"$ne": False}, "llm_callable": True}, _PROJECTION
+        ).sort("name", ASCENDING)
+        return await cursor.to_list(length=None)
+
     async def find_by_name(self, name: str) -> dict | None:
         """正規化済みの名前でスキルを 1 件取得する。無ければ None を返す。"""
         return await self._collection.find_one({"name": name}, _PROJECTION)
 
-    async def add(self, name: str, description: str, prompt: str) -> dict | None:
-        """スキルを追加し、追加したドキュメントを返す。同名が既にあれば None を返す。"""
+    async def add(
+        self, name: str, description: str, prompt: str, llm_callable: bool = False
+    ) -> dict | None:
+        """スキルを追加し、追加したドキュメントを返す。同名が既にあれば None を返す。
+
+        `llm_callable` は LLM（`llm_load_skill`）から呼べるか。既定は呼べない（手動専用）。
+        """
         now = utc_now()
         doc = {
             "name": name,
             "description": description,
             "prompt": prompt,
             "enabled": True,
+            "llm_callable": llm_callable,
             "created_at": now,
             "updated_at": now,
         }
@@ -109,6 +126,7 @@ class SkillRepository:
         description: str | None = None,
         prompt: str | None = None,
         enabled: bool | None = None,
+        llm_callable: bool | None = None,
     ) -> SkillUpdateResult:
         """指定したフィールドだけを更新する（None のフィールドは変えない）。"""
         updates: dict = {"updated_at": utc_now()}
@@ -120,6 +138,8 @@ class SkillRepository:
             updates["prompt"] = prompt
         if enabled is not None:
             updates["enabled"] = enabled
+        if llm_callable is not None:
+            updates["llm_callable"] = llm_callable
         try:
             result = await self._collection.update_one(
                 {"_id": ObjectId(skill_id)}, {"$set": updates}

@@ -2,8 +2,8 @@
 
 拡張の設定のうち、利用者がダッシュボードで編集し、再起動なしで使えるものを
 `Extension.settings_model()` で宣言できます。値は MongoDB の `extension_settings` に
-拡張ごとに 1 ドキュメントで保存し、観測用ダッシュボードの **Extensions** 画面
-（管理メニュー、`#/admin/extensions`）で編集します。
+拡張ごとに 1 ドキュメントで保存し、観測用ダッシュボードの **設定** 画面
+（右上のメニュー、`#/settings`。各拡張の設定）で編集します。
 
 ## YAML の設定・上書きとの違い
 
@@ -57,11 +57,53 @@ class DiaryExtension(Extension):
 - 既定値の無い項目がある・既定値がモデルの検証を通らない（宣言ミス）場合は、ロード時に落ちます。
 - `config_model()` と同じ名前の項目を持つと、担当の二重宣言としてロード時に落ちます。
 - `settings_model()` の項目を `lilla.yaml` の `extensions.<節名>` に書くと、移行先
-  （ダッシュボードの Extensions 画面）を示して起動時に落ちます。YAML の値を黙って捨てたり
+  （ダッシュボードの 設定画面）を示して起動時に落ちます。YAML の値を黙って捨てたり
   使ったりしません。
 - 画面の入力欄は項目の型から決まります。今対応しているのは文字列（`multiline` で複数行）・
-  真偽値・数値と、それぞれの未設定（`None`）です。`title` / `description` は画面の見出しと説明に、
-  `pattern` やバリデータは保存時の検証に使います。
+  真偽値・数値と、それぞれの未設定（`None`）、それに下の「選択肢から選ぶリスト」です。
+  `title` / `description` は画面の見出しと説明に、`pattern` やバリデータは保存時の検証に使います。
+- 対応する入力欄の無い型（`widget` の無い配列・入れ子のモデルなど）は、画面に「このフォームでは
+  未対応」と出し、保存しても今の値をそのまま送り返します。汎用フォームは入れ子の無い平らな設定
+  までが対象です。入れ子は拡張ごとの専用画面（`dashboard_page()`）で扱ってください。
+
+### 選択肢から選ぶリスト（チェックボックス群）
+
+決まった候補から複数の値を選ぶ項目は、`json_schema_extra` の `widget` に `"checkbox-group"` を
+書きます。入力部品は型から推測しないため、`list[str]` と書くだけではチェックボックスになりません。
+
+```python
+class DiarySettings(BaseModel):
+    # 動的な選択肢: 書き込める保存先から選ぶ
+    storages: list[str] = Field(
+        default=["notes"],
+        title="清書の保存先",
+        json_schema_extra={"widget": "checkbox-group", "choices_from": "writable_file_storages"},
+    )
+    # 静的な選択肢: {value, title} か、値だけ（見出しは値の文字列）
+    weekdays: list[int] = Field(
+        default=[1, 2, 3, 4, 5],
+        json_schema_extra={
+            "widget": "checkbox-group",
+            "choices": [{"value": 0, "title": "日"}, 1, 2, 3, 4, 5, {"value": 6, "title": "土"}],
+        },
+    )
+```
+
+- 項目はスカラー（文字列・整数・数値・真偽値）の配列にし、`choices`（静的）か `choices_from`
+  （動的）の **どちらか一方** を書きます。どちらも無い・両方ある・未知の `widget` や
+  `choices_from`・配列でない項目は、ロード時に落ちます。
+- `choices_from` は画面を開くたびにコアが候補を解決します。今使えるのは次の名前です。
+
+  | 名前 | 候補 |
+  |------|------|
+  | `writable_file_storages` | 登録済みの保存先（`Extension.file_storages()`）のうち `read_only` が偽のもの（登録順。値と見出しは保存先の名前） |
+
+- 値の型は保ったまま保存されます（整数の候補は整数のまま）。配列の項目には「未設定」は出ません。
+- すべて外して保存すると空の配列 `[]` を保存します（初期値には戻りません）。
+- 保存済みの値のうち今の候補に無いもの（保存先が今ロードされていないなど）は、落とさずに
+  チェック済みのまま「今の候補にありません」と出します。外して保存したときだけ消えます。
+- 保存時の検証はモデルの規則だけです。今の候補に無いことだけを理由に、コアは保存を拒否しません。
+  候補が実行時に使えるかどうかは、設定を使う側（拡張）で確かめてください。
 
 ## 読み取り
 
@@ -95,7 +137,7 @@ async def execute(input, context):
 
 ## 保存
 
-ダッシュボードの Extensions 画面の「設定」欄で一式を保存します（API は
+ダッシュボードの 設定画面の「設定」欄で一式を保存します（API は
 `PUT /api/admin/extensions/{name}/settings`、ボディは `{"values": {項目名: 値}}`）。
 
 - 一式をモデルで検証してから、1 回の書き込みで置き換えます（`updated_at` は UTC）。1 か所でも
@@ -119,4 +161,4 @@ async def execute(input, context):
 
 - [拡張の基本](extensions.md)
 - [設定の合成](extension-config.md)
-- [観測用ダッシュボード](dashboard.md#extensions)
+- [観測用ダッシュボード](dashboard.md#設定)

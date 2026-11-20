@@ -8,6 +8,10 @@
 import できなければ公式拡張パック（`lilla_core.extensions.google_oauth`）を
 補ってもう一度だけ試す短縮名記法にも対応する（`_import_extension_module()`）。
 
+`BUILTIN_EXTENSION_MODULES` に挙げた拡張（ノート置き場 `notes`）は標準機能で、
+`LILLA_EXTENSIONS` に並べなくても `load_extensions()` が常に先頭へ読み込む。
+`LILLA_EXTENSIONS` に残っていたら、二重登録にせず警告して読み飛ばす。
+
 `Extension` は Adapter 型で、全メソッドに「何もしない」デフォルトがある。
 拡張は使うものだけをオーバーライドする。
 
@@ -58,6 +62,7 @@ import inspect
 import logging
 import os
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -66,12 +71,18 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
+    from lilla_core.core.file_storage import FileStorage
     from lilla_core.repository.conversation_repository import SavedConversation
 
 logger = logging.getLogger(__name__)
 
 #: 拡張モジュールの import パスを並べる環境変数名（カンマ区切り）。
 EXTENSIONS_ENV_VAR = "LILLA_EXTENSIONS"
+
+#: `LILLA_EXTENSIONS` によらず `load_extensions()` が常に読み込む標準機能のモジュール。
+#: 実装は公式拡張パックと同じ `Extension` 契約で書かれており、コア本体はモジュールを
+#: 直接 import せず、ここに挙げた import パスを文字列で読む。
+BUILTIN_EXTENSION_MODULES: tuple[str, ...] = ("lilla_core.extensions.notes",)
 
 #: 各拡張モジュールが `Extension` インスタンスを export する属性名。
 EXTENSION_ATTR = "extension"
@@ -170,6 +181,7 @@ RESERVED_EXTENSION_NAMES = frozenset(
         "usage",
         "logs",
         "extensions",
+        "settings",
     }
 )
 
@@ -433,6 +445,16 @@ class Extension:
     #: コアは順序を並べ替えないため、利用者が正しい順に並べる。
     requires: tuple[str, ...] = ()
 
+    def display_name(self) -> str | None:
+        """ダッシュボードの設定画面に出す、この拡張の表示名を返す（`None` なら `name`）。
+
+        設定画面の一覧と見出しに使う。拡張の画面のタブは `dashboard_page()` の
+        `DashboardPage.label` のままで、ここでは変わらない。メソッドなので呼ばれる
+        たびに評価され、`lilla_core.ui.messages.t()` の戻り値を返してもよい。
+        空文字・文字列以外を返すとロード時に落とす。
+        """
+        return None
+
     def config_model(self) -> type[BaseModel] | None:
         """この拡張が足す YAML セクションのモデルを返す（足さないなら `None`）。
 
@@ -582,6 +604,32 @@ class Extension:
         """
         return []
 
+    def file_storages(self) -> dict[str, FileStorage]:
+        """この拡張が提供する保存先（`core/file_storage.py` の `FileStorage`）を名前で返す。
+
+        名前は `^[a-z0-9][a-z0-9-]*$` の形で、拡張どうしで重なるとロード時に落ちる。
+        値は `FileStorage` のインスタンスで、拡張の登録時にこのメソッドが呼ばれるため、
+        コンストラクタで外部へ接続しないこと。利用側は `get_file_storage(name)` で引く。
+        """
+        return {}
+
+    def notes_directories(self) -> dict[str, dict[str, str]]:
+        """ノート置き場（`notes`）で書き込むトップレベルディレクトリと、その用途を返す。
+
+        戻り値は「ディレクトリ名 → `{"ja": 用途, "en": 用途}`」の形（`ja` / `en` の両方が必須で、
+        ほかの言語のキーは持てない）。notes の書き込みは、ロード済みの拡張が宣言した
+        ディレクトリ（notes 自身の `user/` を含む）の配下だけに許される。用途は notes の
+        デフォルトのプロンプトへそのまま載るため、具体的なファイルのパスやパスの形には
+        触れず、何に使うディレクトリかだけを書く（パスの形を伝えたいなら自分の
+        `default_prompt()` に書く）。用途の文は notes の `default_prompt()` の一部として
+        Jinja2 で展開されるため、`{{` / `{%` / `{#` を書かない（コアは検査もエスケープもしない）。
+
+        名前はノートのパスの 1 要素として正しい形（空・`.` / `..`・`/` / `\\`・制御文字・
+        前後の空白・NFC でない文字列・255 文字超を含まない）でなければならず、違反と、
+        ほかの拡張（notes を含む）との重複はロード時に `ValueError` で落とす。
+        """
+        return {}
+
     def startup_repos(self) -> list[StartupRepoFactory]:
         """`on_ready` で `init_collection()` を呼ぶリポジトリファクトリを返す。"""
         return []
@@ -621,6 +669,13 @@ class Extension:
         `ui.locale` → `ja` → `en` → 定義の先頭の順に最初に見つかった言語の本文を
         選び、ロード順に連結して注入する（`client_type` が `"task"` のときは注入しない）。
         `client_prompt_providers()` と違い、`client_type` によらず全会話に入る。
+
+        選んだ本文（デフォルトでも上書きでも）は注入の前に Jinja2 テンプレートとして
+        展開する（`services/prompt_template.py`）。テンプレートに渡す変数は `settings`
+        だけで、中身はこの拡張の `settings_model()` の値（秘匿値の型は除く）を呼ぶたびに
+        読み直したもの。未定義の名前は失敗にし、展開に失敗したら展開前の本文をそのまま
+        注入する（WARNING ログ）。`{{` / `{%` / `{#` を文字として書きたいときは
+        `{% raw %}…{% endraw %}` で囲む。
 
         形（空でない `dict` であること・キーと値が文字列であること）は
         ロード時に検証し、違反は fail-fast する。
@@ -665,6 +720,18 @@ _dashboard_static_mounts: list[DashboardStaticMount] = []
 _dashboard_routes: list[DashboardRoute] = []
 _dashboard_public_routes: list[DashboardRoute] = []
 _http_routes: list[HttpRoute] = []
+_file_storages: dict[str, Any] = {}
+_notes_directories: dict[str, dict[str, str]] = {}
+#: `set_extensions()` の検証中だけ、これから登録する宣言を `get_notes_directories()` へ見せる。
+#: notes の `default_prompt()` は宣言から本文を組み立てるが、`default_prompt()` は登録前の
+#: 検証で呼ばれるため、確定前の（検証済みの）宣言を参照させる必要がある。
+_pending_notes_directories: dict[str, dict[str, str]] | None = None
+
+#: `notes_directories()` の用途に必須の言語キー。
+_NOTES_DIRECTORY_LANGUAGES = frozenset({"ja", "en"})
+#: notes のパスの要素 1 つの最大の文字数（`extensions/notes/paths.py` の `MAX_SEGMENT_CHARS` と同じ）。
+_NOTES_MAX_SEGMENT_CHARS = 255
+_NOTES_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
 def _merge_unique(
@@ -859,7 +926,8 @@ def _collect_settings_models(extensions: list[Extension]) -> dict[str, Any]:
     Raises:
         ValueError: `BaseModel` サブクラス以外を返した場合、既定値の無いフィールドが
             ある場合、既定値（初期値）がモデルの検証を通らない場合、または
-            `config_model()` と同じ名前のフィールドを持つ（担当の二重宣言）場合。
+            `config_model()` と同じ名前のフィールドを持つ（担当の二重宣言）場合、
+            または `json_schema_extra` の `widget` の宣言が不正な場合。
     """
     from pydantic import BaseModel, ValidationError
 
@@ -887,6 +955,13 @@ def _collect_settings_models(extensions: list[Extension]) -> dict[str, Any]:
             raise ValueError(
                 f"Extension '{ext.name}' settings_model() has invalid default values: {e}"
             ) from e
+        # 循環 import を避けるため関数内で import する（services 側がこのモジュールを読む）
+        from lilla_core.services.extension_settings import validate_widgets
+
+        try:
+            validate_widgets(model)
+        except ValueError as e:
+            raise ValueError(f"Extension '{ext.name}' settings_model(): {e}") from e
         config_model = ext.config_model()
         if isinstance(config_model, type) and issubclass(config_model, BaseModel):
             both = sorted(set(model.model_fields) & set(config_model.model_fields))
@@ -972,6 +1047,40 @@ def _validate_names(extensions: list[Extension]) -> None:
         if name in seen:
             raise ValueError(f"Duplicate extension name: '{name}'")
         seen.add(name)
+
+
+def _validate_display_names(extensions: list[Extension]) -> None:
+    """`display_name()` が `None` か空でない文字列を返すことを検証する。
+
+    Raises:
+        ValueError: 空文字・空白だけ・文字列以外を返した場合。
+    """
+    for ext in extensions:
+        value = ext.display_name()
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"Extension '{ext.name}' display_name() must return None or a non-empty string"
+            )
+
+
+def extension_display_name(ext: Extension) -> str:
+    """拡張の表示名を返す（`display_name()` が `None` なら `name`）。"""
+    value = ext.display_name()
+    return value if value is not None else ext.name
+
+
+def is_builtin_extension(ext: Extension) -> bool:
+    """標準機能（`BUILTIN_EXTENSION_MODULES` のモジュールが定義した拡張）かを返す。"""
+    return type(ext).__module__ in BUILTIN_EXTENSION_MODULES
+
+
+def is_official_extension(ext: Extension) -> bool:
+    """公式拡張パック（`lilla_core.extensions.` の下。標準機能は除く）の拡張かを返す。"""
+    if is_builtin_extension(ext):
+        return False
+    return type(ext).__module__.startswith(_OFFICIAL_EXTENSION_PACKAGE_PREFIX)
 
 
 def _validate_required(
@@ -1214,6 +1323,92 @@ def _collect_http_routes(extensions: list[Extension]) -> list[HttpRoute]:
     return collected
 
 
+def _collect_file_storages(extensions: list[Extension]) -> dict[str, Any]:
+    """各拡張の `file_storages()` をまとめ、名前の形と値の型を検証する。
+
+    Raises:
+        ValueError: 名前の形が不正な場合、または拡張どうしで名前が重なった場合。
+        TypeError: 値が `FileStorage` のインスタンスでない場合。
+    """
+    from lilla_core.core.file_storage import FileStorage
+
+    merged = _merge_unique(extensions, "file_storages", "file storage")
+    for name, storage in merged.items():
+        if not isinstance(name, str) or not _EXTENSION_NAME_RE.fullmatch(name):
+            raise ValueError(
+                f"File storage name {name!r} must match {_EXTENSION_NAME_RE.pattern}"
+            )
+        if not isinstance(storage, FileStorage):
+            raise TypeError(
+                f"File storage '{name}' must be a FileStorage instance, "
+                f"got {type(storage).__name__}"
+            )
+    return merged
+
+
+def _is_valid_notes_directory_name(name: Any) -> bool:
+    """`name` がノートのパスの 1 要素として正しい形か（`notes/paths.py` の `normalize_path` と同じ規則）。
+
+    コア本体は notes のパッケージを import しないため、要素 1 つ分の規則をここにも持つ
+    （同じ規則であることは notes のテストで突き合わせる）。正規化前提の比較ができるよう、
+    NFC 正規化で変わる名前も拒否する。
+    """
+    return (
+        isinstance(name, str)
+        and name not in ("", ".", "..")
+        and unicodedata.normalize("NFC", name) == name
+        and len(name) <= _NOTES_MAX_SEGMENT_CHARS
+        and "/" not in name
+        and "\\" not in name
+        and not _NOTES_CONTROL_RE.search(name)
+        and name == name.strip()
+    )
+
+
+def _collect_notes_directories(extensions: list[Extension]) -> dict[str, dict[str, str]]:
+    """各拡張の `notes_directories()` を検証し、ロード順に 1 つへまとめる。
+
+    Raises:
+        ValueError: 戻り値が `dict` でない場合、名前の形が不正な場合、用途が
+            `ja` / `en` の空でない文字列の組でない場合、または拡張どうし（notes を含む）で
+            名前が重なった場合。
+    """
+    merged: dict[str, dict[str, str]] = {}
+    owners: dict[str, str] = {}
+    for ext in extensions:
+        declared = ext.notes_directories()
+        if not isinstance(declared, dict):
+            raise ValueError(
+                f"Extension '{ext.name}' notes_directories() must return a dict of "
+                f"directory name -> usage, got {type(declared).__name__}"
+            )
+        for name, usage in declared.items():
+            if not _is_valid_notes_directory_name(name):
+                raise ValueError(
+                    f"Extension '{ext.name}' notes_directories() declares an invalid "
+                    f"directory name {name!r}: it must be a single notes path segment "
+                    "(no '/', '\\', '.', '..', control characters, surrounding spaces; "
+                    f"NFC; at most {_NOTES_MAX_SEGMENT_CHARS} characters)"
+                )
+            if (
+                not isinstance(usage, dict)
+                or set(usage) != _NOTES_DIRECTORY_LANGUAGES
+                or not all(isinstance(text, str) and text.strip() for text in usage.values())
+            ):
+                raise ValueError(
+                    f"Extension '{ext.name}' notes_directories() must map '{name}' to a "
+                    "dict with non-empty str 'ja' and 'en' usages (and no other keys)"
+                )
+            if name in owners:
+                raise ValueError(
+                    f"Duplicate notes directory '{name}' declared by extensions "
+                    f"'{owners[name]}' and '{ext.name}'"
+                )
+            owners[name] = ext.name
+            merged[name] = {"ja": usage["ja"], "en": usage["en"]}
+    return merged
+
+
 def _core_tool_context_keys() -> frozenset[str]:
     """コアが実行時にツール context へ必ず注入するキーの集合を返す。
 
@@ -1242,7 +1437,8 @@ def set_extensions(extensions: list[Extension]) -> None:
         extensions: ロード順に並んだ `Extension` インスタンス。
 
     Raises:
-        TypeError: `Extension` のインスタンスでない要素が含まれる場合。
+        TypeError: `Extension` のインスタンスでない要素が含まれる場合、または
+            `file_storages()` の値が `FileStorage` でない場合。
         ValueError: 名前または貢献キーが衝突している場合、`api_version` がこのコアの
             受け付ける契約バージョンでない場合、契約から外したメソッド
             （`config_models()` など）を上書きしている場合、`config_model()` が
@@ -1255,10 +1451,13 @@ def set_extensions(extensions: list[Extension]) -> None:
             含む）な場合、またはダッシュボードの申告（`name` の形・予約名・ルートのパス接頭辞・
             ページを出すのに静的ディレクトリが無い）が規約に違反している場合、
             共有 HTTP サーバーのルート申告がコアや他の拡張と重なる場合、
-            または `result_deliveries()` の配送関数が `(text, saved)` の 2 引数で
-            呼べない形の場合。
+            `result_deliveries()` の配送関数が `(text, saved)` の 2 引数で
+            呼べない形の場合、`file_storages()` の名前が不正・重複している場合、または
+            `notes_directories()` の名前・用途が不正・重複している場合。
     """
     from lilla_core.core.config import core_env_field_names
+
+    global _extensions, _pending_notes_directories
 
     for ext in extensions:
         if not isinstance(ext, Extension):
@@ -1266,6 +1465,7 @@ def set_extensions(extensions: list[Extension]) -> None:
                 f"Expected an Extension instance, got {type(ext).__name__}"
             )
     _validate_names(extensions)
+    _validate_display_names(extensions)
     _validate_api_versions(extensions)
     _validate_removed_methods(extensions)
     _validate_requires(extensions)
@@ -1306,14 +1506,19 @@ def set_extensions(extensions: list[Extension]) -> None:
     start_hooks = _merge_lists(
         extensions, "conversation_start_hooks", "conversation start hook"
     )
-    default_prompts = _collect_default_prompts(extensions)
+    notes_directories = _collect_notes_directories(extensions)
+    _pending_notes_directories = notes_directories
+    try:
+        default_prompts = _collect_default_prompts(extensions)
+    finally:
+        _pending_notes_directories = None
     dashboard_pages, static_mounts, dash_routes, public_routes = _collect_dashboard(
         extensions
     )
     http_routes = _collect_http_routes(extensions)
+    file_storages = _collect_file_storages(extensions)
     _validate_message_catalogs(extensions)
 
-    global _extensions
     _extensions = list(extensions)
     _config_models.clear()
     _config_models.update(config_models)
@@ -1341,6 +1546,10 @@ def set_extensions(extensions: list[Extension]) -> None:
     _dashboard_public_routes.extend(public_routes)
     _http_routes.clear()
     _http_routes.extend(http_routes)
+    _file_storages.clear()
+    _file_storages.update(file_storages)
+    _notes_directories.clear()
+    _notes_directories.update(notes_directories)
 
     _clear_message_catalog_cache()
 
@@ -1383,6 +1592,27 @@ def reset_extensions() -> None:
     set_extensions([])
 
 
+def _names_builtin_module(module_path: str) -> bool:
+    """`LILLA_EXTENSIONS` の 1 項目が標準機能のモジュールを指すか（短縮名も含む）を返す。"""
+    candidates = {module_path}
+    if "." not in module_path:
+        candidates.add(f"{_OFFICIAL_EXTENSION_PACKAGE_PREFIX}{module_path}")
+    return any(path in BUILTIN_EXTENSION_MODULES for path in candidates)
+
+
+def _extension_of(module: ModuleType, module_path: str) -> Any:
+    """モジュールが export する `extension` 属性を返す（無ければ `AttributeError`）。
+
+    型の検査は `set_extensions()` が行うため、ここでは属性の有無だけを見る。
+    """
+    if not hasattr(module, EXTENSION_ATTR):
+        raise AttributeError(
+            f"Extension module '{module_path}' must export "
+            f"a single '{EXTENSION_ATTR}' attribute"
+        )
+    return getattr(module, EXTENSION_ATTR)
+
+
 def _import_extension_module(module_path: str) -> ModuleType:
     """`LILLA_EXTENSIONS` の 1 項目を、公式拡張パックの短縮名にも対応して import する。
 
@@ -1423,7 +1653,7 @@ def load_extensions(spec: str | None = None) -> list[Extension]:
 
     登録のあと、拡張が申告した YAML セクションと秘匿フィールドを
     `compose_config()` で `AppConfig` へ合成し、`set_config()` でプロセスの設定に
-    据える。拡張が 0 個、または申告が空なら素の `AppConfig` になる。
+    据える。`LILLA_EXTENSIONS` が空でも標準機能の拡張（後述）は載る。
 
     コアの他の初期化（`get_config()` / コマンド・ツールのロード）より前に
     呼ぶこと。ここで組んだ設定インスタンスを以降の `get_config()` が返すため。
@@ -1433,11 +1663,16 @@ def load_extensions(spec: str | None = None) -> list[Extension]:
     （`_import_extension_module`）。公式拡張パック向けの短縮記法で、`.` を含む
     パス（第三者パックや、すでにフルパスで書いた公式拡張）には適用しない。
 
+    `BUILTIN_EXTENSION_MODULES` の拡張（標準機能のノート置き場 `notes`）は `spec` に
+    よらず常に先頭へ読み込む（他の拡張が `requires` で依存しても並び順を気にせずに
+    済むため）。`spec` に同じ拡張が書かれていたら（短縮名・フルパスのどちらでも）、
+    二重登録で落とさずに WARNING を出して読み飛ばす。
+
     Args:
         spec: カンマ区切りの import パス。`None` なら `LILLA_EXTENSIONS` を読む。
 
     Returns:
-        ロード順に並んだ `Extension` インスタンスのリスト。
+        ロード順に並んだ `Extension` インスタンスのリスト（先頭は標準機能の拡張）。
 
     Raises:
         ImportError: モジュールを import できない場合（短縮名の解決も失敗した場合を含む）。
@@ -1452,15 +1687,27 @@ def load_extensions(spec: str | None = None) -> list[Extension]:
         spec = os.environ.get(EXTENSIONS_ENV_VAR, "")
 
     module_paths = [part.strip() for part in spec.split(",") if part.strip()]
-    extensions: list[Extension] = []
+    extensions: list[Extension] = [
+        _extension_of(importlib.import_module(path), path)
+        for path in BUILTIN_EXTENSION_MODULES
+    ]
+    builtin_ids = {id(ext) for ext in extensions}
     for module_path in module_paths:
-        module = _import_extension_module(module_path)
-        if not hasattr(module, EXTENSION_ATTR):
-            raise AttributeError(
-                f"Extension module '{module_path}' must export "
-                f"a single '{EXTENSION_ATTR}' attribute"
+        # 標準機能の短縮名・フルパスは import せずに見分ける（短縮名がカレントディレクトリの
+        # 同名パッケージなどに解決されて別物を読むのを避けるため）。
+        if _names_builtin_module(module_path):
+            ext = None
+        else:
+            ext = _extension_of(_import_extension_module(module_path), module_path)
+        if ext is None or id(ext) in builtin_ids:
+            logger.warning(
+                "Extension module '%s' is now a built-in feature and is always loaded; "
+                "skipping it. Remove it from %s.",
+                module_path,
+                EXTENSIONS_ENV_VAR,
             )
-        extensions.append(getattr(module, EXTENSION_ATTR))
+            continue
+        extensions.append(ext)
 
     # コアの他モジュールより先に拡張モジュールを import させるため、`config` の
     # import は拡張の import が終わったここまで遅らせる。
@@ -1612,6 +1859,30 @@ def get_dashboard_public_routes() -> list[DashboardRoute]:
 def get_http_routes() -> list[HttpRoute]:
     """全拡張の共有 HTTP サーバー向けルートをロード順に返す。"""
     return list(_http_routes)
+
+
+def get_file_storage(name: str) -> FileStorage | None:
+    """名前で保存先（`FileStorage`）を返す。無ければ `None`。"""
+    return _file_storages.get(name)
+
+
+def list_file_storages() -> dict[str, FileStorage]:
+    """登録済みの保存先を「名前 → `FileStorage`」でロード順に返す（コピー）。"""
+    return dict(_file_storages)
+
+
+def get_notes_directories() -> dict[str, dict[str, str]]:
+    """拡張が宣言した notes のトップレベルディレクトリを「名前 → 用途（ja / en）」でロード順に返す。
+
+    `set_extensions()` の検証中（`default_prompt()` の収集中）は、これから登録する
+    検証済みの宣言を返す。戻り値はコピーで、書き換えても登録内容には影響しない。
+    """
+    source = (
+        _pending_notes_directories
+        if _pending_notes_directories is not None
+        else _notes_directories
+    )
+    return {name: dict(usage) for name, usage in source.items()}
 
 
 def get_result_delivery(client_type: str) -> DeliveryFn | None:

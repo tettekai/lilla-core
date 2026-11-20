@@ -358,7 +358,7 @@ def resolve_available_tools(
 
     各要素は YAML stem か、`$` + セット名のトークンのどちらか。YAML stem はそのまま残し、
     トークンはその位置で `tools.sets` の同名セットの中身へ展開する（セットの中の `$` 参照も
-    再帰的に展開する）。`main` セットが未設定なら `$main` は空に展開する。展開は出現順で、
+    再帰的に展開する）。展開は出現順で、
     最初の出現を残して重複を除く（LLM に渡す並びは `build_tools_param` が決めるロード順）。
 
     `supported_client_type` による絞り込みはここでは行わない（`build_tools_param` の役目）。
@@ -455,8 +455,6 @@ def _expand_entries(
             chain = " -> ".join(_TOOLSET_TOKEN_PREFIX + n for n in (*stack, set_name))
             raise ValueError(f"Tool set reference cycle: {chain}")
         if set_name not in sets:
-            if set_name == MAIN_TOOL_SET_NAME:
-                continue
             raise ValueError(f"Unknown tool set: {entry}")
         expanded.extend(_expand_entries(sets[set_name], sets, (*stack, set_name)))
     return expanded

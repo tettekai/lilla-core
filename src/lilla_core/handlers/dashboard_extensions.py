@@ -39,6 +39,7 @@ def register_routes(app: web.Application, tools: dict | None) -> None:
         tools: ツールのレジストリ。`None` なら空（タスクは編集対象にならない）。
     """
     app[TOOLS_KEY] = tools or {}
+    app.router.add_get("/api/admin/settings/general", handle_general)
     app.router.add_get("/api/admin/extensions", handle_list)
     app.router.add_get("/api/admin/extensions/{name}", handle_detail)
     app.router.add_patch("/api/admin/extensions/{name}/overrides", handle_update)
@@ -75,8 +76,15 @@ async def _detail(name: str, tools: dict) -> dict:
     return detail
 
 
+async def handle_general(request: web.Request) -> web.Response:
+    """GET /api/admin/settings/general - 設定画面「全般」の内容（読み取り専用）を返す。"""
+    from lilla_core.services.general_settings import build_general_settings
+
+    return web.json_response(build_general_settings())
+
+
 async def handle_list(request: web.Request) -> web.Response:
-    """GET /api/admin/extensions - ロード済みの拡張を、編集できるかの目印つきで返す。"""
+    """GET /api/admin/extensions - ロード済みの拡張を、表示名・種類・編集できるかの目印つきで返す。"""
     from lilla_core.services.extension_overrides import list_editable
 
     return web.json_response({"items": list_editable(request.app[TOOLS_KEY])})
@@ -105,7 +113,10 @@ async def handle_update(request: web.Request) -> web.Response:
     """PATCH /api/admin/extensions/{name}/overrides - 上書きを保存する。
 
     リクエスト全体を検証してから 1 回の更新で保存し（不正なら 400 で何も保存しない）、
-    タスクを変えたときだけ稼働中のスケジューラへ反映する。応答の `saved` は保存の成否、
+    タスクを変えたときだけ稼働中のスケジューラへ反映する。プロンプトの上書き
+    （`{"mode", "text"}`）は、モードによらず入力本文（`text`）だけを Jinja2 テンプレートとして
+    今の設定で試しに展開し、展開できなければ 400 にする
+    （設定を読めなければ構文だけを確かめる）。応答の `saved` は保存の成否、
     `tasks_apply` は反映の結果（`applied` / `scheduler_not_running` /
     `scheduler_disabled` / `failed`。
     タスクを変えていなければ `None`）で、保存できたが反映に失敗したことを成功と
@@ -118,6 +129,7 @@ async def handle_update(request: web.Request) -> web.Response:
         find_extension,
         parse_update,
     )
+    from lilla_core.services.prompt_template import PromptTemplateError, validate_extension_prompt
 
     name = request.match_info["name"]
     if find_extension(name) is None:
@@ -130,6 +142,13 @@ async def handle_update(request: web.Request) -> web.Response:
         update = parse_update(name, body, tools)
     except OverrideValidationError as e:
         return _error(400, str(e))
+    prompt = update.set_fields.get("prompt")
+    if isinstance(prompt, dict):
+        # 試し展開は入力本文だけが対象（既定とつないだ本文は確かめない）
+        try:
+            await validate_extension_prompt(name, prompt["text"])
+        except PromptTemplateError as e:
+            return _error(400, f"prompt: {e}")
 
     try:
         await get_extension_override_repo().update_overrides(

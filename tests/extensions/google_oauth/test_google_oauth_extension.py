@@ -111,7 +111,7 @@ class TestGoogleOAuthComposition:
             monkeypatch.setenv("CONFIG_ROOT", str(oauth_only_config_root))
             loaded = ext_mod.load_extensions()
 
-        assert [e.name for e in loaded] == ["google-oauth"]
+        assert [e.name for e in loaded] == ["notes", "google-oauth"]
 
 
 class TestGoogleOAuthLocales:

@@ -137,6 +137,10 @@ class FilesExtension(Extension):
 
     name = "files"
 
+    def display_name(self) -> str:
+        """ダッシュボードの設定画面に出す表示名を返す（画面の文言に合わせて日本語の直書き）。"""
+        return "ファイル"
+
     def config_model(self) -> type[BaseModel]:
         """YAML セクションのモデルを返す（節名は `extensions.files`）。"""
         return FilesConfig
@@ -151,6 +155,16 @@ class FilesExtension(Extension):
     def locale_dirs(self) -> list[Path]:
         """エラー通知に出す文言のカタログ（このパッケージの `locales/`）を返す。"""
         return [Path(__file__).resolve().parent / "locales"]
+
+    def file_storages(self) -> dict:
+        """ホワイトリストのディレクトリを保存先 `files` として申告する。
+
+        論理パスは LLM ツールと同じ「ディレクトリの名前/相対パス」。書き込み可能な
+        ディレクトリが無ければ `read_only` になる。
+        """
+        from lilla_core.extensions.files.storage import FilesStorage
+
+        return {"files": FilesStorage()}
 
 
 extension = FilesExtension()

@@ -128,6 +128,9 @@ Verification is `verify_client_token(token)`. Routes an extension mounts as `def
 >   same host, narrow it to `host: 127.0.0.1`
 > - `POST /api/tools/call` and `POST /api/runtask` can run tools. Keep tokens as safe as
 >   passwords and reissue with the same `label` if one leaks
+> - The built-in notes feature serves Git smart HTTP (clone / fetch / push) at `/notes.git`. A
+>   valid token can pull out all the notes and their history, so let this server listen only on a
+>   trusted network such as a LAN ([Notes store](notes.md#git-clone--fetch--push))
 
 ## Adding routes from an extension
 

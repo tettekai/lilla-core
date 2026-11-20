@@ -47,7 +47,7 @@ from lilla_core.repository.channel_summary_repository import get_channel_summary
 from lilla_core.repository.llm_usage_repository import get_llm_usage_repo
 from lilla_core.repository.extension_override_repository import get_extension_override_repo
 from lilla_core.repository.extension_settings_repository import get_extension_settings_repo
-from lilla_core.handlers import message_handler, interaction_handler, task_handler
+from lilla_core.handlers import message_handler, interaction_handler, reaction_handler, task_handler
 from lilla_core.handlers.command_handler import set_command_runtime
 from lilla_core.handlers.dashboard_server import start_dashboard_server
 from lilla_core.handlers.http_server import start_http_server, stop_http_server
@@ -140,6 +140,18 @@ async def on_message(message):
         return await dispatch_on_message(msg, bot)
 
     await message_handler.handle_message(message, bot, tools, llm_tools, message_hook)
+
+
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    """リアクション追加イベント（キャッシュ外・DM を含む）を reaction_handler へ委譲する。"""
+    await reaction_handler.handle_raw_reaction(payload, bot, added=True)
+
+
+@bot.event
+async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
+    """リアクション削除イベント（キャッシュ外・DM を含む）を reaction_handler へ委譲する。"""
+    await reaction_handler.handle_raw_reaction(payload, bot, added=False)
 
 
 @bot.event

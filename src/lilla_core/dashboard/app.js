@@ -7,16 +7,39 @@
 // カタログを取れなかったときの退避。組み込み 7 画面だけはカタログ無しでも
 // 開けるようにして、ナビの取得失敗でダッシュボードごと使えなくならないようにする。
 const FALLBACK_PAGES = [
-  { name: 'home', label: 'Home', group: 'main', hash: '#/', module: null },
-  { name: 'conversations', label: 'Conversations', group: 'main', hash: '#/conversations', module: null },
-  { name: 'memos', label: 'Memos', group: 'main', hash: '#/memos', module: null },
-  { name: 'skills', label: 'Skills', group: 'main', hash: '#/skills', module: null },
-  { name: 'usage', label: 'Usage', group: 'main', hash: '#/usage', module: null },
-  { name: 'logs', label: 'Admin', group: 'admin', hash: '#/admin/logs', module: null },
-  { name: 'extensions', label: 'Extensions', group: 'admin', hash: '#/admin/extensions', module: null },
+  { name: 'home', label: 'ホーム', group: 'main', hash: '#/', module: null },
+  { name: 'conversations', label: '会話', group: 'main', hash: '#/conversations', module: null },
+  { name: 'memos', label: 'メモ', group: 'main', hash: '#/memos', module: null },
+  { name: 'skills', label: 'スキル', group: 'main', hash: '#/skills', module: null },
+  { name: 'usage', label: '使用量', group: 'main', hash: '#/usage', module: null },
+  { name: 'logs', label: 'ログ', group: 'admin', hash: '#/admin/logs', module: null },
+  { name: 'settings', label: '設定', group: 'admin', hash: '#/settings', module: null },
 ];
 
 const DEFAULT_HASH = '#/';
+
+// 設定画面のハッシュ。#/settings が全般、#/settings/extensions が拡張機能の一覧、
+// #/settings/extensions/{name} が拡張機能 1 つ、#/settings/{name} が標準機能 1 つ。
+const SETTINGS_HASH = '#/settings';
+const SETTINGS_EXTENSIONS_HASH = '#/settings/extensions';
+
+// 設定画面のハッシュをサブ画面へ読み替える。設定画面のハッシュでなければ null。
+// 名前が実在するか・種類がハッシュと合っているかは、一覧を取ってから settingsItem() で見る。
+function parseSettingsHash(hash) {
+  if (hash === SETTINGS_HASH) return { section: 'general', name: null };
+  if (hash === SETTINGS_EXTENSIONS_HASH) return { section: 'extension-list', name: null };
+  const extPrefix = SETTINGS_EXTENSIONS_HASH + '/';
+  if (hash.startsWith(extPrefix)) {
+    const name = decodeURIComponent(hash.slice(extPrefix.length));
+    return name && !name.includes('/') ? { section: 'extension', name } : null;
+  }
+  const prefix = SETTINGS_HASH + '/';
+  if (hash.startsWith(prefix)) {
+    const name = decodeURIComponent(hash.slice(prefix.length));
+    return name && !name.includes('/') ? { section: 'extension', name } : null;
+  }
+  return null;
+}
 
 // スキル名の規則（サーバー側の services/skills.py と同じ）。半角英数字・`_`・`-` のみで
 // 64 文字以内。大文字小文字は区別せず、サーバーが小文字に正規化して保存する。
@@ -35,6 +58,15 @@ function dashboardApp() {
     navPages: [],
     routeByHash: {},
     hashByName: {},
+
+    // 設定画面のサブ画面（section は 'general' / 'extension-list' / 'extension'）と、
+    // 全般の内容（/api/admin/settings/general の応答）。
+    settingsView: { section: 'general', name: null },
+    general: {
+      data: null,
+      loading: false,
+      error: false,
+    },
 
     // 拡張ページ用スロットの状態。module を持つページを開いている間だけ name が入る。
     extPage: { name: null, error: '' },
@@ -113,9 +145,13 @@ function dashboardApp() {
       detail: null,
       detailLoading: false,
       error: '',
+      // 一覧（GET /api/admin/extensions）の取得に失敗したときの文言。1 つの拡張の画面の
+      // error とは分けて持ち、「拡張機能が 0 件」と取得の失敗を区別して出す
+      listError: '',
       notice: '',
       applyFailed: false,
-      promptDraft: '',
+      // プロンプトの上書きの編集中の値（{ mode, text }。promptOverrideEditor と結ぶ）
+      promptDraft: { mode: 'append', text: '' },
       taskDrafts: {},
       // 画面管理の設定（設定の本体）の編集中の値。unset は「未設定（null）」にする項目。
       settingsDraft: {},
@@ -130,6 +166,7 @@ function dashboardApp() {
       newName: '',
       newDescription: '',
       newPrompt: '',
+      newLlmCallable: false,
       editingId: null,
       editName: '',
       editDescription: '',
@@ -217,6 +254,13 @@ function dashboardApp() {
     // （replaceState なので履歴は増やさない）。
     resolveRoute() {
       const hash = window.location.hash;
+      const settings = parseSettingsHash(hash);
+      if (settings) {
+        this.settingsView = settings;
+        this.activeTab = 'settings';
+        this.loadTabData('settings');
+        return;
+      }
       const tab = this.routeByHash[hash];
       if (!tab && hash) {
         history.replaceState(null, '', this.basePath() + DEFAULT_HASH);
@@ -228,8 +272,12 @@ function dashboardApp() {
     // ナビの操作はハッシュを書き換えるだけにして、描画と取得は
     // hashchange 経由の resolveRoute() に一本化する（二重 fetch を避ける）。
     navigate(tab) {
+      this.navigateHash(this.hashByName[tab] || DEFAULT_HASH);
+    },
+
+    // ハッシュを直接指定して移る（設定画面のサブ画面など、カタログに無いハッシュ用）。
+    navigateHash(hash) {
       this.menuOpen = false;
-      const hash = this.hashByName[tab] || DEFAULT_HASH;
       if (window.location.hash === hash) {
         // 同じハッシュでは hashchange が起きないので、再読み込みとして直接呼ぶ
         this.resolveRoute();
@@ -260,8 +308,8 @@ function dashboardApp() {
         this.fetchSkills();
       } else if (tab === 'usage') {
         this.fetchUsage();
-      } else if (tab === 'extensions') {
-        this.fetchExtensions();
+      } else if (tab === 'settings') {
+        this.loadSettings();
       } else if (tab === 'home') {
         this.fetchHomeStatus();
       }
@@ -278,6 +326,13 @@ function dashboardApp() {
         authedFetch: (url, options) => this.authedFetch(url, options),
         formatDate: (isoStr) => this.formatDate(isoStr),
       };
+    },
+
+    // 開いている拡張の画面に設定があれば、その設定画面のハッシュ（無ければ null）。
+    extPageSettingsHash() {
+      if (!this.extPage.name) return null;
+      const page = this.navPages.find((p) => p.name === this.extPage.name);
+      return (page && page.settings_hash) || null;
     },
 
     // 世代は「スロットに出すものが変わる」すべての入口（mount / unmount）で進める。
@@ -745,29 +800,78 @@ function dashboardApp() {
 
     // ---- 拡張の上書き ----
 
-    editableExtensions() {
-      return this.exts.items.filter((item) => item.editable);
+    builtinExtensions() {
+      return this.exts.items.filter((item) => item.kind === 'builtin');
+    },
+
+    otherExtensions() {
+      return this.exts.items.filter((item) => item.kind !== 'builtin');
+    },
+
+    // 今のハッシュが指す拡張。一覧に無い・種類がハッシュと合わない（標準機能を
+    // #/settings/extensions/... で開いたなど）ときは null。
+    settingsItem() {
+      if (this.settingsView.section !== 'extension') return null;
+      const item = this.exts.items.find((i) => i.name === this.settingsView.name);
+      if (!item || item.settings_hash !== window.location.hash) return null;
+      return item;
+    },
+
+    isBuiltinSelected() {
+      const item = this.settingsItem();
+      return Boolean(item && item.kind === 'builtin');
+    },
+
+    kindLabel(kind) {
+      if (kind === 'builtin') return '標準機能';
+      if (kind === 'official') return '公式の拡張機能';
+      return '拡張機能';
+    },
+
+    // 設定画面を開いたとき・サブ画面を移ったときに呼ぶ。左のメニューに標準機能を
+    // 並べるため、一覧はどのサブ画面でも取り直す。
+    async loadSettings() {
+      const view = this.settingsView;
+      if (view.section === 'general') this.fetchGeneralSettings();
+      await this.fetchExtensions();
+      // 一覧を待つ間に別のサブ画面へ移っていたら、ここでは何もしない
+      if (this.settingsView !== view || view.section !== 'extension') return;
+      const item = this.settingsItem();
+      if (!item || !item.editable) {
+        this.exts.selected = null;
+        this.exts.detail = null;
+        return;
+      }
+      await this.selectExtension(item.name);
+    },
+
+    async fetchGeneralSettings() {
+      this.general.loading = true;
+      this.general.error = false;
+      try {
+        const res = await this.authedFetch('/api/admin/settings/general');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        this.general.data = await res.json();
+      } catch (e) {
+        console.error('Failed to fetch general settings', e);
+        this.general.error = true;
+      } finally {
+        this.general.loading = false;
+      }
     },
 
     async fetchExtensions() {
       this.exts.loading = true;
-      this.exts.error = '';
+      this.exts.listError = '';
       try {
         const res = await this.authedFetch('/api/admin/extensions');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
         this.exts.items = data.items || [];
-        const editable = this.editableExtensions();
-        const keep = editable.find((item) => item.name === this.exts.selected);
-        const next = keep ? keep.name : (editable[0] ? editable[0].name : null);
-        if (next) {
-          await this.selectExtension(next);
-        } else {
-          this.exts.selected = null;
-          this.exts.detail = null;
-        }
       } catch (e) {
         console.error('Failed to fetch extensions', e);
-        this.exts.error = '拡張の一覧を取得できませんでした';
+        this.exts.items = [];
+        this.exts.listError = '拡張機能の一覧を取得できませんでした';
       } finally {
         this.exts.loading = false;
       }
@@ -802,7 +906,12 @@ function dashboardApp() {
     // 入れ、空欄は「デフォルトを使う」を意味する。
     setExtensionDetail(detail) {
       this.exts.detail = detail;
-      this.exts.promptDraft = detail.prompt ? detail.prompt.effective : '';
+      // プロンプトは保存済みの mode / text を入れる（合成済みの effective は入れない）。
+      // 上書きが無い・不正なら追加モードの空の本文から始める
+      const prompt = detail.prompt;
+      this.exts.promptDraft = prompt && prompt.overridden && !prompt.invalid
+        ? { mode: prompt.mode, text: prompt.text }
+        : { mode: 'append', text: '' };
       const drafts = {};
       for (const task of detail.tasks || []) {
         drafts[task.name] = {
@@ -820,14 +929,54 @@ function dashboardApp() {
       if (settings && settings.values) {
         for (const field of settings.fields) {
           const value = settings.values[field.name];
-          unset[field.name] = field.nullable && (value === null || value === undefined);
-          draft[field.name] = value === null || value === undefined ? '' : value;
+          if (field.widget === 'checkbox-group') {
+            // 配列の項目は「未設定」を持たない。null も空の選択として扱う
+            // キーが無い（不正な保存値に後から足した項目）ときは初期値から始め、
+            // 意図せず全部オフで保存されないようにする
+            unset[field.name] = false;
+            const start = value === undefined ? field.default : value;
+            draft[field.name] = Array.isArray(start) ? [...start] : [];
+          } else if (!field.supported) {
+            // 汎用フォームで編集できない項目は、保存時にそのまま送り返す。
+            // キーが無ければ undefined のままにして送らない（モデルの初期値で埋めさせる）
+            unset[field.name] = false;
+            draft[field.name] = value;
+          } else {
+            unset[field.name] = field.nullable && (value === null || value === undefined);
+            draft[field.name] = value === null || value === undefined ? '' : value;
+          }
         }
       }
       this.exts.settingsDraft = draft;
       this.exts.settingsUnset = unset;
       this.exts.settingsErrors =
         settings && settings.error && settings.error.errors ? settings.error.errors : [];
+    },
+
+    isPlainSettingField(field) {
+      return field.supported && !field.widget;
+    },
+
+    settingChoiceChecked(field, value) {
+      const selected = this.exts.settingsDraft[field.name];
+      return Array.isArray(selected) && selected.some((item) => item === value);
+    },
+
+    toggleSettingChoice(field, value, checked) {
+      // 値は choices の value（JSON の型のまま）を使い、文字列化しない
+      const selected = Array.isArray(this.exts.settingsDraft[field.name])
+        ? this.exts.settingsDraft[field.name]
+        : [];
+      const rest = selected.filter((item) => item !== value);
+      this.exts.settingsDraft[field.name] = checked ? [...rest, value] : rest;
+    },
+
+    settingUnknownChoices(field) {
+      // 保存済みで、今の候補に無い値（落とさずにチェック済みで出す）
+      const selected = this.exts.settingsDraft[field.name];
+      if (!Array.isArray(selected)) return [];
+      const known = (field.choices || []).map((choice) => choice.value);
+      return selected.filter((item) => !known.some((value) => value === item));
     },
 
     settingsFieldErrors(name) {
@@ -841,6 +990,15 @@ function dashboardApp() {
       const values = {};
       for (const field of settings.fields) {
         let value = this.exts.settingsDraft[field.name];
+        if (field.widget === 'checkbox-group') {
+          // 全部オフも [] で明示する（省略すると初期値で保存されるため）
+          values[field.name] = Array.isArray(value) ? [...value] : [];
+          continue;
+        }
+        if (!field.supported) {
+          if (value !== undefined) values[field.name] = value;
+          continue;
+        }
         if (field.nullable && this.exts.settingsUnset[field.name]) {
           value = null;
         } else if ((field.type === 'integer' || field.type === 'number') && value !== '') {
@@ -957,9 +1115,10 @@ function dashboardApp() {
     },
 
     savePromptOverride() {
-      // 空文字も「何も注入しない」という有効な上書きとして保存する
+      // モードと本文を一緒に保存する（置き換えの空文字は「何も注入しない」という有効な上書き）
+      const draft = this.exts.promptDraft || {};
       this.saveExtensionOverrides(
-        { prompt: this.exts.promptDraft },
+        { prompt: { mode: draft.mode === 'replace' ? 'replace' : 'append', text: draft.text || '' } },
         'プロンプトの上書きを保存しました',
         'プロンプトの上書きを保存できませんでした',
       );
@@ -1022,6 +1181,7 @@ function dashboardApp() {
       const name = this.skills.newName.trim();
       const description = this.skills.newDescription.trim();
       const prompt = this.skills.newPrompt.trim();
+      const llm_callable = this.skills.newLlmCallable;
       if (!name || !prompt) return;
       if (!this.isValidSkillName(name)) {
         alert(SKILL_NAME_HINT);
@@ -1031,12 +1191,13 @@ function dashboardApp() {
         const res = await this.authedFetch('/api/skills', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, description, prompt }),
+          body: JSON.stringify({ name, description, prompt, llm_callable }),
         });
         if (res.ok) {
           this.skills.newName = '';
           this.skills.newDescription = '';
           this.skills.newPrompt = '';
+          this.skills.newLlmCallable = false;
           await this.fetchSkills();
         } else {
           await this.alertSkillFailure(res, '追加');
@@ -1047,12 +1208,13 @@ function dashboardApp() {
       }
     },
 
-    async toggleSkill(skill) {
+    // field は 'enabled' か 'llm_callable'。今の値（true 以外はオフ扱い）を反転して保存する。
+    async toggleSkill(skill, field) {
       try {
         const res = await this.authedFetch('/api/skills/' + skill._id, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled: !skill.enabled }),
+          body: JSON.stringify({ [field]: skill[field] !== true }),
         });
         if (res.ok) {
           await this.fetchSkills();

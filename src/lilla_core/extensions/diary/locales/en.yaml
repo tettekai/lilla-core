@@ -1,0 +1,10 @@
+# UI message catalog (English). Keep the keys in sync with ja.yaml.
+
+diary:
+  faircopy:
+    saved: "Saved the fair copy of the diary for {date} ({storage}: {path})."
+    moodscore_missing: "moodscore is not filled in yet."
+    settings_error: "Diary fair copy: failed to load the settings"
+    storage_missing: "Diary fair copy: file storage {storage} is not loaded"
+    storage_read_only: "Diary fair copy: file storage {storage} is read-only"
+    write_failed: "Diary fair copy: failed to save the fair copy for {date} to {path} in {storage}"

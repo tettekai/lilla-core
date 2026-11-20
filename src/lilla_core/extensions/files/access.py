@@ -24,6 +24,15 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
+from lilla_core.core.file_storage import (
+    FileStorageError,
+    FileStorageExistsError,
+    FileStorageNotFoundError,
+    FileStorageNotTextError,
+    FileStoragePathError,
+    FileStoragePermissionError,
+)
+
 if TYPE_CHECKING:
     from lilla_core.extensions.files import FilesConfig
 
@@ -38,8 +47,32 @@ INVALID_PATH_MESSAGE = (
 )
 
 
-class FileAccessError(Exception):
-    """ツールの入力やアクセス判定の失敗（LLM へそのまま返してよい文言を持つ）。"""
+class FileAccessError(FileStorageError):
+    """ツールの入力やアクセス判定の失敗（LLM へそのまま返してよい文言を持つ）。
+
+    `FileStorage` の利用側から種類が分かるよう、下の派生クラスは
+    `core/file_storage.py` の対応する例外も継承する。
+    """
+
+
+class FilePathError(FileAccessError, FileStoragePathError):
+    """パスの形式が正しくない。"""
+
+
+class FileNotAllowedError(FileAccessError, FileStorageNotFoundError):
+    """名前の分からないディレクトリ、またはホワイトリストの外を指している。"""
+
+
+class FileWriteDeniedError(FileAccessError, FileStoragePermissionError):
+    """書き込みが許可されていない場所への書き込み。"""
+
+
+class FileAlreadyExistsError(FileAccessError, FileStorageExistsError):
+    """`create` で、ファイルが既にある。"""
+
+
+class FileNotTextAccessError(FileAccessError, FileStorageNotTextError):
+    """テキスト（UTF-8）として読めない、または大きすぎるファイル。"""
 
 
 class Access(IntEnum):
@@ -93,18 +126,18 @@ def split_logical_path(path: Any) -> list[str]:
     区切りは `/` と `\\` のどちらでもよい。空の要素と `.` は読み飛ばす。
 
     Raises:
-        FileAccessError: 文字列でない・NUL を含む・絶対パス・`..` を含む場合。
+        FilePathError: 文字列でない・NUL を含む・絶対パス・`..` を含む場合。
     """
     if path is None:
         return []
     if not isinstance(path, str) or "\0" in path:
-        raise FileAccessError(INVALID_PATH_MESSAGE)
+        raise FilePathError(INVALID_PATH_MESSAGE)
     normalized = path.strip().replace("\\", "/")
     if normalized.startswith("/") or ntpath.splitdrive(normalized)[0]:
-        raise FileAccessError(INVALID_PATH_MESSAGE)
+        raise FilePathError(INVALID_PATH_MESSAGE)
     segments = [s for s in normalized.split("/") if s not in ("", ".")]
     if any(s == ".." for s in segments):
-        raise FileAccessError(INVALID_PATH_MESSAGE)
+        raise FilePathError(INVALID_PATH_MESSAGE)
     return segments
 
 
@@ -144,21 +177,21 @@ def resolve_target(roots: list[Root], segments: list[str]) -> Target:
     """要素のリスト（先頭がディレクトリの名前）を実体パスへ解決し、操作の可否を決める。
 
     Raises:
-        FileAccessError: 名前の分からないディレクトリ、またはホワイトリストの外を指す場合。
+        FileNotAllowedError: 名前の分からないディレクトリ、またはホワイトリストの外を指す場合。
     """
     if not segments:
-        raise FileAccessError(NOT_FOUND_MESSAGE)
+        raise FileNotAllowedError(NOT_FOUND_MESSAGE)
     root = next((r for r in roots if r.label == segments[0]), None)
     if root is None:
-        raise FileAccessError(NOT_FOUND_MESSAGE)
+        raise FileNotAllowedError(NOT_FOUND_MESSAGE)
     root_real = root.real_path()
     real = os.path.realpath(os.path.join(root_real, *segments[1:]))
     if not is_within(root_real, real):
-        raise FileAccessError(OUTSIDE_MESSAGE)
+        raise FileNotAllowedError(OUTSIDE_MESSAGE)
     access = access_for(roots, real)
     if access is Access.NONE:
         # 選んだディレクトリの配下にあれば必ずどれかに当たる。念のため拒否側に倒す。
-        raise FileAccessError(OUTSIDE_MESSAGE)
+        raise FileNotAllowedError(OUTSIDE_MESSAGE)
     return Target(root, "/".join(segments), real, access)
 
 

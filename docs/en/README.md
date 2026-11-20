@@ -16,6 +16,7 @@ The index of the lilla-core user documentation.
 - [Registered channels](channels.md) — `discord.channels`
 - [Channel notes (nightly summary)](channel-notes.md)
 - [Searching history by room name](history-search.md)
+- [Reactions on messages](reactions.md) — storage format, Discord, retrieval, how they reach the LLM
 - [Scheduled notifications delegated to the LLM](scheduled-llm.md)
 - [Integrating an external scheduler](external-scheduler.md) — `scheduler.enabled` and `GET /api/tasks`
 - [Timezone](timezone.md) — `ui.timezone`
@@ -30,11 +31,14 @@ The index of the lilla-core user documentation.
 - [Recording LLM token usage](llm-usage.md) — `llm.usage_log` and the dashboard's Usage page
 - [The observability dashboard](dashboard.md) — including the exposure warning
 - [Skills](skills.md) — `!skill` and the Skills page of the dashboard
+- [Prompt templates (Jinja2)](prompt-template.md) — `{{ current_hour }}` and which prompts are expanded
 - [The shared HTTP server](http-server.md) — `http:`, Bearer tokens, adding routes from extensions
 - [Tool contracts](tools.md) — LLM tools, task tools, built-in tools
 - [Decision helper (Jev)](jev.md) — the optional `lilla_core.tool_support.jev`
 - [Google OAuth / Calendar / Drive (official extension pack)](google.md) — extensions bundled in `lilla_core.extensions`
 - [Local file read / write (official extension pack)](files.md) — `lilla_core.extensions.files`
+- [Diary (official extension pack)](diary.md) — `lilla_core.extensions.diary`
+- [Notes store (built-in feature)](notes.md) — the always-on `notes` (`lilla_core.extensions.notes`)
 
 ## Extensions
 
@@ -45,6 +49,7 @@ The index of the lilla-core user documentation.
 - [Overriding an extension's tasks](extension-task-override.md) — `tasks` in `extension_overrides` (`schedule` / `enabled`)
 - [Extension settings managed on screen](extension-settings.md) — `settings_model()` and `extension_settings`
 - [Dashboard contributions](extension-dashboard.md)
+- [Common storage interface (FileStorage)](file-storage.md) — `file_storages()` and `get_file_storage()`
 - [Testing an extension](extension-testing.md) — `lilla_core.testing`
 
 ## Repository

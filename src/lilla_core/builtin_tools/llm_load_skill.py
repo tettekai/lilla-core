@@ -8,7 +8,7 @@
 包んだ本文をツール結果として返す。結果はキャッシュせず、毎回リポジトリから読む。
 
 このツールが LLM に渡される会話では、`services/conversation_service.py` が
-`build_skill_list_section()` で有効なスキルの名前と説明の一覧をシステムプロンプトへ足す。
+`build_skill_list_section()` で LLM から呼べる（`llm_callable`）有効なスキルの名前と説明の一覧をシステムプロンプトへ足す。
 一覧の上限（`max_skills` / `max_description_chars` / `max_list_chars`）はツール YAML の
 固有キーで変えられ、不正な値は `build_schema()`（ツールのロード時）で起動を落とす。
 """
@@ -128,14 +128,14 @@ def _format_list_line(skill: dict, max_description_chars: int) -> str:
 def format_skill_list_section(
     skills: list[dict], tool_name: str, limits: dict[str, int]
 ) -> str:
-    """有効なスキルの一覧からシステムプロンプトへ足す節を組み立てる。
+    """LLM から呼べる有効なスキルの一覧からシステムプロンプトへ足す節を組み立てる。
 
     名前順に並んだ前提で先頭から行を足し、件数（`max_skills`）か各行の合計文字数
     （`max_list_chars`。見出しと説明文・省略案内は数えない）のどちらかの上限に
     達した時点で以降を載せない。省略した件数があれば末尾に案内を 1 行付ける。
 
     Args:
-        skills: 有効なスキル（名前順）。
+        skills: LLM から呼べる有効なスキル（名前順）。
         tool_name: LLM へ見せているこのツールの名前（YAML の stem）。
         limits: `resolve_limits()` の戻り値。
 
@@ -167,7 +167,7 @@ def format_skill_list_section(
 
 
 async def build_skill_list_section(tool_name: str, tool_config: dict | None) -> str:
-    """有効なスキルをリポジトリから取得して、システムプロンプトへ足す節を返す。
+    """LLM から呼べる有効なスキルをリポジトリから取得して、システムプロンプトへ足す節を返す。
 
     キャッシュせず、呼ぶたびに取得する。取得に失敗した場合は WARNING ログを出して
     空文字列を返す（一覧が出せないだけで会話は止めない）。
@@ -177,14 +177,14 @@ async def build_skill_list_section(tool_name: str, tool_config: dict | None) -> 
         tool_config: このツールの YAML の内容（上限の設定を読む）。
 
     Returns:
-        節の文字列。有効なスキルが無い・取得に失敗した場合は空文字列。
+        節の文字列。LLM から呼べる有効なスキルが無い・取得に失敗した場合は空文字列。
     """
     limits = resolve_limits(tool_config)
     # 設定を読み込むリポジトリの生成をツールのロード時に走らせないため関数内 import にする。
     from lilla_core.repository.skill_repository import get_skill_repo
 
     try:
-        skills = await get_skill_repo().get_enabled()
+        skills = await get_skill_repo().get_llm_callable()
     except Exception as e:
         logger.warning("Failed to load enabled skills for the system prompt: %s", e)
         return ""
@@ -202,7 +202,7 @@ async def execute(input: dict, context: dict) -> dict:
 
     Returns:
         標準結果辞書。成功時は `data` に展開後の文字列、名前が規則に合わない・存在しない・
-        無効な場合は `tool_error`。
+        無効・LLM から呼べない（`llm_callable` が `True` でない）場合は `tool_error`。
     """
     raw_name = input.get("name")
     name = normalize_skill_name(raw_name)
@@ -218,6 +218,9 @@ async def execute(input: dict, context: dict) -> dict:
         return tool_error(TOOL_NAME, message, message)
     if not skill.get("enabled", True):
         message = t("tool.load_skill.disabled", name=name)
+        return tool_error(TOOL_NAME, message, message)
+    if skill.get("llm_callable") is not True:
+        message = t("tool.load_skill.manual_only", name=name)
         return tool_error(TOOL_NAME, message, message)
 
     logger.info("[SKILL] Loading skill '%s' via tool", name)

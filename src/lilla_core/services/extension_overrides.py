@@ -15,7 +15,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from lilla_core.core.extension import Extension, get_default_prompts, get_extensions
+from lilla_core.core.extension import (
+    Extension,
+    extension_display_name,
+    get_dashboard_pages,
+    get_default_prompts,
+    get_extensions,
+    is_builtin_extension,
+    is_official_extension,
+)
+from lilla_core.services.extension_prompt_override import (
+    InvalidPromptOverrideError,
+    effective_prompt_template,
+    parse_prompt_override,
+)
+from lilla_core.services.prompt_template import (
+    PromptTemplateError,
+    check_syntax,
+    public_field_names,
+)
 from lilla_core.services.task_schedules import (
     is_valid_crontab,
     parse_task_overrides,
@@ -23,6 +41,16 @@ from lilla_core.services.task_schedules import (
     scheduled_task_entries,
 )
 from lilla_core.utils.datetime_utils import local_timezone
+
+#: 設定画面（SPA）のハッシュ。標準機能は全般と同じ並びの `#/settings/{name}`、
+#: それ以外は「拡張機能」の下の `#/settings/extensions/{name}` に置く。
+SETTINGS_HASH = "#/settings"
+SETTINGS_EXTENSIONS_HASH = "#/settings/extensions"
+
+#: `list_editable()` の `kind`。標準機能・公式拡張パック・それ以外（外部の拡張）。
+KIND_BUILTIN = "builtin"
+KIND_OFFICIAL = "official"
+KIND_EXTERNAL = "external"
 
 #: 保存リクエストのトップレベルで受け付けるキー。
 _UPDATE_KEYS = frozenset({"prompt", "tasks"})
@@ -79,19 +107,41 @@ def task_entries_of(name: str, tools: dict) -> dict[str, dict]:
     return scheduled_task_entries(tools, name)
 
 
+def extension_kind(ext: Extension) -> str:
+    """拡張の種類（`KIND_BUILTIN` / `KIND_OFFICIAL` / `KIND_EXTERNAL`）を返す。"""
+    if is_builtin_extension(ext):
+        return KIND_BUILTIN
+    if is_official_extension(ext):
+        return KIND_OFFICIAL
+    return KIND_EXTERNAL
+
+
+def settings_hash_of(ext: Extension) -> str:
+    """設定画面でその拡張を開くハッシュを返す。"""
+    if is_builtin_extension(ext):
+        return f"{SETTINGS_HASH}/{ext.name}"
+    return f"{SETTINGS_EXTENSIONS_HASH}/{ext.name}"
+
+
 def list_editable(tools: dict) -> list[dict]:
-    """ロード済みの拡張を、編集できるものの目印つきでロード順に返す。
+    """ロード済みの拡張を、設定画面に出す情報と編集できるかの目印つきでロード順に返す。
+
+    編集する項目が無い拡張も含めて全件を返す（設定画面の一覧はすべての拡張を並べ、
+    項目が無いものは「設定する項目はありません」と出すため）。
 
     Args:
         tools: ツールのレジストリ。
 
     Returns:
-        `name` / `has_prompt` / `task_count` / `has_settings` / `editable` を持つ dict のリスト。
-        `has_settings` は画面管理の設定（`settings_model()`）を宣言しているか。
+        `name` / `display_name` / `kind` / `has_prompt` / `task_count` / `has_settings` /
+        `editable` / `settings_hash` / `page_hash` を持つ dict のリスト。
+        `has_settings` は画面管理の設定（`settings_model()`）を宣言しているか、
+        `page_hash` はダッシュボードに画面を出していればそのハッシュ（無ければ `None`）。
     """
     from lilla_core.core.extension import get_settings_models
 
     settings_models = get_settings_models()
+    page_hashes = {entry.name: entry.hash for entry in get_dashboard_pages()}
     items = []
     for ext in get_extensions():
         has_prompt = default_prompts_of(ext.name) is not None
@@ -100,13 +150,27 @@ def list_editable(tools: dict) -> list[dict]:
         items.append(
             {
                 "name": ext.name,
+                "display_name": extension_display_name(ext),
+                "kind": extension_kind(ext),
                 "has_prompt": has_prompt,
                 "task_count": task_count,
                 "has_settings": has_settings,
                 "editable": has_prompt or task_count > 0 or has_settings,
+                "settings_hash": settings_hash_of(ext),
+                "page_hash": page_hashes.get(ext.name),
             }
         )
     return items
+
+
+def _template_variable_names(name: str) -> list[str]:
+    """プロンプトのテンプレートから `settings.名前` で使える名前の一覧（設定が無ければ空）。"""
+    from lilla_core.services.extension_settings import get_settings_model
+
+    model = get_settings_model(name)
+    if model is None:
+        return []
+    return public_field_names(model)
 
 
 def build_detail(
@@ -120,7 +184,9 @@ def build_detail(
 ) -> dict:
     """1 つの拡張の編集画面に出す内容を組み立てる。
 
-    プロンプトはデフォルト（`ui.locale` → `ja` → `en` → 先頭の言語）・上書き・実効値を、
+    プロンプトはデフォルト（`ui.locale` → `ja` → `en` → 先頭の言語）・上書きの `mode` /
+    `text`・実効値（`effective`。既定と追加分を展開前のまま空行区切りでつないだ表示用の本文で、
+    合成の規則は `services/extension_prompt_override.py`）を、
     タスクはタスクごとに `schedule` / `enabled` のデフォルト・上書き・実効値と、
     スケジューラに今載っている crontab（`applied_schedule`。載っていなければ `None`）を返す。
     実効値は保存済みの上書きを起動時・反映時と同じ規則で解釈したもので、型の不正・
@@ -147,16 +213,22 @@ def build_detail(
             (lang for lang, text in prompts.items() if text == default_text), None
         )
         overridden = "prompt" in doc
-        value = doc.get("prompt")
-        invalid = overridden and not isinstance(value, str)
-        effective = value if overridden and not invalid else default_text
+        override = None
+        invalid = False
+        if overridden:
+            try:
+                override = parse_prompt_override(doc.get("prompt"))
+            except InvalidPromptOverrideError:
+                invalid = True
         prompt_section = {
             "default": default_text,
             "default_locale": default_locale,
             "overridden": overridden,
-            "override": value if overridden and not invalid else None,
+            "mode": override.mode if override is not None else None,
+            "text": override.text if override is not None else None,
             "invalid": invalid,
-            "effective": effective,
+            "effective": effective_prompt_template(default_text, override),
+            "template_variables": _template_variable_names(name),
         }
 
     entries = task_entries_of(name, tools)
@@ -207,10 +279,11 @@ def build_detail(
 def parse_update(name: str, body: object, tools: dict) -> OverrideUpdate:
     """保存リクエストを検証し、リポジトリへ渡す更新内容に変える。
 
-    リクエストの形は ``{"prompt": str | null, "tasks": {ツール名: {"schedule": str | null,
-    "enabled": bool | null}}}`` で、どのキーも省略できる。省略したキーは変えず、`null` は
-    上書きを消す（デフォルトへ戻す）。プロンプトの空文字は「注入しない」という有効な
-    上書き。1 か所でも不正ならリクエスト全体を拒否する（部分的に保存しない）。
+    リクエストの形は ``{"prompt": {"mode": "append" | "replace", "text": str} | null,
+    "tasks": {ツール名: {"schedule": str | null, "enabled": bool | null}}}`` で、どのキーも
+    省略できる。省略したキーは変えず、`null` は上書きを消す（デフォルトへ戻す）。
+    プロンプトのモードと本文は 1 つのフィールドとして同時に保存する。`replace` の空文字は
+    「注入しない」という有効な上書き。構文チェックは入力本文（`text`）だけが対象。1 か所でも不正ならリクエスト全体を拒否する（部分的に保存しない）。
 
     Args:
         name: 拡張名（ロード済みであること）。
@@ -240,10 +313,16 @@ def parse_update(name: str, body: object, tools: dict) -> OverrideUpdate:
         value = body["prompt"]
         if value is None:
             unset_fields.append("prompt")
-        elif isinstance(value, str):
-            set_fields["prompt"] = value
         else:
-            raise OverrideValidationError("prompt must be a string or null")
+            try:
+                override = parse_prompt_override(value)
+            except InvalidPromptOverrideError as e:
+                raise OverrideValidationError(str(e)) from e
+            try:
+                check_syntax(override.text)
+            except PromptTemplateError as e:
+                raise OverrideValidationError(f"prompt: {e}") from e
+            set_fields["prompt"] = override.to_document()
 
     if "tasks" in body:
         tasks = body["tasks"]

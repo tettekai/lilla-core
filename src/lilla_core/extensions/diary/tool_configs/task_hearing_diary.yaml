@@ -1,0 +1,2 @@
+# 日記の聞き取り（既定は毎日 22:00）。既定値は task_diary_llm.py が持つ
+type: task_diary_llm

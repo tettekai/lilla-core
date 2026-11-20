@@ -67,7 +67,11 @@ def mock_memory_manager_module(mock_memory_manager_instance: MagicMock) -> Magic
 def mock_llm_tool_loader() -> MagicMock:
     """lilla_core.loaders.llm_tool_loader モック。"""
     mock = MagicMock()
-    mock.build_tools_param = lambda x, client_type="discord", allowed_names=None: list(x.values())
+    # ツールループは tools の関数名にあるツールだけを実行するため、キー（YAML stem）を関数名にした
+    # スキーマを返す。
+    mock.build_tools_param = lambda x, client_type="discord", allowed_names=None: [
+        {"type": "function", "function": {"name": name}} for name in x
+    ]
     mock.MAIN_TOOLSET_TOKEN = "$main"
     # 既定では main セットにロード済みの全ツールが並んでいるものとして展開する。
     mock.resolve_available_tools = MagicMock(side_effect=lambda entries, tools: list(tools))

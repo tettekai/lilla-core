@@ -19,6 +19,7 @@ def mock_cfg() -> MagicMock:
     cfg.dashboard.host = "0.0.0.0"
     cfg.dashboard.port = 8765
     cfg.dashboard.cookie_secure = True
+    cfg.ui.timezone = "Asia/Tokyo"
     return cfg
 
 
@@ -884,7 +885,7 @@ class TestHandleApiSkills:
             )
         )
 
-        repo.add.assert_awaited_once_with("code-review_1", "説明", "本文")
+        repo.add.assert_awaited_once_with("code-review_1", "説明", "本文", False)
         assert mock_web.json_response.call_args[1]["status"] == 201
 
     async def test_post_description_is_optional(
@@ -898,7 +899,7 @@ class TestHandleApiSkills:
             _make_skill_request("POST", {"name": "review", "prompt": "本文"})
         )
 
-        repo.add.assert_awaited_once_with("review", "", "本文")
+        repo.add.assert_awaited_once_with("review", "", "本文", False)
 
     @pytest.mark.parametrize(
         "name",
@@ -938,6 +939,61 @@ class TestHandleApiSkills:
 
         await dashboard_server.handle_api_skills(
             _make_skill_request("POST", {"name": "review", "prompt": "  "})
+        )
+
+        assert _response_status(mock_web) == 400
+        repo.add.assert_not_awaited()
+
+    @pytest.mark.parametrize("prompt", ["{{ broken", "{{ now }}"])
+    async def test_post_rejects_invalid_template(
+        self, dashboard_server, mock_web, monkeypatch, prompt
+    ) -> None:
+        """本文を Jinja2 テンプレートとして展開できない（構文エラー・未定義の名前）なら 400。"""
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+        mock_web.Response.reset_mock()
+
+        await dashboard_server.handle_api_skills(
+            _make_skill_request("POST", {"name": "review", "prompt": prompt})
+        )
+
+        assert _response_status(mock_web) == 400
+        assert "Invalid prompt template" in mock_web.Response.call_args[1]["text"]
+        repo.add.assert_not_awaited()
+
+    async def test_post_accepts_current_hour(self, dashboard_server, mock_web, monkeypatch) -> None:
+        """`{{ current_hour }}` を使う本文は保存できる。"""
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+
+        await dashboard_server.handle_api_skills(
+            _make_skill_request("POST", {"name": "review", "prompt": "今は {{ current_hour }}"})
+        )
+
+        repo.add.assert_awaited_once_with("review", "", "今は {{ current_hour }}", False)
+
+    async def test_post_accepts_llm_callable(self, dashboard_server, mock_web, monkeypatch) -> None:
+        """`llm_callable` を指定すると、その値で追加する。"""
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+
+        await dashboard_server.handle_api_skills(
+            _make_skill_request("POST", {"name": "review", "prompt": "本文", "llm_callable": True})
+        )
+
+        repo.add.assert_awaited_once_with("review", "", "本文", True)
+
+    @pytest.mark.parametrize("value", ["true", 1, None])
+    async def test_post_rejects_non_bool_llm_callable(
+        self, dashboard_server, mock_web, monkeypatch, value
+    ) -> None:
+        """`llm_callable` が真偽値でなければ 400 で保存しない（null も省略扱いにしない）。"""
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+        mock_web.Response.reset_mock()
+
+        await dashboard_server.handle_api_skills(
+            _make_skill_request("POST", {"name": "review", "prompt": "本文", "llm_callable": value})
         )
 
         assert _response_status(mock_web) == 400
@@ -983,7 +1039,12 @@ class TestHandleApiSkillDetail:
         )
 
         repo.update.assert_awaited_once_with(
-            oid, name="review", description=None, prompt="新しい本文", enabled=None
+            oid,
+            name="review",
+            description=None,
+            prompt="新しい本文",
+            enabled=None,
+            llm_callable=None,
         )
         mock_web.Response.assert_called_once_with(status=204)
 
@@ -999,8 +1060,52 @@ class TestHandleApiSkillDetail:
         )
 
         repo.update.assert_awaited_once_with(
-            oid, name=None, description=None, prompt=None, enabled=False
+            oid,
+            name=None,
+            description=None,
+            prompt=None,
+            enabled=False,
+            llm_callable=None,
         )
+
+    async def test_patch_toggles_llm_callable(
+        self, dashboard_server, mock_web, monkeypatch
+    ) -> None:
+        """LLM から呼べるかだけを切り替えられる。"""
+        from bson import ObjectId
+        oid = str(ObjectId())
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+
+        await dashboard_server.handle_api_skill_detail(
+            _make_skill_request("PATCH", {"llm_callable": True}, oid)
+        )
+
+        repo.update.assert_awaited_once_with(
+            oid,
+            name=None,
+            description=None,
+            prompt=None,
+            enabled=None,
+            llm_callable=True,
+        )
+
+    async def test_patch_rejects_non_bool_llm_callable(
+        self, dashboard_server, mock_web, monkeypatch
+    ) -> None:
+        """llm_callable が真偽値でなければ 400。"""
+        from bson import ObjectId
+        oid = str(ObjectId())
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+        mock_web.Response.reset_mock()
+
+        await dashboard_server.handle_api_skill_detail(
+            _make_skill_request("PATCH", {"llm_callable": "yes"}, oid)
+        )
+
+        assert _response_status(mock_web) == 400
+        repo.update.assert_not_awaited()
 
     async def test_patch_rejects_invalid_name(self, dashboard_server, mock_web, monkeypatch) -> None:
         """名前の規則に合わない編集は 400。"""
@@ -1012,6 +1117,23 @@ class TestHandleApiSkillDetail:
 
         await dashboard_server.handle_api_skill_detail(
             _make_skill_request("PATCH", {"name": "bad name"}, oid)
+        )
+
+        assert _response_status(mock_web) == 400
+        repo.update.assert_not_awaited()
+
+    async def test_patch_rejects_invalid_template(
+        self, dashboard_server, mock_web, monkeypatch
+    ) -> None:
+        """本文の編集も展開できなければ 400 で保存しない。"""
+        from bson import ObjectId
+        oid = str(ObjectId())
+        repo = _make_mock_skill_repo()
+        _patch_skill_repo(monkeypatch, repo)
+        mock_web.Response.reset_mock()
+
+        await dashboard_server.handle_api_skill_detail(
+            _make_skill_request("PATCH", {"prompt": "{% if %}"}, oid)
         )
 
         assert _response_status(mock_web) == 400
@@ -2099,7 +2221,7 @@ class TestHandleApiDashboardNav:
 
         pages = self._payload(mock_web)["pages"]
         assert [p["name"] for p in pages] == [
-            "home", "conversations", "memos", "skills", "usage", "logs", "extensions",
+            "home", "conversations", "memos", "skills", "usage", "logs", "settings",
         ]
         assert [p["hash"] for p in pages] == [
             "#/",
@@ -2108,14 +2230,25 @@ class TestHandleApiDashboardNav:
             "#/skills",
             "#/usage",
             "#/admin/logs",
-            "#/admin/extensions",
+            "#/settings",
         ]
         assert all(p["module"] is None for p in pages)
+
+    async def test_builtin_labels_are_japanese(
+        self, dashboard_server, mock_web, monkeypatch
+    ) -> None:
+        """組み込み画面のラベルは日本語にそろえる（画面の中身と同じ言語）。"""
+        _patch_dashboard_contributions(monkeypatch, dashboard_server)
+
+        await dashboard_server.handle_api_dashboard_nav(_make_request())
+
+        labels = [p["label"] for p in self._payload(mock_web)["pages"]]
+        assert labels == ["ホーム", "会話", "メモ", "スキル", "使用量", "ログ", "設定"]
 
     async def test_builtin_groups_split_main_and_admin(
         self, dashboard_server, mock_web, monkeypatch
     ) -> None:
-        """Logs と Extensions だけが管理メニュー側に入る。"""
+        """ログと設定だけが管理メニュー側に入る。"""
         _patch_dashboard_contributions(monkeypatch, dashboard_server)
 
         await dashboard_server.handle_api_dashboard_nav(_make_request())
@@ -2128,7 +2261,7 @@ class TestHandleApiDashboardNav:
             "skills": "main",
             "usage": "main",
             "logs": "admin",
-            "extensions": "admin",
+            "settings": "admin",
         }
 
     async def test_extension_pages_follow_builtins_in_load_order(
@@ -2145,7 +2278,7 @@ class TestHandleApiDashboardNav:
 
         names = [p["name"] for p in self._payload(mock_web)["pages"]]
         assert names == [
-            "home", "conversations", "memos", "skills", "usage", "logs", "extensions", "habits", "cal",
+            "home", "conversations", "memos", "skills", "usage", "logs", "settings", "habits", "cal",
         ]
 
     async def test_extension_paths_come_from_the_core(
@@ -2166,7 +2299,31 @@ class TestHandleApiDashboardNav:
             "hash": "#/google-oauth",
             "module": "/static/ext/google-oauth/page.js",
             "api_prefix": "/api/google-oauth",
+            "settings_hash": None,
         }
+
+    async def test_extension_page_carries_settings_hash_when_editable(
+        self, dashboard_server, mock_web, monkeypatch
+    ) -> None:
+        """設定画面に編集する項目がある拡張だけ、その設定画面のハッシュを載せる。"""
+        _patch_dashboard_contributions(
+            monkeypatch,
+            dashboard_server,
+            pages=[_page_entry("notes", "ノート"), _page_entry("habits", "習慣")],
+        )
+        items = [
+            {"name": "notes", "editable": True, "settings_hash": "#/settings/notes"},
+            {"name": "habits", "editable": False, "settings_hash": "#/settings/extensions/habits"},
+        ]
+        monkeypatch.setattr(
+            "lilla_core.services.extension_overrides.list_editable", lambda tools: items
+        )
+
+        await dashboard_server.handle_api_dashboard_nav(_make_request())
+
+        pages = {p["name"]: p for p in self._payload(mock_web)["pages"]}
+        assert pages["notes"]["settings_hash"] == "#/settings/notes"
+        assert pages["habits"]["settings_hash"] is None
 
     async def test_admin_extension_page_uses_admin_hash(
         self, dashboard_server, mock_web, monkeypatch
@@ -2193,7 +2350,7 @@ class TestHandleApiDashboardNav:
         await dashboard_server.handle_api_dashboard_nav(_make_request())
         self._payload(mock_web)["pages"][0]["label"] = "Tampered"
 
-        assert dashboard_server._BUILTIN_PAGES[0]["label"] == "Home"
+        assert dashboard_server._BUILTIN_PAGES[0]["label"] == "ホーム"
 
 
 class TestAddExtensionRoutes:

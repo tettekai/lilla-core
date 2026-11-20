@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -115,6 +116,13 @@ class TestExtensionDefaults:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def no_builtin_extensions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """標準機能の拡張を外し、`LILLA_EXTENSIONS` の解釈だけを検証できるようにする。"""
+    monkeypatch.setattr(ext_module, "BUILTIN_EXTENSION_MODULES", ())
+
+
+@pytest.mark.usefixtures("no_builtin_extensions")
 class TestLoadExtensions:
     def test_empty_spec_loads_nothing(self) -> None:
         """未設定・空なら 0 個（コア単体起動）。"""
@@ -711,6 +719,7 @@ class TestRequiredToolContextKeys:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("no_builtin_extensions")
 class TestLoadExtensionsComposesConfig:
     """`load_extensions()` が申告を合成してプロセスの設定に据えること。"""
 
@@ -758,6 +767,67 @@ class TestLoadExtensionsComposesConfig:
         ext_module.load_extensions("")
 
         assert type(config_module().get_config()) is config_module().AppConfig
+
+
+# ---------------------------------------------------------------------------
+# TestBuiltinExtensions
+# ---------------------------------------------------------------------------
+
+
+class TestBuiltinExtensions:
+    """標準機能の拡張（`notes`）は `LILLA_EXTENSIONS` によらず常に読み込まれる。"""
+
+    def test_builtin_modules_are_notes_only(self) -> None:
+        """標準機能は notes だけ（他の公式拡張パックの拡張は並べたときだけ有効）。"""
+        assert ext_module.BUILTIN_EXTENSION_MODULES == ("lilla_core.extensions.notes",)
+
+    def test_empty_spec_loads_notes(self) -> None:
+        """空でも notes が読み込まれ、保存先・画面・設定が有効になる（MongoDB のリポジトリは持たない）。"""
+        loaded = ext_module.load_extensions("")
+
+        assert [e.name for e in loaded] == ["notes"]
+        assert ext_module.get_file_storage("notes") is not None
+        assert [p.name for p in ext_module.get_dashboard_pages()] == ["notes"]
+        assert ext_module.get_startup_repos() == []
+        notes_cfg = config_module().get_config().extensions.notes
+        assert notes_cfg.max_content_chars == 1_000_000
+
+    def test_notes_is_loaded_before_listed_extensions(
+        self, register_module, make_extension
+    ) -> None:
+        """notes は先頭に入り、並べた拡張はその後ろにロード順で続く。"""
+        dependent = make_extension("a")
+        dependent.requires = ("notes",)
+        register_module("pack_a", extension=dependent)
+
+        loaded = ext_module.load_extensions("pack_a")
+
+        assert [e.name for e in loaded] == ["notes", "a"]
+
+    @pytest.mark.parametrize("entry", ["notes", "lilla_core.extensions.notes"])
+    def test_listed_notes_is_skipped_with_warning(
+        self, entry: str, register_module, make_extension, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """`LILLA_EXTENSIONS` に notes が残っていても二重登録にせず、警告して読み飛ばす。"""
+        register_module("pack_a", extension=make_extension("a"))
+
+        with caplog.at_level(logging.WARNING, logger=ext_module.__name__):
+            loaded = ext_module.load_extensions(f"pack_a,{entry}")
+
+        assert [e.name for e in loaded] == ["notes", "a"]
+        assert any(
+            "built-in feature" in r.getMessage() and entry in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_other_extension_named_notes_still_conflicts(
+        self, register_module, make_extension
+    ) -> None:
+        """notes と同名の別の拡張は、従来どおり名前の衝突で落ちる。"""
+        register_module("other_notes", extension=make_extension("notes"))
+
+        with pytest.raises(ValueError, match="Duplicate extension name"):
+            ext_module.load_extensions("other_notes")
 
 
 # ---------------------------------------------------------------------------
@@ -1209,6 +1279,48 @@ class TestExtensionNameRules:
             ])
 
 
+class TestDisplayName:
+    """`display_name()` の検査と、表示名・種類の判定。"""
+
+    def test_defaults_to_name(self, make_extension) -> None:
+        """`display_name()` を持たない拡張の表示名は `name`。"""
+        ext = make_extension("habits")
+        ext_module.set_extensions([ext])
+
+        assert ext.display_name() is None
+        assert ext_module.extension_display_name(ext) == "habits"
+
+    def test_uses_declared_display_name(self, make_extension) -> None:
+        """宣言した表示名を返す。"""
+        ext = make_extension("habits", display_name="習慣")
+        ext_module.set_extensions([ext])
+
+        assert ext_module.extension_display_name(ext) == "習慣"
+
+    @pytest.mark.parametrize("value", ["", "   ", 1, ["習慣"]])
+    def test_invalid_display_name_is_rejected(self, make_extension, value) -> None:
+        """空文字・空白だけ・文字列以外はロード時に落とす。"""
+        with pytest.raises(ValueError, match="display_name"):
+            ext_module.set_extensions([make_extension("habits", display_name=value)])
+
+    def test_builtin_and_official_follow_the_module(self) -> None:
+        """標準機能はモジュールが `BUILTIN_EXTENSION_MODULES`、公式は `lilla_core.extensions.` の下。"""
+
+        def _ext(module: str):
+            return type("Ext", (Extension,), {"__module__": module, "name": "x"})()
+
+        notes = _ext("lilla_core.extensions.notes")
+        diary = _ext("lilla_core.extensions.diary")
+        outside = _ext("habits")
+
+        assert ext_module.is_builtin_extension(notes) is True
+        assert ext_module.is_official_extension(notes) is False
+        assert ext_module.is_builtin_extension(diary) is False
+        assert ext_module.is_official_extension(diary) is True
+        assert ext_module.is_builtin_extension(outside) is False
+        assert ext_module.is_official_extension(outside) is False
+
+
 # ---------------------------------------------------------------------------
 # TestDashboardPage
 # ---------------------------------------------------------------------------
@@ -1638,3 +1750,182 @@ class TestHttpRouteContributions:
         served = {(route.method, route.path) for route in http_server._CORE_ROUTES}
         assert served == set(ext_module.CORE_HTTP_ROUTES)
 
+
+
+# ---------------------------------------------------------------------------
+# TestFileStorageContributions
+# ---------------------------------------------------------------------------
+
+
+class _MemoryStorage:
+    """テスト用の `FileStorage` を作るためのファクトリ（クラスは都度作る）。"""
+
+    @staticmethod
+    def make():
+        """何もしない `FileStorage` のインスタンスを返す。"""
+        from lilla_core.core.file_storage import FileStorage, FileWriteResult
+
+        class _Storage(FileStorage):
+            async def read(self, path):
+                return ""
+
+            async def write(self, path, content, mode="overwrite"):
+                return FileWriteResult(path=path, created=True)
+
+            async def list(self, path=""):
+                return []
+
+            async def exists(self, path):
+                return False
+
+        return _Storage()
+
+
+class TestFileStorageContributions:
+    """`Extension.file_storages()` の集約と検証。"""
+
+    def test_default_is_empty(self) -> None:
+        """既定では何も申告しない。"""
+        assert Extension().file_storages() == {}
+        ext_module.set_extensions([])
+        assert ext_module.list_file_storages() == {}
+        assert ext_module.get_file_storage("notes") is None
+
+    def test_storages_are_registered_in_load_order(self, make_extension) -> None:
+        """申告した保存先を名前で引け、一覧はロード順になる。"""
+        a = _MemoryStorage.make()
+        b = _MemoryStorage.make()
+        ext_module.set_extensions([
+            make_extension("ext-b", file_storages={"storage-b": b}),
+            make_extension("ext-a", file_storages={"storage-a": a}),
+        ])
+
+        assert ext_module.get_file_storage("storage-a") is a
+        assert list(ext_module.list_file_storages()) == ["storage-b", "storage-a"]
+
+    def test_duplicate_names_are_rejected(self, make_extension) -> None:
+        """拡張どうしで名前が重なればロード時に落とす。"""
+        with pytest.raises(ValueError, match="file storage"):
+            ext_module.set_extensions([
+                make_extension("ext-a", file_storages={"same": _MemoryStorage.make()}),
+                make_extension("ext-b", file_storages={"same": _MemoryStorage.make()}),
+            ])
+
+    @pytest.mark.parametrize("name", ["Notes", "a/b", "", "notes_x"])
+    def test_invalid_names_are_rejected(self, make_extension, name: str) -> None:
+        """名前は拡張名と同じ形でなければならない。"""
+        with pytest.raises(ValueError, match="must match"):
+            ext_module.set_extensions([
+                make_extension("ext-a", file_storages={name: _MemoryStorage.make()})
+            ])
+
+    def test_non_storage_values_are_rejected(self, make_extension) -> None:
+        """`FileStorage` 以外の値は落とす。"""
+        with pytest.raises(TypeError, match="FileStorage"):
+            ext_module.set_extensions([
+                make_extension("ext-a", file_storages={"notes": object()})
+            ])
+
+    def test_failed_registration_keeps_previous(self, make_extension) -> None:
+        """検証に失敗したら前の登録を残す。"""
+        storage = _MemoryStorage.make()
+        ext_module.set_extensions([make_extension("ext-a", file_storages={"keep": storage})])
+        with pytest.raises(TypeError):
+            ext_module.set_extensions([make_extension("ext-b", file_storages={"x": 1})])
+
+        assert ext_module.get_file_storage("keep") is storage
+
+
+class TestNotesDirectoryContributions:
+    """`Extension.notes_directories()` の集約と検証。"""
+
+    _USAGE = {"ja": "用途", "en": "usage"}
+
+    def test_default_is_empty(self) -> None:
+        """既定では何も宣言しない。"""
+        assert Extension().notes_directories() == {}
+        ext_module.set_extensions([])
+        assert ext_module.get_notes_directories() == {}
+
+    def test_declarations_are_merged_in_load_order(self, make_extension) -> None:
+        """宣言した名前と用途をロード順にまとめる（コピーを返す）。"""
+        ext_module.set_extensions([
+            make_extension("ext-b", notes_directories={"b": dict(self._USAGE)}),
+            make_extension("ext-a", notes_directories={"a": {"ja": "あ", "en": "a"}}),
+        ])
+        dirs = ext_module.get_notes_directories()
+        assert list(dirs) == ["b", "a"]
+        assert dirs["a"] == {"ja": "あ", "en": "a"}
+        dirs["a"]["ja"] = "changed"
+        assert ext_module.get_notes_directories()["a"]["ja"] == "あ"
+
+    def test_duplicate_names_name_both_extensions(self, make_extension) -> None:
+        """拡張どうしで名前が重なれば、両方の拡張名を出して落とす。"""
+        with pytest.raises(ValueError, match="'diary'.*'ext-a' and 'ext-b'"):
+            ext_module.set_extensions([
+                make_extension("ext-a", notes_directories={"diary": dict(self._USAGE)}),
+                make_extension("ext-b", notes_directories={"diary": dict(self._USAGE)}),
+            ])
+
+    def test_duplicate_with_notes_user_is_rejected(self, make_extension) -> None:
+        """notes 自身の `user` と重なっても落とす。"""
+        from lilla_core.extensions import notes
+
+        with pytest.raises(ValueError, match="'user'.*'notes' and 'ext-a'"):
+            ext_module.set_extensions([
+                notes.extension,
+                make_extension("ext-a", notes_directories={"user": dict(self._USAGE)}),
+            ])
+
+    @pytest.mark.parametrize("name", ["", ".", "..", "a/b", "a\\b", " a", "a\nb", 1])
+    def test_invalid_names_are_rejected(self, make_extension, name) -> None:
+        """パスの 1 要素として正しくない名前は落とす。"""
+        with pytest.raises(ValueError, match="invalid directory name"):
+            ext_module.set_extensions([
+                make_extension("ext-a", notes_directories={name: dict(self._USAGE)})
+            ])
+
+    @pytest.mark.parametrize(
+        "usage",
+        [
+            "用途", {"ja": "用途"}, {"ja": "用途", "en": ""}, {"ja": "用途", "en": 1},
+            {"ja": "用途", "en": "usage", "fr": "x"},
+        ],
+    )
+    def test_invalid_usages_are_rejected(self, make_extension, usage) -> None:
+        """用途は `ja` / `en` の空でない文字列の組だけ。"""
+        with pytest.raises(ValueError, match="'ja' and 'en'"):
+            ext_module.set_extensions([
+                make_extension("ext-a", notes_directories={"diary": usage})
+            ])
+
+    def test_non_dict_is_rejected(self, make_extension) -> None:
+        """戻り値が dict でなければ落とす。"""
+        with pytest.raises(ValueError, match="must return a dict"):
+            ext_module.set_extensions([make_extension("ext-a", notes_directories=["diary"])])
+
+    def test_visible_while_collecting_default_prompts(self, make_extension) -> None:
+        """`default_prompt()` の収集中は、同じ登録の宣言が見える（登録後は確定値、失敗時は前の値）。"""
+        seen: list[dict] = []
+
+        class _Prompting(Extension):
+            name = "prompting"
+
+            def default_prompt(self):
+                seen.append(ext_module.get_notes_directories())
+                return {"ja": "x"}
+
+        ext_module.set_extensions([
+            make_extension("ext-a", notes_directories={"diary": dict(self._USAGE)}),
+            _Prompting(),
+        ])
+        assert list(seen[-1]) == ["diary"]
+
+        with pytest.raises(TypeError):
+            ext_module.set_extensions([
+                make_extension("ext-b", notes_directories={"other": dict(self._USAGE)}),
+                _Prompting(),
+                make_extension("ext-c", file_storages={"x": 1}),
+            ])
+        assert list(seen[-1]) == ["other"]
+        assert list(ext_module.get_notes_directories()) == ["diary"]

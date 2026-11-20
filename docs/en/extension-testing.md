@@ -60,6 +60,6 @@ def test_section(tmp_path):
 `CONFIG_ROOT` on the way in, and restores all three on the way out even if the body
 raises. `write_minimal_lilla_yaml(directory, *, my_user_id=..., llm_name=..., extra=...)`
 writes the sections the core requires (`discord.my_user_id`, `llm.default` and the
-matching `llm.providers.<name>`, plus `ui.timezone: Asia/Tokyo` so dates do not depend
+matching `llm.providers.<name>`, `tools.sets.main: []` (no tools), plus `ui.timezone: Asia/Tokyo` so dates do not depend
 on the OS timezone) and deep-merges `extra` on top for the sections an extension makes
 mandatory. It returns the path it wrote.

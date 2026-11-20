@@ -15,6 +15,10 @@ your application's **Bot** page, configure the following before inviting the bot
 No other privileged intent (Server Members / Presence) is required — the core doesn't
 use guild member or presence data.
 
+To store reactions on the bot's messages in the conversation history ([Reactions](reactions.md)),
+`bot_client.py` also enables the reaction intents (`guild_reactions` / `dm_reactions`). These are
+not privileged intents, so nothing needs to be set in the Developer Portal.
+
 ## Permissions for the bot invite URL
 
 When generating the invite URL (OAuth2 URL Generator, `bot` scope), grant at least:

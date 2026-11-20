@@ -130,7 +130,8 @@ class ToolLoopResult:
     needs_auth_list : list[dict]
         ツール結果の `needs_auth_list` を出現順に連結したもの。
     called_tool_names : list[str]
-        実行したツール名（出現順・重複あり。引数 JSON が壊れていて実行しなかったものは含まない）。
+        実行したツール名（出現順・重複あり。引数 JSON が壊れていた・この会話で使えないため
+        実行しなかったものは含まない）。
         `initial_called_tool_names` を渡した場合はその分が先頭に入る。
     iterations : int
         ツールを実行した往復の回数。
@@ -191,8 +192,11 @@ def _parse_arguments(tc: dict) -> tuple[Any, dict | None]:
         }
 
 
-def _pre_tool_call_error(tool_name: str, message: str) -> dict:
-    """事前実行で実行しなかった（できなかった）呼び出しのエラー結果を作る。"""
+def _tool_call_error(tool_name: str, message: str) -> dict:
+    """実行しなかった（できなかった）ツール呼び出しのエラー結果を作る。
+
+    事前実行の検査と、LLM が返した呼び出しの検査（この会話で使えないツール）で共有する。
+    """
     return {
         "success": False,
         "tool_name": tool_name,
@@ -200,6 +204,26 @@ def _pre_tool_call_error(tool_name: str, message: str) -> dict:
         "data": None,
         "error": message,
     }
+
+
+def _schemas_by_function_name(tools: list | None) -> dict[str, dict]:
+    """tools パラメータから「関数名 → スキーマ」の dict を作る。
+
+    `tools` が空・None なら空の dict を返す。関数名を読み取れない要素は無視する。
+    この dict に名前が無い呼び出しは、その会話で LLM に渡していないツールとして実行しない。
+    """
+    return {
+        schema["function"]["name"]: schema
+        for schema in tools or []
+        if isinstance(schema, dict)
+        and isinstance(schema.get("function"), dict)
+        and schema["function"].get("name")
+    }
+
+
+def _unavailable_tool_message(tool_name: str) -> str:
+    """この会話で使えないツールを呼んだときのエラー文を返す。"""
+    return f"ツール '{tool_name}' はこの会話で使えません"
 
 
 def _check_pre_tool_call(item: Any, schemas: dict[str, dict]) -> tuple[str, dict, dict | None]:
@@ -212,30 +236,28 @@ def _check_pre_tool_call(item: Any, schemas: dict[str, dict]) -> tuple[str, dict
         ツール名・引数が読み取れない要素では、それぞれ `INVALID_PRE_TOOL_NAME`・空の dict を返す。
     """
     if not isinstance(item, dict):
-        return INVALID_PRE_TOOL_NAME, {}, _pre_tool_call_error(
+        return INVALID_PRE_TOOL_NAME, {}, _tool_call_error(
             INVALID_PRE_TOOL_NAME, "事前実行の要素が dict ではありません"
         )
     tool_name = item.get("tool")
     if not isinstance(tool_name, str) or not tool_name:
-        return INVALID_PRE_TOOL_NAME, {}, _pre_tool_call_error(
+        return INVALID_PRE_TOOL_NAME, {}, _tool_call_error(
             INVALID_PRE_TOOL_NAME, "事前実行の要素の 'tool' が文字列ではありません"
         )
     args = item.get("args", {})
     if args is None:
         args = {}
     if not isinstance(args, dict):
-        return tool_name, {}, _pre_tool_call_error(
+        return tool_name, {}, _tool_call_error(
             tool_name, f"ツール '{tool_name}' の引数が dict ではありません"
         )
     schema = schemas.get(tool_name)
     if schema is None:
-        return tool_name, args, _pre_tool_call_error(
-            tool_name, f"ツール '{tool_name}' はこの会話で使えません"
-        )
+        return tool_name, args, _tool_call_error(tool_name, _unavailable_tool_message(tool_name))
     required = schema.get("function", {}).get("parameters", {}).get("required") or []
     missing = [name for name in required if name not in args]
     if missing:
-        return tool_name, args, _pre_tool_call_error(
+        return tool_name, args, _tool_call_error(
             tool_name,
             f"ツール '{tool_name}' の必須の引数がありません: {', '.join(missing)}",
         )
@@ -280,11 +302,7 @@ async def run_pre_tool_calls(
     PreToolCallsResult
         実行したツール名と、ツール結果の `needs_auth_list` を出現順に連結したもの。
     """
-    schemas = {
-        schema["function"]["name"]: schema
-        for schema in tools
-        if isinstance(schema, dict) and schema.get("function", {}).get("name")
-    }
+    schemas = _schemas_by_function_name(tools)
     result = PreToolCallsResult()
     for index, item in enumerate(pre_tool_calls):
         tool_name, args, tool_result = _check_pre_tool_call(item, schemas)
@@ -394,6 +412,11 @@ async def run_tool_loop(
     引数 JSON が壊れた呼び出しは実行せず、エラー内容を `tool` メッセージで返して続ける。
     ツールが失敗結果（`success: False`）を返したときは、ツール名と `error` を WARNING ログに
     出し、`error` を含めた `tool` メッセージで返して続ける（`build_tool_message_content`）。
+    実行するのは関数名が `tools`（この会話で LLM に渡したツール）にある呼び出しだけで、
+    無いもの（ツール名の取り違えやプロンプトインジェクションで指定させられた名前、`tools` が
+    空のときの呼び出しすべて）は引数の解釈より先に弾き、`execute_tool_call` を呼ばずに
+    エラー内容を `tool` メッセージで返して続ける（WARNING ログを出し、`called_tool_names` には
+    含めない）。`llm_tools` は実行するツールの検索にだけ使う。
     `messages` は呼び出し元のリストをそのまま伸ばす（assistant の tool_calls と tool の結果を
     足す。最終応答は足さない）ため、呼び出し元は同じリストで続きを回せる。
 
@@ -436,6 +459,7 @@ async def run_tool_loop(
     """
     result = ToolLoopResult(called_tool_names=list(initial_called_tool_names))
     provider: str | None = None
+    allowed_names = _schemas_by_function_name(tools).keys()
 
     while result.iterations < max_iterations:
         if select_provider is not None:
@@ -453,7 +477,17 @@ async def run_tool_loop(
 
         messages.append(response["raw_message"])
         for tc in response["tool_calls"]:
-            arguments, tool_result = _parse_arguments(tc)
+            tool_name = tc["function"]["name"]
+            if tool_name in allowed_names:
+                arguments, tool_result = _parse_arguments(tc)
+            else:
+                # 渡していないツールは引数の内容にかかわらず実行しない
+                logger.warning(
+                    "Rejected a tool call not available in this conversation: %s", tool_name
+                )
+                arguments, tool_result = None, _tool_call_error(
+                    tool_name, _unavailable_tool_message(tool_name)
+                )
             if tool_result is None:
                 result.called_tool_names.append(tc["function"]["name"])
                 tool_result = await execute_tool_call(

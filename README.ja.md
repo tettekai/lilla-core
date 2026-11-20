@@ -44,6 +44,8 @@ python -m lilla_core.bot
 （`lilla_core.extensions.google_calendar`）・Google Drive / Sheets（`lilla_core.extensions.google_drive`）・
 ローカルのファイル読み書き（`lilla_core.extensions.files`）を同梱しています。どれも `LILLA_EXTENSIONS` に並べたときだけ読み込まれます。
 
+Git リポジトリに保存するノート置き場（`notes`）は標準機能で、`LILLA_EXTENSIONS` に並べなくても常に有効です（LLM ツール・ダッシュボードの「ノート」画面・保存先 `notes`）。
+
 ## 任意の判定ヘルパー（Jev）
 
 `lilla_core.tool_support.jev` の `ask_jev()` は、TypeSafe の System One モデル（Jev）に

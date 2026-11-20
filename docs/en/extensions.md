@@ -28,6 +28,11 @@ extension = MyExtension()
 Load the module by listing it in `LILLA_EXTENSIONS`
 ([Install and run](getting-started.md#loading-extensions)).
 
+Only the standard notes store ([`notes`](notes.md); `name = "notes"`) is always loaded by the
+core, regardless of `LILLA_EXTENSIONS` (it is loaded before the listed extensions, so you can
+write `requires = ("notes",)` without worrying about the order). Listing it in
+`LILLA_EXTENSIONS` does not load it twice; the core logs a warning and skips it.
+
 ## Methods
 
 | Method | Purpose |
@@ -49,6 +54,8 @@ Load the module by listing it in `LILLA_EXTENSIONS`
 | `dashboard_routes` | HTTP routes (`DashboardRoute`) mounted inside session auth. Paths must live under `/api/{name}` |
 | `dashboard_public_routes` | Public routes mounted outside session auth (OAuth callbacks and the like). Paths must live under `/oauth/{name}`; validating `state` is the extension's job |
 | `http_routes` | Routes added to the shared HTTP server (a separate port from the dashboard), as `HttpRoute(method, path, handler, auth)`. No path prefix restriction; `auth` is `bearer` (default) / `public` / `deferred` ([The shared HTTP server](http-server.md)) |
+| `notes_directories` | Declares the top-level directories this extension writes to in the notes store `notes`, with their purpose (`ja` / `en`), as "name → purpose". Writes are allowed only under declared directories ([Notes store](notes.md)) |
+| `file_storages` | Declares text file storages (`FileStorage` implementations) as "name → implementation". Users look them up with `get_file_storage(name)` / `list_file_storages()` ([Common storage interface](file-storage.md)) |
 | `config_model` | The one YAML section model this extension adds, or `None`. It lives at `extensions.<name with hyphens as underscores>` (`cfg.extensions.google_oauth` for `google-oauth`) ([Config composition](extension-config.md)) |
 | `settings_model` | The one model for settings edited on the dashboard (the settings proper), or `None`. Stored in MongoDB's `extension_settings` and read per piece of work with `load_settings()`. Every field needs a default, and it cannot share a field with `config_model()` ([Extension settings managed on screen](extension-settings.md)) |
 | `env_fields` | Secret fields this extension adds to `cfg.env` |
@@ -62,7 +69,7 @@ Load the module by listing it in `LILLA_EXTENSIONS`
 Contribution keys must not collide **between extensions**: duplicate `Extension.name`,
 config section names, env field names, tool context keys, result-delivery `client_type`
 keys, command names, tool file names across different roots, or shared HTTP server
-method-and-path pairs (including overlaps with core routes) all fail fast at startup
+method-and-path pairs (including overlaps with core routes), storage names (`file_storages`) or notes top-level directory names (`notes_directories`) all fail fast at startup
 rather than silently picking a winner. Client prompts and conversation start hooks are
 the exception by design: they are lists per `client_type` and are concatenated in load
 order, so several extensions can contribute to the same client.

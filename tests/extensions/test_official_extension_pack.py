@@ -38,3 +38,23 @@ class TestCoreDoesNotDependOnExtensionPack:
         ]
 
         assert offenders == []
+
+
+class TestDisplayNames:
+    """公式拡張パックと標準機能の拡張は、設定画面に出す表示名を持つ。"""
+
+    def test_each_extension_declares_a_display_name(self) -> None:
+        """各拡張の `display_name()` が決めた表示名を返す。"""
+        import importlib
+
+        expected = {
+            "lilla_core.extensions.notes": "ノート",
+            "lilla_core.extensions.diary": "日記",
+            "lilla_core.extensions.google_oauth": "Google 認証",
+            "lilla_core.extensions.google_calendar": "Google カレンダー",
+            "lilla_core.extensions.google_drive": "Google ドライブ",
+            "lilla_core.extensions.files": "ファイル",
+        }
+        for module_path, display_name in expected.items():
+            ext = importlib.import_module(module_path).extension
+            assert ext.display_name() == display_name, module_path

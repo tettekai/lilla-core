@@ -11,19 +11,22 @@ not added to the system prompt).
 If you enable the built-in tool `llm_load_skill`, the LLM can also load the skills it needs
 on its own, judging from their descriptions and the flow of the conversation
 ([Letting the LLM load skills itself](#letting-the-llm-load-skills-itself)).
+Only skills with "Callable by LLM" turned on can be loaded by the LLM; the rest are for manual
+calling with `!skill` only.
 
 ## Registering
 
 Skills are managed on the **Skills** page of the observability dashboard
 ([The observability dashboard](dashboard.md)). You can list, add, edit, delete, and
-enable / disable them.
+enable / disable them and toggle "Callable by LLM".
 
 | Field | Meaning |
 |-------|---------|
 | Name | The name used to call the skill (required) |
 | Description | Shown in the list (optional; shown in the dashboard list and in the `!skill` list; also listed in the system prompt's skill list in conversations where `llm_load_skill` is enabled, where it helps the LLM decide whether to load the skill) |
-| Prompt | The prompt that is expanded (required) |
+| Prompt | The prompt that is expanded (required). Expanded as a Jinja2 template (`{{ current_hour }}` and so on; [Prompt templates](prompt-template.md)). It is trial-expanded on save and not saved if it cannot be expanded. In the input field you can click `current_hour` to insert it, and check the result of the same trial expansion (preview / error) while typing ([Jinja2 template input field](dashboard.md#jinja2-template-input-field)) |
 | Enabled | Disabled skills cannot be called (new skills start enabled) |
+| Callable by LLM | Only skills with this on can be loaded by the LLM through `llm_load_skill` (`llm_callable`; off by default when adding). Skills that are off are for manual `!skill` calling only and are not listed in the system prompt's skill list. It does not affect `!skill` calling or its list |
 
 They are stored in the MongoDB `skills` collection (with a unique index on `name`).
 
@@ -117,7 +120,9 @@ Usage: `!skill <skill name> [additional instructions]`
 ## Letting the LLM load skills itself
 
 When the built-in tool `llm_load_skill` is enabled, the LLM sees a list of enabled skills
-and can load one by name when it judges it necessary.
+and can load one by name when it judges it necessary. Only skills that are **enabled and have "Callable by LLM" turned on** are
+targets (those with `llm_callable` set to `true` in the `skills` collection). A skill whose
+`llm_callable` is `false` or unset cannot be loaded by the LLM.
 
 ### Enabling it
 
@@ -151,16 +156,17 @@ Each limit must be a positive integer; zero, negative or non-numeric values fail
 
 On success, the tool result is the skill body wrapped in the same "instruction from the
 system" wrapper as `!skill` (without additional instructions). A name that breaks the rules,
-a missing skill and a disabled skill each return an error (missing and disabled skills use
-different messages).
+a missing skill, a disabled skill and a skill the LLM may not call each return an error (missing,
+disabled and not-LLM-callable skills use different messages; a skill that is both disabled and not
+LLM-callable gets the disabled message).
 
 The result is not cached; every call reads the `skills` collection. Editing, enabling or
-disabling a skill in the dashboard takes effect from the next call.
+disabling a skill, or toggling "Callable by LLM", in the dashboard takes effect from the next call.
 
 ### The list in the system prompt
 
 Only when `llm_load_skill` is handed to the LLM in that conversation, a list of the
-**names and descriptions** of enabled skills is added to the system prompt (bodies are not
+**names and descriptions** of enabled, LLM-callable skills is added to the system prompt (bodies are not
 included). It is not added when the tool is not in the set used, while `!disable_tools` is
 on, or when the LLM is called without tools.
 
@@ -177,9 +183,9 @@ You can load the body of the skills below by passing a name to the `llm_load_ski
 - Lines are added from the top until either the count limit (`max_skills`) or the total
   character limit of the lines (`max_list_chars`; the heading and intro are not counted) is
   reached. If some skills were left out, a final line says how many and that they can still
-  be loaded by name. Enabled skills that are not listed can still be loaded with
+  be loaded by name. Enabled, LLM-callable skills that are not listed can still be loaded with
   `llm_load_skill`
-- If there is no enabled skill, the section is not added at all
+- If there is no enabled, LLM-callable skill, the section is not added at all
 - The list is not cached either; it is fetched every time the system prompt is built
 
 Since the description is what the LLM uses to decide whether to load a skill, write it so

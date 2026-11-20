@@ -22,11 +22,16 @@
 """
 from __future__ import annotations
 
-from typing import Any, TypeVar
+import json
+import logging
+from typing import Any, Callable, TypeVar
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic.fields import FieldInfo
 
-from lilla_core.core.extension import get_settings_models
+from lilla_core.core.extension import get_settings_models, list_file_storages
+
+logger = logging.getLogger(__name__)
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
@@ -185,43 +190,240 @@ async def save_settings(name: str, values: Any) -> BaseModel:
     return instance
 
 
-def describe_fields(model: type[BaseModel]) -> list[dict]:
-    """画面の汎用編集欄に出す項目の説明を、モデルの定義順に返す。
+#: 選択肢付きの配列をチェックボックス群で出す入力部品（`json_schema_extra` の `widget`）。
+WIDGET_CHECKBOX_GROUP = "checkbox-group"
 
-    各要素は `name` / `title` / `description` / `type`（JSON Schema の型。`string` など）/
-    `nullable`（未設定 `null` を取れるか）/ `multiline` / `default` / `pattern`。
+#: 汎用フォームが解釈する `widget` の一覧。
+SUPPORTED_WIDGETS = frozenset({WIDGET_CHECKBOX_GROUP})
+
+#: `widget` なしで汎用フォームが入力欄を出せる型（JSON Schema の型）。
+_PLAIN_FIELD_TYPES = frozenset({"string", "integer", "number", "boolean"})
+
+#: チェックボックス群の要素に使える型（入れ子は汎用フォームの対象外）。
+_CHOICE_ITEM_TYPES = frozenset({"string", "integer", "number", "boolean"})
+
+
+def _writable_file_storages() -> list[dict[str, Any]]:
+    """書き込める（`read_only` が偽の）保存先を、登録順に選択肢として返す。"""
+    return [
+        {"value": name, "title": name}
+        for name, storage in list_file_storages().items()
+        if not storage.read_only
+    ]
+
+
+#: `choices_from` の名前 -> 選択肢を返す関数。設定詳細を組み立てるたびに呼ぶ。
+CHOICE_PROVIDERS: dict[str, Callable[[], list[dict[str, Any]]]] = {
+    "writable_file_storages": _writable_file_storages,
+}
+
+
+def _field_extra(field: FieldInfo) -> dict[str, Any]:
+    """`Field` の `json_schema_extra`（dict のときだけ）を返す。"""
+    return field.json_schema_extra if isinstance(field.json_schema_extra, dict) else {}
+
+
+def _resolve_ref(schema: dict, node: Any) -> dict:
+    """`$ref` を `$defs` の定義へ解決する（解決できなければそのまま返す）。"""
+    if not isinstance(node, dict):
+        return {}
+    ref = node.get("$ref")
+    if isinstance(ref, str) and ref.startswith("#/$defs/"):
+        target = schema.get("$defs", {}).get(ref[len("#/$defs/"):])
+        if isinstance(target, dict):
+            return target
+    return node
+
+
+def _schema_types(schema: dict, prop: dict) -> tuple[str | None, bool, str | None, dict]:
+    """項目の JSON Schema から「型・未設定を取れるか・配列要素の型・型の節」を取り出す。
+
+    型が分からない（`$ref` の先が無いなど）ときは `None` を返す。入れ子のモデルは `object`。
+    """
+    variants = prop.get("anyOf") or [prop]
+    resolved = [_resolve_ref(schema, variant) for variant in variants]
+    nullable = any(variant.get("type") == "null" for variant in resolved)
+    main = next((variant for variant in resolved if variant.get("type") != "null"), {})
+    main_type = main.get("type")
+    if main_type is None and ("properties" in main or "$ref" in main):
+        main_type = "object"
+    items_type = None
+    if main_type == "array":
+        items = _resolve_ref(schema, main.get("items"))
+        items_type = items.get("type")
+        if items_type is None and items:
+            items_type = "object"
+    return main_type, nullable, items_type, main
+
+
+def _normalize_choices(choices: Any) -> list[dict[str, Any]]:
+    """静的な `choices` を `{value, title}` のリストへそろえる。
+
+    要素は `{value, title}`（`title` は省略可）か値そのもの。`title` が無ければ値の文字列化。
+
+    Raises:
+        ValueError: リストでない・`value` の無い dict がある場合。
+    """
+    if not isinstance(choices, (list, tuple)):
+        raise ValueError("choices must be a list")
+    normalized = []
+    for choice in choices:
+        if isinstance(choice, dict):
+            if "value" not in choice:
+                raise ValueError("each choice object must have 'value'")
+            value = choice["value"]
+            title = choice.get("title")
+        else:
+            value = choice
+            title = None
+        normalized.append({"value": value, "title": str(value) if title is None else str(title)})
+    return normalized
+
+
+def _check_choice_values(name: str, field: FieldInfo, choices: list[dict[str, Any]]) -> None:
+    """静的な選択肢の各 `value` が項目の要素の型に合うかを確かめる。
+
+    画面は `value` を JSON の型のまま送るため、送られたときと同じ形（1 要素の配列の JSON）を
+    strict で検証する（`list[int]` に `"1"` を書いた宣言ミスを保存時ではなくロード時に見つける）。
+
+    Raises:
+        ValueError: 要素の型に合わない `value` がある場合。
+    """
+    adapter = TypeAdapter(field.annotation)
+    for choice in choices:
+        value = choice["value"]
+        try:
+            adapter.validate_json(json.dumps([value]), strict=True)
+        except (ValidationError, TypeError, ValueError) as e:
+            raise ValueError(
+                f"Settings field '{name}' has a choice value {value!r} "
+                f"that does not match the item type: {e}"
+            ) from e
+
+
+def validate_widgets(model: type[BaseModel]) -> None:
+    """モデルの各項目の `widget` 宣言を検証する（拡張のロード時に呼ぶ）。
+
+    Raises:
+        ValueError: 未知の `widget`、または `checkbox-group` の宣言が不正な場合
+            （スカラー要素の配列でない・`choices` と `choices_from` がどちらも無い／両方ある・
+            未知の `choices_from`・`choices` の形が不正・`choices` の値が要素の型に合わない）。
     """
     schema = model.model_json_schema()
     properties = schema.get("properties", {})
+    for name, field in model.model_fields.items():
+        extra = _field_extra(field)
+        widget = extra.get("widget")
+        if widget is None:
+            continue
+        if widget not in SUPPORTED_WIDGETS:
+            raise ValueError(
+                f"Settings field '{name}' declares unknown widget {widget!r} "
+                f"(supported: {', '.join(sorted(SUPPORTED_WIDGETS))})"
+            )
+        main_type, _, items_type, _ = _schema_types(schema, properties.get(name, {}))
+        if main_type != "array" or items_type not in _CHOICE_ITEM_TYPES:
+            raise ValueError(
+                f"Settings field '{name}' uses widget '{WIDGET_CHECKBOX_GROUP}' "
+                "but is not a list of scalar values"
+            )
+        has_static = "choices" in extra
+        has_dynamic = "choices_from" in extra
+        if has_static == has_dynamic:
+            raise ValueError(
+                f"Settings field '{name}' uses widget '{WIDGET_CHECKBOX_GROUP}' "
+                "and must declare exactly one of 'choices' or 'choices_from'"
+            )
+        if has_dynamic and extra["choices_from"] not in CHOICE_PROVIDERS:
+            raise ValueError(
+                f"Settings field '{name}' declares unknown choices_from "
+                f"{extra['choices_from']!r} (supported: {', '.join(sorted(CHOICE_PROVIDERS))})"
+            )
+        if has_static:
+            try:
+                choices = _normalize_choices(extra["choices"])
+            except ValueError as e:
+                raise ValueError(f"Settings field '{name}' has invalid choices: {e}") from e
+            _check_choice_values(name, field, choices)
+
+
+def describe_fields(model: type[BaseModel]) -> list[dict]:
+    """画面の汎用編集欄に出す項目の説明を、モデルの定義順に返す。
+
+    各要素は `name` / `title` / `description` / `type`（JSON Schema の型。`string` など。
+    入れ子のモデルは `object`）/ `nullable`（未設定 `null` を取れるか）/ `multiline` /
+    `default` / `pattern` / `widget`（`json_schema_extra` の `widget`。無ければ `None`）/
+    `items_type`（配列要素の型。配列でなければ `None`）/ `choices`（静的な選択肢を
+    `{value, title}` にそろえたもの。無ければ `None`）/ `choices_from`（動的な選択肢の
+    名前。ここでは解決しない）/ `supported`（汎用フォームで入力欄を出せるか）。
+
+    部品は型から推測しない。`widget` の無い配列や入れ子のモデルは `supported` が偽になる。
+    """
+    schema = model.model_json_schema()
+    properties = schema.get("properties", {})
+    defaults = model().model_dump(mode="json")
     fields = []
     for name, field in model.model_fields.items():
         prop = properties.get(name, {})
-        variants = prop.get("anyOf") or [prop]
-        types = [variant.get("type") for variant in variants if isinstance(variant, dict)]
-        nullable = "null" in types
-        main = next(
-            (variant for variant in variants if isinstance(variant, dict) and variant.get("type") not in (None, "null")),
-            {},
-        )
-        extra = field.json_schema_extra if isinstance(field.json_schema_extra, dict) else {}
+        main_type, nullable, items_type, main = _schema_types(schema, prop)
+        extra = _field_extra(field)
+        widget = extra.get("widget")
+        choices = _normalize_choices(extra["choices"]) if "choices" in extra else None
+        if widget is None:
+            supported = main_type in _PLAIN_FIELD_TYPES or main_type is None
+        else:
+            supported = widget in SUPPORTED_WIDGETS
         fields.append(
             {
                 "name": name,
                 "title": field.title or prop.get("title") or name,
                 "description": field.description or "",
-                "type": main.get("type", "string"),
+                "type": main_type or "string",
                 "nullable": nullable,
                 "multiline": bool(extra.get("multiline")),
-                "default": model().model_dump(mode="json")[name],
+                "default": defaults[name],
                 "pattern": main.get("pattern"),
+                "widget": widget,
+                "items_type": items_type,
+                "choices": choices,
+                "choices_from": extra.get("choices_from"),
+                "supported": supported,
             }
         )
     return fields
 
 
+def _resolve_choices(fields: list[dict]) -> None:
+    """`choices_from` を持つ項目の `choices` を、今の候補で埋める（その場で書き換える）。
+
+    プロバイダが失敗しても画面は開けるよう、WARNING ログを出して空の候補にする。
+    """
+    for field in fields:
+        source = field.get("choices_from")
+        if source is None:
+            continue
+        provider = CHOICE_PROVIDERS.get(source)
+        if provider is None:
+            logger.warning("Unknown choices_from '%s' for settings field '%s'", source, field["name"])
+            field["choices"] = []
+            continue
+        try:
+            field["choices"] = provider()
+        except Exception as e:
+            logger.warning(
+                "Failed to resolve choices_from '%s' for settings field '%s': %s",
+                source,
+                field["name"],
+                e,
+            )
+            field["choices"] = []
+
+
 async def build_settings_detail(name: str) -> dict | None:
     """編集画面に出す設定の節を組み立てる。設定を宣言していない拡張なら `None`。
 
+    `fields` は `describe_fields()` の結果で、`choices_from` を持つ項目の `choices` は
+    ここで今の候補に解決する（フォームは解決済みの `choices` だけを見る）。
     `values` は保存済みの値（未保存なら初期値）、`stored` は保存済みか、`error` は
     読めなかったとき（`unavailable`）と保存値が不正なとき（`invalid`。`values` には
     直せるよう保存されている生の値を入れる）の理由。
@@ -229,8 +431,10 @@ async def build_settings_detail(name: str) -> dict | None:
     model = get_settings_model(name)
     if model is None:
         return None
+    fields = describe_fields(model)
+    _resolve_choices(fields)
     detail: dict[str, Any] = {
-        "fields": describe_fields(model),
+        "fields": fields,
         "values": None,
         "stored": False,
         "error": None,

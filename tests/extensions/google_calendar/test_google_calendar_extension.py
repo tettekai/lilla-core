@@ -165,7 +165,7 @@ class TestComposition:
             monkeypatch.setenv("CONFIG_ROOT", str(calendar_config_root))
             loaded = ext_mod.load_extensions()
 
-        assert [e.name for e in loaded] == ["google-oauth", "google-calendar"]
+        assert [e.name for e in loaded] == ["notes", "google-oauth", "google-calendar"]
 
 
 class TestToolRoots:

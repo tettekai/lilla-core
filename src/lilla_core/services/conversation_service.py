@@ -209,7 +209,7 @@ async def run_conversation(
     allowed_tool_names : list[str] | None, optional
         この回だけ LLM に見せるツールの許可リスト（展開済みの YAML stem。
         `llm_tool_loader.resolve_available_tools` の戻り値を想定）。None なら
-        `tools.sets` の `main` セットを展開して使う（未設定ならツールなし）。
+        `tools.sets` の `main` セットを展開して使う（`main: []` ならツールなし）。
         空リストならツールを渡さない。
         いずれの場合も、続けて `supported_client_type` で絞る。
     max_tool_call_iterations : int | None, optional
@@ -294,7 +294,7 @@ async def _run_conversation(
     if is_tools_disabled() and client_type != "task":
         llm_tools = {}
 
-    # 省略（None）は「`main` セットを使う」。展開結果が空（`main` 未設定を含む）なら
+    # 省略（None）は「`main` セットを使う」。展開結果が空（`main: []`）なら
     # ツールを渡さない。システムプロンプトのスキル一覧は実際に渡すツールで決まるため、
     # ツールの解決はシステムプロンプトの組み立てより先に行う。
     if allowed_tool_names is None and llm_tools:

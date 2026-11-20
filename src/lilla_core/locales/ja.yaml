@@ -138,4 +138,5 @@ tool:
     list_truncated: "ほか {count} 件は一覧に載せていません。名前が分かれば `{tool}` で読み込めます。"
     not_found: "スキル '{name}' は見つかりません。"
     disabled: "スキル '{name}' は無効になっています。"
+    manual_only: "スキル '{name}' は手動（`!skill`）でのみ呼び出せます。"
     loaded: "スキル '{name}' を読み込みました。"

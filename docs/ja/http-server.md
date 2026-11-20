@@ -120,6 +120,9 @@ docker exec -it <コンテナ名> python -m lilla_core.scripts.issue_client_toke
 >   `host: 127.0.0.1` に絞ってください
 > - `POST /api/tools/call` と `POST /api/runtask` はツールを実行できます。トークンは
 >   パスワードと同じ扱いで保管し、漏れたら同じ `label` で再発行してください
+> - 標準機能の notes は `/notes.git` に Git の smart HTTP（clone / fetch / push）を載せます。
+>   有効なトークンならノート全体と履歴を取り出せるため、このサーバーは LAN の中など信頼できる
+>   ネットワークだけで listen させてください（[ノート置き場](notes.md#git-で-clone--fetch--push-する)）
 
 ## 拡張からルートを足す
 

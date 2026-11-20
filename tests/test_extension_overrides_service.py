@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -58,15 +59,62 @@ class TestTargets:
         assert svc.task_entries_of("diary", None) == {}
 
     def test_list_editable_marks_extensions(self, registered, tools) -> None:
-        """プロンプトかタスクを持つ拡張だけが編集できる。"""
+        """編集する項目の無い拡張も含めて全件を返し、プロンプトかタスクを持つものだけが編集できる。"""
         items = {item["name"]: item for item in svc.list_editable(tools)}
 
         assert items["diary"] == {
-            "name": "diary", "has_prompt": True, "task_count": 2, "has_settings": False, "editable": True,
+            "name": "diary",
+            "display_name": "diary",
+            "kind": "external",
+            "has_prompt": True,
+            "task_count": 2,
+            "has_settings": False,
+            "editable": True,
+            "settings_hash": "#/settings/extensions/diary",
+            "page_hash": None,
         }
         assert items["habits"]["editable"] is True
         assert items["habits"]["has_prompt"] is False
         assert items["plain"]["editable"] is False
+
+    def test_list_editable_uses_display_name_and_page_hash(
+        self, make_extension, use_extensions
+    ) -> None:
+        """表示名は `display_name()`、画面を出す拡張はそのハッシュを返す。"""
+        from lilla_core.core.extension import DashboardPage
+
+        use_extensions(
+            make_extension(
+                "habits",
+                display_name="習慣",
+                dashboard_page=DashboardPage(label="習慣", group="main"),
+                dashboard_static_dir=Path(__file__).parent,
+            )
+        )
+
+        (item,) = svc.list_editable({})
+
+        assert item["display_name"] == "習慣"
+        assert item["page_hash"] == "#/habits"
+
+    def test_kind_and_settings_hash_follow_the_module(self) -> None:
+        """標準機能は全般と同じ並び、公式拡張パックとそれ以外は拡張機能の下に置く。"""
+        from lilla_core.core.extension import Extension
+
+        def _ext(module: str, name: str):
+            cls = type("Ext", (Extension,), {"__module__": module, "name": name})
+            return cls()
+
+        builtin = _ext("lilla_core.extensions.notes", "notes")
+        official = _ext("lilla_core.extensions.diary", "diary")
+        external = _ext("habits", "habits")
+
+        assert [svc.extension_kind(e) for e in (builtin, official, external)] == [
+            "builtin", "official", "external",
+        ]
+        assert svc.settings_hash_of(builtin) == "#/settings/notes"
+        assert svc.settings_hash_of(official) == "#/settings/extensions/diary"
+        assert svc.settings_hash_of(external) == "#/settings/extensions/habits"
 
     def test_find_extension(self, registered) -> None:
         """ロード済みの拡張だけを見つける。"""
@@ -97,9 +145,11 @@ class TestBuildDetail:
             "default": PROMPTS["ja"],
             "default_locale": "ja",
             "overridden": False,
-            "override": None,
+            "mode": None,
+            "text": None,
             "invalid": False,
             "effective": PROMPTS["ja"],
+            "template_variables": [],
         }
         task_a = detail["tasks"][0]
         assert task_a["name"] == "task_a"
@@ -116,19 +166,52 @@ class TestBuildDetail:
         assert self._detail(tools, None, locale="en")["prompt"]["default_locale"] == "en"
         assert self._detail(tools, None, locale="fr")["prompt"]["default_locale"] == "ja"
 
-    def test_empty_prompt_override_is_effective(self, registered, tools) -> None:
-        """空文字の上書きは「注入しない」という有効な値として扱う。"""
-        detail = self._detail(tools, {"prompt": ""})
+    def test_empty_replace_override_is_effective(self, registered, tools) -> None:
+        """空文字の replace は「注入しない」という有効な値として扱う。"""
+        detail = self._detail(tools, {"prompt": {"mode": "replace", "text": ""}})
 
         assert detail["prompt"]["overridden"] is True
-        assert detail["prompt"]["override"] == ""
+        assert detail["prompt"]["invalid"] is False
+        assert detail["prompt"]["mode"] == "replace"
+        assert detail["prompt"]["text"] == ""
         assert detail["prompt"]["effective"] == ""
 
-    def test_invalid_prompt_override_falls_back(self, registered, tools) -> None:
-        """文字列でない上書きは不正として示し、デフォルトを実効値にする。"""
-        detail = self._detail(tools, {"prompt": 42})
+    def test_append_override_joins_default_and_text(self, registered, tools) -> None:
+        """append の実効値は、locale で選んだ既定と入力本文を展開前のまま空行でつなぐ。"""
+        doc = {"prompt": {"mode": "append", "text": "追加 {{ current_hour }}"}}
+        assert self._detail(tools, doc)["prompt"]["effective"] == (
+            PROMPTS["ja"] + "\n\n追加 {{ current_hour }}"
+        )
+        assert self._detail(tools, doc, locale="en")["prompt"]["effective"] == (
+            PROMPTS["en"] + "\n\n追加 {{ current_hour }}"
+        )
 
+    def test_append_with_empty_text_is_default(self, registered, tools) -> None:
+        """本文が空の append は既定だけになる（余分な区切りを足さない）。"""
+        detail = self._detail(tools, {"prompt": {"mode": "append", "text": "  "}})
+
+        assert detail["prompt"]["mode"] == "append"
+        assert detail["prompt"]["effective"] == PROMPTS["ja"]
+
+    def test_replace_override_ignores_default(self, registered, tools) -> None:
+        """replace の実効値は入力本文だけ。"""
+        detail = self._detail(tools, {"prompt": {"mode": "replace", "text": "置換"}})
+
+        assert detail["prompt"]["effective"] == "置換"
+
+    @pytest.mark.parametrize(
+        "value",
+        [42, "旧形式の文字列", {"mode": "prepend", "text": "x"}, {"mode": "append"},
+         {"mode": "append", "text": "x", "extra": 1}],
+    )
+    def test_invalid_prompt_override_falls_back(self, registered, tools, value) -> None:
+        """新形式に合わない上書き（旧形式の文字列を含む）は不正として示し、既定を実効値にする。"""
+        detail = self._detail(tools, {"prompt": value})
+
+        assert detail["prompt"]["overridden"] is True
         assert detail["prompt"]["invalid"] is True
+        assert detail["prompt"]["mode"] is None
+        assert detail["prompt"]["text"] is None
         assert detail["prompt"]["effective"] == PROMPTS["ja"]
 
     def test_task_overrides_and_sync_state(self, registered, tools) -> None:
@@ -170,6 +253,21 @@ class TestBuildDetail:
 
         assert detail["tasks"][0]["in_sync"] is True
 
+    def test_template_variables_list_public_settings(
+        self, make_extension, use_extensions, tools,
+    ) -> None:
+        """`settings.名前` で使える名前（秘匿値の型の項目を除く）を返す。"""
+        from pydantic import BaseModel, SecretStr
+
+        class Settings(BaseModel):
+            path: str = "a.md"
+            token: SecretStr | None = None
+            enabled: bool = True
+
+        use_extensions(make_extension("diary", default_prompt=PROMPTS, settings_model=Settings))
+        detail = self._detail(tools, None)
+        assert detail["prompt"]["template_variables"] == ["path", "enabled"]
+
     def test_extension_without_prompt(self, registered, tools) -> None:
         """プロンプトを持たない拡張はプロンプトの節を持たない。"""
         detail = self._detail(tools, None, name="habits")
@@ -182,9 +280,9 @@ class TestParseUpdate:
     """保存リクエストの検証。"""
 
     def test_prompt_set_and_unset(self, registered, tools) -> None:
-        """文字列は保存（空文字も有効）、null は上書きを消す。"""
-        update = svc.parse_update("diary", {"prompt": ""}, tools)
-        assert update.set_fields == {"prompt": ""}
+        """{mode, text} は保存（空文字も有効）、null は上書きを消す。"""
+        update = svc.parse_update("diary", {"prompt": {"mode": "replace", "text": ""}}, tools)
+        assert update.set_fields == {"prompt": {"mode": "replace", "text": ""}}
         assert update.unset_fields == []
         assert update.task_names == []
 
@@ -218,6 +316,13 @@ class TestParseUpdate:
             {},
             {"settings": {}},
             {"prompt": 1},
+            {"prompt": "旧形式の文字列"},
+            {"prompt": {"mode": "prepend", "text": "x"}},
+            {"prompt": {"mode": "append", "text": "x", "extra": 1}},
+            {"prompt": {"mode": "append"}},
+            {"prompt": {"text": "x"}},
+            {"prompt": {"mode": "append", "text": None}},
+            {"prompt": {"mode": 1, "text": "x"}},
             {"tasks": []},
             {"tasks": {"task_core": {"enabled": False}}},
             {"tasks": {"task_other": {"enabled": False}}},
@@ -230,7 +335,7 @@ class TestParseUpdate:
             {"tasks": {"task_a": {"schedule": 5}}},
             {"tasks": {"task_a": {"enabled": "false"}}},
             {"tasks": {"task_a": {}}},
-            {"prompt": "ok", "tasks": {"task_a": {"schedule": "bad"}}},
+            {"prompt": {"mode": "append", "text": "ok"}, "tasks": {"task_a": {"schedule": "bad"}}},
         ],
     )
     def test_rejects_invalid_requests(self, registered, tools, body) -> None:
@@ -238,7 +343,20 @@ class TestParseUpdate:
         with pytest.raises(OverrideValidationError):
             svc.parse_update("diary", body, tools)
 
+    def test_prompt_syntax_error_is_rejected(self, registered, tools) -> None:
+        """テンプレートの構文エラーは保存させない。"""
+        with pytest.raises(OverrideValidationError, match="prompt: Template syntax error"):
+            svc.parse_update(
+                "diary", {"prompt": {"mode": "append", "text": "{% if settings.x %}"}}, tools
+            )
+
+    def test_prompt_template_is_saved_as_is(self, registered, tools) -> None:
+        """構文が正しければテンプレートのまま保存する（展開はしない）。"""
+        value = {"mode": "append", "text": "{{ settings.path }}"}
+        update = svc.parse_update("diary", {"prompt": value}, tools)
+        assert update.set_fields == {"prompt": value}
+
     def test_prompt_rejected_for_extension_without_default_prompt(self, registered, tools) -> None:
         """デフォルトのプロンプトを持たない拡張のプロンプトは編集できない。"""
         with pytest.raises(OverrideValidationError, match="no default prompt"):
-            svc.parse_update("habits", {"prompt": "x"}, tools)
+            svc.parse_update("habits", {"prompt": {"mode": "append", "text": "x"}}, tools)

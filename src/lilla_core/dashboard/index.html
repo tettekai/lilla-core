@@ -56,7 +56,7 @@
     <header>
       <div class="header-bar">
         <h1>Lilla Dashboard</h1>
-        <!-- ナビは /api/dashboard/nav のカタログから組む。組み込みの 5 画面も
+        <!-- ナビは /api/dashboard/nav のカタログから組む。組み込みの画面も
              拡張のページも同じ形で並ぶので、ここで区別しない。 -->
         <nav class="tabs">
           <template x-for="page in mainNav" :key="page.name">
@@ -73,7 +73,7 @@
               <button :class="{ active: activeTab === page.name }"
                 @click="navigate(page.name)" x-text="page.label"></button>
             </template>
-            <button @click="logout()">Logout</button>
+            <button @click="logout()">ログアウト</button>
           </div>
         </div>
       </div>
@@ -81,7 +81,7 @@
 
     <!-- Home Tab -->
     <section x-show="activeTab === 'home'">
-      <h2 class="page-title">Home</h2>
+      <h2 class="page-title">ホーム</h2>
       <div x-show="home.loading && !home.status" class="loading">読み込み中...</div>
       <div x-show="home.error" class="empty">状態を取得できませんでした</div>
       <template x-if="home.status">
@@ -237,7 +237,7 @@
 
     <!-- Usage Tab -->
     <section x-show="activeTab === 'usage'">
-      <h2 class="page-title">LLM Usage</h2>
+      <h2 class="page-title">LLM の使用量</h2>
       <div class="filters">
         <select x-model.number="usage.days" @change="fetchUsage()">
           <option value="1">今日</option>
@@ -348,8 +348,13 @@
         <input type="text" x-model="skills.newName" placeholder="スキル名（例: review）" class="skill-name-input"
           maxlength="64">
         <input type="text" x-model="skills.newDescription" placeholder="説明（任意）" class="skill-description-input">
-        <textarea x-model="skills.newPrompt" placeholder="展開するプロンプト本文..." class="memo-input"
-          rows="5"></textarea>
+        <div class="skill-prompt-editor"
+          x-data="jinjaEditor({ target: { type: 'skill' }, fetch: (u, o) => authedFetch(u, o), rows: 5, placeholder: '展開するプロンプト本文...' })"
+          x-modelable="text" x-model="skills.newPrompt"></div>
+        <label class="memo-toggle">
+          <input type="checkbox" x-model="skills.newLlmCallable">
+          LLM から呼べる
+        </label>
         <button @click="addSkill()" :disabled="!skills.newName.trim() || !skills.newPrompt.trim()">追加</button>
       </div>
 
@@ -369,14 +374,21 @@
               <input type="text" x-model="skills.editName" class="skill-name-input" maxlength="64">
               <input type="text" x-model="skills.editDescription" placeholder="説明（任意）"
                 class="skill-description-input">
-              <textarea x-model="skills.editPrompt" @keydown.escape="cancelSkillEdit()"
-                class="memo-input" rows="5"></textarea>
+              <template x-if="skills.editingId === skill._id">
+                <div @keydown.escape="cancelSkillEdit()"
+                  x-data="jinjaEditor({ target: { type: 'skill' }, fetch: (u, o) => authedFetch(u, o), rows: 5 })"
+                  x-modelable="text" x-model="skills.editPrompt"></div>
+              </template>
             </div>
             <div class="memo-actions">
               <span class="memo-time" x-text="formatDate(skill.updated_at)"></span>
               <label class="memo-toggle">
-                <input type="checkbox" :checked="skill.enabled" @change="toggleSkill(skill)">
+                <input type="checkbox" :checked="skill.enabled" @change="toggleSkill(skill, 'enabled')">
                 有効
+              </label>
+              <label class="memo-toggle" title="オフにすると !skill での手動呼び出し専用になり、llm_load_skill からは読み込めません">
+                <input type="checkbox" :checked="skill.llm_callable === true" @change="toggleSkill(skill, 'llm_callable')">
+                LLM から呼べる
               </label>
               <button x-show="skills.editingId !== skill._id" @click="startSkillEdit(skill)">編集</button>
               <button x-show="skills.editingId === skill._id" @click="saveSkillEdit(skill)">保存</button>
@@ -389,23 +401,126 @@
       </div>
     </section>
 
-    <section x-show="activeTab === 'extensions'">
+    <!-- 設定。左のメニュー（全般・標準機能・拡張機能）と右の本文に分ける。
+         どのサブ画面を出すかは settingsView（#/settings 以下のハッシュから決める）。 -->
+    <section x-show="activeTab === 'settings'">
+      <div class="settings-layout">
+        <nav class="settings-menu" aria-label="設定のメニュー">
+          <button :class="{ active: settingsView.section === 'general' }"
+            @click="navigateHash('#/settings')">全般</button>
+          <template x-for="item in builtinExtensions()" :key="item.name">
+            <button :class="{ active: settingsView.section === 'extension' && settingsView.name === item.name }"
+              @click="navigateHash(item.settings_hash)" x-text="item.display_name"></button>
+          </template>
+          <button :class="{ active: settingsView.section === 'extension-list'
+              || (settingsView.section === 'extension' && !isBuiltinSelected()) }"
+            @click="navigateHash('#/settings/extensions')">拡張機能</button>
+        </nav>
+
+        <div class="settings-body">
+          <!-- 全般（コアの今の動作。読み取り専用） -->
+          <div x-show="settingsView.section === 'general'">
+            <h2 class="settings-title">全般</h2>
+            <p class="ext-help">
+              今の動作の確認用です。値は <code>lilla.yaml</code> に書いたもので、ここでは変えられません
+              （変えるときは <code>lilla.yaml</code> を編集して再起動してください）。ただし「今使っている LLM」と
+              「会話のツール」は <code>!model</code> / <code>!disable_tools</code> で切り替えた実行時の状態で、
+              再起動すると <code>lilla.yaml</code> の値に戻ります。秘匿情報は表示しません。
+            </p>
+            <div x-show="general.loading && !general.data" class="loading">読み込み中...</div>
+            <div x-show="general.error" class="empty">設定を取得できませんでした</div>
+            <template x-if="general.data">
+              <dl class="home-status">
+                <dt>表示言語（<code>ui.locale</code>）</dt>
+                <dd x-text="general.data.ui.locale"></dd>
+                <dt>タイムゾーン（<code>ui.timezone</code>）</dt>
+                <dd x-text="general.data.ui.timezone"></dd>
+                <dt>既定の LLM（<code>llm.default</code>）</dt>
+                <dd x-text="general.data.llm.default"></dd>
+                <dt>今使っている LLM（<code>!model</code>）</dt>
+                <dd x-text="general.data.llm.active || '既定のまま'"></dd>
+                <dt>LLM プロバイダー</dt>
+                <dd>
+                  <template x-for="provider in general.data.llm.providers" :key="provider.name">
+                    <div>
+                      <code x-text="provider.name"></code>
+                      <span class="ext-sub" x-text="provider.type + (provider.model ? ' / ' + provider.model : '')"></span>
+                    </div>
+                  </template>
+                </dd>
+                <dt>ツール呼び出しの上限</dt>
+                <dd x-text="general.data.llm.max_tool_call_iterations + ' 回'"></dd>
+                <dt>会話のツール（<code>!disable_tools</code>）</dt>
+                <dd x-text="general.data.tools_disabled ? '無効' : '有効'"></dd>
+                <dt>内部スケジューラ（<code>scheduler.enabled</code>）</dt>
+                <dd x-text="general.data.scheduler_enabled ? '有効' : '無効（外部のスケジューラを使う）'"></dd>
+                <dt>ダッシュボード</dt>
+                <dd x-text="general.data.dashboard.host + ':' + general.data.dashboard.port"></dd>
+                <dt>共有 HTTP サーバー</dt>
+                <dd x-text="general.data.http.host + ':' + general.data.http.port"></dd>
+                <dt>読み込んでいる機能</dt>
+                <dd>
+                  <template x-for="ext in general.data.extensions" :key="ext.name">
+                    <div>
+                      <span x-text="ext.display_name"></span>
+                      <span class="ext-sub" x-text="ext.name + '・' + kindLabel(ext.kind)"></span>
+                    </div>
+                  </template>
+                </dd>
+              </dl>
+            </template>
+          </div>
+
+          <!-- 拡張機能の一覧（標準機能を除く、読み込んだ拡張すべて） -->
+          <div x-show="settingsView.section === 'extension-list'">
+            <h2 class="settings-title">拡張機能</h2>
+            <div x-show="exts.loading" class="loading">読み込み中...</div>
+            <div class="ext-error" x-show="exts.listError">
+              <span x-text="exts.listError"></span>
+            </div>
+            <div x-show="!exts.loading && !exts.listError && otherExtensions().length === 0" class="empty">
+              読み込んでいる拡張機能はありません
+            </div>
+            <div class="settings-ext-list">
+              <template x-for="item in otherExtensions()" :key="item.name">
+                <button class="settings-ext-item" @click="navigateHash(item.settings_hash)">
+                  <span class="settings-ext-name">
+                    <span x-text="item.display_name"></span>
+                    <span class="badge level-info" x-show="item.kind === 'official'">公式</span>
+                  </span>
+                  <span class="ext-sub" x-text="item.name"></span>
+                  <span class="ext-sub" x-show="!item.editable">設定する項目はありません</span>
+                </button>
+              </template>
+            </div>
+          </div>
+
+          <!-- 1 つの拡張の設定 -->
+          <div x-show="settingsView.section === 'extension'">
+            <template x-if="settingsItem()">
+              <div class="settings-ext-header">
+                <button class="settings-back" x-show="!isBuiltinSelected()"
+                  @click="navigateHash('#/settings/extensions')">← 拡張機能</button>
+                <h2 class="settings-title">
+                  <span x-text="settingsItem().display_name"></span>
+                  <span class="badge level-info" x-show="settingsItem().kind === 'official'">公式</span>
+                </h2>
+                <a class="settings-open-page" x-show="settingsItem().page_hash" :href="settingsItem().page_hash"
+                  x-text="settingsItem().display_name + 'を開く'"></a>
+              </div>
+            </template>
+            <div x-show="!exts.loading && settingsView.name && !settingsItem()" class="empty">
+              この機能は読み込まれていません
+            </div>
+            <div x-show="settingsItem() && !settingsItem().editable" class="empty">
+              設定する項目はありません
+            </div>
+
+            <div x-show="settingsItem() && settingsItem().editable">
       <p class="ext-intro">
-        拡張の設定（<code>extension_settings</code>。設定の本体）と、デフォルトのプロンプト・同梱の定期タスクへの
+        この機能の設定（<code>extension_settings</code>。設定の本体）と、デフォルトのプロンプト・同梱の定期タスクへの
         上書き（<code>extension_overrides</code>。コードと同梱の既定値は変えません）を編集します。
       </p>
-      <div x-show="exts.loading" class="loading">読み込み中...</div>
-      <div x-show="!exts.loading && editableExtensions().length === 0" class="empty">
-        編集できる拡張がありません（画面で管理する設定・デフォルトのプロンプト・定期タスクのどれかを持つ拡張だけが対象です）
-      </div>
-
-      <div class="ext-tabs" x-show="editableExtensions().length > 0">
-        <template x-for="item in editableExtensions()" :key="item.name">
-          <button :class="{ active: exts.selected === item.name }" @click="selectExtension(item.name)"
-            x-text="item.name"></button>
-        </template>
-      </div>
-
       <div class="ext-error" x-show="exts.error">
         <span x-text="exts.error"></span>
         <button x-show="exts.applyFailed" @click="reapplyExtensionTasks()">再反映</button>
@@ -441,22 +556,49 @@
                       <code class="ext-sub" x-text="field.name"></code>
                     </label>
                     <div class="ext-sub" x-show="field.description" x-text="field.description"></div>
-                    <label class="memo-toggle" x-show="field.nullable">
+                    <label class="memo-toggle" x-show="field.nullable && isPlainSettingField(field)">
                       <input type="checkbox" x-model="exts.settingsUnset[field.name]">
                       未設定
                     </label>
-                    <template x-if="field.type === 'boolean'">
+                    <template x-if="field.widget === 'checkbox-group'">
+                      <div class="ext-choices">
+                        <template x-for="(choice, index) in (field.choices || [])" :key="'c' + index">
+                          <label class="memo-toggle">
+                            <input type="checkbox" :checked="settingChoiceChecked(field, choice.value)"
+                              @change="toggleSettingChoice(field, choice.value, $event.target.checked)">
+                            <span x-text="choice.title"></span>
+                          </label>
+                        </template>
+                        <template x-for="(value, index) in settingUnknownChoices(field)" :key="'u' + index">
+                          <label class="memo-toggle">
+                            <input type="checkbox" checked
+                              @change="toggleSettingChoice(field, value, $event.target.checked)">
+                            <span x-text="String(value)"></span>
+                            <span class="ext-sub ext-warning-text">（今の候補にありません。外すと保存時に消えます）</span>
+                          </label>
+                        </template>
+                        <div class="ext-sub" x-show="(field.choices || []).length === 0 && settingUnknownChoices(field).length === 0">
+                          選べる候補がありません
+                        </div>
+                      </div>
+                    </template>
+                    <template x-if="!field.supported">
+                      <div class="ext-sub ext-warning-text">
+                        この項目の型はこのフォームでは未対応です（保存しても今の値のまま変わりません）
+                      </div>
+                    </template>
+                    <template x-if="isPlainSettingField(field) && field.type === 'boolean'">
                       <label class="memo-toggle">
                         <input type="checkbox" x-model="exts.settingsDraft[field.name]"
                           :disabled="exts.settingsUnset[field.name]">
                         有効
                       </label>
                     </template>
-                    <template x-if="field.type !== 'boolean' && field.multiline">
+                    <template x-if="isPlainSettingField(field) && field.type !== 'boolean' && field.multiline">
                       <textarea class="memo-input ext-prompt" rows="12" x-model="exts.settingsDraft[field.name]"
                         :disabled="exts.settingsUnset[field.name]"></textarea>
                     </template>
-                    <template x-if="field.type !== 'boolean' && !field.multiline">
+                    <template x-if="isPlainSettingField(field) && field.type !== 'boolean' && !field.multiline">
                       <input class="ext-cron ext-setting-input"
                         :type="field.type === 'integer' || field.type === 'number' ? 'number' : 'text'"
                         x-model="exts.settingsDraft[field.name]" :disabled="exts.settingsUnset[field.name]"
@@ -487,23 +629,41 @@
                 x-text="exts.detail.prompt && exts.detail.prompt.overridden ? '上書き中' : 'デフォルト'"></span>
             </div>
             <p class="ext-help">
-              文字列 1 つで拡張のプロンプト全体を置き換えます。空にして保存すると、この拡張のプロンプトを
-              会話に入れません。次の会話から使われます。「デフォルトに戻す」は上書きを消すだけで、
-              デフォルトの本文はコピーしません（<code>ui.locale</code> を変えても上書きは翻訳されません）。
+              「デフォルトプロンプトに追加」は、拡張のデフォルトの本文の後ろに入力した本文を空行区切りで
+              書き足します。拡張のデフォルトが更新されたり <code>ui.locale</code> を変えたりすると、
+              デフォルトの部分は自動で追従します（入力した本文は翻訳されません）。
+              「デフォルトプロンプトを置き換える」は、入力した本文だけを使います（空にして保存すると、
+              この拡張のプロンプトを会話に入れません）。どちらも次の会話から使われます。
+              デフォルトを編集のベースにしたいときは、追加モードで表示されるデフォルトをコピーし、
+              置き換えモードで貼り付けてください。「デフォルトに戻す」は上書きを消します。
+            </p>
+            <p class="ext-help">
+              本文は Jinja2 のテンプレートとして展開します。<code>{{ settings.名前 }}</code> で設定値を、
+              <code>{% if settings.名前 %}…{% endif %}</code> で条件分岐を書けます。保存時に、入力した本文だけを
+              今の設定で試しに展開し、展開できなければ保存しません。追加モードでも、デフォルトと入力した
+              本文は別々に展開するため、デフォルト側の <code>{% set %}</code> やマクロは使えません。
+              <span x-show="exts.detail.prompt && exts.detail.prompt.template_variables.length === 0">
+                この拡張には設定が無いため、<code>settings</code> の名前はありません。
+              </span>
             </p>
             <div class="ext-warning" x-show="exts.detail.prompt && exts.detail.prompt.invalid">
-              保存済みの上書きが文字列ではないため、デフォルトを使っています
+              保存済みの上書きが今の形式（モードと本文）に合わないため、デフォルトを使っています。
+              上書きを保存し直すか、「デフォルトに戻す」を押してください
             </div>
-            <textarea class="memo-input ext-prompt" rows="12" x-model="exts.promptDraft"></textarea>
+            <div x-data="promptOverrideEditor({
+                defaultText: () => (exts.detail && exts.detail.prompt ? exts.detail.prompt.default : ''),
+                defaultLocale: () => (exts.detail && exts.detail.prompt ? exts.detail.prompt.default_locale : ''),
+                target: () => ({ type: 'extension', name: exts.selected }),
+                variables: () => (exts.detail && exts.detail.prompt ? exts.detail.prompt.template_variables : []).map((v) => 'settings.' + v),
+                fetch: (u, o) => authedFetch(u, o),
+                rows: 12,
+              })"
+              x-modelable="value" x-model="exts.promptDraft"></div>
             <div class="memo-actions">
               <button @click="savePromptOverride()">上書きを保存</button>
               <button x-show="exts.detail.prompt && exts.detail.prompt.overridden"
                 @click="resetPromptOverride()">デフォルトに戻す</button>
             </div>
-            <details class="ext-default">
-              <summary x-text="'デフォルト（' + ((exts.detail.prompt && exts.detail.prompt.default_locale) || '-') + '）'"></summary>
-              <pre x-text="exts.detail.prompt && exts.detail.prompt.default"></pre>
-            </details>
           </div>
 
           <div class="ext-card" x-show="exts.detail.tasks.length > 0">
@@ -571,11 +731,18 @@
           </div>
         </div>
       </template>
+            </div>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- 拡張ページ用スロット。中身は拡張の page.js が mount(el, ctx) で書くので、
          Alpine のディレクティブは置かない（殻が触るのは表示の切り替えだけ）。 -->
     <section x-show="extPage.name" x-cloak>
+      <div class="ext-page-bar" x-show="extPageSettingsHash()">
+        <a :href="extPageSettingsHash()">⚙ 設定</a>
+      </div>
       <div x-ref="extSlot"></div>
       <div class="empty" x-show="extPage.error" x-text="extPage.error"></div>
     </section>
@@ -610,6 +777,67 @@
 
   </div>
 
+  <!-- Jinja2 テンプレートの共通入力部品（jinja-editor.js の jinjaEditor が init() で複製する） -->
+  <template id="jinja-editor-tpl">
+    <div class="jinja-editor">
+      <div class="jinja-editor-header">
+        <span class="jinja-badge" title="保存時と会話の前に Jinja2 で展開されます">Jinja2 テンプレート</span>
+        <span class="jinja-vars-label">変数（クリックで差し込み）:</span>
+        <template x-for="name in variableNames()" :key="name">
+          <button type="button" class="jinja-var" @click="insertVariable(name)" x-text="name"></button>
+        </template>
+      </div>
+      <textarea x-ref="input" x-model="text" class="memo-input jinja-input" :rows="rows"
+        :placeholder="placeholder" spellcheck="false"></textarea>
+      <div class="jinja-status" :class="'jinja-status-' + status">
+        <span x-show="status === 'checking'">確認中...</span>
+        <span x-show="status === 'ok' && !settingsUnavailable">展開できます</span>
+        <span x-show="status === 'ok' && settingsUnavailable">
+          設定を読めないため、構文だけを確かめました（保存時も同じです）
+        </span>
+        <span x-show="status === 'error' || status === 'failed'" x-text="error"></span>
+      </div>
+      <details class="jinja-preview" x-show="status === 'ok'">
+        <summary>展開後のプレビュー</summary>
+        <pre x-show="rendered !== null" x-text="rendered"></pre>
+        <div x-show="comments.length > 0" class="jinja-comments">
+          <div class="jinja-comments-title">展開で消える部分（<code>{# … #}</code>）:</div>
+          <template x-for="(c, i) in comments" :key="i">
+            <div class="jinja-comment"><span x-text="c.line + ' 行目: '"></span><code x-text="c.text"></code></div>
+          </template>
+        </div>
+      </details>
+    </div>
+  </template>
+
+  <!-- プロンプトの上書きの共通入力部品（prompt-override-editor.js の promptOverrideEditor が init() で複製する） -->
+  <template id="prompt-override-editor-tpl">
+    <div class="prompt-override-editor">
+      <div class="prompt-override-modes" role="radiogroup" aria-label="上書きの方法">
+        <label class="prompt-override-mode">
+          <input type="radio" :name="radioName" value="append"
+            :checked="mode() === 'append'" @change="setMode('append')">
+          デフォルトプロンプトに追加
+        </label>
+        <label class="prompt-override-mode">
+          <input type="radio" :name="radioName" value="replace"
+            :checked="mode() === 'replace'" @change="setMode('replace')">
+          デフォルトプロンプトを置き換える
+        </label>
+      </div>
+      <div class="prompt-override-default" x-show="mode() === 'append'">
+        <div class="prompt-override-default-label">
+          デフォルトプロンプト（<span x-text="defaultLocale()"></span>・読み取り専用）
+        </div>
+        <pre class="prompt-override-default-text" x-text="defaultText()"></pre>
+        <div class="prompt-override-default-label">この後ろに追加する本文:</div>
+      </div>
+      <div x-data="jinjaEditor(editorOptions())" x-modelable="text" x-model="value.text"></div>
+    </div>
+  </template>
+
+  <script src="/static/jinja-editor.js"></script>
+  <script src="/static/prompt-override-editor.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

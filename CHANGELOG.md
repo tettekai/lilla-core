@@ -7,6 +7,162 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-20
+
+### Added
+
+- `Extension.display_name()` を足した（#363）。ダッシュボードの設定画面に出す拡張の表示名で、既定は `None`（`name` を使う）。空でない文字列以外を返すとロード時に落ちる。公式拡張パックと notes には日本語の表示名を付けた（非破壊のため `EXTENSION_API_VERSION` は変えていない）
+- ダッシュボードの設定画面に「全般」（`GET /api/admin/settings/general`）を足した（#363）。表示言語・タイムゾーン・LLM のプロバイダー・ツールの無効化・内部スケジューラ・listen 先・読み込んだ拡張を読み取り専用で出す（正本は `lilla.yaml`。秘匿情報とプロバイダーの URL は出さない）
+- 公式拡張パックに日記の `diary` 拡張（`lilla_core.extensions.diary`）を足した（#355）。
+  - 日ごとの下書き（MongoDB の `diary_drafts`）を読み書きする LLM ツール 3 つ（`llm_diary_draft_get` / `llm_diary_draft_set` / `llm_diary_draft_faircopy_get`）、既定タスク 2 つ（毎日 22:00 の聞き取り `task_hearing_diary`・毎日 03:30 に notes の `diary/` へ清書を書く `task_write_diary`）、会話向けのプロンプト（ja / en）、ダッシュボードで編集する設定（テンプレート・日付の切り替わり時刻・清書の保存先とパス）を持つ。ツールとタスクの YAML は同梱している
+  - `LILLA_EXTENSIONS` に `diary`（または `lilla_core.extensions.diary`）を並べると読み込む。通常会話で使うには `tools.sets.main` に `llm_diary_draft_get` / `llm_diary_draft_set` を並べる
+  - lilla-agent の `diary` 拡張を移したもので、拡張名・設定の節・コレクション・notes の置き場所は同じ。ツールが返すエラーとダッシュボードに出る設定の検証の文言は英語にした
+  - 説明は `docs/ja/diary.md`
+- ダッシュボードに Jinja2 テンプレートの共通入力部品を足し、スキルの本文の追加欄・編集欄と拡張のプロンプトの上書き欄で使うようにした（#352）。
+  - 「Jinja2 テンプレート」の表示と変数の一覧（`current_hour`、拡張のプロンプトでは秘匿値を除く `settings.名前` も）を出し、クリックで差し込める
+  - 入力中に（約 0.4 秒待ってから）保存時と同じ試しの展開を行い、エラー（構文エラーは行番号つき）か展開後のプレビューを出す。`{# … #}` で消える部分も行番号つきで並べる
+  - プレビュー用の API `POST /api/admin/prompt-preview`（ログイン必須。本文は保存しない）を足した。展開は保存時の検査と同じ関数（`services/prompt_template.py` の `preview_skill_prompt()` / `preview_extension_prompt()`）で行う
+  - 部品は `dashboard/jinja-editor.js` の `Alpine.data('jinjaEditor', …)`。使い方は `docs/ja/dashboard.md`
+  - 保存の形式と保存時の検査の合否は変えていない
+
+### Changed
+
+- **BREAKING**: ダッシュボードのナビを整理した（#363）。
+  - 組み込みの画面のラベルを日本語にした（ホーム / 会話 / メモ / スキル / 使用量、右上のメニューはログ / 設定 / ログアウト）
+  - 管理画面 Extensions（`#/admin/extensions`）を **設定**（`#/settings`）に置き換えた。左のメニューで「全般」・標準機能（今は ノート、`#/settings/notes`）・「拡張機能」（`#/settings/extensions`。設定する項目の無いものも含むすべての拡張の一覧。公式拡張パックには「公式」の印）を切り替え、各拡張の設定は `#/settings/extensions/{name}` で開く
+  - 拡張の画面と設定の画面を相互にリンクした（`GET /api/dashboard/nav` の拡張の項目に `settings_hash` を足した）
+  - `GET /api/admin/extensions` は編集できない拡張も含むすべての拡張を返し、各要素に `display_name` / `kind` / `settings_hash` / `page_hash` を足した
+  - 拡張の名前 `settings` を予約名に加えた
+  - 移行手順: 古いハッシュ `#/admin/extensions` の別名は置いていない（開くとホームへ戻る）。ブックマークは `#/settings` に張り直す。API のパスは変えていない
+
+- **BREAKING**: スキルに「LLM から呼べるか」のフラグ `llm_callable`（真偽値）を足し、`llm_load_skill` で読み込めるスキルと
+  システムプロンプトのスキル一覧を、有効かつ `llm_callable` が `true` のものだけにした。`false` のスキルは `!skill` での手動呼び出し専用になる
+  - 未設定（このフラグを持たない既存のスキル）は LLM から呼べない扱いにする（互換の読み替えはしない）。LLM に読み込ませたい既存のスキルは、
+    ダッシュボードの Skills 画面で「LLM から呼べる」をオンにし直す（`llm_load_skill` を使っていなければ対応は不要）
+  - `POST /api/skills` と `PATCH /api/skills/{id}` が `llm_callable`（真偽値。POST で省略すると `false`）を受け付けるようにした。真偽値以外は 400
+  - Skills 画面に「LLM から呼べる」のチェックボックスを足した（追加フォームと各スキル）
+  - `SkillRepository` に `get_llm_callable()` を足し、`add()` / `update()` が `llm_callable` を受け取るようにした。`llm_load_skill` は LLM から呼べないスキルを
+    `tool.load_skill.manual_only` の文言でエラーにする
+  - `!skill`（呼び出し・一覧）と、拡張が使う `get_enabled()` の挙動は変えていない
+
+- **BREAKING**: 拡張のプロンプトの上書き（`extension_overrides` の `prompt`）を、「デフォルトプロンプトに追加」と「デフォルトプロンプトを置き換える」から選べるようにした（#312）。
+  - 保存形式を文字列 1 つから `{"mode": "append" | "replace", "text": 文字列}` に変えた。保存するのはモードと入力した本文だけで、デフォルトとの合成は実行時に行う。`append` はその拡張自身の `default_prompt()`（`ui.locale` で選んだもの）と入力した本文を、それぞれ独立した Jinja2 テンプレートとして展開してから空行区切りでつなぐため、拡張のデフォルトの更新や `ui.locale` の変更に追従する（追加分から既定側の `{% set %}` やマクロは参照できない）。`replace` は入力した本文だけを使い、空文字は従来どおり「注入しない」
+  - `PATCH /api/admin/extensions/{name}/overrides` の `prompt` は `{"mode", "text"}` か `null`（解除）になった。文字列・未知のモードやキー・型の違いは 400。保存時の構文チェックと試し展開は、どちらのモードでも入力した本文だけが対象
+  - `GET /api/admin/extensions/{name}` の `prompt` から `override` を外し、`mode` / `text` を足した。`effective` はデフォルトと入力した本文を展開前のまま空行でつないだ表示用の本文
+  - ダッシュボードにプロンプトの上書きの共通入力部品（`dashboard/prompt-override-editor.js` の `Alpine.data('promptOverrideEditor', …)`）を足し、Extensions 画面のプロンプトの欄で使うようにした。追加モードのときだけ入力欄の上にデフォルトの本文（言語つき・読み取り専用）を出し、従来の欄の下の折りたたみの「デフォルト」欄はなくした。`jinjaEditor` とプレビュー API は変えていない
+  - 移行手順: 以前の形式（文字列）の上書きは読み替えず、不正な値として扱って WARNING を出しデフォルトを使う（自動では移行しない）。残っている場合は Extensions 画面で上書きを保存し直すか、「デフォルトに戻す」を押す
+- **BREAKING**: `lilla.yaml` の `tools.sets.main` を必須にした（#354）。
+  - `tools:` 節・`tools.sets`・`sets.main` のどれかが無いと、起動時に設定エラーで落ちる。これまでは `main` が無いと黙って「ツールなし」になり、通常会話・`task_scheduled_llm` / `llm_expert` の `$main` がエラーも出さずにツール無しで動いていた
+  - ツール無しで動かすなら `main: []` と書く（空のリストは許す）。`$main` の展開で `main` が無いときに空として扱う分岐は消した
+  - テスト用ヘルパー `lilla_core.testing.write_minimal_lilla_yaml()` が書く最小構成に `tools.sets.main: []` を足した
+  - 移行手順: `main` を書いていない `lilla.yaml` に `tools:` / `sets:` / `main: []`（または通常会話で使うツールの stem）を足す。テストで `lilla.yaml` を自前で書いている場合も同じ
+- **BREAKING**: 運用者が書くプロンプト全般を Jinja2 のテンプレートとして展開するようにした（#350）。
+  - 対象は `prompt.system` / `prompt.conversation` / `prompt.discord`・LLM プロバイダーの `prompt`・`llm_expert` / `task_scheduled_llm` の `prompt`・拡張の `client_prompt_providers()` が返した本文・スキルの本文（`!skill` と `llm_load_skill`）・拡張のプロンプト。会話履歴・ユーザーメモ・ツール結果・`!skill` の追加指示・スキルの名前と説明などのデータは展開しない
+  - どのプロンプトにも共通の変数 `current_hour`（今の日時を `ui.timezone` で `YYYY-MM-DD HH:xx` にした文字列。例 `2026-11-14 20:xx`）を渡す。拡張のプロンプトにはこれまでどおり `settings` も渡す。展開の処理は `services/prompt_template.py` の `render_template()` 1 つにまとめ、失敗時に元の本文を使う入口として `render_or_raw()` を足した
+  - 展開に失敗したら（構文エラー・未定義の名前など）、どのプロンプトかを含む WARNING を出して展開前の本文をそのまま使う（会話・タスクは止めない）
+  - ダッシュボードの Skills 画面でスキルを追加・編集するときは本文を試しに展開し、展開できなければ 400 で保存しない
+  - **`task_scheduled_llm` の `{{now}}` の置き換えを廃止した**。`{{now}}` は未定義の名前として展開に失敗し、WARNING を出して `{{now}}` が残ったまま LLM へ渡る。移行手順: プロンプトの `{{now}}` を `{{ current_hour }}` に書き換える（分までは入らなくなる）。あわせて、既存のプロンプト・スキルに `{{` / `{%` / `{#` が文字として含まれていないかを確かめ、含まれていれば `{% raw %}…{% endraw %}` で囲む
+- ノート置き場 `notes` の書き込めるトップレベルディレクトリを、拡張が宣言できるようにした（#343）。
+  - `Extension` に `notes_directories()` を追加した（既定は空）。「ディレクトリ名 → `{"ja": 用途, "en": 用途}`」を返すと、そのディレクトリの配下へ書ける。名前の形（ノートのパスの要素 1 つ）・用途の形が不正なものと、notes の `user` やほかの拡張と重なる名前は起動時に落ちる
+  - notes 自身が持つ許可リストは `user/` だけになり、**`diary/` を外した**。`diary/` へ書く拡張（日記の拡張など）は `notes_directories()` で `diary` を宣言しないと書き込みが失敗する（既存の `diary/` のノートは読み取り・一覧・検索・削除ができる）
+  - 許可リストは `user/` と、ロード済みの拡張が宣言したディレクトリを合わせたもの。パスの検証・notes のデフォルトのプロンプト・エラー文はこれを使う。プロンプトの用途の説明には具体的なファイルのパスやパスの形を書かない
+  - `lilla_core/extensions/notes/paths.py` の `WRITABLE_TOP_LEVEL_DIRS` は無くなり、notes 自身の分は `CORE_WRITABLE_TOP_LEVEL_DIRS`、合わせた許可リストは `writable_top_level_dirs()` で読む。宣言の一覧は `core/extension.py` の `get_notes_directories()` で引ける
+  - エラー文・ツールの説明のパスの例を `user/memo.md` にした
+- ノート置き場 `notes` のルート直下への新規作成を禁止し、書き込めるトップレベルディレクトリを `diary/` と `user/` に限った（#341）。
+  - ルート直下のファイルと、許可リストに無いトップレベルディレクトリへの書き込み（作成・上書き・追記・直前の版への復元）は、LLM ツール・ダッシュボード・保存先 `notes` のどこからでもパスの誤りとして失敗する。`diary/` と `user/` の配下は人も LLM もこれまでどおり書ける
+  - 既存のルート直下のファイルは読み取り・一覧・検索ができ、ダッシュボードから削除できる（自動では移さない）
+  - 許可リストは `lilla_core/extensions/notes/paths.py` の `WRITABLE_TOP_LEVEL_DIRS` だけに持つ（設定項目・拡張からの登録 API は無い。#343 で拡張が宣言する形に変えた）
+  - notes 拡張にデフォルトのプロンプト（`ja` / `en`）を足した。ルート直下へは書けないことと書けるディレクトリを許可リストから組み立てて伝え、`client_type` が `task` 以外の会話に入る
+- ノート置き場 `notes` の保存先を MongoDB から、ディスク上の bare Git リポジトリ（dulwich。作業ツリーなし）に変えた（#338）。
+  - 置き場所は新しい設定 `extensions.notes.repo_path`（絶対パス。既定 `/app/data/notes.git`）。無いか空のディレクトリなら起動時に `main` を持つ bare リポジトリを作る。読み取り専用のコンテナでは、書き込めるボリュームをマウントする必要がある
+  - リポジトリを開けなくてもボットは止めず、ERROR ログを出して起動を続ける（ノートの操作だけがそのつど失敗する）
+  - 1 回の書き込みが 1 コミットになり、作成・更新日時はコミットの時刻から決める。書き込みは 1 つずつ順番に処理する。検索は最新の `main` を順に読む部分一致
+  - 「直前の版」は、そのファイルを最後に変えたコミットの 1 つ前の内容を Git から読む。復元も新しいコミットとして書く。LLM ツール・ダッシュボードの API・保存先 `notes` の形は変わらない
+  - `notes` / `notes_history` コレクションは使わなくなった（データの移行はしない）。`extensions.notes.history_retention_days` は廃止し、残っていると消すよう案内して起動時に落ちる
+  - 新しい設定 `extensions.notes.deletion_alert_lines`（既定 50）。上書き・削除・復元で消える行がこの数以上なら、WARNING ログとエラー通知チャンネルへ、パス・行数・コミットのハッシュと差分の `.patch` 添付で知らせる（書き込みは止めない）
+  - 依存に `dulwich` を追加した
+- `core/error_notify.py` に、エラーではない知らせをエラー通知チャンネルへ送る `notify_warning(bot, message, *, attachment_name=None, attachment_text=None)` を追加した（WARNING ログつき・テキストの添付可・例外は投げない）
+- ノート置き場 `notes` を、`LILLA_EXTENSIONS` に並べたときだけ有効な公式拡張パックの拡張から、常に有効な標準機能にした（#333）。
+  - `load_extensions()` が `LILLA_EXTENSIONS` によらず notes を先頭に読み込む（設定 `extensions.notes`・保存先 `notes`・ダッシュボードの
+    「ノート」画面・`notes` / `notes_history` の初期化が常に有効）。他の拡張は `requires` を書かずに notes がある前提で使える
+  - `LILLA_EXTENSIONS` に `notes` / `lilla_core.extensions.notes` が残っていても起動は失敗せず、二重には読み込まずに WARNING を出して
+    読み飛ばす（列挙は外してよい）
+  - LLM ツール（`llm_notes_*`）は従来どおり YAML を置いたものだけ有効で、引数・戻り値も変わらない。パッケージは `lilla_core.extensions.notes` のまま
+  - 読み込む拡張の一覧（`load_extensions()` / `get_extensions()` の戻り値）の先頭に、常に `notes` が入る
+
+### Added
+
+- 拡張のプロンプト（`default_prompt()` のデフォルトと、ダッシュボードで保存した上書き）を Jinja2 のテンプレートとして展開するようにした（#346）。
+  - テンプレートに渡す変数は `settings` だけで、中身はその拡張の画面管理の設定（`settings_model()`）を会話ごとに読み直したもの。`SecretStr` / `SecretBytes` の値は入れ子の中も含めて除く。設定を持たない拡張は DB を読まずに空にする。`settings` は読み取り専用の入れ物で、項目名が `items` / `get` などの dict のメソッド名と同じでも `settings.名前` は値を返す
+  - 展開はサンドボックス（`SandboxedEnvironment`）で、自動エスケープなし・未定義の名前は失敗（`StrictUndefined`）・末尾の改行は残す。設定値の中の波括弧はもう一度展開しない
+  - 展開に失敗したら拡張名を含む WARNING ログを出し、展開前の本文をそのまま注入する（会話は止めない）。展開後が空白だけなら注入しない
+  - **既存のデフォルトや上書きに `{{` / `{%` / `{#` が文字として含まれていると、展開に失敗して展開前のまま注入され、WARNING が出続ける**。文字として書くなら `{% raw %}` で囲む。`notes_directories()` の用途の文も notes のプロンプトとして展開されるため、これらを書かない
+  - ダッシュボードの Extensions 画面でプロンプトの上書きを保存するときは、構文と、今の設定での試しの展開を確かめ、通らなければ 400 で保存しない（設定を読めなければ構文だけ）。詳細の `prompt` に `settings.名前` で使える名前の一覧（`template_variables`）を足した
+  - 依存に `jinja2` を追加した
+
+- ノート置き場 `notes` の bare Git リポジトリを、共有 HTTP サーバーの `/notes.git` から Git の smart HTTP で clone / fetch / push できるようにした（#345）。
+  - 認証は共有 HTTP サーバーの Bearer トークン。Git からは `http.extraHeader` で `Authorization: Bearer <token>` を付ける。有効 / 無効の設定と、読み取り・書き込みの権限の区別は持たない（共有 HTTP サーバーを信頼できるネットワークだけで listen させる前提。理由は `docs/ja/notes.md`）
+  - push は通常の書き込みと同じロックで直列化し、`refs/heads/main` の fast-forward だけを受け付ける。push に含まれる全コミットの追加・変更したファイルに、通常の書き込みと同じパスの規則・書けるトップレベルディレクトリ・本文の上限をかけ、通常ファイル・UTF-8 のテキストに限る。1 つでも満たさなければ push 全体を断り、理由は `git push` の出力に出る
+  - push で消えた行の合計が `deletion_alert_lines` 以上なら、通常の書き込みと同じ大量削除の通知を出す（複数ファイルのときの文言は `notes.alert.large_deletion_files`）
+- ダッシュボードの拡張設定（`settings_model()`）の汎用フォームに、選択肢から複数を選ぶ入力部品（チェックボックス群）を追加した（#335）。
+  - `Field` の `json_schema_extra` に `widget: "checkbox-group"` と、静的な `choices`（`{value, title}` か値だけのリスト）または
+    動的な `choices_from` を書く。最初の `choices_from` は `writable_file_storages`（`read_only` が偽の保存先）。部品は型から推測しない
+  - `describe_fields()` が `widget` / `items_type` / `choices` / `choices_from` / `supported` を返し、`build_settings_detail()` が
+    `choices_from` を今の候補へ解決する。全部オフは `[]` を明示して保存し、今の候補に無い保存値は落とさずに注意つきで残す
+  - `widget` の宣言が不正（未知の部品・スカラーの配列でない・`choices` と `choices_from` が無い／両方ある・未知の `choices_from`）な
+    `settings_model()` は拡張のロード時に落とす
+  - `widget` の無い配列・入れ子のモデルは、テキスト入力に落とさず「このフォームでは未対応」と表示する（保存時は今の値をそのまま送る）
+
+- 会話履歴 1 件の今の `reactions` を返す `ConversationRepository.get_reactions(conversation_id)` を追加した（#329）。
+  会話履歴が無ければ `ConversationNotFoundError`、`conversation_id` が ObjectId として不正な形式なら `ValueError` を送出する。
+  利用側がリポジトリの非公開属性 `_collection` を読まずに済むようにするため
+
+- 会話履歴のメッセージに付いたリアクションを保存し、LLM のコンテキストに含めるようにした（#325）。
+  - `conversations` の各ドキュメントに `reactions` 配列（`emoji`・カスタム絵文字なら `emoji_id`・`source`・`reacted_at`）を
+    保存する。同じメッセージに同じ絵文字は 1 つまで。`message.content` には混ぜない
+  - 経路に依存しない追加・削除 `lilla_core.services.reactions.add_reaction` / `remove_reaction` と、変更を受け取るフックの
+    登録 `register_reaction_hook` を追加した。対象の会話履歴が無ければ `ConversationNotFoundError` を送出し、重複した追加・
+    付いていない絵文字の削除（`False`）と区別できる。フックへ渡す `ReactionChange` は変更後のそのメッセージの
+    `reactions` 全体を持つ
+  - Discord の Bot の発言へのリアクションの追加・削除（キャッシュ外のメッセージ・DM を含む）を保存する。Bot 自身と
+    オーナー以外のリアクションは無視する。`bot_client.py` でリアクションのインテントを明示的に有効にした（特権インテントではない）
+  - `ConversationRepository.list_for_client()` の各要素に `reactions`（無ければ空配列）を含めるようにした。既存の項目の形は変えない
+  - リアクション付きのメッセージだけを絵文字で絞り込み・ページングして返す `list_reacted()` と、絵文字ごとの件数を全期間で
+    集計する `count_reactions()` を追加した。`reactions` を持つドキュメントだけの部分インデックスと、`discord_message_ids` の
+    インデックスを起動時に作る
+  - システムプロンプトの末尾に、送る会話履歴に含まれるメッセージへのリアクションだけを載せる「最近のリアクション」
+    （`## Recent Reactions`）の節を足す（対象が無ければ出さない。メッセージの ID は渡さない）
+
+- テキストファイルの保存先の共通インタフェース `lilla_core.core.file_storage.FileStorage` を追加した（#313）。
+  - `read` / `write`（`mode` は `create` / `overwrite` / `append`）/ `list` / `exists` と `read_only` を持ち、失敗は
+    `FileStorageError` の派生（パス・不在・権限・既存・テキストでない）で分かる
+  - `Extension` に `file_storages()`（「名前 → `FileStorage`」。既定は空）を追加した。名前は拡張名と同じ形で、拡張どうしの
+    重複・`FileStorage` 以外の値はロード時に落とす。利用側は `get_file_storage(name)` / `list_file_storages()` で引く
+  - `files` 拡張が、ホワイトリストのディレクトリを保存先 `files` として申告するようにした（ツールと同じ検証を通る）
+- 公式拡張パックに、MongoDB に保存する汎用のノート置き場 `notes` 拡張（`lilla_core.extensions.notes`）を追加した（#313）。
+  - `files` と同じ形の LLM ツール `llm_notes_list` / `llm_notes_read` / `llm_notes_write` / `llm_notes_search`（YAML を置いた
+    ものだけ有効）と、ダッシュボードの「ノート」画面（ツリー・閲覧・検索・編集・削除・直前の版への復元）を持つ
+  - 保存先 `notes` として `FileStorage` を申告する
+  - 上書き・削除の直前の版を `notes_history` に TTL 付きで 1 件残す。設定は任意の `extensions.notes`
+    （`max_content_chars` / `max_read_chars` / `history_retention_days`）
+
+### Changed
+
+- LLM が返したツール呼び出しは、その会話で LLM に渡したツール（`tools.sets` / `allowed_tool_names` の展開と
+  `supported_client_type` の絞り込みを経た tools パラメータ。`llm_expert` では `available_tools`）に含まれるものだけを
+  実行するようにした（#290）。これまでは読み込んだ全ツールから名前で探して実行していたため、渡していないツールの名前を
+  LLM が返す（取り違えやプロンプトインジェクション）と実行されていた。含まれない呼び出しは引数の解釈より先に弾き、
+  `execute_tool_call` を呼ばずに「ツール '{名前}' はこの会話で使えません」のエラーを tool メッセージで返して WARNING ログを
+  出す（ループは続け、`called_tool_names` には含めない）。拡張が `run_tool_loop` を直接使う場合も同じで、`tools` に
+  渡していないツールは実行されない。ツールの中から `call_tool` で別のツールを呼ぶ入れ子の呼び出しは対象外
+
+### Removed
+
+- PR のマージを外部の Webhook へ通知する GitHub Actions workflow `notify-grok-bot-merged.yml` を削除した（#330）。
+  受け取り側が GitHub の PR マージイベントを直接受け取る方式に移ったため。Secrets
+  `GROK_BOT_CORE_MERGED_WEBHOOK_URL` / `GROK_BOT_CORE_MERGED_WEBHOOK_AUTHORIZATION` も不要になった。
+  リリース通知（`release.yml`）は変わらない
+
 ## [0.8.0] - 2026-11-08
 
 ### Added

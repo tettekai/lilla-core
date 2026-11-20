@@ -102,29 +102,31 @@ _AUTH_EXEMPT_PREFIXES = ("/static/", "/oauth/")
 #: lilla-core が ``RESERVED_EXTENSION_NAMES`` で押さえているので拡張と衝突しない。
 #: ``module`` が None のものは ``index.html`` に DOM を持つ組み込み画面。
 _BUILTIN_PAGES: tuple[dict, ...] = (
-    {"name": "home", "label": "Home", "group": "main", "hash": "#/", "module": None},
+    {"name": "home", "label": "ホーム", "group": "main", "hash": "#/", "module": None},
     {
         "name": "conversations",
-        "label": "Conversations",
+        "label": "会話",
         "group": "main",
         "hash": "#/conversations",
         "module": None,
     },
-    {"name": "memos", "label": "Memos", "group": "main", "hash": "#/memos", "module": None},
-    {"name": "skills", "label": "Skills", "group": "main", "hash": "#/skills", "module": None},
-    {"name": "usage", "label": "Usage", "group": "main", "hash": "#/usage", "module": None},
+    {"name": "memos", "label": "メモ", "group": "main", "hash": "#/memos", "module": None},
+    {"name": "skills", "label": "スキル", "group": "main", "hash": "#/skills", "module": None},
+    {"name": "usage", "label": "使用量", "group": "main", "hash": "#/usage", "module": None},
     {
         "name": "logs",
-        "label": "Admin",
+        "label": "ログ",
         "group": "admin",
         "hash": "#/admin/logs",
         "module": None,
     },
+    # 設定画面は #/settings の下にサブ画面（全般・標準機能・拡張機能）を持つ。
+    # 下の階層のハッシュはフロントが ``#/settings`` からの接頭辞で解決する。
     {
-        "name": "extensions",
-        "label": "Extensions",
+        "name": "settings",
+        "label": "設定",
         "group": "admin",
-        "hash": "#/admin/extensions",
+        "hash": "#/settings",
         "module": None,
     },
 )
@@ -555,6 +557,7 @@ async def handle_api_skills(request: web.Request) -> web.Response:
 
     ``name`` はスキル名の規則（半角英数字・``_``・``-`` のみ、64 文字以内）に合わなければ
     400 で、小文字に正規化して保存する。同名（大文字小文字を区別しない）が既にあれば 409。
+    ``llm_callable``（LLM から呼べるか。真偽値）は省略すると ``False``（手動専用）。
     """
     from lilla_core.repository.skill_repository import get_skill_repo
 
@@ -581,18 +584,98 @@ async def handle_api_skills(request: web.Request) -> web.Response:
         return web.Response(status=400, text=error)
     if not prompt:
         return web.Response(status=400, text="prompt is required")
+    error = _check_skill_prompt(prompt)
+    if error:
+        return web.Response(status=400, text=error)
 
-    doc = await repo.add(name, description or "", prompt)
+    llm_callable = body.get("llm_callable", False)
+    if not isinstance(llm_callable, bool):
+        return web.Response(status=400, text="llm_callable must be a boolean")
+
+    doc = await repo.add(name, description or "", prompt, llm_callable)
     if doc is None:
         return web.Response(status=409, text="Skill name already exists")
     return web.json_response(_serialize_doc(doc), status=201)
+
+
+def _check_skill_prompt(prompt: str) -> str | None:
+    """スキルの本文を Jinja2 テンプレートとして試しに展開し、失敗の理由を返す。
+
+    実行時と同じ変数（`current_hour`）で展開するため、構文エラーに加えて未定義の名前
+    （通った分岐の中だけ）も見つかる。
+
+    Returns:
+        展開できなければエラーの文言。展開できれば None。
+    """
+    from lilla_core.services.prompt_template import PromptTemplateError, preview_skill_prompt
+
+    try:
+        preview_skill_prompt(prompt)
+    except PromptTemplateError as e:
+        return f"Invalid prompt template: {e}"
+    return None
+
+
+async def handle_api_prompt_preview(request: web.Request) -> web.Response:
+    """POST /api/admin/prompt-preview - Jinja2 テンプレートを試しに展開して返す（保存しない）。
+
+    ボディは ``{"text": str, "target": {"type": "skill"}}`` か
+    ``{"text": str, "target": {"type": "extension", "name": str}}``。展開には保存時の検査と
+    同じ関数（スキルは `preview_skill_prompt()`、拡張のプロンプトは
+    `preview_extension_prompt()`）を使い、スキルの本文は保存時と同じく前後の空白を除いてから
+    展開する。成功なら 200 で ``{"rendered", "comments", "settings_unavailable"}``
+    （設定を読めず試しの展開を飛ばしたときは ``rendered`` が null）、展開できなければ
+    400 で ``{"error": 理由}``（構文エラーは行番号つき）。
+    """
+    from lilla_core.services.extension_overrides import default_prompts_of, find_extension
+    from lilla_core.services.prompt_template import (
+        PromptTemplateError,
+        preview_extension_prompt,
+        preview_skill_prompt,
+    )
+
+    body, ok = await parse_json_body(request)
+    if not ok or not isinstance(body, dict):
+        return web.json_response({"error": "Invalid JSON body"}, status=400)
+    text = body.get("text")
+    if not isinstance(text, str):
+        return web.json_response({"error": "text must be a string"}, status=400)
+    target = body.get("target")
+    if not isinstance(target, dict):
+        return web.json_response({"error": "target must be an object"}, status=400)
+
+    target_type = target.get("type")
+    try:
+        if target_type == "skill":
+            preview = preview_skill_prompt(text.strip())
+        elif target_type == "extension":
+            name = target.get("name")
+            if not isinstance(name, str) or find_extension(name) is None:
+                return web.json_response({"error": "Extension is not loaded"}, status=404)
+            if default_prompts_of(name) is None:
+                return web.json_response(
+                    {"error": f"Extension '{name}' has no default prompt"}, status=404
+                )
+            preview = await preview_extension_prompt(name, text)
+        else:
+            return web.json_response(
+                {"error": "target.type must be 'skill' or 'extension'"}, status=400
+            )
+    except PromptTemplateError as e:
+        return web.json_response({"error": str(e)}, status=400)
+
+    return web.json_response({
+        "rendered": preview.rendered,
+        "comments": [{"line": c.line, "text": c.text} for c in preview.comments],
+        "settings_unavailable": preview.settings_unavailable,
+    })
 
 
 async def handle_api_skill_detail(request: web.Request) -> web.Response:
     """PATCH /api/skills/{id} - スキルを更新する。DELETE /api/skills/{id} - スキルを削除する。
 
     PATCH はボディに含まれたフィールド（``name`` / ``description`` / ``prompt`` /
-    ``enabled``）だけを更新する。
+    ``enabled`` / ``llm_callable``）だけを更新する。
     """
     from lilla_core.repository.skill_repository import SkillUpdateResult, get_skill_repo
 
@@ -627,13 +710,25 @@ async def handle_api_skill_detail(request: web.Request) -> web.Response:
         return web.Response(status=400, text=error)
     if prompt is not None and not prompt:
         return web.Response(status=400, text="prompt must not be empty")
+    if prompt is not None:
+        error = _check_skill_prompt(prompt)
+        if error:
+            return web.Response(status=400, text=error)
 
     enabled = body.get("enabled")
     if enabled is not None and not isinstance(enabled, bool):
         return web.Response(status=400, text="enabled must be a boolean")
+    llm_callable = body.get("llm_callable")
+    if llm_callable is not None and not isinstance(llm_callable, bool):
+        return web.Response(status=400, text="llm_callable must be a boolean")
 
     result = await repo.update(
-        skill_id, name=name, description=description, prompt=prompt, enabled=enabled
+        skill_id,
+        name=name,
+        description=description,
+        prompt=prompt,
+        enabled=enabled,
+        llm_callable=llm_callable,
     )
     if result is SkillUpdateResult.NOT_FOUND:
         return web.Response(status=404, text="Skill not found")
@@ -1059,17 +1154,28 @@ async def handle_api_logout(request: web.Request) -> web.Response:
 async def handle_api_dashboard_nav(request: web.Request) -> web.Response:
     """GET /api/dashboard/nav - ナビに並べる画面のカタログを返す。
 
-    組み込みの 5 画面に、拡張が ``Extension.dashboard_page()`` で申告したページを
+    組み込みの 7 画面に、拡張が ``Extension.dashboard_page()`` で申告したページを
     ロード順で足して返す。経路（ハッシュ・API 接頭辞・JS モジュール URL）は
     lilla-core が ``Extension.name`` から導出したものをそのまま載せ、ここでも
-    フロントでも組み立て直さない。
+    フロントでも組み立て直さない。拡張のページには、設定画面に編集する項目が
+    あればそのハッシュを ``settings_hash`` に載せる（無ければ ``None``）。画面の
+    見出しの「設定」リンクに使う。
 
     Args:
-        request: aiohttp のリクエスト（未使用）。
+        request: aiohttp のリクエスト。
 
     Returns:
         ``{"pages": [...]}`` の JSON レスポンス。
     """
+    from lilla_core.handlers.dashboard_extensions import TOOLS_KEY
+    from lilla_core.services.extension_overrides import list_editable
+
+    tools = request.app.get(TOOLS_KEY) or {}
+    settings_hashes = {
+        item["name"]: item["settings_hash"]
+        for item in list_editable(tools)
+        if item["editable"]
+    }
     pages: list[dict] = [dict(page) for page in _BUILTIN_PAGES]
     for entry in get_dashboard_pages():
         pages.append(
@@ -1080,6 +1186,7 @@ async def handle_api_dashboard_nav(request: web.Request) -> web.Response:
                 "hash": entry.hash,
                 "module": entry.module_url,
                 "api_prefix": entry.api_prefix,
+                "settings_hash": settings_hashes.get(entry.name),
             }
         )
     return web.json_response({"pages": pages})
@@ -1156,6 +1263,7 @@ async def start_dashboard_server(tools: dict | None = None) -> None:
     app.router.add_post("/api/skills", handle_api_skills)
     app.router.add_patch("/api/skills/{id}", handle_api_skill_detail)
     app.router.add_delete("/api/skills/{id}", handle_api_skill_detail)
+    app.router.add_post("/api/admin/prompt-preview", handle_api_prompt_preview)
     app.router.add_get("/api/dashboard/nav", handle_api_dashboard_nav)
     app.router.add_get("/api/dashboard/status", handle_api_dashboard_status)
     app.router.add_get("/api/usage", handle_api_usage)

@@ -14,6 +14,7 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [登録チャンネル](channels.md) — `discord.channels`
 - [部屋のノート（深夜要約）](channel-notes.md)
 - [会話履歴の部屋名検索](history-search.md)
+- [メッセージへのリアクション](reactions.md) — 保存形式、Discord、取得、LLM への渡し方
 - [スケジュール実行で LLM に委譲する通知](scheduled-llm.md)
 - [外部スケジューラとの連携](external-scheduler.md) — `scheduler.enabled` と `GET /api/tasks`
 - [タイムゾーン](timezone.md) — `ui.timezone`
@@ -28,11 +29,14 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [LLM のトークン使用量の記録](llm-usage.md) — `llm.usage_log` と、ダッシュボードの Usage 画面
 - [観測用ダッシュボード](dashboard.md) — 公開面への注意を含む
 - [スキル](skills.md) — `!skill` と、ダッシュボードの Skills 画面
+- [プロンプトのテンプレート（Jinja2）](prompt-template.md) — `{{ current_hour }}` と、展開するプロンプトの範囲
 - [共有 HTTP サーバー](http-server.md) — `http:`、Bearer トークン、拡張からのルート追加
 - [ツール契約](tools.md) — LLM ツール・task ツール・組み込みツール
 - [判定ヘルパー（Jev）](jev.md) — 任意の `lilla_core.tool_support.jev`
 - [Google OAuth / Calendar / Drive（公式拡張パック）](google.md) — `lilla_core.extensions` の同梱拡張
 - [ローカルのファイル読み書き（公式拡張パック）](files.md) — `lilla_core.extensions.files`
+- [日記（公式拡張パック）](diary.md) — `lilla_core.extensions.diary`
+- [ノート置き場（標準機能）](notes.md) — 常に有効な `notes`（`lilla_core.extensions.notes`）
 
 ## 拡張
 
@@ -43,6 +47,7 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [拡張のタスクの上書き](extension-task-override.md) — `extension_overrides` の `tasks`（`schedule` / `enabled`）
 - [画面で管理する拡張の設定](extension-settings.md) — `settings_model()` と `extension_settings`
 - [ダッシュボードへの差し込み](extension-dashboard.md)
+- [保存先の共通インタフェース（FileStorage）](file-storage.md) — `file_storages()` と `get_file_storage()`
 - [拡張のテストの書き方](extension-testing.md) — `lilla_core.testing`
 
 ## リポジトリ

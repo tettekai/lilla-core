@@ -1,0 +1,4 @@
+# 日記の清書（既定は毎日 03:30）。notes の diary/ の下へ書く（書くかどうかとパスはダッシュボードの
+# diary の設定 faircopy_storage / faircopy_path）。
+# 既定値は task_diary_faircopy.py が持つ
+type: task_diary_faircopy
