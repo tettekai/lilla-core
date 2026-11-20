@@ -8,7 +8,6 @@ from __future__ import annotations
 import importlib
 import sys
 from datetime import datetime
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 

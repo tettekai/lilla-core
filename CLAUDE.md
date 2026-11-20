@@ -167,7 +167,9 @@ lilla-core は拡張が一切登録されていない状態でも Discord bot �
 - コードを変更したら、タスク終了前に必ず以下を実行して確認すること
 - `pytest tests/`（このリポジトリ直下。`pyproject.toml` の `pythonpath = ["src"]` により
   `lilla_core` を解決する）
-- テストが失敗した場合は修正してから完了とすること
+- `ruff check .`（設定は `pyproject.toml` の `[tool.ruff]`。`target-version` はサポートする最低版の
+  `py312` で、3.12 で使えない構文を拾う）
+- テストや `ruff check` が失敗した場合は修正してから完了とすること
 - `src/lilla_core/api`, `src/lilla_core/repository` 配下のソースはテストクラスを作らないこと。
   それ以外のソースはテストクラスを作ること
 

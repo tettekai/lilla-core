@@ -4,6 +4,7 @@
       "Bash(python -m pytest*)",
       "Bash(python -m py_compile*)",
       "Bash(mypy*)",
+      "Bash(ruff check*)",
       "Bash(pip install*)"
     ],
     "deny": [

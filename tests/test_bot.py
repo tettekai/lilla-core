@@ -365,7 +365,6 @@ def discord_bot(
     _unload_module("lilla_core.handlers.interaction_handler")
     _unload_module("lilla_core.handlers.message_handler")
     from lilla_core import bot as discord_bot_mod
-    import lilla_core.bot_client  # noqa: F401
 
     lilla_core.handlers.message_handler._memory_manager = mock_memory_manager_instance
     discord_bot_mod.bot.user.mentioned_in.return_value = MagicMock()
