@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -58,15 +59,62 @@ class TestTargets:
         assert svc.task_entries_of("diary", None) == {}
 
     def test_list_editable_marks_extensions(self, registered, tools) -> None:
-        """プロンプトかタスクを持つ拡張だけが編集できる。"""
+        """編集する項目の無い拡張も含めて全件を返し、プロンプトかタスクを持つものだけが編集できる。"""
         items = {item["name"]: item for item in svc.list_editable(tools)}
 
         assert items["diary"] == {
-            "name": "diary", "has_prompt": True, "task_count": 2, "has_settings": False, "editable": True,
+            "name": "diary",
+            "display_name": "diary",
+            "kind": "external",
+            "has_prompt": True,
+            "task_count": 2,
+            "has_settings": False,
+            "editable": True,
+            "settings_hash": "#/settings/extensions/diary",
+            "page_hash": None,
         }
         assert items["habits"]["editable"] is True
         assert items["habits"]["has_prompt"] is False
         assert items["plain"]["editable"] is False
+
+    def test_list_editable_uses_display_name_and_page_hash(
+        self, make_extension, use_extensions
+    ) -> None:
+        """表示名は `display_name()`、画面を出す拡張はそのハッシュを返す。"""
+        from lilla_core.core.extension import DashboardPage
+
+        use_extensions(
+            make_extension(
+                "habits",
+                display_name="習慣",
+                dashboard_page=DashboardPage(label="習慣", group="main"),
+                dashboard_static_dir=Path(__file__).parent,
+            )
+        )
+
+        (item,) = svc.list_editable({})
+
+        assert item["display_name"] == "習慣"
+        assert item["page_hash"] == "#/habits"
+
+    def test_kind_and_settings_hash_follow_the_module(self) -> None:
+        """標準機能は全般と同じ並び、公式拡張パックとそれ以外は拡張機能の下に置く。"""
+        from lilla_core.core.extension import Extension
+
+        def _ext(module: str, name: str):
+            cls = type("Ext", (Extension,), {"__module__": module, "name": name})
+            return cls()
+
+        builtin = _ext("lilla_core.extensions.notes", "notes")
+        official = _ext("lilla_core.extensions.diary", "diary")
+        external = _ext("habits", "habits")
+
+        assert [svc.extension_kind(e) for e in (builtin, official, external)] == [
+            "builtin", "official", "external",
+        ]
+        assert svc.settings_hash_of(builtin) == "#/settings/notes"
+        assert svc.settings_hash_of(official) == "#/settings/extensions/diary"
+        assert svc.settings_hash_of(external) == "#/settings/extensions/habits"
 
     def test_find_extension(self, registered) -> None:
         """ロード済みの拡張だけを見つける。"""

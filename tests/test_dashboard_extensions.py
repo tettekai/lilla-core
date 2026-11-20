@@ -149,6 +149,23 @@ class TestList:
         assert items["diary"]["editable"] is True
         assert items["diary"]["task_count"] == 1
         assert items["plain"]["editable"] is False
+        assert items["plain"]["settings_hash"] == "#/settings/extensions/plain"
+
+
+class TestGeneral:
+    """GET /api/admin/settings/general"""
+
+    async def test_returns_general_settings(self, client, monkeypatch) -> None:
+        """全般の内容（`build_general_settings()` の結果）をそのまま返す。"""
+        monkeypatch.setattr(
+            "lilla_core.services.general_settings.build_general_settings",
+            lambda: {"ui": {"locale": "ja"}},
+        )
+
+        res = await client.get("/api/admin/settings/general")
+
+        assert res.status == 200
+        assert await res.json() == {"ui": {"locale": "ja"}}
 
 
 class TestDetail:

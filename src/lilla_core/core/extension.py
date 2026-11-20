@@ -181,6 +181,7 @@ RESERVED_EXTENSION_NAMES = frozenset(
         "usage",
         "logs",
         "extensions",
+        "settings",
     }
 )
 
@@ -443,6 +444,16 @@ class Extension:
     #: `LILLA_EXTENSIONS` 上で自分より後ろに並んでいる場合はロード時に fail-fast する。
     #: コアは順序を並べ替えないため、利用者が正しい順に並べる。
     requires: tuple[str, ...] = ()
+
+    def display_name(self) -> str | None:
+        """ダッシュボードの設定画面に出す、この拡張の表示名を返す（`None` なら `name`）。
+
+        設定画面の一覧と見出しに使う。拡張の画面のタブは `dashboard_page()` の
+        `DashboardPage.label` のままで、ここでは変わらない。メソッドなので呼ばれる
+        たびに評価され、`lilla_core.ui.messages.t()` の戻り値を返してもよい。
+        空文字・文字列以外を返すとロード時に落とす。
+        """
+        return None
 
     def config_model(self) -> type[BaseModel] | None:
         """この拡張が足す YAML セクションのモデルを返す（足さないなら `None`）。
@@ -1038,6 +1049,40 @@ def _validate_names(extensions: list[Extension]) -> None:
         seen.add(name)
 
 
+def _validate_display_names(extensions: list[Extension]) -> None:
+    """`display_name()` が `None` か空でない文字列を返すことを検証する。
+
+    Raises:
+        ValueError: 空文字・空白だけ・文字列以外を返した場合。
+    """
+    for ext in extensions:
+        value = ext.display_name()
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"Extension '{ext.name}' display_name() must return None or a non-empty string"
+            )
+
+
+def extension_display_name(ext: Extension) -> str:
+    """拡張の表示名を返す（`display_name()` が `None` なら `name`）。"""
+    value = ext.display_name()
+    return value if value is not None else ext.name
+
+
+def is_builtin_extension(ext: Extension) -> bool:
+    """標準機能（`BUILTIN_EXTENSION_MODULES` のモジュールが定義した拡張）かを返す。"""
+    return type(ext).__module__ in BUILTIN_EXTENSION_MODULES
+
+
+def is_official_extension(ext: Extension) -> bool:
+    """公式拡張パック（`lilla_core.extensions.` の下。標準機能は除く）の拡張かを返す。"""
+    if is_builtin_extension(ext):
+        return False
+    return type(ext).__module__.startswith(_OFFICIAL_EXTENSION_PACKAGE_PREFIX)
+
+
 def _validate_required(
     extensions: list[Extension], method_name: str, label: str, available: set[str]
 ) -> None:
@@ -1420,6 +1465,7 @@ def set_extensions(extensions: list[Extension]) -> None:
                 f"Expected an Extension instance, got {type(ext).__name__}"
             )
     _validate_names(extensions)
+    _validate_display_names(extensions)
     _validate_api_versions(extensions)
     _validate_removed_methods(extensions)
     _validate_requires(extensions)

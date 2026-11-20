@@ -44,7 +44,7 @@ tools:
 ## 設定
 
 `lilla.yaml` の `extensions.diary` には今は項目がありません（節ごと省略できます）。設定は
-**観測用ダッシュボード** の管理メニュー → **Extensions** → `diary` → 「設定」カードで行い、
+**観測用ダッシュボード** の右上のメニュー → **設定** → **拡張機能** → **日記** → 「設定」カードで行い、
 値は MongoDB の `extension_settings`（`diary` のドキュメント）に保存されます。下の項目を
 `lilla.yaml` の `extensions.diary` に書くと、移行先を示して起動時にエラーになります。
 
@@ -112,7 +112,7 @@ moodscore: <<moodscore>>
     （既定へ黙って置き換えません）。
 - notes に書けるのは、ロード済みの拡張が宣言したディレクトリの下だけです。`diary` を
   `LILLA_EXTENSIONS` から外すと、notes の書ける場所から `diary/` も消えます。
-- 時刻はダッシュボードの Extensions 画面の `tasks.task_write_diary`、送り先は
+- 時刻はダッシュボードの 設定画面の `tasks.task_write_diary`、送り先は
   `${CONFIG_ROOT}/tools/task_write_diary.yaml`（`type: task_diary_faircopy` と `target`）で変えます。
 
 ### ほかの書き出し先を使うとき
@@ -148,7 +148,7 @@ available_tools:
 | `available_tools` | `["$main"]` |
 
 返事は通常の会話として届き、`llm_diary_draft_set` で下書きへ反映されます。時刻の変更と定期実行の
-停止は、ダッシュボードの Extensions 画面の `tasks.task_hearing_diary` でも行えます
+停止は、ダッシュボードの 設定画面の `tasks.task_hearing_diary` でも行えます
 （[拡張のタスクの上書き](extension-task-override.md)）。
 
 ## 会話向けのプロンプト

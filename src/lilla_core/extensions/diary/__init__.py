@@ -278,6 +278,10 @@ class DiaryExtension(Extension):
 
     name = "diary"
 
+    def display_name(self) -> str:
+        """ダッシュボードの設定画面に出す表示名を返す（画面の文言に合わせて日本語の直書き）。"""
+        return "日記"
+
     def config_model(self) -> type[BaseModel]:
         """日記用の YAML セクションのモデルを返す（節名は `extensions.diary`）。"""
         return DiaryConfig

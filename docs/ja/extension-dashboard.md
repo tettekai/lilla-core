@@ -41,11 +41,27 @@ SPA はタブを開いたときにこれを `import()` し、`mount(el, ctx)` �
 離れるときは `unmount()` を呼びます（`unmount` の export は任意）。`ctx` には
 `authedFetch` と `formatDate` が入ります。
 
+## 表示名と設定へのリンク
+
+`Extension.display_name()` で、ダッシュボードの設定画面（拡張機能の一覧・見出し）に出す表示名を
+返せます（既定は `None` で、そのときは `name` を使います）。返すなら空でない文字列にしてください
+（それ以外はロード時に fail-fast します）。ナビのタブのラベルは従来どおり `DashboardPage.label` です。
+
+```python
+    def display_name(self) -> str | None:
+        return "マイ拡張"
+```
+
+タブを持つ拡張が設定画面で編集できるもの（画面管理の設定・デフォルトのプロンプト・同梱した
+定期タスク）を持つときは、`GET /api/dashboard/nav` のその項目に `settings_hash`
+（`#/settings/extensions/{name}`。標準機能なら `#/settings/{name}`）が付き、SPA がタブの上に
+「⚙ 設定」のリンクを出します。逆に設定画面からは「〈表示名〉を開く」でタブへ戻れます。
+
 ## 名前とパスの検証
 
 `name` は URL にそのまま埋まるため、`^[a-z0-9][a-z0-9-]*$` に合わない名前と、
 コアが押さえている予約名（`api` / `oauth` / `static` / `admin` / `dashboard` /
-`auth` / `login` / `logout` / `setup` / `home` / `conversations` / `memos` / `skills` / `usage` / `logs`）は
+`auth` / `login` / `logout` / `setup` / `home` / `conversations` / `memos` / `skills` / `usage` / `logs` / `extensions` / `settings`）は
 ロード時に fail-fast します。ルートのパスが自分の接頭辞の外にある場合、タブを出すのに
 `dashboard_static_dir()` を返していない場合も同様です。
 
