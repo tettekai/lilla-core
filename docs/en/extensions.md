@@ -62,7 +62,7 @@ Load the module by listing it in `LILLA_EXTENSIONS`
 Contribution keys must not collide **between extensions**: duplicate `Extension.name`,
 config section names, env field names, tool context keys, result-delivery `client_type`
 keys, command names, tool file names across different roots, or shared HTTP server
-method-and-path pairs (including overlaps with core routes) all fail fast at startup
+method-and-path pairs (including overlaps with core routes), storage names (`file_storages`) or notes top-level directory names (`notes_directories`) all fail fast at startup
 rather than silently picking a winner. Client prompts and conversation start hooks are
 the exception by design: they are lists per `client_type` and are concatenated in load
 order, so several extensions can contribute to the same client.

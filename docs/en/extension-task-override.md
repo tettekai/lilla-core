@@ -35,8 +35,8 @@ db.extension_overrides.updateOne(
 )
 ```
 
-You normally edit it on the observability dashboard's **Extensions** page (admin menu,
-`#/admin/extensions`; [The observability dashboard](dashboard.md#extensions)). You can also
+You normally edit it on the observability dashboard's **Settings** page (top-right menu,
+`#/settings`; per-extension settings; [The observability dashboard](dashboard.md#extensions)). You can also
 set it directly with `mongosh` and the like as above, but then restart, or use "Re-apply" on
 the screen, for it to take effect.
 
@@ -97,7 +97,7 @@ its defaults.
 Overrides are read at startup (when the scheduler is started upon the Discord connection
 completing). They are not cached.
 
-When you save on the dashboard's Extensions page, the change is applied to the running
+When you save on the dashboard's Settings page, the change is applied to the running
 scheduler after saving, without a restart (`lilla_core.handlers.task_handler.apply_task_overrides(extension_name,
 strict=True)`). It does not watch for changes or poll, so after rewriting directly with
 `mongosh` and the like, restart or press "Re-apply" on the screen.

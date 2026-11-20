@@ -18,7 +18,7 @@ src/lilla_core/
 ├── api/                  # LLM client (Ollama / OpenAI-compatible)
 ├── repository/           # Data persistence to MongoDB
 ├── builtin_tools/        # Built-in tools shipped with the core (opt-in)
-├── extensions/           # Official extension pack (Google OAuth / Calendar; opt in via LILLA_EXTENSIONS)
+├── extensions/           # Official extension pack (opt in via LILLA_EXTENSIONS) and the built-in notes (always enabled)
 ├── tool_support/         # Opt-in helpers for tool implementations
 └── testing/              # Test helpers for extension repositories (opt-in)
 tests/                    # Unit tests (pytest)
