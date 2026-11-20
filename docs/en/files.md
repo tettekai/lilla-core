@@ -102,6 +102,14 @@ type: llm_file_search
 | `llm_file_write` | Writes `content` as UTF-8 (no BOM) only under `writable_dirs` (newlines are not converted). `mode` is `create` (fails if it exists) / `overwrite` (replaces the whole file; creates it if missing) / `append` (appends; creates it if missing). With `append`, nothing is appended if the start of the existing file cannot be read as UTF-8 text (Shift_JIS, binary, etc.), so encodings do not get mixed. Missing parent directories are created. `created` in the result tells whether the file was newly created |
 | `llm_file_search` | Searches text files under `path` (a directory or a file; empty string for everything) for lines containing `query` and returns `path` / `line` (line number) / `text` (case-insensitive). Binary files, non-UTF-8 files, files over 5 MB, and files the OS fails to read are silently skipped (with an empty string, missing directories are skipped too). More than 50 matching lines or 2,000 scanned files are truncated with `truncated: true` |
 
+## Using it as a storage (FileStorage)
+
+The `files` extension also declares the whitelisted directories as the core's
+[`FileStorage`](file-storage.md) storage `files` (`get_file_storage("files")`). Logical paths are
+the same "directory name/relative path" as in the tools, and path validation, whitelist checks
+and text detection go through the same code as the tools. If there is no writable directory at
+all, it is `read_only`.
+
 ## Safety
 
 - Paths containing `..`, absolute paths, drive names, or NUL are not accepted

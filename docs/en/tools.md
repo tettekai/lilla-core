@@ -87,8 +87,8 @@ tools:
 - Set names may only use ASCII letters, digits, `-` and `_`, and are case sensitive. The
   only reserved name is `main`. An empty name, or one containing `$` or other characters,
   makes startup fail
-- When `main` is unset there are no tools. A missing `tools.sets`, a missing `sets.main`
-  and `main: []` all mean the same thing (forgetting to write it never opens up every tool)
+- `main` is required. If the `tools:` section, `tools.sets` or `sets.main` is missing, startup
+  fails (it never silently runs without tools). To run without tools, write `main: []`
 - Expansion follows the order of appearance, and duplicates are removed keeping the first
   occurrence. The order passed to the LLM is not this order but the tool load order
 - A reference cycle (coming back to the same set while expanding it) makes startup fail.
@@ -98,6 +98,13 @@ tools:
 - Filtering by `supported_client_type` happens after expansion. A set that mixes tools for
   different client types does not fail at startup; at run time only the tools usable by
   that client type are passed
+- Tool calls returned by the LLM are executed only if they are among the tools handed to the LLM in
+  that conversation (after set expansion and `supported_client_type` filtering). If the LLM returns
+  the name of a tool that is loaded but was not handed over (a mix-up, or prompt injection making it
+  name one), it is not executed: an error "tool '{name}' is not available in this conversation" is
+  returned to the LLM as the result and a WARNING is logged. The same applies to
+  `available_tools` of `llm_expert`. Nested calls made from inside a tool with `call_tool` are not
+  subject to this restriction
 
 The `available_tools` of a scheduled LLM task
 ([`available_tools`](scheduled-llm.md#the-tool-allow-list-available_tools)) and of
@@ -180,6 +187,9 @@ prompt: dir:${config_root}/prompt/experts/health
 llm_provider: grok            # optional
 available_tools: [llm_health_get]   # tool set references such as `$main` work too
 ```
+
+The body read from `prompt` is expanded as a Jinja2 template (`{{ current_hour }}` and so on;
+[Prompt templates](prompt-template.md)).
 
 Combining `api: responses` with `grok_tools` makes a single call that uses the Responses
 API's built-in tools (`api: responses` together with `available_tools` is not supported).

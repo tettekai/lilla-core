@@ -53,8 +53,8 @@ normal conversation's `main` tool set.
 - Each entry is a tool YAML stem (such as `llm_weather`) or a
   [tool set](tools.md#tool-sets-toolssets) reference written as `$` followed by the set
   name (such as `$main`)
-- `$main` expands in place to the contents of `tools.sets.main`. When `main` is unset it
-  is empty (no tools). Other sets such as `$health` expand the same way
+- `$main` expands in place to the contents of `tools.sets.main`. `main` is a required
+  item of `lilla.yaml`; `main: []` means empty (no tools). Other sets such as `$health` expand the same way
 - An empty list `[]`, or omitting the key entirely, both mean no tools
   (the `main` set is not consulted)
 - Duplicates are removed after expansion. A stem that is not loaded, or a set name that
@@ -83,8 +83,9 @@ be usable by every task run; this setting is what limits it to the tasks that li
 
 ## What happens on each run
 
-1. `prompt` is loaded and every `{{now}}` in it is replaced with the run time (a
-   `YYYY-MM-DD HH:MM` timestamp in `ui.timezone`)
+1. `prompt` is loaded and expanded as a Jinja2 template ([Prompt templates](prompt-template.md)).
+   `{{ current_hour }}` is the run time in `ui.timezone` as `YYYY-MM-DD HH:xx`
+   (the former `{{now}}` no longer works)
 2. One LLM turn runs as a conversation with `client_type="task"`. Conversation history
    and user memos are the same ones a normal conversation sees; only the LLM tools
    allowed by `available_tools` are passed

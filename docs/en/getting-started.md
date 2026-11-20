@@ -36,7 +36,10 @@ environment variable wins). If neither sets it, `/app/config` is used.
 
 `lilla.yaml` must define at least one entry under `llm.providers`, and `llm.default`
 must match one of those provider names — otherwise startup fails with a
-`ValidationError`. For `type: resolver` entries, which pick a provider per turn, see
+`ValidationError`.
+The list of tools the LLM sees in normal conversation, `tools.sets.main`, is also required (write
+`main: []` to run without tools; see [Tools](tools.md#tool-sets-toolssets)). For `type: resolver`
+entries, which pick a provider per turn, see
 [Choosing the LLM provider per turn](llm-resolver.md).
 
 > **Privacy note:** `config.example/logging.yaml` sets the root logger to `DEBUG`.
@@ -77,6 +80,7 @@ python -m lilla_core.bot
 See [Extension basics](extensions.md) for how to write one. The official extension
 pack (under `lilla_core.extensions`) can also be referenced by its short module name
 ([Google OAuth / Google Calendar](google.md#enabling)).
+The built-in notes store ([`notes`](notes.md)) is always loaded without being written in `LILLA_EXTENSIONS`.
 
 ## Testing
 

@@ -6,7 +6,7 @@
 Of an extension's settings, those that users edit on the dashboard and use without a restart
 can be declared with `Extension.settings_model()`. The values are stored in MongoDB's
 `extension_settings`, one document per extension, and edited on the observability
-dashboard's **Extensions** page (admin menu, `#/admin/extensions`).
+dashboard's **Settings** page (top-right menu, `#/settings`; per-extension settings).
 
 ## How it differs from YAML settings and overrides
 
@@ -62,12 +62,61 @@ class DiaryExtension(Extension):
 - Having a field with the same name as one in `config_model()` is a double declaration of
   ownership and fails at load.
 - Writing a `settings_model()` field under `extensions.<section>` in `lilla.yaml` fails at
-  startup, pointing to where it moved (the dashboard's Extensions page). The YAML value is
+  startup, pointing to where it moved (the dashboard's Settings page). The YAML value is
   neither silently discarded nor used.
 - The input control on the screen follows the field's type. Currently supported are strings
-  (multi-line with `multiline`), booleans, numbers, and the unset (`None`) variant of each.
-  `title` / `description` become the screen's heading and description, and `pattern` and
-  validators are used for validation on save.
+  (multi-line with `multiline`), booleans, numbers, the unset (`None`) variant of each, and
+  the "list chosen from options" below. `title` / `description` become the screen's heading and
+  description, and `pattern` and validators are used for validation on save.
+- A type with no matching input control (an array without a `widget`, a nested model, and so
+  on) shows "not supported by this form" on the screen, and saving sends the current value back
+  unchanged. The generic form covers only flat settings without nesting. Handle nesting in a
+  per-extension page (`dashboard_page()`).
+
+### A list chosen from options (checkbox group)
+
+For a field that picks several values from fixed candidates, write `"checkbox-group"` as the
+`widget` in `json_schema_extra`. The input control is not inferred from the type, so just writing
+`list[str]` does not give you checkboxes.
+
+```python
+class DiarySettings(BaseModel):
+    # Dynamic options: choose from writable storages
+    storages: list[str] = Field(
+        default=["notes"],
+        title="清書の保存先",
+        json_schema_extra={"widget": "checkbox-group", "choices_from": "writable_file_storages"},
+    )
+    # Static options: {value, title}, or just a value (the label is the value as a string)
+    weekdays: list[int] = Field(
+        default=[1, 2, 3, 4, 5],
+        json_schema_extra={
+            "widget": "checkbox-group",
+            "choices": [{"value": 0, "title": "日"}, 1, 2, 3, 4, 5, {"value": 6, "title": "土"}],
+        },
+    )
+```
+
+- Make the field an array of scalars (string, integer, number, boolean) and write **exactly
+  one** of `choices` (static) or `choices_from` (dynamic). Neither, both, an unknown `widget` or
+  `choices_from`, or a field that is not an array fails at load.
+- `choices_from` is resolved by the core every time the screen is opened. The names available
+  now are:
+
+  | Name | Options |
+  |------|------|
+  | `writable_file_storages` | The registered storages (`Extension.file_storages()`) whose `read_only` is false (in registration order; value and label are the storage's name) |
+
+- Values are saved with their types preserved (integer options stay integers). Array fields do
+  not show an "unset" state.
+- Saving with everything unchecked saves an empty array `[]` (it does not return to the
+  initial value).
+- Saved values that are not among the current options (for example a storage that is not
+  loaded now) are not dropped: they stay checked and are labeled "not in the current options".
+  They disappear only when you uncheck them and save.
+- Validation on save is only the model's rules. The core does not refuse to save merely because
+  a value is not among the current options. Check whether an option is usable at run time on the
+  side that uses the setting (the extension).
 
 ## Reading
 
@@ -103,7 +152,7 @@ until a correct value is saved again on the screen.
 
 ## Saving
 
-Save the whole set in the "Settings" area of the dashboard's Extensions page (the API is
+Save the whole set in the "Settings" area of the dashboard's Settings page (the API is
 `PUT /api/admin/extensions/{name}/settings`, with the body `{"values": {field: value}}`).
 
 - The whole set is validated with the model and then replaced in a single write
@@ -131,4 +180,4 @@ There is no general migration mechanism. When you change the model, keep the fol
 
 - [Extension basics](extensions.md)
 - [Config composition](extension-config.md)
-- [The observability dashboard](dashboard.md#extensions)
+- [The observability dashboard](dashboard.md#settings)

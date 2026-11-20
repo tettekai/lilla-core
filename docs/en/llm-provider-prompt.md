@@ -32,6 +32,8 @@ llm:
 - If you leave it out, nothing is added (the previous behavior).
 - Like the other prompts, the content is read from disk on every call, so edits take
   effect without a restart. A missing file means nothing is added.
+- The loaded text is expanded as a Jinja2 template (`{{ current_hour }}` and so on;
+  [Prompt templates](prompt-template.md)).
 
 ## Where it goes
 
