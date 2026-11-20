@@ -161,4 +161,4 @@ async def execute(input, context):
 
 - [拡張の基本](extensions.md)
 - [設定の合成](extension-config.md)
-- [観測用ダッシュボード](dashboard.md#extensions)
+- [観測用ダッシュボード](dashboard.md#設定)

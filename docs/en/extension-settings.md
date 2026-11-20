@@ -180,4 +180,4 @@ There is no general migration mechanism. When you change the model, keep the fol
 
 - [Extension basics](extensions.md)
 - [Config composition](extension-config.md)
-- [The observability dashboard](dashboard.md#extensions)
+- [The observability dashboard](dashboard.md#settings)

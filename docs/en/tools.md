@@ -188,6 +188,9 @@ llm_provider: grok            # optional
 available_tools: [llm_health_get]   # tool set references such as `$main` work too
 ```
 
+The body read from `prompt` is expanded as a Jinja2 template (`{{ current_hour }}` and so on;
+[Prompt templates](prompt-template.md)).
+
 Combining `api: responses` with `grok_tools` makes a single call that uses the Responses
 API's built-in tools (`api: responses` together with `available_tools` is not supported).
 If the expert needs re-authentication, it aborts and passes that request up as it is.

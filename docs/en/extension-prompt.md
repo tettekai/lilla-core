@@ -74,7 +74,7 @@ is used.
     reinterpreted and is treated as this "invalid" case. If one remains, save the override
     again on the settings page or press "Reset to default" (it is not migrated automatically).
 - You normally edit it on the observability dashboard's **Settings** page (top-right menu,
-  `#/settings`; per-extension settings; [The observability dashboard](dashboard.md#extensions)). "Reset to
+  `#/settings`; per-extension settings; [The observability dashboard](dashboard.md#settings)). "Reset to
   default" only deletes the `prompt` key and does not copy the default text as an override.
   You can also set it directly with `mongosh` and the like, as in the example below.
 

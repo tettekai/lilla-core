@@ -36,7 +36,7 @@ db.extension_overrides.updateOne(
 ```
 
 You normally edit it on the observability dashboard's **Settings** page (top-right menu,
-`#/settings`; per-extension settings; [The observability dashboard](dashboard.md#extensions)). You can also
+`#/settings`; per-extension settings; [The observability dashboard](dashboard.md#settings)). You can also
 set it directly with `mongosh` and the like as above, but then restart, or use "Re-apply" on
 the screen, for it to take effect.
 
