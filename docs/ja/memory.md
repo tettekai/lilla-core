@@ -103,7 +103,9 @@ MongoDB のコレクションは `remember`（`_id` が日付 `YYYY-MM-DD`、`en
 
 - 毎日の整理の対象日は、日付の区切り（`day_rollover`）を基準に **直前に締まった日** をコードで決め、
   プロンプトの変数 `target_date` で渡します。その日の remember は `<remember_entries>` タグで囲み、
-  タグを抜け出す文字列を無害化してから変数 `remember_entries` で渡します。記録が無い日は LLM を呼びません。
+  変数 `remember_entries` で渡します。remember の本文に `<remember_entries>` / `</remember_entries>` の形のタグ
+  （大文字小文字・空白の違いも含む）があれば、`core.md` と同じく
+  [`strip_tag`](prompt-template.md#タグを取り除くstrip_tag) で取り除き、WARNING ログを出します。記録が無い日は LLM を呼びません。
   対象はその回の「直前に締まった日」だけで、さかのぼりません。bot の停止中や LLM の失敗などで
   整理されなかった日の remember は自動では整理されないため、必要なら手で整理してください。
 - 週次の整理は、実行した月のアーカイブのパスを変数 `journal_path` で渡します。`core.md` がまだ無ければ

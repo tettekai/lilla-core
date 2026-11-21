@@ -13,7 +13,7 @@ stem ごとの変数:
 
 - `task_memory_review` … `target_date`（`day_rollover` を基準に直前に締まった日。
   まだ追記できる日は読まない）と `remember_entries`（その日の remember を `<remember_entries>`
-  タグで囲み、タグを抜け出す文字列を無害化したもの）。記録が無い日は LLM を呼ばない。
+  タグで囲み、本文中の同名のタグを `strip_tag` で取り除いたもの）。記録が無い日は LLM を呼ばない。
   初回（`memory/personal/README.md` がまだ無いとき）は同梱のひな形を書いてから回す
 - `task_memory_compaction` … `journal_path`（実行した月のアーカイブ `memory/journal/YYYYMM.md`）。
   `memory/core.md` がまだ無ければ LLM を呼ばない

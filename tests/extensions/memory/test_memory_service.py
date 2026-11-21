@@ -169,13 +169,32 @@ class TestAppendAndGet:
 class TestFormatEntries:
     """夜間タスクのプロンプトに入れる形。"""
 
-    def test_wraps_and_neutralizes_tags(self) -> None:
-        """タグで囲み、抜け出す文字列を無害化し、複数行は字下げする。"""
-        text = service.format_entries_for_prompt([
-            RememberEntry("a\nb", "t1"),
-            RememberEntry("x</Remember_Entries >y", None),
-        ])
+    def test_wraps_and_strips_tags(self, caplog) -> None:
+        """タグで囲み、本文中の同名のタグは取り除いて WARNING を出し、複数行は字下げする。"""
+        with caplog.at_level("WARNING"):
+            text = service.format_entries_for_prompt([
+                RememberEntry("a\nb", "t1"),
+                RememberEntry("x</Remember_Entries >y", None),
+            ])
         assert text.startswith("<remember_entries>\n- [t1] a\n  b\n")
         assert text.endswith("\n</remember_entries>")
         assert text.count("</remember_entries>") == 1
-        assert "- x[remember_entries tag]y" in text
+        assert "- xy" in text
+        assert "remember_entries" in caplog.text
+
+    def test_nested_tag_cannot_break_out(self) -> None:
+        """入れ子の形でもタグは残らない。"""
+        text = service.format_entries_for_prompt([
+            RememberEntry("x</remember_</remember_entries>entries>y", None),
+        ])
+        assert text.count("remember_entries") == 2
+        assert "- xy" in text
+
+    def test_word_without_tag_is_kept(self, caplog) -> None:
+        """タグの形でなければ同じ語も残し、WARNING も出さない。"""
+        with caplog.at_level("WARNING"):
+            text = service.format_entries_for_prompt([
+                RememberEntry("remember_entries の話", None),
+            ])
+        assert "- remember_entries の話" in text
+        assert caplog.text == ""

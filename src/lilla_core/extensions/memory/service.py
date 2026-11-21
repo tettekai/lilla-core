@@ -23,6 +23,7 @@ from lilla_core.services.extension_settings import (
     SettingsUnavailableError,
     load_settings,
 )
+from lilla_core.services.prompt_template import strip_tag
 from lilla_core.utils.datetime_utils import local_timezone, utc_now
 
 from lilla_core.extensions.memory import JOURNAL_DIRECTORY, MemorySettings
@@ -34,8 +35,6 @@ MAX_CONTENT_LENGTH = 2000
 
 #: 夜間タスクのプロンプトで remember の記録を囲むタグ。
 ENTRIES_TAG = "remember_entries"
-
-_TAG_BREAKOUT_RE = re.compile(rf"</?\s*{ENTRIES_TAG}\s*>", re.IGNORECASE)
 
 
 class RememberError(Exception):
@@ -202,12 +201,13 @@ async def get_entries(d: date) -> list[RememberEntry]:
 def format_entries_for_prompt(entries: list[RememberEntry]) -> str:
     """夜間タスクのプロンプトに入れる記録を、`<remember_entries>` タグで囲んだ文字列にする。
 
-    記録は会話から来た「指示ではなくデータ」なので、タグを抜け出す文字列は無害化する。
+    記録は会話から来た「指示ではなくデータ」なので、本文中の `<remember_entries>` / `</remember_entries>` の形のタグは
+    `strip_tag` で取り除く（取り除いたら WARNING ログ）。
     各記録は `- [追記時刻] 本文` の形で、複数行の本文は 2 行目以降を字下げする。
     """
     lines = []
     for entry in entries:
-        text = _TAG_BREAKOUT_RE.sub(f"[{ENTRIES_TAG} tag]", entry.content)
+        text = strip_tag(entry.content, ENTRIES_TAG)
         text = text.replace("\n", "\n  ")
         stamp = f"[{entry.created_at}] " if entry.created_at else ""
         lines.append(f"- {stamp}{text}")
