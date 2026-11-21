@@ -153,6 +153,8 @@ function dashboardApp() {
       // プロンプトの上書きの編集中の値（{ mode, text }。promptOverrideEditor と結ぶ）
       promptDraft: { mode: 'append', text: '' },
       taskDrafts: {},
+      // LLM の定期タスクのプロンプトの上書きの編集中の値（ツール名 -> { mode, text }）
+      taskPromptDrafts: {},
       // 画面管理の設定（設定の本体）の編集中の値。unset は「未設定（null）」にする項目。
       settingsDraft: {},
       settingsUnset: {},
@@ -913,13 +915,20 @@ function dashboardApp() {
         ? { mode: prompt.mode, text: prompt.text }
         : { mode: 'append', text: '' };
       const drafts = {};
+      const promptDrafts = {};
       for (const task of detail.tasks || []) {
         drafts[task.name] = {
           schedule: task.override.schedule || '',
           enabled: task.effective.enabled,
         };
+        if (task.prompt) {
+          promptDrafts[task.name] = task.prompt.overridden && !task.prompt.invalid
+            ? { mode: task.prompt.mode, text: task.prompt.text }
+            : { mode: 'append', text: '' };
+        }
       }
       this.exts.taskDrafts = drafts;
+      this.exts.taskPromptDrafts = promptDrafts;
       this.setSettingsDraft(detail.settings);
     },
 
@@ -1043,7 +1052,7 @@ function dashboardApp() {
       return fallback;
     },
 
-    async saveExtensionOverrides(payload, doneText, failText) {
+    async saveExtensionOverrides(payload, doneText, failText, usedFromText) {
       const name = this.exts.selected;
       if (!name) return;
       this.exts.notice = '';
@@ -1067,7 +1076,7 @@ function dashboardApp() {
         } else {
           await this.selectExtension(name);
         }
-        this.showApplyResult(data.tasks_apply, doneText);
+        this.showApplyResult(data.tasks_apply, doneText, usedFromText);
       } catch (e) {
         console.error('Failed to save extension overrides', e);
         this.exts.error = failText;
@@ -1075,7 +1084,7 @@ function dashboardApp() {
     },
 
     // 保存と反映は分けて伝える。保存できても反映に失敗したら成功と言わない。
-    showApplyResult(status, savedText) {
+    showApplyResult(status, savedText, usedFromText) {
       this.exts.applyFailed = status === 'failed';
       if (status === 'failed') {
         this.exts.notice = '';
@@ -1087,7 +1096,7 @@ function dashboardApp() {
       } else if (status === 'applied') {
         this.exts.notice = savedText + '。スケジューラへ反映しました';
       } else {
-        this.exts.notice = savedText + '。次の会話から使われます';
+        this.exts.notice = savedText + '。' + (usedFromText || '次の会話から使われます');
       }
     },
 
@@ -1157,6 +1166,32 @@ function dashboardApp() {
         { tasks: { [task.name]: { schedule: null, enabled: null } } },
         task.name + ' をデフォルトに戻しました',
         task.name + ' をデフォルトに戻せませんでした',
+      );
+    },
+
+    saveTaskPromptOverride(task) {
+      const draft = this.exts.taskPromptDrafts[task.name] || {};
+      this.saveExtensionOverrides(
+        {
+          tasks: {
+            [task.name]: {
+              prompt: { mode: draft.mode === 'replace' ? 'replace' : 'append', text: draft.text || '' },
+            },
+          },
+        },
+        task.name + ' のプロンプトの上書きを保存しました',
+        task.name + ' のプロンプトの上書きを保存できませんでした',
+        '次の実行から使われます',
+      );
+    },
+
+    resetTaskPromptOverride(task) {
+      if (!confirm(task.name + ' のプロンプトの上書きを消して、デフォルトに戻しますか？')) return;
+      this.saveExtensionOverrides(
+        { tasks: { [task.name]: { prompt: null } } },
+        task.name + ' のプロンプトをデフォルトに戻しました',
+        task.name + ' のプロンプトをデフォルトに戻せませんでした',
+        '次の実行から使われます',
       );
     },
 

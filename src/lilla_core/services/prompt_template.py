@@ -28,6 +28,7 @@ import logging
 import re
 import types
 import typing
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -253,6 +254,7 @@ async def render_template(
     variables: dict[str, Any] | None = None,
     *,
     now: datetime | None = None,
+    notes_reader: Callable[[Any], Awaitable[str]] | None = None,
 ) -> str:
     """テンプレートを、共通の変数と呼び出し元の変数で展開する（全プロンプト共通の処理）。
 
@@ -264,6 +266,8 @@ async def render_template(
         text: テンプレートの本文。
         variables: 呼び出し元の変数（共通の変数と同じ名前は使えない）。
         now: `current_hour` の基準の日時。省略時は今。
+        notes_reader: 関数 `notes(path)` の本体の差し替え。省略時は保存先 `notes` を読む
+            `read_note()`（プレビューで実データを読まないときに使う）。
 
     Returns:
         展開した本文。
@@ -278,7 +282,7 @@ async def render_template(
     if reserved:
         raise ValueError(f"Template variables overlap common variables: {sorted(reserved)}")
     check_syntax(text)
-    common = {"current_hour": current_hour(now), "notes": read_note}
+    common = {"current_hour": current_hour(now), "notes": notes_reader or read_note}
     try:
         return await _ENV.from_string(text).render_async(**common, **variables)
     except Exception as e:
@@ -534,3 +538,51 @@ async def render_extension_prompt(name: str, text: str) -> str:
         展開した本文。失敗したときは `text`。
     """
     return (await render_extension_prompt_parts(name, [text]))[0]
+
+
+def dummy_task_variables(names: list[str]) -> dict[str, str]:
+    """タスクのプロンプトの試し展開に使う、変数名ごとのダミー値（`[名前]`）を返す。"""
+    return {name: f"[{name}]" for name in names}
+
+
+async def _dummy_note(path: Any) -> str:
+    """試し展開用の `notes(path)`。保存先を読まず、パスを示す目印だけを返す。
+
+    Raises:
+        TypeError: `path` が文字列でないとき（実行時の `notes()` と同じ）。
+    """
+    if not isinstance(path, str):
+        raise TypeError("notes() takes a note path string")
+    return f"[notes: {path}]"
+
+
+async def preview_task_prompt(text: str, variable_names: list[str]) -> TemplatePreview:
+    """定期タスクのプロンプトを、宣言した変数名のダミー値で試しに展開する。
+
+    実データ（remember や notes）は読まない。`notes(path)` もパスを示す目印を返すだけ。
+    保存時の検査（`validate_task_prompt()`）も同じ処理を使う。
+
+    Args:
+        text: 入力本文。
+        variable_names: そのタスクがプロンプトへ渡す変数名（`prompt_variable_names()`）。
+
+    Raises:
+        PromptTemplateError: 構文エラー・未定義の名前・サンドボックスの拒否など。
+    """
+    check_syntax(text)
+    comments = find_comments(text)
+    rendered = await render_template(
+        text, dummy_task_variables(variable_names), notes_reader=_dummy_note
+    )
+    return TemplatePreview(rendered=rendered, comments=comments)
+
+
+async def validate_task_prompt(text: str, variable_names: list[str]) -> None:
+    """保存しようとしている定期タスクのプロンプトを試しに展開して確かめる。
+
+    中身は `preview_task_prompt()` と同じ（プレビューと保存時の検査をそろえるため）。
+
+    Raises:
+        PromptTemplateError: 構文エラーか、展開できないとき。
+    """
+    await preview_task_prompt(text, variable_names)

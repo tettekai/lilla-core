@@ -57,7 +57,7 @@ Jinja2 のテンプレートとして展開される入力欄（スキルの本�
 
 | メソッド・パス | 内容 |
 |------|------|
-| `POST /api/admin/prompt-preview` | ボディは `{"text": 本文, "target": {"type": "skill"}}` か `{"text": 本文, "target": {"type": "extension", "name": 拡張名}}`。スキルは保存時と同じく前後の空白を除いてから `current_hour` だけで、拡張のプロンプトは今の設定（秘匿値を除く）でも展開します。成功は 200 で `{"rendered": 展開した本文 \| null, "comments": [{"line", "text"}], "settings_unavailable": 真偽値}`（設定を読めず展開を飛ばしたときは `rendered` が `null`）。展開できなければ 400 で `{"error": 理由}`。未ロードの拡張・デフォルトのプロンプトを持たない拡張は 404 |
+| `POST /api/admin/prompt-preview` | ボディは `{"text": 本文, "target": {"type": "skill"}}` か `{"text": 本文, "target": {"type": "extension", "name": 拡張名}}` か `{"text": 本文, "target": {"type": "task", "name": 拡張名, "task": ツール名}}`。スキルは保存時と同じく前後の空白を除いてから `current_hour` だけで、拡張のプロンプトは今の設定（秘匿値を除く）でも展開します。タスクのプロンプトはそのタスクが渡す変数を `[変数名]`、`notes("パス")` を `[notes: パス]` のダミー値で展開し、実際のデータは読みません（その拡張の LLM のタスクでなければ 404）。成功は 200 で `{"rendered": 展開した本文 \| null, "comments": [{"line", "text"}], "settings_unavailable": 真偽値}`（設定を読めず展開を飛ばしたときは `rendered` が `null`）。展開できなければ 400 で `{"error": 理由}`。未ロードの拡張・デフォルトのプロンプトを持たない拡張は 404 |
 
 ### 部品を使う（ダッシュボードの開発者向け）
 
@@ -170,12 +170,18 @@ Jinja2 のテンプレートとして展開される入力欄（スキルの本�
   使うので、保存し直すか「デフォルトに戻す」を押してください。次の会話から効きます
   （[拡張のデフォルトプロンプトと上書き](extension-prompt.md)）
 - **定期タスク**: その拡張が同梱し、ロードされている定期タスクごとに、`schedule`（crontab）と
-  定期実行の有効 / 無効だけを上書きできます。crontab は `ui.timezone` で解釈します。無効は
+  定期実行の有効 / 無効を上書きできます（LLM のタスクのプロンプトは次の項目）。crontab は `ui.timezone` で解釈します。無効は
   定期実行を止めるだけで、`!runtask` での手動実行はできます。ツール YAML で `enabled: false` に
   してロードしていないタスクは出てこず、ここから復活させることもできません。コアのタスクや他の
   拡張のタスクも対象外です。保存するとスケジューラへすぐ反映し（実行中のジョブは止めません）、
   反映に失敗したときは失敗と表示して「再反映」でやり直せます
   （[拡張のタスクの上書き](extension-task-override.md)）
+- **定期タスクのプロンプト**: LLM を使うタスクには、行の下に「プロンプト」の欄が出ます。入力部品は
+  拡張のプロンプトと同じ [プロンプトの上書きの入力部品](#プロンプトの上書きの入力部品) で、追加 / 置き換えを
+  選べます。置き換えモードの空の本文は保存できません。プレビューはそのタスクが渡す変数を
+  `[変数名]` のダミー値、`notes("パス")` を `[notes: パス]` で展開し、実際のデータ（remember やノート）は
+  読みません。保存してもスケジューラへの反映はせず、次の実行（`!runtask` を含む）から使われます。
+  上書きファイルに `prompt` を書いているタスクには ⚠️「設定ファイルの値が優先されます」と出ます
 
 保存はリクエスト全体を検証してから 1 回の更新で行い、1 か所でも不正（未知のキー・型の違い・
 対象外のタスク・crontab として読めない値・プロンプトの未知のモード・入力した本文を展開できない）
@@ -188,8 +194,8 @@ Jinja2 のテンプレートとして展開される入力欄（スキルの本�
 |------|------|
 | `GET /api/admin/settings/general` | 全般の内容（読み取り専用。秘匿情報とプロバイダーの URL は含まない） |
 | `GET /api/admin/extensions` | ロード済みのすべての拡張。`name` / `display_name` / `kind`（`builtin` / `official` / `external`）/ 編集できるか（`editable`）/ 設定の画面のハッシュ（`settings_hash`）/ 拡張の画面のハッシュ（`page_hash`。画面が無ければ `null`）など |
-| `GET /api/admin/extensions/{name}` | プロンプト・タスクのデフォルト・上書き・実効値と、スケジューラに今載っている値。プロンプトは `default` / `default_locale` / `overridden` / `mode` / `text`（上書きがあるときだけ値を持つ）/ `invalid` / `effective`（デフォルトと入力した本文を展開前のまま空行でつないだ表示用の本文）/ `template_variables`。画面管理の設定（`settings`。項目・値・保存済みか・エラー）も含む |
-| `PATCH /api/admin/extensions/{name}/overrides` | 上書きの保存。ボディは `{"prompt": {"mode": "append" \| "replace", "text": 文字列} \| null, "tasks": {ツール名: {"schedule": 文字列 \| null, "enabled": 真偽値 \| null}}}` で、省略したキーは変えず、`null` は上書きを消す。応答の `saved` は保存の成否、`tasks_apply` は反映の結果（`applied` / `scheduler_not_running` / `scheduler_disabled` / `failed`。タスクを変えていなければ `null`）。`prompt` は `mode` と `text` の両方が必要で、ほかのキーは受け付けない（以前の文字列 1 つの形式も 400）。構文の確認と試しの展開は `text` だけが対象 |
+| `GET /api/admin/extensions/{name}` | プロンプト・タスクのデフォルト・上書き・実効値と、スケジューラに今載っている値。LLM のタスクは `prompt` に拡張のプロンプトと同じ形の節（`template_variables` はそのタスクの変数）を持ち、ほかのタスクは `null`。プロンプトは `default` / `default_locale` / `overridden` / `mode` / `text`（上書きがあるときだけ値を持つ）/ `invalid` / `effective`（デフォルトと入力した本文を展開前のまま空行でつないだ表示用の本文）/ `template_variables`。画面管理の設定（`settings`。項目・値・保存済みか・エラー）も含む |
+| `PATCH /api/admin/extensions/{name}/overrides` | 上書きの保存。ボディは `{"prompt": {"mode": "append" \| "replace", "text": 文字列} \| null, "tasks": {ツール名: {"schedule": 文字列 \| null, "enabled": 真偽値 \| null, "prompt": {"mode", "text"} \| null}}}` で、省略したキーは変えず、`null` は上書きを消す。応答の `saved` は保存の成否、`tasks_apply` は反映の結果（`applied` / `scheduler_not_running` / `scheduler_disabled` / `failed`。タスクを変えていなければ `null`）。`prompt` は `mode` と `text` の両方が必要で、ほかのキーは受け付けない（以前の文字列 1 つの形式も 400）。構文の確認と試しの展開は `text` だけが対象（タスクの `prompt` はダミー値で試しに展開し、置き換えモードの空の本文は 400）。タスクの `prompt` だけを変えたときは反映しない |
 | `POST /api/admin/extensions/{name}/tasks/apply` | 保存済みのタスクの上書きの再反映（失敗したら 503） |
 | `POST /api/admin/prompt-preview` | 上書きの本文を試しに展開した結果（[Jinja2 テンプレートの入力欄](#jinja2-テンプレートの入力欄)） |
 | `PUT /api/admin/extensions/{name}/settings` | 画面管理の設定の一式の保存。ボディは `{"values": {項目名: 値}}`。不正なら 400（`errors` に項目ごとの理由）で何も保存しない。設定を宣言していない拡張は 404 |

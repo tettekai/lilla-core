@@ -820,3 +820,8 @@ tr.clickable:hover { background: var(--bg-secondary); }
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* LLM の定期タスクのプロンプトの上書き（タスクの行の下に開閉式で出す） */
+.ext-tasks .ext-task-prompt-row td { padding-top: 0; }
+.ext-task-prompt summary { cursor: pointer; padding: 4px 0; }
+.ext-task-prompt[open] summary { margin-bottom: 8px; }

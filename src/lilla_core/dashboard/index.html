@@ -693,8 +693,8 @@
                   <th></th>
                 </tr>
               </thead>
-              <tbody>
-                <template x-for="task in exts.detail.tasks" :key="task.name">
+              <template x-for="task in exts.detail.tasks" :key="task.name">
+                <tbody>
                   <tr>
                     <td><code x-text="task.name"></code></td>
                     <td>
@@ -731,8 +731,48 @@
                       <button x-show="taskHasOverride(task)" @click="resetTaskOverride(task)">デフォルトに戻す</button>
                     </td>
                   </tr>
-                </template>
-              </tbody>
+                  <tr x-show="task.prompt" class="ext-task-prompt-row">
+                    <td colspan="5">
+                      <details class="ext-task-prompt" :open="task.prompt && task.prompt.overridden">
+                        <summary>
+                          プロンプト
+                          <span :class="'badge ' + (task.prompt && task.prompt.overridden ? 'badge-warning' : 'level-default')"
+                            x-text="task.prompt && task.prompt.overridden ? '上書き中' : 'デフォルト'"></span>
+                        </summary>
+                        <div class="ext-warning" x-show="task.file_overridden.includes('prompt')">
+                          ⚠️ 設定ファイル（extensions/<span x-text="exts.detail.name"></span>/tools/）の
+                          <code>prompt</code> が優先されるため、ここで保存した値は効いていません
+                        </div>
+                        <div class="ext-warning" x-show="task.prompt && task.prompt.invalid">
+                          保存済みの上書きが今の形式（モードと本文）に合わないため、デフォルトを使っています
+                        </div>
+                        <p class="ext-help">
+                          このタスクが渡す変数（<span x-text="task.prompt && task.prompt.template_variables.length ? task.prompt.template_variables.join(', ') : 'なし'"></span>）と
+                          <code>current_hour</code>・<code>notes("パス")</code> を使えます。プレビューと保存時の検査は
+                          実データを読まず、変数をダミー値（<code>[名前]</code>）にして展開します。
+                          置き換えモードで空の本文は保存できません。保存した値は次の実行（<code>!runtask</code> を含む）から使われます。
+                        </p>
+                        <template x-if="task.prompt">
+                          <div x-data="promptOverrideEditor({
+                              defaultText: () => task.prompt.default,
+                              defaultLocale: () => task.prompt.default_locale,
+                              target: () => ({ type: 'task', name: exts.selected, task: task.name }),
+                              variables: () => task.prompt.template_variables,
+                              fetch: (u, o) => authedFetch(u, o),
+                              rows: 10,
+                            })"
+                            x-modelable="value" x-model="exts.taskPromptDrafts[task.name]"></div>
+                        </template>
+                        <div class="memo-actions">
+                          <button @click="saveTaskPromptOverride(task)">プロンプトの上書きを保存</button>
+                          <button x-show="task.prompt && task.prompt.overridden"
+                            @click="resetTaskPromptOverride(task)">デフォルトに戻す</button>
+                        </div>
+                      </details>
+                    </td>
+                  </tr>
+                </tbody>
+              </template>
             </table>
           </div>
         </div>
