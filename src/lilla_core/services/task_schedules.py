@@ -11,6 +11,10 @@
   `enabled: false` にしたものはロードされないため対象にならない
 - 上書き（`extension_overrides` の `tasks.<ツール名>`）は、そのタスクを同梱した拡張の
   ドキュメントのものだけを使う。拡張に属さないタスクには上書きを適用しない
+- `${CONFIG_ROOT}/extensions/<拡張名>/tools/` の YAML に書いた `schedule` / `enabled` は
+  ダッシュボードの上書きより優先する（キー単位。YAML に書いていないキーは画面の上書きが効く）。
+  YAML の値はツールのデフォルト（`instance.schedule`）にすでに入っているため、そのキーの
+  画面の上書きを無視するだけでよい
 - 型の不正な上書き項目は無視してデフォルトを使う。crontab として解釈できない
   `schedule` の上書きもデフォルトへ戻す。デフォルトも解釈できなければ実効スケジュールは無い
 """
@@ -24,6 +28,9 @@ from apscheduler.triggers.cron import CronTrigger
 from lilla_core.utils.datetime_utils import local_now, local_timezone
 
 logger = logging.getLogger(__name__)
+
+#: ダッシュボードの上書き（`extension_overrides` の `tasks`）が扱うキー。
+TASK_OVERRIDE_KEYS = ("schedule", "enabled")
 
 #: `GET /api/tasks` が返す crontab の方言。APScheduler 3 の `CronTrigger.from_crontab()`
 #: の解釈（曜日の 0 は月曜、日と曜日は AND）であることを外部へ伝える。
@@ -200,19 +207,29 @@ def resolve_task(
     extension: str | None,
     default_schedule: str,
     override: TaskOverride | None = None,
+    file_overrides: frozenset[str] | set[str] = frozenset(),
 ) -> ResolvedTask:
     """デフォルトに上書きを重ね、1 タスクの実効値を決める。
 
     `schedule` の上書きが crontab として不正ならデフォルトへ戻し、デフォルトも
     不正なら実効の `schedule` は `None` になる（`enabled` には影響しない）。
+    `file_overrides` にあるキー（上書きの YAML に書かれていたキー）は、画面の上書きを
+    無視してデフォルト（YAML の値が入ったもの）を使う。無視した項目は `override` に残さない。
 
     Args:
         name: ツール名。
         extension: タスクを同梱した拡張名。
         default_schedule: ツールが持つデフォルトの crontab。
         override: `parse_task_overrides()` が返したそのタスクの上書き。
+        file_overrides: ツールのエントリの `file_overrides`（上書きの YAML のキー）。
     """
     override = override or TaskOverride()
+    if set(file_overrides) & set(TASK_OVERRIDE_KEYS):
+        override = TaskOverride(
+            schedule=None if "schedule" in file_overrides else override.schedule,
+            enabled=None if "enabled" in file_overrides else override.enabled,
+            invalid=tuple(k for k in override.invalid if k not in file_overrides),
+        )
     rejected = False
     schedule: str | None = None
     if override.schedule is not None:
@@ -266,7 +283,13 @@ async def load_task_schedules(tools: dict | None) -> list[ResolvedTask]:
     for tool_name, info in entries.items():
         extension = info.get("extension")
         override = overrides.get(extension, {}).get(tool_name) if extension else None
-        resolved = resolve_task(tool_name, extension, info["instance"].schedule, override)
+        resolved = resolve_task(
+            tool_name,
+            extension,
+            info["instance"].schedule,
+            override,
+            info.get("file_overrides", frozenset()),
+        )
         if resolved.schedule is None:
             raise TaskScheduleError(tool_name)
         result.append(resolved)

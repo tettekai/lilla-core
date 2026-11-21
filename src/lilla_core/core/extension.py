@@ -528,11 +528,11 @@ class Extension:
     def tool_config_roots(self) -> list[Path]:
         """この拡張が同梱する既定のツール YAML（`llm_*.yaml` / `task_*.yaml`）のディレクトリを返す。
 
-        ローダーは「拡張の `tool_config_roots()`（ロード順）→ `${CONFIG_ROOT}/tools`」の
-        順に YAML を集め、同じファイル名（stem）は `${CONFIG_ROOT}/tools` 側が丸ごと
-        上書きする（利用者の設定が常に勝つ）。拡張どうしで同じ stem を同梱した場合は
-        fail-fast する。利用者が同梱ツールを無効化したいときは、`${CONFIG_ROOT}/tools` に
-        同名の YAML を置いて `enabled: false` と書く。
+        利用者は `${CONFIG_ROOT}/extensions/<拡張名>/tools/` に同じ stem の YAML を置くと、
+        同梱分へトップレベルのキー単位で差分を重ねられる（無効化するなら `enabled: false`。
+        `type` は省略できる）。`${CONFIG_ROOT}/tools` に同梱分と同じ stem を置く・同梱して
+        いない stem の差分を置く・拡張どうしで同じ stem を同梱する、はいずれもロード時に
+        fail-fast する。
         """
         return []
 

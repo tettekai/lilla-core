@@ -25,10 +25,11 @@ import と同じく `sys.modules` に登録され、相対 import も使える�
 import できるパッケージは `LILLA_EXTENSIONS` のモジュールと同じ信頼レベルとみなし、
 ディレクトリの検査は行わない。
 
-ツール YAML（`llm_*.yaml` / `task_*.yaml`）は `resolve_tool_config_files()` が集める。
-拡張が `tool_config_roots()` で同梱した既定 YAML をロード順に読み、最後に
-`${CONFIG_ROOT}/tools` を重ねる。同じ stem は `${CONFIG_ROOT}/tools` 側が丸ごと
-上書きし（利用者の設定が常に勝つ）、拡張どうしの同じ stem は fail-fast する。
+ツール YAML（`llm_*.yaml` / `task_*.yaml`）は `resolve_tool_configs()` が集める。
+拡張が `tool_config_roots()` で同梱した既定 YAML には、
+`${CONFIG_ROOT}/extensions/<拡張名>/tools/` の同じ stem の YAML を差分として
+トップレベルのキー単位で重ねる。`${CONFIG_ROOT}/tools` は利用者自身のツール専用で、
+同梱と同じ stem があれば fail-fast する（拡張どうしの同じ stem も fail-fast）。
 
 ツールの `.py` をロードしてよいディレクトリは `resolve_tool_dirs()` が返す
 「探索ルート + `config_root/tools`（`type: self` の置き場所）」で、これ以外の設定は
@@ -42,11 +43,14 @@ from __future__ import annotations
 
 import importlib
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 
+import yaml
+
 from lilla_core.core.config import get_config
-from lilla_core.core.extension import get_tool_config_roots, get_tool_roots
+from lilla_core.core.extension import get_extensions, get_tool_config_roots, get_tool_roots
 
 logger = logging.getLogger(__name__)
 
@@ -107,99 +111,206 @@ def resolve_tool_dirs(
     )
 
 
-def _collect_tool_config_files(
-    prefix: str, config_root: Path | None
-) -> tuple[dict[str, Path], dict[str, str]]:
-    """ロード対象のツール YAML と、拡張が同梱した stem の持ち主を集める。
+#: `${CONFIG_ROOT}` の下で、拡張の同梱ツールの設定を上書きする YAML を置くディレクトリ。
+#: `${CONFIG_ROOT}/extensions/<拡張名>/tools/{llm_*,task_*}.yaml` の形になる。
+EXTENSION_OVERRIDE_DIR = "extensions"
 
-    `resolve_tool_config_files()` と `resolve_tool_config_owners()` が共有する本体。
-    持ち主（stem -> 拡張名）は、`${CONFIG_ROOT}/tools` の同名 YAML で置き換えられた
-    stem も同梱した拡張のものとして残す。
+#: 拡張が同梱するツール YAML のファイル名プレフィックス。
+TOOL_CONFIG_PREFIXES = ("llm_", "task_")
+
+
+@dataclass(frozen=True)
+class ToolConfigEntry:
+    """ロード対象のツール YAML 1 つ分（上書きを重ねたあと）。
+
+    Attributes:
+        name: YAML のファイル名 stem（ツール名）。
+        path: 元の YAML のパス（拡張の同梱分か `${CONFIG_ROOT}/tools` のもの）。
+            `type: self` の `.py` はこのパスの隣を探す。
+        config: 元の YAML に上書きの YAML をトップレベルのキー単位で重ねた dict。
+        extension: この YAML を `tool_config_roots()` で同梱した拡張の名前。
+            利用者が `${CONFIG_ROOT}/tools` に置いたものは `None`。
+        override_path: 上書きの YAML のパス。無ければ `None`。
+        override_keys: 上書きの YAML に書かれていたキー。
+    """
+
+    name: str
+    path: Path
+    config: dict
+    extension: str | None = None
+    override_path: Path | None = None
+    override_keys: frozenset[str] = field(default_factory=frozenset)
+
+
+def _read_yaml_mapping(path: Path, *, strict: bool) -> dict:
+    """YAML を読み、トップレベルの dict を返す（空のファイルは空の dict）。
+
+    `strict` が真なら、構文エラーとトップレベルが dict でないことをロード時の
+    エラーにする（上書きの YAML 用）。偽なら従来どおり例外をそのまま伝え、
+    dict でない値は空の dict として扱う。
+
+    Raises:
+        ValueError: `strict` で、構文エラーかトップレベルが dict でないとき。
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        if not strict:
+            raise
+        raise ValueError(f"Failed to parse tool config override {path}: {e}") from e
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        if strict:
+            raise ValueError(
+                f"Tool config override {path} must be a mapping, got {type(data).__name__}"
+            )
+        return {}
+    return data
+
+
+def _collect_bundled() -> tuple[dict[str, tuple[str, Path]], dict[str, set[str]]]:
+    """拡張が同梱したツール YAML を集める。
+
+    Returns:
+        `(stem -> (拡張名, YAML パス), 拡張名 -> 同梱した stem の集合)` の組。
+
+    Raises:
+        ValueError: 複数の拡張が同じ stem の YAML を同梱している場合。
+    """
+    bundled: dict[str, tuple[str, Path]] = {}
+    by_extension: dict[str, set[str]] = {}
+    for ext_name, root in get_tool_config_roots():
+        if not root.is_dir():
+            continue
+        for prefix in TOOL_CONFIG_PREFIXES:
+            for path in sorted(root.glob(f"{prefix}*.yaml")):
+                stem = path.stem
+                if stem in bundled:
+                    raise ValueError(
+                        f"Tool config '{stem}.yaml' is bundled by both extensions "
+                        f"'{bundled[stem][0]}' and '{ext_name}'"
+                    )
+                bundled[stem] = (ext_name, path)
+                by_extension.setdefault(ext_name, set()).add(stem)
+    return bundled, by_extension
+
+
+def _collect_overrides(
+    config_root: Path, by_extension: dict[str, set[str]]
+) -> dict[str, Path]:
+    """`${CONFIG_ROOT}/extensions/<拡張名>/tools/` の上書きの YAML を集めて検証する。
+
+    `extensions/` の下のディレクトリはロード済みの拡張の名前でなければならず、
+    その `tools/` の YAML はその拡張が同梱したツールの stem でなければならない。
+    `extensions/` の直下のファイルと、`tools/` の YAML 以外のファイルは見ない。
+
+    Returns:
+        stem -> 上書きの YAML のパス。
+
+    Raises:
+        ValueError: 知らない拡張名のディレクトリ、またはその拡張が同梱していない
+            stem の YAML があるとき。
+    """
+    base = Path(config_root) / EXTENSION_OVERRIDE_DIR
+    if not base.is_dir():
+        return {}
+    loaded = {ext.name for ext in get_extensions()}
+    overrides: dict[str, Path] = {}
+    for ext_dir in sorted(base.iterdir()):
+        if not ext_dir.is_dir():
+            continue
+        if ext_dir.name not in loaded:
+            raise ValueError(
+                f"Tool config override directory {ext_dir} does not match any loaded extension"
+            )
+        tools_dir = ext_dir / "tools"
+        if not tools_dir.is_dir():
+            continue
+        bundled = by_extension.get(ext_dir.name, set())
+        for path in sorted(tools_dir.glob("*.yaml")):
+            if path.stem not in bundled:
+                raise ValueError(
+                    f"Tool config override {path} does not match any tool bundled by "
+                    f"extension '{ext_dir.name}'"
+                )
+            overrides[path.stem] = path
+    return overrides
+
+
+def resolve_tool_configs(prefix: str, config_root: Path | None = None) -> list[ToolConfigEntry]:
+    """ロード対象のツール YAML を、上書きを重ねたうえで stem 順に返す。
+
+    集めるものは次の 2 つで、ツール名（stem）の空間は 1 つ。
+
+    - 拡張が `tool_config_roots()` で同梱した YAML。`${CONFIG_ROOT}/extensions/<拡張名>/tools/`
+      に同じ stem の YAML があれば、その中身をトップレベルのキー単位で重ねる（書いた
+      キーだけを置き換え、値がリストでも要素ではなく丸ごと置き換える）
+    - 利用者自身のツール（`${CONFIG_ROOT}/tools`）。拡張が同梱した stem と同じ名前は
+      置けない
+
+    `enabled` の判定はしない（重ねたあとの dict を見て呼び出し側が決める）。
 
     Args:
         prefix: 集める YAML のファイル名プレフィックス（`"llm_"` または `"task_"`）。
         config_root: 設定ルート。`None` なら設定から取る。
 
     Returns:
-        `(stem -> YAML パス, stem -> 同梱した拡張名)` の組。
+        `ToolConfigEntry` のリスト（stem の昇順）。
 
     Raises:
-        ValueError: 複数の拡張が同じ stem の YAML を同梱している場合。
+        ValueError: 拡張どうしで同じ stem を同梱している・`${CONFIG_ROOT}/tools` に
+            同梱と同じ stem がある・上書きのディレクトリや YAML が同梱と合わない・
+            上書きの YAML が読めない場合。
     """
     if config_root is None:
         config_root = get_config().env.config_root
 
-    selected: dict[str, Path] = {}
-    owners: dict[str, str] = {}
-    for ext_name, root in get_tool_config_roots():
-        if not root.is_dir():
+    bundled, by_extension = _collect_bundled()
+    overrides = _collect_overrides(Path(config_root), by_extension)
+
+    entries: dict[str, ToolConfigEntry] = {}
+    for stem, (ext_name, path) in bundled.items():
+        if not stem.startswith(prefix):
             continue
-        for path in sorted(root.glob(f"{prefix}*.yaml")):
-            stem = path.stem
-            if stem in owners:
-                raise ValueError(
-                    f"Tool config '{stem}.yaml' is bundled by both extensions "
-                    f"'{owners[stem]}' and '{ext_name}'"
-                )
-            owners[stem] = ext_name
-            selected[stem] = path
+        config = dict(_read_yaml_mapping(path, strict=False))
+        override_path = overrides.get(stem)
+        override_keys: frozenset[str] = frozenset()
+        if override_path is not None:
+            override = _read_yaml_mapping(override_path, strict=True)
+            config.update(override)
+            override_keys = frozenset(override)
+            logger.info(
+                "Tool config '%s.yaml' of extension '%s' is overridden by %s (keys: %s)",
+                stem, ext_name, override_path, ", ".join(sorted(override_keys)) or "none",
+            )
+        entries[stem] = ToolConfigEntry(
+            name=stem,
+            path=path,
+            config=config,
+            extension=ext_name,
+            override_path=override_path,
+            override_keys=override_keys,
+        )
 
     user_dir = Path(config_root) / "tools"
     if user_dir.is_dir():
         for path in sorted(user_dir.glob(f"{prefix}*.yaml")):
-            if path.stem in selected:
-                logger.info(
-                    "Tool config '%s.yaml' from %s overrides the one bundled by extension '%s'",
-                    path.stem, user_dir, owners[path.stem],
+            if path.stem in bundled:
+                ext_name = bundled[path.stem][0]
+                raise ValueError(
+                    f"Tool config {path} has the same name as a tool bundled by extension "
+                    f"'{ext_name}'. Put overrides in "
+                    f"{Path(config_root) / EXTENSION_OVERRIDE_DIR / ext_name / 'tools'} instead"
                 )
-            selected[path.stem] = path
+            entries[path.stem] = ToolConfigEntry(
+                name=path.stem,
+                path=path,
+                config=_read_yaml_mapping(path, strict=False),
+            )
 
-    return selected, owners
-
-
-def resolve_tool_config_files(prefix: str, config_root: Path | None = None) -> list[Path]:
-    """ロード対象のツール YAML を、上書き規則を適用したうえで stem 順に返す。
-
-    集める順序は「拡張の `tool_config_roots()`（ロード順）→ `${CONFIG_ROOT}/tools`」。
-    同じ stem の YAML が複数あるときは、`${CONFIG_ROOT}/tools` にあるものが拡張の
-    同梱分を丸ごと置き換える（内容のマージはしない）。拡張どうしで同じ stem を
-    同梱している場合はどちらを使うかが暗黙になるため fail-fast する。存在しない
-    ディレクトリは読み飛ばす。
-
-    Args:
-        prefix: 集める YAML のファイル名プレフィックス（`"llm_"` または `"task_"`）。
-        config_root: 設定ルート。`None` なら設定から取る。
-
-    Returns:
-        YAML ファイルパスのリスト（stem の昇順）。
-
-    Raises:
-        ValueError: 複数の拡張が同じ stem の YAML を同梱している場合。
-    """
-    selected, _ = _collect_tool_config_files(prefix, config_root)
-    return [selected[stem] for stem in sorted(selected)]
-
-
-def resolve_tool_config_owners(prefix: str, config_root: Path | None = None) -> dict[str, str]:
-    """拡張が `tool_config_roots()` で同梱したツール YAML の stem と、その拡張名を返す。
-
-    `${CONFIG_ROOT}/tools` に同じ stem の YAML を置いて同梱分を置き換えていても、
-    その stem は同梱した拡張のものとして含める。拡張が同梱していない stem
-    （利用者だけが置いた YAML・コア組み込みツール）は含めない。拡張のタスクの
-    上書き（`extension_overrides` の `tasks`）で、どの拡張のタスクかを引くのに使う。
-
-    Args:
-        prefix: 対象の YAML のファイル名プレフィックス（`"llm_"` または `"task_"`）。
-        config_root: 設定ルート。`None` なら設定から取る。
-
-    Returns:
-        stem から拡張名への dict。
-
-    Raises:
-        ValueError: 複数の拡張が同じ stem の YAML を同梱している場合。
-    """
-    _, owners = _collect_tool_config_files(prefix, config_root)
-    return owners
+    return [entries[stem] for stem in sorted(entries)]
 
 
 def is_tool_enabled(config: dict) -> bool:
@@ -207,8 +318,8 @@ def is_tool_enabled(config: dict) -> bool:
 
     `enabled: false` と明示したときだけ無効。キーが無い、または `false` 以外の値なら
     有効とみなす（真偽値以外の値で静かに無効化されないようにするため）。
-    `${CONFIG_ROOT}/tools` に同名の YAML を置いて `enabled: false` と書けば、拡張が
-    同梱したツールを利用者側で止められる。
+    `${CONFIG_ROOT}/extensions/<拡張名>/tools/` に同じ stem の YAML を置いて
+    `enabled: false` と書けば、拡張が同梱したツールを利用者側で止められる。
 
     Args:
         config: YAML から読んだ dict。

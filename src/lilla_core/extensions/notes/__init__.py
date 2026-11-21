@@ -122,8 +122,9 @@ class NotesExtension(Extension):
     def tool_config_roots(self) -> list[Path]:
         """同梱する既定のツール YAML（このパッケージの `tool_configs/`）のディレクトリを返す。
 
-        利用者が `${CONFIG_ROOT}/tools` に同じ stem の YAML を置くと、同梱分は
-        丸ごと置き換わる（止めるなら `enabled: false`）。通常会話で使うには、
+        利用者は `${CONFIG_ROOT}/extensions/notes/tools/` に同じ stem の YAML を置くと、
+        同梱分へトップレベルのキー単位で差分を重ねられる（止めるなら `enabled: false`）。
+        通常会話で使うには、
         引き続き `tools.sets.main` に並べる必要がある。
         """
         return [_PACKAGE_DIR / "tool_configs"]

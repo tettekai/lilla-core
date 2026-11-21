@@ -121,6 +121,32 @@ class TestResolveTask:
         assert resolved.schedule == "0 2 * * *"
         assert resolved.schedule_override_rejected is True
 
+    def test_file_override_keys_win_over_dashboard(self) -> None:
+        """上書きの YAML に書いたキーは画面の上書きを無視し、書いていないキーは画面が効く。"""
+        override = TaskOverride(schedule="0 9 * * *", enabled=False)
+
+        schedule_locked = svc.resolve_task(
+            "t", "diary", "0 5 * * *", override, frozenset({"schedule"})
+        )
+        assert (schedule_locked.schedule, schedule_locked.enabled) == ("0 5 * * *", False)
+        assert schedule_locked.override == TaskOverride(enabled=False)
+
+        both_locked = svc.resolve_task(
+            "t", "diary", "0 5 * * *", override, frozenset({"schedule", "enabled", "target"})
+        )
+        assert (both_locked.schedule, both_locked.enabled) == ("0 5 * * *", True)
+        assert both_locked.override == TaskOverride()
+
+    def test_file_override_drops_invalid_marker_of_locked_key(self) -> None:
+        """固定されたキーの画面の上書きが不正でも、不正としては報告しない。"""
+        resolved = svc.resolve_task(
+            "t", "diary", "0 5 * * *",
+            TaskOverride(enabled=False, invalid=("schedule",)),
+            frozenset({"schedule"}),
+        )
+        assert resolved.override.invalid == ()
+        assert resolved.enabled is False
+
     def test_invalid_default_has_no_schedule(self) -> None:
         resolved = svc.resolve_task("t", None, "not a cron")
         assert resolved.schedule is None
@@ -141,6 +167,17 @@ class TestLoadTaskSchedules:
         assert (resolved["task_b"].schedule, resolved["task_b"].enabled) == ("30 3 * * *", False)
         assert (resolved["task_core"].schedule, resolved["task_core"].enabled) == ("0 2 * * *", True)
         repo.find_by_extensions.assert_awaited_once_with(["diary", "habits"])
+
+    async def test_file_overrides_of_the_entry_win(self, tools, repo) -> None:
+        """エントリの `file_overrides` にある `schedule` は画面の上書きより優先する。"""
+        tools["task_a"]["file_overrides"] = frozenset({"schedule"})
+        repo.docs = {
+            "diary": {"tasks": {"task_a": {"schedule": "15 21 * * *", "enabled": False}}},
+        }
+
+        resolved = {t.name: t for t in await svc.load_task_schedules(tools)}
+
+        assert (resolved["task_a"].schedule, resolved["task_a"].enabled) == ("0 22 * * *", False)
 
     async def test_reads_latest_overrides_every_call(self, tools, repo) -> None:
         repo.docs = {"diary": {"tasks": {"task_a": {"enabled": False}}}}

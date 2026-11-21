@@ -172,14 +172,9 @@ class TestComposition:
             assert [p.name for p in get_dashboard_pages()] == ["notes"]
 
     def test_tools_are_loaded(self, config_root: Path) -> None:
-        """利用者の YAML に `type: <ファイル名>` と書けば 4 つのツールがロードされる。"""
+        """利用者の YAML が無くても、同梱の YAML で 4 つのツールがロードされる。"""
         from lilla_core.loaders import llm_tool_loader
         from lilla_core.testing import use_extensions
-
-        tools_dir = config_root / "tools"
-        tools_dir.mkdir()
-        for stem in _TOOL_STEMS:
-            (tools_dir / f"{stem}.yaml").write_text(f"type: {stem}\n")
 
         with use_extensions(notes.extension, config_root=config_root):
             tools = llm_tool_loader.load_llm_tools(config_root=config_root)
@@ -223,10 +218,12 @@ class TestBundledToolConfigs:
 
         assert set(tools) == _TOOL_STEMS
 
-    def test_host_yaml_replaces_bundled(self, config_root: Path, use_extensions) -> None:
-        """ホストの同じ stem の YAML が同梱分を丸ごと置き換える。"""
-        (config_root / "tools" / "llm_notes_read.yaml").write_text(
-            "type: llm_notes_read\ndescription: host description\n", encoding="utf-8"
+    def test_override_yaml_is_merged(self, config_root: Path, use_extensions) -> None:
+        """`extensions/notes/tools/` の差分が同梱分に重なる。"""
+        override_dir = config_root / "extensions" / "notes" / "tools"
+        override_dir.mkdir(parents=True)
+        (override_dir / "llm_notes_read.yaml").write_text(
+            "description: host description\n", encoding="utf-8"
         )
 
         tools = self._load(config_root, use_extensions)
@@ -234,12 +231,23 @@ class TestBundledToolConfigs:
         assert tools["llm_notes_read"]["tool_config"]["description"] == "host description"
         assert tools["llm_notes_read"]["schema"]["function"]["description"] == "host description"
 
-    def test_host_yaml_can_disable_one_tool(self, config_root: Path, use_extensions) -> None:
-        """ホストの `enabled: false` で 1 つだけ止められる。"""
-        (config_root / "tools" / "llm_notes_write.yaml").write_text(
-            "type: llm_notes_write\nenabled: false\n", encoding="utf-8"
-        )
+    def test_override_yaml_can_disable_one_tool(self, config_root: Path, use_extensions) -> None:
+        """差分の `enabled: false` で 1 つだけ止められる。"""
+        override_dir = config_root / "extensions" / "notes" / "tools"
+        override_dir.mkdir(parents=True)
+        (override_dir / "llm_notes_write.yaml").write_text("enabled: false\n", encoding="utf-8")
 
         tools = self._load(config_root, use_extensions)
 
         assert set(tools) == _TOOL_STEMS - {"llm_notes_write"}
+
+    def test_host_yaml_with_bundled_name_fails_fast(
+        self, config_root: Path, use_extensions
+    ) -> None:
+        """ホストの `tools/` に同梱と同じ stem があれば、置き換えずに落とす。"""
+        (config_root / "tools" / "llm_notes_read.yaml").write_text(
+            "type: llm_notes_read\n", encoding="utf-8"
+        )
+
+        with pytest.raises(ValueError, match="same name as a tool bundled by extension 'notes'"):
+            self._load(config_root, use_extensions)

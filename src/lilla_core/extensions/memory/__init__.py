@@ -233,8 +233,8 @@ class MemoryExtension(Extension):
     def tool_config_roots(self) -> list[Path]:
         """同梱する既定のツール YAML（`lilla_core/extensions/memory/tool_configs/`）のディレクトリを返す。
 
-        利用者が `${CONFIG_ROOT}/tools` に同じ stem の YAML を置くと、同梱分は
-        丸ごと置き換わる（無効化するなら `enabled: false`）。
+        利用者は `${CONFIG_ROOT}/extensions/memory/tools/` に同じ stem の YAML を置くと、
+        同梱分へトップレベルのキー単位で差分を重ねられる（無効化するなら `enabled: false`）。
         """
         return [_PACKAGE_DIR / "tool_configs"]
 

@@ -276,8 +276,33 @@ class TestBuildDetail:
         assert [task["name"] for task in detail["tasks"]] == ["task_other"]
 
 
+class TestBuildDetailFileOverrides:
+    """`extensions/<拡張名>/tools/` の YAML で固定したタスクの項目。"""
+
+    def test_reports_file_overridden_and_ignores_dashboard_value(self, registered, tools) -> None:
+        """YAML に書いたキーは `file_overridden` に挙げ、画面の上書きは見せるが実効値に効かない。"""
+        tools["task_a"]["file_overrides"] = frozenset({"schedule", "target"})
+        doc = {"tasks": {"task_a": {"schedule": "0 9 * * *", "enabled": False}}}
+
+        detail = svc.build_detail("diary", tools, doc, "ja", {}, False)
+
+        task_a = detail["tasks"][0]
+        assert task_a["file_overridden"] == ["schedule"]
+        assert task_a["override"] == {"schedule": "0 9 * * *", "enabled": False}
+        assert task_a["effective"] == {"schedule": "0 22 * * *", "enabled": False}
+        assert detail["tasks"][1]["file_overridden"] == []
+
+
 class TestParseUpdate:
     """保存リクエストの検証。"""
+
+    def test_accepts_key_set_by_file(self, registered, tools) -> None:
+        """YAML に書いたキーでも画面からの保存は受け付ける（実効値ではファイルが勝つ）。"""
+        tools["task_a"]["file_overrides"] = frozenset({"schedule"})
+
+        update = svc.parse_update("diary", {"tasks": {"task_a": {"schedule": "0 9 * * *"}}}, tools)
+
+        assert update.set_fields == {"tasks.task_a.schedule": "0 9 * * *"}
 
     def test_prompt_set_and_unset(self, registered, tools) -> None:
         """{mode, text} は保存（空文字も有効）、null は上書きを消す。"""

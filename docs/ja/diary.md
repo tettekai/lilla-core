@@ -19,8 +19,9 @@ export LILLA_EXTENSIONS=diary
 清書のために notes を並べる必要はありません。
 
 ツール YAML とタスク YAML は拡張に同梱しているので、`${CONFIG_ROOT}/tools` に置かなくても
-次のものが読み込まれます（同じ stem の YAML を `${CONFIG_ROOT}/tools` に置くと、同梱分を丸ごと
-置き換えます。止めるなら `enabled: false`）。
+次のものが読み込まれます（変えるときは `${CONFIG_ROOT}/extensions/diary/tools/` に同じ stem の
+YAML を置き、変えたいキーだけを書きます。止めるなら `enabled: false`。
+[ツール契約](tools.md#同梱ツールの上書き上級者向け)）。
 
 | stem | 種類 | 内容 |
 |------|------|------|
@@ -113,7 +114,7 @@ moodscore: <<moodscore>>
 - notes に書けるのは、ロード済みの拡張が宣言したディレクトリの下だけです。`diary` を
   `LILLA_EXTENSIONS` から外すと、notes の書ける場所から `diary/` も消えます。
 - 時刻はダッシュボードの 設定画面の `tasks.task_write_diary`、送り先は
-  `${CONFIG_ROOT}/tools/task_write_diary.yaml`（`type: task_diary_faircopy` と `target`）で変えます。
+  `${CONFIG_ROOT}/extensions/diary/tools/task_write_diary.yaml`（`target` だけを書く）で変えます。
 
 ### ほかの書き出し先を使うとき
 
@@ -123,7 +124,7 @@ moodscore: <<moodscore>>
 起動時にエラーになります。
 
 ```yaml
-# ${CONFIG_ROOT}/tools/task_write_diary.yaml（同梱の清書タスクを丸ごと置き換える）
+# ${CONFIG_ROOT}/extensions/diary/tools/task_write_diary.yaml（同梱の清書タスクの type を差し替える）
 type: task_scheduled_llm
 schedule: "30 3 * * *"
 llm_provider: REPLACE_ME

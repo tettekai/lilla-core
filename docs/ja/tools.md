@@ -23,13 +23,36 @@
 
 ## 拡張が同梱するツール YAML
 
-拡張は `tool_config_roots()` で既定の YAML を同梱できます。ローダーはまずそれらの
-ディレクトリ（拡張のロード順）から、次に `${CONFIG_ROOT}/tools` から YAML を集め、
-同じ stem のファイルが `${CONFIG_ROOT}/tools` にあれば同梱分を丸ごと置き換えます
-（内容のマージはしません）。利用者の設定が常に勝つ形です。2 つの拡張が同じ stem を
-同梱していると起動時に失敗します。同梱ツールを止めるには、`${CONFIG_ROOT}/tools` に
-同じ stem で `enabled: false` と書いた YAML を置いてください。`enabled: false` は
-同梱かどうかに関わらず、どのツール YAML でも無効化に使えます。
+拡張は `tool_config_roots()` で既定の YAML を同梱できます。同梱した YAML は
+`${CONFIG_ROOT}/tools` に置かなくても読み込まれます。2 つの拡張が同じ stem を同梱していると
+起動時に失敗します。
+
+### 同梱ツールの上書き（上級者向け）
+
+同梱した YAML の値を変えたいときは、`${CONFIG_ROOT}/extensions/<拡張名>/tools/` に同じ stem の
+YAML を置きます。ファイルには **変えたいキーだけ** を書き、同梱分へトップレベルのキー単位で重ねます。
+
+```yaml
+# ${CONFIG_ROOT}/extensions/notes/tools/llm_notes_write.yaml（type は書かなくてよい）
+enabled: false
+```
+
+- トップレベルのキーごとに置き換えます。値が辞書やリストでも中までは合わせず、丸ごと置き換えます
+  （リストに 1 つ足したいときも、リスト全体を書きます）。
+- `type` は省略できます（書けば同梱分の `type` を置き換えます）。
+- 同梱ツールを止めるには `enabled: false` を書きます。`enabled: false` は同梱かどうかに関わらず、
+  どのツール YAML でも無効化に使えます。
+- 次の場合は起動時に失敗します。
+  - `${CONFIG_ROOT}/tools` に、拡張が同梱したツールと同じ stem の YAML がある（上書きは
+    `extensions/<拡張名>/tools/` に置きます）
+  - `extensions/<拡張名>/tools/` に、その拡張が同梱していない stem の YAML がある
+  - `extensions/` の下に、ロードしていない拡張の名前のディレクトリがある
+  - YAML の構文が壊れている・トップレベルが辞書でない
+- 書いたキーをそのツールが受け付けるか（綴りや値の妥当性）は検査しません。ツールが受け付けない
+  キーや値を書いたときの動作は保証しません。上書きは同梱ツールの中身を理解したうえで使う
+  上級者向けの手段です。
+- 同梱タスクの `schedule` / `enabled` を上書きファイルに書くと、ダッシュボードの
+  [拡張のタスクの上書き](extension-task-override.md) より優先します。
 
 ## LLM ツール
 

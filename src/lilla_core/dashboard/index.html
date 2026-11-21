@@ -701,12 +701,18 @@
                       <input type="text" class="ext-cron" x-model="exts.taskDrafts[task.name].schedule"
                         :placeholder="task.default.schedule">
                       <div class="ext-sub" x-text="'デフォルト: ' + task.default.schedule"></div>
+                      <div class="ext-sub" x-show="task.file_overridden.includes('schedule')">
+                        ⚠️ 設定ファイル（extensions/<span x-text="exts.detail.name"></span>/tools/）の値が優先されます
+                      </div>
                     </td>
                     <td>
                       <label class="memo-toggle">
                         <input type="checkbox" x-model="exts.taskDrafts[task.name].enabled">
                         有効
                       </label>
+                      <div class="ext-sub" x-show="task.file_overridden.includes('enabled')">
+                        ⚠️ 設定ファイルの値が優先されます
+                      </div>
                     </td>
                     <td>
                       <span :class="'badge ' + (taskHasOverride(task) ? 'badge-warning' : 'level-default')"

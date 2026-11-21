@@ -190,13 +190,13 @@ tools:
       - llm_notes_search
 ```
 
-`${CONFIG_ROOT}/tools` に同じ stem の YAML を置くと、同梱分を丸ごと置き換えます（説明文を変えるときなど）。
+変えるときは `${CONFIG_ROOT}/extensions/notes/tools/` に同じ stem の YAML を置き、変えたいキーだけを
+書きます（説明文を変えるときなど。[ツール契約](tools.md#同梱ツールの上書き上級者向け)）。
 `enabled: false` と書けば、そのツールだけロードしません（たとえば読み取りだけにしたいときは
 `llm_notes_write` を止めます）。
 
 ```yaml
-# ${CONFIG_ROOT}/tools/llm_notes_write.yaml
-type: llm_notes_write
+# ${CONFIG_ROOT}/extensions/notes/tools/llm_notes_write.yaml
 enabled: false
 ```
 

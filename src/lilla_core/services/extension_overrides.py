@@ -236,7 +236,13 @@ def build_detail(
     tasks = []
     for tool_name, info in entries.items():
         default_schedule = info["instance"].schedule
+        file_overrides = info.get("file_overrides", frozenset())
+        # 画面に見せる上書きは保存値のまま（ファイルが勝つ項目も消さない）。実効値だけ
+        # ファイルの値を優先して決める
         resolved = resolve_task(tool_name, name, default_schedule, overrides.get(tool_name))
+        effective = resolve_task(
+            tool_name, name, default_schedule, overrides.get(tool_name), file_overrides
+        )
         override: dict = {}
         invalid_keys = set(resolved.override.invalid)
         if resolved.override.schedule is not None:
@@ -247,8 +253,11 @@ def build_detail(
         if resolved.override.enabled is not None:
             override["enabled"] = resolved.override.enabled
         invalid = [key for key in ("schedule", "enabled") if key in invalid_keys]
-        schedule = override.get("schedule", default_schedule)
-        enabled = resolved.enabled
+        if "schedule" in file_overrides:
+            schedule = default_schedule
+        else:
+            schedule = override.get("schedule", default_schedule)
+        enabled = effective.enabled
         applied = applied_schedules.get(tool_name)
         expected = schedule if enabled else None
         tasks.append(
@@ -260,6 +269,9 @@ def build_detail(
                 "effective": {"schedule": schedule, "enabled": enabled},
                 "applied_schedule": applied,
                 "in_sync": (not scheduler_running) or applied == expected,
+                "file_overridden": [
+                    key for key in ("schedule", "enabled") if key in file_overrides
+                ],
             }
         )
 

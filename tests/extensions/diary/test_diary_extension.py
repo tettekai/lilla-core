@@ -383,16 +383,14 @@ class TestBundledToolConfigs:
         assert tools["llm_diary_draft_get"]["supported_client_type"] == "all"
         assert tools["llm_diary_draft_set"]["supported_client_type"] == "all"
 
-    def test_user_yaml_replaces_bundled_one(self, diary_config_root: Path) -> None:
-        """同じ stem の YAML を `${CONFIG_ROOT}/tools` に置くと同梱分が置き換わる。"""
-        tools_dir = diary_config_root / "tools"
-        tools_dir.mkdir()
+    def test_override_yaml_is_merged_into_bundled_one(self, diary_config_root: Path) -> None:
+        """`${CONFIG_ROOT}/extensions/diary/tools/` の差分が同梱分に重なる。"""
+        tools_dir = diary_config_root / "extensions" / "diary" / "tools"
+        tools_dir.mkdir(parents=True)
         (tools_dir / "llm_diary_draft_get.yaml").write_text(
-            "type: llm_diary_draft_get\nsupported_client_type: task\n", encoding="utf-8"
+            "supported_client_type: task\n", encoding="utf-8"
         )
-        (tools_dir / "llm_diary_draft_set.yaml").write_text(
-            "type: llm_diary_draft_set\nenabled: false\n", encoding="utf-8"
-        )
+        (tools_dir / "llm_diary_draft_set.yaml").write_text("enabled: false\n", encoding="utf-8")
 
         tools = self._load(diary_config_root)
 

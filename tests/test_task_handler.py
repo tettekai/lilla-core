@@ -444,6 +444,23 @@ class TestTaskOverrides:
         assert self._fields("task_core")["hour"] == "7"
         repo.find_by_extensions.assert_awaited_once_with(["diary"])
 
+    async def test_file_override_schedule_wins_over_dashboard(self, repo, diary) -> None:
+        """上書きの YAML に書いた schedule は画面の上書きより優先し、enabled は画面が効く。"""
+        repo.docs = {
+            "diary": {"extension": "diary", "tasks": {
+                "task_a": {"schedule": "30 21 * * *"},
+                "task_b": {"schedule": "30 21 * * *", "enabled": False},
+            }},
+        }
+        tools = self._tools(task_a="0 5 * * *", task_b="0 5 * * *")
+        tools["task_a"]["file_overrides"] = frozenset({"schedule"})
+        tools["task_b"]["file_overrides"] = frozenset({"schedule"})
+
+        await task_handler.start_scheduler(tools, MagicMock())
+
+        assert self._fields("task_a")["hour"] == "5"
+        assert self._job("task_b") is None
+
     async def test_reapply_changes_trigger_and_next_run(self, repo, diary) -> None:
         """上書きを入れて反映すると、ジョブのトリガーと次回実行時刻が変わる。"""
         await task_handler.start_scheduler(self._tools(task_a=self.DEFAULT), MagicMock())

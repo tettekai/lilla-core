@@ -446,25 +446,37 @@ class TestLoadLlmToolsBundledConfigs:
         assert "llm_pack" in result
         assert result["llm_pack"]["schema"]["description"] == "from pack"
 
-    def test_user_yaml_replaces_bundled_yaml(
+    def test_override_yaml_is_merged_into_bundled_yaml(
         self, llm_tool_loader, pack_configs: Path, tool_root: Path, config_root: Path
     ) -> None:
-        """同名 YAML を `config_root/tools` に置くと、その内容で丸ごと上書きされる。"""
-        _write_yaml(config_root / "tools", "llm_pack.yaml", "type: llm_pack\ndescription: mine\n")
+        """`extensions/<拡張名>/tools/` の差分は、書いたキーだけを置き換える（`type` は同梱のまま）。"""
+        (config_root / "extensions" / "pack" / "tools").mkdir(parents=True)
+        _write_yaml(config_root / "extensions" / "pack" / "tools", "llm_pack.yaml", "description: mine\n")
 
         result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
 
         assert result["llm_pack"]["schema"]["description"] == "mine"
+        assert result["llm_pack"]["tool_config"]["type"] == "llm_pack"
 
-    def test_user_can_disable_bundled_tool(
+    def test_override_can_disable_bundled_tool(
         self, llm_tool_loader, pack_configs: Path, tool_root: Path, config_root: Path
     ) -> None:
-        """`enabled: false` の同名 YAML を置くと、同梱ツールはロードされない。"""
-        _write_yaml(config_root / "tools", "llm_pack.yaml", "enabled: false\n")
+        """差分の `enabled: false` で、同梱ツールはロードされない。"""
+        (config_root / "extensions" / "pack" / "tools").mkdir(parents=True)
+        _write_yaml(config_root / "extensions" / "pack" / "tools", "llm_pack.yaml", "enabled: false\n")
 
         result = llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
 
         assert result == {}
+
+    def test_user_yaml_with_bundled_name_fails_fast(
+        self, llm_tool_loader, pack_configs: Path, tool_root: Path, config_root: Path
+    ) -> None:
+        """同名 YAML を `config_root/tools` に置くと、置き換えずにロード時に落とす。"""
+        _write_yaml(config_root / "tools", "llm_pack.yaml", "type: llm_pack\ndescription: mine\n")
+
+        with pytest.raises(ValueError, match="same name as a tool bundled"):
+            llm_tool_loader.load_llm_tools(tool_roots=[tool_root], config_root=config_root)
 
     def test_bundled_self_type_loads_py_next_to_yaml(
         self, llm_tool_loader, make_extension, use_extensions, tmp_path: Path, config_root: Path
