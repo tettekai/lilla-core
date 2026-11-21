@@ -287,7 +287,7 @@ class TestDispatchCommand:
         assert result.conversation_started
         assert not result.replied
         assert ctx.conversations == [
-            format_skill_instruction("review", "レビューして", "この PR")
+            await format_skill_instruction("review", "レビューして", "この PR")
         ]
 
     async def test_skill_not_found_via_reply_error(self, skill_repo: MagicMock) -> None:

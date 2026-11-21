@@ -33,7 +33,7 @@ def normalize_skill_name(name) -> str | None:
     return name.lower()
 
 
-def format_skill_instruction(name: str, prompt: str, extra: str | None = None) -> str:
+async def format_skill_instruction(name: str, prompt: str, extra: str | None = None) -> str:
     """スキルの本文を「システムからの動作指示」のラッパーで囲み、追加指示があれば続けて返す。
 
     ユーザーの発言と区別できるよう、開始行・前置き文・本文・終了行の形で囲む。文言は
@@ -53,12 +53,13 @@ def format_skill_instruction(name: str, prompt: str, extra: str | None = None) -
     Returns:
         展開後の文字列。
     """
+    body = (await render_or_raw(prompt, f"skill '{name}'")).strip()
     block = "\n".join(
         [
             t("command.skill.instruction_start", name=name),
             t("command.skill.instruction_preamble"),
             "",
-            render_or_raw(prompt, f"skill '{name}'").strip(),
+            body,
             t("command.skill.instruction_end"),
         ]
     )

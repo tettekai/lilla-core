@@ -135,7 +135,7 @@ async def _load_provider_prompt(provider, provider_name: str = "") -> str:
         return ""
     config_root = get_config().env.config_root
     text = await load_text_resources(resolve_llm_provider_prompt_spec(spec, config_root), config_root)
-    return render_or_raw(text, f"llm.providers.{provider_name}.prompt").strip()
+    return (await render_or_raw(text, f"llm.providers.{provider_name}.prompt")).strip()
 
 
 def _resolve_api_key(provider) -> str:

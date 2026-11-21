@@ -244,4 +244,4 @@ class ScheduledLlmTask:
         if not isinstance(now, datetime):
             now = None
         prompt = await load_text_resources(self._prompt_sources)
-        return render_or_raw(prompt, f"task '{self.name}' prompt", now=now).strip()
+        return (await render_or_raw(prompt, f"task '{self.name}' prompt", now=now)).strip()

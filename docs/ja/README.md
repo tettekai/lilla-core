@@ -30,7 +30,7 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [観測用ダッシュボード](dashboard.md) — 公開面への注意を含む
 - [スキル](skills.md) — `!skill` と、ダッシュボードの Skills 画面
 - [プロンプトの読み込み元（source spec）](prompt-sources.md) — `file:` / `dir:`、`${config_root}`、notes の `$notes`
-- [プロンプトのテンプレート（Jinja2）](prompt-template.md) — `{{ current_hour }}` と、展開するプロンプトの範囲
+- [プロンプトのテンプレート（Jinja2）](prompt-template.md) — `{{ current_hour }}`・ノートを読む `notes()` と、展開するプロンプトの範囲
 - [共有 HTTP サーバー](http-server.md) — `http:`、Bearer トークン、拡張からのルート追加
 - [ツール契約](tools.md) — LLM ツール・task ツール・組み込みツール
 - [判定ヘルパー（Jev）](jev.md) — 任意の `lilla_core.tool_support.jev`

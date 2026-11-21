@@ -99,7 +99,7 @@ async def execute(input: dict, context: dict) -> dict:
             tool_name, None, "Expert の prompt ディレクトリが設定されていません"
         )
 
-    system_prompt = render_or_raw(await load_text_resources(prompt_dir_raw), "llm_expert prompt")
+    system_prompt = await render_or_raw(await load_text_resources(prompt_dir_raw), "llm_expert prompt")
 
     llm_tools = context.get("llm_tools", {})
     available_tools = context.get("available_tools", [])

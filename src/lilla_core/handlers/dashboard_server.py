@@ -584,7 +584,7 @@ async def handle_api_skills(request: web.Request) -> web.Response:
         return web.Response(status=400, text=error)
     if not prompt:
         return web.Response(status=400, text="prompt is required")
-    error = _check_skill_prompt(prompt)
+    error = await _check_skill_prompt(prompt)
     if error:
         return web.Response(status=400, text=error)
 
@@ -598,7 +598,7 @@ async def handle_api_skills(request: web.Request) -> web.Response:
     return web.json_response(_serialize_doc(doc), status=201)
 
 
-def _check_skill_prompt(prompt: str) -> str | None:
+async def _check_skill_prompt(prompt: str) -> str | None:
     """スキルの本文を Jinja2 テンプレートとして試しに展開し、失敗の理由を返す。
 
     実行時と同じ変数（`current_hour`）で展開するため、構文エラーに加えて未定義の名前
@@ -610,7 +610,7 @@ def _check_skill_prompt(prompt: str) -> str | None:
     from lilla_core.services.prompt_template import PromptTemplateError, preview_skill_prompt
 
     try:
-        preview_skill_prompt(prompt)
+        await preview_skill_prompt(prompt)
     except PromptTemplateError as e:
         return f"Invalid prompt template: {e}"
     return None
@@ -647,7 +647,7 @@ async def handle_api_prompt_preview(request: web.Request) -> web.Response:
     target_type = target.get("type")
     try:
         if target_type == "skill":
-            preview = preview_skill_prompt(text.strip())
+            preview = await preview_skill_prompt(text.strip())
         elif target_type == "extension":
             name = target.get("name")
             if not isinstance(name, str) or find_extension(name) is None:
@@ -711,7 +711,7 @@ async def handle_api_skill_detail(request: web.Request) -> web.Response:
     if prompt is not None and not prompt:
         return web.Response(status=400, text="prompt must not be empty")
     if prompt is not None:
-        error = _check_skill_prompt(prompt)
+        error = await _check_skill_prompt(prompt)
         if error:
             return web.Response(status=400, text=error)
 

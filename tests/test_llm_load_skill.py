@@ -41,7 +41,7 @@ class TestExecute:
         result = await load_skill.execute({"name": "proofread"}, {})
 
         assert result["success"] is True
-        assert result["data"] == format_skill_instruction("proofread", "校正して")
+        assert result["data"] == await format_skill_instruction("proofread", "校正して")
         repo.find_by_name.assert_awaited_once_with("proofread")
 
     async def test_name_is_case_insensitive(self, repo: MagicMock) -> None:
@@ -52,7 +52,7 @@ class TestExecute:
 
         assert result["success"] is True
         repo.find_by_name.assert_awaited_once_with("proofread")
-        assert result["data"] == format_skill_instruction("proofread", "p")
+        assert result["data"] == await format_skill_instruction("proofread", "p")
 
     async def test_reason_is_not_in_result(self, repo: MagicMock) -> None:
         """`reason` は省略でき、指定しても結果の本文に含まれない。"""
@@ -128,8 +128,8 @@ class TestExecute:
         repo.find_by_name.return_value = {"name": "a", "prompt": "new", "enabled": False, "llm_callable": True}
         third = await load_skill.execute({"name": "a"}, {})
 
-        assert first["data"] == format_skill_instruction("a", "old")
-        assert second["data"] == format_skill_instruction("a", "new")
+        assert first["data"] == await format_skill_instruction("a", "old")
+        assert second["data"] == await format_skill_instruction("a", "new")
         assert third["success"] is False
         assert repo.find_by_name.await_count == 3
 

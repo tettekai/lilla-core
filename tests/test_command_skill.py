@@ -62,7 +62,7 @@ class TestHandleSkill:
             msg,
             bot,
             {"tool": {}},
-            format_skill_instruction("review", "レビューして", "この PR を見て"),
+            await format_skill_instruction("review", "レビューして", "この PR を見て"),
         )
         msg.reply.assert_not_awaited()
         content = repo.start_conversation.call_args.args[3]
@@ -77,7 +77,7 @@ class TestHandleSkill:
 
         repo.find_by_name.assert_awaited_once_with("review")
         content = repo.start_conversation.call_args.args[3]
-        assert content == format_skill_instruction("review", "p")
+        assert content == await format_skill_instruction("review", "p")
         assert "追加指示" not in content
 
     async def test_not_found_replies_without_llm(self, repo: MagicMock) -> None:

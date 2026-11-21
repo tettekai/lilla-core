@@ -97,44 +97,145 @@ class TestCurrentHour:
 
 
 class TestRenderTemplate:
-    def test_injects_current_hour(self) -> None:
+    async def test_injects_current_hour(self) -> None:
         """共通の変数 `current_hour` を渡す。"""
-        assert render_template("いまは {{ current_hour }}", now=_NOW) == "いまは 2026-11-14 20:xx"
+        assert await render_template("いまは {{ current_hour }}", now=_NOW) == "いまは 2026-11-14 20:xx"
 
-    def test_passes_caller_variables(self) -> None:
+    async def test_passes_caller_variables(self) -> None:
         """呼び出し元の変数も渡せる。"""
-        assert render_template("{{ a }}/{{ current_hour }}", {"a": "x"}, now=_NOW) == (
+        assert await render_template("{{ a }}/{{ current_hour }}", {"a": "x"}, now=_NOW) == (
             "x/2026-11-14 20:xx"
         )
 
-    def test_rejects_caller_variable_named_like_common(self) -> None:
+    async def test_rejects_caller_variable_named_like_common(self) -> None:
         """共通の変数と同じ名前は呼び出し元の誤りとして ValueError。"""
         with pytest.raises(ValueError, match="current_hour"):
-            render_template("x", {"current_hour": "y"}, now=_NOW)
+            await render_template("x", {"current_hour": "y"}, now=_NOW)
 
-    def test_legacy_now_is_undefined(self) -> None:
+    async def test_legacy_now_is_undefined(self) -> None:
         """廃止した `{{now}}` は未定義の名前として失敗する。"""
         with pytest.raises(PromptTemplateError):
-            render_template("{{now}}", now=_NOW)
+            await render_template("{{now}}", now=_NOW)
+
+
+class _FakeNotes:
+    """テンプレートの `notes()` が読む保存先 `notes` の代わり（`read` だけを持つ）。"""
+
+    def __init__(self, files: dict[str, str], error: Exception | None = None) -> None:
+        """`files`（パス → 本文）と、読み取りで投げる例外を受け取る。"""
+        self.files = files
+        self.error = error
+        self.reads: list[str] = []
+
+    async def read(self, path: str) -> str:
+        """本文を返す（無ければ `FileStorageNotFoundError`）。"""
+        from lilla_core.core.file_storage import FileStorageNotFoundError
+
+        self.reads.append(path)
+        if self.error is not None:
+            raise self.error
+        if path not in self.files:
+            raise FileStorageNotFoundError(f"not found: {path}")
+        return self.files[path]
+
+
+@pytest.fixture
+def notes_storage(monkeypatch):
+    """`get_file_storage("notes")` が返す保存先を差し替える（`set(storage)` で入れ替え）。"""
+    holder: dict[str, object] = {"notes": _FakeNotes({"memory/core.md": "覚えたこと\n"})}
+    monkeypatch.setattr(
+        "lilla_core.core.extension.get_file_storage", lambda name: holder.get(name)
+    )
+    return holder
+
+
+class TestNotesFunction:
+    """どのテンプレートでも使える関数 `notes(path)`。"""
+
+    async def test_reads_note(self, notes_storage) -> None:
+        """保存先 `notes` のファイルの本文を展開する。"""
+        assert await render_template('[{{ notes("memory/core.md") }}]') == "[覚えたこと\n]"
+
+    async def test_missing_note_is_empty(self, notes_storage) -> None:
+        """無いファイルは空文字（まだ作られていないノートを書いておける）。"""
+        assert await render_template('[{{ notes("memory/none.md") }}]') == "[]"
+        assert await render_template('{% if notes("memory/none.md") %}x{% endif %}') == ""
+
+    async def test_available_in_extension_prompts(self, notes_storage) -> None:
+        """拡張のプロンプト（`settings` と一緒）でも使える。"""
+        text = '{% if settings.enabled %}{{ notes("memory/core.md") }}{% endif %}'
+        assert await render_prompt(text, {"enabled": True}) == "覚えたこと\n"
+
+    async def test_note_braces_are_not_expanded_again(self, notes_storage) -> None:
+        """ノートの中の波括弧はもう一度展開しない。"""
+        notes_storage["notes"] = _FakeNotes({"a.md": "{{ current_hour }}"})
+        assert await render_template('{{ notes("a.md") }}') == "{{ current_hour }}"
+
+    async def test_long_note_is_truncated_with_warning(self, notes_storage, caplog) -> None:
+        """`MAX_NOTE_CHARS` を超える本文は切り詰めて WARNING を出す。"""
+        from lilla_core.services import prompt_template
+
+        notes_storage["notes"] = _FakeNotes({"a.md": "x" * (prompt_template.MAX_NOTE_CHARS + 5)})
+        with caplog.at_level("WARNING"):
+            result = await render_template('{{ notes("a.md") }}')
+        assert len(result) == prompt_template.MAX_NOTE_CHARS
+        assert "a.md" in caplog.text
+
+    async def test_read_error_fails_rendering(self, notes_storage) -> None:
+        """無いファイル以外の失敗（パスの規則違反など）は展開の失敗にする。"""
+        from lilla_core.core.file_storage import FileStoragePathError
+
+        notes_storage["notes"] = _FakeNotes({}, error=FileStoragePathError("bad path"))
+        with pytest.raises(PromptTemplateError, match="bad path"):
+            await render_template('{{ notes("../x") }}')
+
+    async def test_without_notes_storage_fails_rendering(self, notes_storage) -> None:
+        """保存先 `notes` が無ければ展開の失敗にする。"""
+        notes_storage.clear()
+        with pytest.raises(PromptTemplateError, match="not registered"):
+            await render_template('{{ notes("a.md") }}')
+
+    async def test_non_string_path_fails_rendering(self, notes_storage) -> None:
+        """文字列でないパスは展開の失敗にする。"""
+        with pytest.raises(PromptTemplateError):
+            await render_template("{{ notes(1) }}")
+
+    async def test_failure_falls_back_to_raw_text(self, notes_storage, caplog) -> None:
+        """`render_or_raw()` では失敗しても展開前の本文を使う。"""
+        notes_storage.clear()
+        text = '{{ notes("a.md") }}'
+        with caplog.at_level("WARNING"):
+            assert await render_or_raw(text, "prompt.system") == text
+
+    async def test_not_called_when_unused(self, notes_storage) -> None:
+        """使わないテンプレートでは読みに行かない。"""
+        storage = notes_storage["notes"]
+        await render_template("plain")
+        assert storage.reads == []
+
+    async def test_name_is_reserved(self) -> None:
+        """`notes` は共通の名前で、呼び出し元の変数には使えない。"""
+        with pytest.raises(ValueError, match="notes"):
+            await render_template("x", {"notes": "y"})
 
 
 class TestRenderOrRaw:
-    def test_renders(self) -> None:
+    async def test_renders(self) -> None:
         """展開できれば展開した本文を返す。"""
-        assert render_or_raw("{{ current_hour }}\n", "prompt.system", now=_NOW) == (
+        assert await render_or_raw("{{ current_hour }}\n", "prompt.system", now=_NOW) == (
             "2026-11-14 20:xx\n"
         )
 
     @pytest.mark.parametrize("text", ["{{ broken", "{{ missing }}"])
-    def test_returns_raw_with_warning_on_failure(self, text, caplog) -> None:
+    async def test_returns_raw_with_warning_on_failure(self, text, caplog) -> None:
         """構文エラー・未定義の名前は WARNING を出して本文をそのまま返す。"""
         with caplog.at_level("WARNING"):
-            assert render_or_raw(text, "prompt.system", now=_NOW) == text
+            assert await render_or_raw(text, "prompt.system", now=_NOW) == text
         assert "prompt.system" in caplog.text
 
-    def test_empty_text_is_returned_as_is(self) -> None:
+    async def test_empty_text_is_returned_as_is(self) -> None:
         """空の本文は展開しない。"""
-        assert render_or_raw("", "prompt.system") == ""
+        assert await render_or_raw("", "prompt.system") == ""
 
 
 class TestCheckSyntax:
@@ -157,73 +258,73 @@ class TestCheckSyntax:
 class TestRenderPrompt:
     """`settings` を渡した展開。"""
 
-    def test_renders_value_and_branch(self) -> None:
+    async def test_renders_value_and_branch(self) -> None:
         """値の埋め込みと条件分岐が効く。"""
         text = "{% if settings.enabled %}保存先: {{ settings.path }}{% endif %}"
-        assert render_prompt(text, {"enabled": True, "path": "a.md"}) == "保存先: a.md"
+        assert await render_prompt(text, {"enabled": True, "path": "a.md"}) == "保存先: a.md"
 
-    def test_plain_text_is_unchanged_including_trailing_newline(self) -> None:
+    async def test_plain_text_is_unchanged_including_trailing_newline(self) -> None:
         """記法を含まない本文は末尾の改行も含めて変わらない。"""
         text = "## 見出し\n本文です。\n\n"
-        assert render_prompt(text, {}) == text
+        assert await render_prompt(text, {}) == text
 
-    def test_value_braces_are_not_expanded_again(self) -> None:
+    async def test_value_braces_are_not_expanded_again(self) -> None:
         """設定値の中の波括弧はもう一度展開しない。"""
-        assert render_prompt("{{ settings.path }}", {"path": "{{ x }}"}) == "{{ x }}"
+        assert await render_prompt("{{ settings.path }}", {"path": "{{ x }}"}) == "{{ x }}"
 
-    def test_no_autoescape(self) -> None:
+    async def test_no_autoescape(self) -> None:
         """HTML ではないため自動エスケープしない。"""
-        assert render_prompt("{{ settings.v }}", {"v": "<a & b>"}) == "<a & b>"
+        assert await render_prompt("{{ settings.v }}", {"v": "<a & b>"}) == "<a & b>"
 
-    def test_undefined_name_fails(self) -> None:
+    async def test_undefined_name_fails(self) -> None:
         """未定義の名前は空文字にせず失敗にする。"""
         with pytest.raises(PromptTemplateError, match="UndefinedError"):
-            render_prompt("{{ settings.missing }}", {"path": "a"})
+            await render_prompt("{{ settings.missing }}", {"path": "a"})
 
-    def test_raw_block_keeps_braces(self) -> None:
+    async def test_raw_block_keeps_braces(self) -> None:
         """`{% raw %}` の中はそのまま出る。"""
-        assert render_prompt("{% raw %}{{名前}}{% endraw %}", {}) == "{{名前}}"
+        assert await render_prompt("{% raw %}{{名前}}{% endraw %}", {}) == "{{名前}}"
 
-    def test_sandbox_blocks_attribute_access(self) -> None:
+    async def test_sandbox_blocks_attribute_access(self) -> None:
         """サンドボックスが内部属性への到達を拒否する。"""
         with pytest.raises(PromptTemplateError):
-            render_prompt("{{ settings.__class__.__mro__ }}", {})
+            await render_prompt("{{ settings.__class__.__mro__ }}", {})
 
     @pytest.mark.parametrize("name", ["items", "keys", "values", "get", "update"])
-    def test_dict_method_names_resolve_to_values(self, name) -> None:
+    async def test_dict_method_names_resolve_to_values(self, name) -> None:
         """dict のメソッド名と同じ項目も、属性でも添字でも値を返す。"""
         text = "{{ settings.%s }}/{{ settings['%s'] }}" % (name, name)
-        assert render_prompt(text, {name: "v"}) == "v/v"
+        assert await render_prompt(text, {name: "v"}) == "v/v"
 
-    def test_nested_values_are_wrapped(self) -> None:
+    async def test_nested_values_are_wrapped(self) -> None:
         """入れ子の dict・リストの中の dict も同じ規則で引ける。"""
         text = "{{ settings.inner.items }}{% for x in settings.rows %},{{ x.get }}{% endfor %}"
         settings = {"inner": {"items": "a"}, "rows": [{"get": "b"}, {"get": "c"}]}
-        assert render_prompt(text, settings) == "a,b,c"
+        assert await render_prompt(text, settings) == "a,b,c"
 
-    def test_view_supports_membership_iteration_and_truthiness(self) -> None:
+    async def test_view_supports_membership_iteration_and_truthiness(self) -> None:
         """`in`・`for`・真偽判定・フィルターが使える。"""
         text = (
             "{{ 'path' in settings }} {% for k in settings %}{{ k }};{% endfor %} "
             "{% if settings.empty %}y{% else %}n{% endif %} {{ settings.tags|join(',') }}"
         )
         settings = {"path": "a", "empty": {}, "tags": ["x", "y"]}
-        assert render_prompt(text, settings) == "True path;empty;tags; n x,y"
+        assert await render_prompt(text, settings) == "True path;empty;tags; n x,y"
 
-    def test_view_hides_internals(self) -> None:
+    async def test_view_hides_internals(self) -> None:
         """入れ物の中身の属性にはテンプレートから届かない。"""
         with pytest.raises(PromptTemplateError, match="unsafe"):
-            render_prompt("{{ settings._data }}", {})
+            await render_prompt("{{ settings._data }}", {})
 
-    def test_nested_undefined_name_fails(self) -> None:
+    async def test_nested_undefined_name_fails(self) -> None:
         """入れ子の無い名前も失敗にする。"""
         with pytest.raises(PromptTemplateError, match="UndefinedError"):
-            render_prompt("{{ settings.inner.missing }}", {"inner": {}})
+            await render_prompt("{{ settings.inner.missing }}", {"inner": {}})
 
-    def test_syntax_error_is_prompt_template_error(self) -> None:
+    async def test_syntax_error_is_prompt_template_error(self) -> None:
         """構文エラーも `PromptTemplateError` になる。"""
         with pytest.raises(PromptTemplateError, match="syntax"):
-            render_prompt("{% if %}", {})
+            await render_prompt("{% if %}", {})
 
 
 class TestSecretStripping:
@@ -403,18 +504,18 @@ class TestFindComments:
 class TestPreviewSkillPrompt:
     """スキルの本文のプレビュー。"""
 
-    def test_renders_with_current_hour(self) -> None:
+    async def test_renders_with_current_hour(self) -> None:
         """`current_hour` で展開し、コメントも返す。"""
         with patch("lilla_core.utils.datetime_utils.local_now", return_value=_NOW):
-            preview = preview_skill_prompt("{{ current_hour }}{# memo #}")
+            preview = await preview_skill_prompt("{{ current_hour }}{# memo #}")
         assert preview.rendered == "2026-11-14 20:xx"
         assert [c.text for c in preview.comments] == [" memo "]
         assert preview.settings_unavailable is False
 
-    def test_settings_is_undefined(self) -> None:
+    async def test_settings_is_undefined(self) -> None:
         """スキルには `settings` を渡さない。"""
         with pytest.raises(PromptTemplateError):
-            preview_skill_prompt("{{ settings.path }}")
+            await preview_skill_prompt("{{ settings.path }}")
 
 
 class TestPreviewExtensionPrompt:
