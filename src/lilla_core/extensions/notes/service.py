@@ -374,7 +374,11 @@ async def notify_changes(
     拡張が `notes_watched_paths()` で申告したファイルが変わっていれば変更の通知
     （`alert_watched_changes`）を出す。どちらも失敗は WARNING ログだけで、書き込みの結果は
     変えない。すべての書き込みの経路（通常の書き込み・削除・復元・Git の push）がここを通る。
+    その前に、中身が変わったノートの `llm_notes_read` のキャッシュを消す（失敗は WARNING ログだけ）。
     """
+    from .read_cache import invalidate
+
+    await invalidate([path for path, before, after in changes if before != after])
     await alert_if_large_deletion_changes(changes, commit_id, config)
     await alert_watched_changes(changes, commit_id)
 

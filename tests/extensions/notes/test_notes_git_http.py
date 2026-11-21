@@ -509,3 +509,18 @@ class TestNotesExtensionRoutes:
             ("POST", "/notes.git/git-receive-pack"),
         }
         assert {r.auth for r in routes} == {"bearer"}
+
+    async def test_push_invalidates_read_cache_of_changed_files(
+        self, server, git, tmp_path: Path, tool_cache
+    ) -> None:
+        """push で変わったファイルの `llm_notes_read` のキャッシュは全部消え、変わらないものは残る。"""
+        await service.write_note("user/a.md", "a\n")
+        await service.write_note("user/b.md", "b\n")
+        await service.write_note("user/c.md", "c\n")
+        for path in ("user/a.md", "user/b.md", "user/c.md"):
+            await tool_cache.set("llm_notes_read", path, "cached", 30)
+        work = await _clone(git, server, tmp_path)
+        await _commit(git, work, {"user/a.md": "a2\n", "user/b.md": None})
+        code, out = await git("push", cwd=work)
+        assert code == 0, out
+        assert set(tool_cache.entries) == {("llm_notes_read", "user/c.md")}

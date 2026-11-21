@@ -9,6 +9,7 @@
 
 ### Added
 
+- notes の `llm_notes_read` が、読んだノートの FrontMatter に `lilla-cache-expiration-minutes`（正の整数・分）があれば、その分数のあいだ結果をツールのキャッシュ（`tool_cache`）に残し、会話のコンテキストへ入れるようにした（#385）。同梱の YAML は `cache.mode: auto` で、キーはノートのパス、内容は FrontMatter を除いた本文の全文。値が不正なら WARNING を出してキャッシュしない（読み取り結果は変わらない）。書き込み・削除・復元・Git の push で変わったノートのキャッシュはすぐ消す（失敗は WARNING ログだけ）。`ToolCacheRepository` に 1 件を消す `delete(tool_name, args_key)` を足した。説明は `docs/ja/notes.md`
 - 拡張が同梱した LLM の定期タスク（`task_scheduled_llm` とその派生クラス。`memory` の夜間タスク・`diary` の聞き取りなど）のプロンプトを、ダッシュボードの設定画面から上書きできるようにした（#383）。`extension_overrides` の `tasks.<ツール名>.prompt` に `{"mode": "append" | "replace", "text"}` で保存し、拡張のプロンプトと同じ規則でデフォルト（同梱のプロンプト）と合成する。置き換えモードの空の本文は保存できない。上書きファイル（`${CONFIG_ROOT}/extensions/<拡張名>/tools/`）に `prompt` を書いたタスクではファイルが優先し、画面に ⚠️ を出す。プロンプトだけの保存はスケジューラへ反映せず、次の実行（`!runtask` を含む）から使われる。保存値が不正・読み込みに失敗したときは WARNING を出してデフォルトを使う。プレビュー API（`POST /api/admin/prompt-preview`）に `target.type: task` を足し、タスクの変数と `notes()` をダミー値で展開する（実際のデータは読まない）。派生クラスは `prompt_variable_names()` でプロンプトの変数名を申告する。説明は `docs/ja/extension-task-override.md`
 
 - プロンプトの source spec（`prompt.system` / `prompt.conversation` / `prompt.discord`・LLM プロバイダーの `prompt`・`task_scheduled_llm` / `llm_expert` の `prompt` など）で、パスの先頭に `$notes` を書くとノート置き場から読めるようにした（#373）。`file:$notes/memory/core.md` / `dir:$notes/memory/personal` のように書き、ディスクの指定と混在できる。組み立てのたびに最新を読み、無いノートは空、notes のパス規則に合わない指定（`..`・空の要素など）はエラーになる。説明は `docs/ja/prompt-sources.md`

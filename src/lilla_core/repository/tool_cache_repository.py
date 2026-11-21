@@ -84,6 +84,21 @@ class ToolCacheRepository:
             upsert=True,
         )
 
+    async def delete(self, tool_name: str, args_key: str) -> bool:
+        """`tool_name` と `args_key` の組のキャッシュを 1 件消す。
+
+        Args:
+            tool_name: ツール名（YAML stem）。
+            args_key: キャッシュのキー。
+
+        Returns:
+            消したら True、無ければ False。
+        """
+        result = await self._collection.delete_one(
+            {"tool_name": tool_name, "args_key": args_key}
+        )
+        return result.deleted_count > 0
+
     async def get_all_valid(self) -> list[dict]:
         """有効期限内のキャッシュレコードをすべて返す。
 
