@@ -104,7 +104,10 @@ class TestBuildToolEntry:
     def test_returns_all_keys(self, task_tool_loader) -> None:
         instance = MagicMock()
         entry = task_tool_loader._build_tool_entry(instance, "task_foo", {})
-        assert set(entry.keys()) == {"instance", "description", "category", "trigger", "scheduled", "extension"}
+        assert set(entry.keys()) == {
+            "instance", "description", "category", "trigger", "scheduled", "extension",
+            "file_overrides",
+        }
 
     def test_instance_is_stored(self, task_tool_loader) -> None:
         instance = MagicMock()
@@ -153,23 +156,38 @@ class TestBuildToolEntry:
 class TestLoadToolConfigsBundled:
     """拡張が同梱した `task_*.yaml` と `enabled: false` の扱い。"""
 
-    def test_bundled_yaml_is_loaded_and_user_yaml_overrides(
+    def test_bundled_yaml_is_loaded_and_override_is_merged(
         self, task_tool_loader, tmp_path: Path, make_extension, use_extensions
     ) -> None:
-        """同梱 YAML が集められ、同名の利用者 YAML があればそちらが勝つ。"""
+        """同梱 YAML が集められ、`extensions/<拡張名>/tools/` の差分が重なる。"""
         configs = tmp_path / "pack"
         configs.mkdir()
         (configs / "task_a.yaml").write_text("type: task_a\nfrom: pack\n")
-        (configs / "task_b.yaml").write_text("type: task_b\nfrom: pack\n")
-        (tmp_path / "tools").mkdir()
-        (tmp_path / "tools" / "task_b.yaml").write_text("type: task_b\nfrom: user\n")
+        (configs / "task_b.yaml").write_text("type: task_b\nfrom: pack\nkeep: 1\n")
+        override_dir = tmp_path / "extensions" / "pack" / "tools"
+        override_dir.mkdir(parents=True)
+        (override_dir / "task_b.yaml").write_text("from: user\n")
         use_extensions(make_extension("pack", tool_config_roots=[configs]))
 
-        result = dict(task_tool_loader._load_tool_configs(tmp_path))
+        result = {e.name: e for e in task_tool_loader._load_tool_configs(tmp_path)}
 
-        assert result[str(configs / "task_a.yaml")]["from"] == "pack"
-        assert result[str(tmp_path / "tools" / "task_b.yaml")]["from"] == "user"
-        assert str(configs / "task_b.yaml") not in result
+        assert result["task_a"].config["from"] == "pack"
+        assert result["task_b"].config == {"type": "task_b", "from": "user", "keep": 1}
+        assert result["task_b"].override_keys == frozenset({"from"})
+
+    def test_override_can_disable_bundled_yaml(
+        self, task_tool_loader, tmp_path: Path, make_extension, use_extensions
+    ) -> None:
+        """差分の `enabled: false` で同梱のタスクを止められる。"""
+        configs = tmp_path / "pack"
+        configs.mkdir()
+        (configs / "task_a.yaml").write_text("type: task_a\n")
+        override_dir = tmp_path / "extensions" / "pack" / "tools"
+        override_dir.mkdir(parents=True)
+        (override_dir / "task_a.yaml").write_text("enabled: false\n")
+        use_extensions(make_extension("pack", tool_config_roots=[configs]))
+
+        assert task_tool_loader._load_tool_configs(tmp_path) == []
 
     def test_disabled_yaml_is_excluded(
         self, task_tool_loader, tmp_path: Path, use_extensions
@@ -180,9 +198,9 @@ class TestLoadToolConfigsBundled:
         (tmp_path / "tools" / "task_off.yaml").write_text("type: task_off\nenabled: false\n")
         (tmp_path / "tools" / "task_on.yaml").write_text("type: task_on\n")
 
-        paths = [p for p, _ in task_tool_loader._load_tool_configs(tmp_path)]
+        paths = [e.path for e in task_tool_loader._load_tool_configs(tmp_path)]
 
-        assert paths == [str(tmp_path / "tools" / "task_on.yaml")]
+        assert paths == [tmp_path / "tools" / "task_on.yaml"]
 
 
 class TestLoadAllToolsExtensionOwner:
@@ -192,13 +210,15 @@ class TestLoadAllToolsExtensionOwner:
         self, task_tool_loader, tmp_path: Path, make_extension, use_extensions,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """同梱分（利用者が置き換えたものを含む）は拡張名、利用者だけの YAML は None。"""
+        """同梱分（差分を重ねたものを含む）は拡張名と差分のキー、利用者だけの YAML は None。"""
         pack = tmp_path / "pack"
         pack.mkdir()
         (pack / "task_a.yaml").write_text("type: task_x\n")
         (pack / "task_b.yaml").write_text("type: task_x\n")
+        override_dir = tmp_path / "extensions" / "pack" / "tools"
+        override_dir.mkdir(parents=True)
+        (override_dir / "task_b.yaml").write_text("schedule: '0 5 * * *'\n")
         (tmp_path / "tools").mkdir()
-        (tmp_path / "tools" / "task_b.yaml").write_text("type: task_x\n")
         (tmp_path / "tools" / "task_user.yaml").write_text("type: task_x\n")
         tool_root = tmp_path / "roots"
         tool_root.mkdir()
@@ -212,6 +232,8 @@ class TestLoadAllToolsExtensionOwner:
 
         assert result["task_a"]["extension"] == "pack"
         assert result["task_b"]["extension"] == "pack"
+        assert result["task_b"]["file_overrides"] == frozenset({"schedule"})
+        assert result["task_a"]["file_overrides"] == frozenset()
         assert result["task_user"]["extension"] is None
 
 
@@ -236,7 +258,7 @@ class TestLoadToolConfigs:
         result = task_tool_loader._load_tool_configs(tmp_path)
 
         assert len(result) == 1
-        path, config = result[0]
+        config = result[0].config
         assert config["type"] == "task_foo"
         assert config["name"] == "Foo Tool"
 
@@ -246,8 +268,8 @@ class TestLoadToolConfigs:
         tools_dir.mkdir()
         yaml_file = _write_yaml(tools_dir, "task_my_tool.yaml", "type: task_foo\n")
 
-        path, _ = task_tool_loader._load_tool_configs(tmp_path)[0]
-        assert path == str(yaml_file)
+        entry = task_tool_loader._load_tool_configs(tmp_path)[0]
+        assert entry.path == yaml_file
 
     def test_returns_multiple_configs(self, task_tool_loader, tmp_path: Path) -> None:
         """複数 task_*.yaml ファイルをすべて返す"""
@@ -507,7 +529,10 @@ class TestLoadAllTools:
             tool_roots=[tool_root], config_root=config_root, class_map={}
         )
         entry = result["task_tool"]
-        assert set(entry.keys()) == {"instance", "description", "category", "trigger", "scheduled", "extension"}
+        assert set(entry.keys()) == {
+            "instance", "description", "category", "trigger", "scheduled", "extension",
+            "file_overrides",
+        }
 
     def test_does_not_mutate_global_tool_class_map(
         self,

@@ -699,14 +699,22 @@
                     <td><code x-text="task.name"></code></td>
                     <td>
                       <input type="text" class="ext-cron" x-model="exts.taskDrafts[task.name].schedule"
-                        :placeholder="task.default.schedule">
+                        :placeholder="task.default.schedule"
+                        :disabled="task.file_locked.includes('schedule')">
                       <div class="ext-sub" x-text="'デフォルト: ' + task.default.schedule"></div>
+                      <div class="ext-sub" x-show="task.file_locked.includes('schedule')">
+                        設定ファイル（extensions/<span x-text="exts.detail.name"></span>/tools/）で指定されています
+                      </div>
                     </td>
                     <td>
                       <label class="memo-toggle">
-                        <input type="checkbox" x-model="exts.taskDrafts[task.name].enabled">
+                        <input type="checkbox" x-model="exts.taskDrafts[task.name].enabled"
+                          :disabled="task.file_locked.includes('enabled')">
                         有効
                       </label>
+                      <div class="ext-sub" x-show="task.file_locked.includes('enabled')">
+                        設定ファイルで指定されています
+                      </div>
                     </td>
                     <td>
                       <span :class="'badge ' + (taskHasOverride(task) ? 'badge-warning' : 'level-default')"

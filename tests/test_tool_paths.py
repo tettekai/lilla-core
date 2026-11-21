@@ -206,48 +206,198 @@ class TestResolveToolDirs:
         ]
 
 
-class TestResolveToolConfigFiles:
-    """拡張が同梱した既定 YAML と `config_root/tools` の合成規則。"""
+class TestResolveToolConfigs:
+    """拡張が同梱した既定 YAML・`extensions/<拡張名>/tools/` の差分・`config_root/tools` の合成規則。"""
 
     @staticmethod
-    def _touch(directory: Path, *names: str) -> None:
+    def _write(directory: Path, name: str, text: str = "type: x\n") -> Path:
+        """`directory` に YAML を書いてパスを返す。"""
         directory.mkdir(parents=True, exist_ok=True)
+        path = directory / name
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    @classmethod
+    def _touch(cls, directory: Path, *names: str) -> None:
         for name in names:
-            (directory / name).write_text("type: x\n")
+            cls._write(directory, name)
 
     def test_user_dir_only_without_extensions(self, tmp_path: Path, use_extensions) -> None:
-        """拡張が 0 個なら `config_root/tools` だけを stem 順で返す（従来どおり）。"""
+        """拡張が 0 個なら `config_root/tools` だけを stem 順で返す。"""
         use_extensions()
         self._touch(tmp_path / "tools", "llm_b.yaml", "llm_a.yaml", "task_x.yaml", "note.txt")
 
-        assert tool_paths.resolve_tool_config_files("llm_", tmp_path) == [
+        entries = tool_paths.resolve_tool_configs("llm_", tmp_path)
+
+        assert [e.path for e in entries] == [
             tmp_path / "tools" / "llm_a.yaml",
             tmp_path / "tools" / "llm_b.yaml",
         ]
+        assert all(e.extension is None and not e.override_keys for e in entries)
 
     def test_bundled_yaml_is_included(
         self, tmp_path: Path, make_extension, use_extensions
     ) -> None:
-        """拡張が同梱した YAML は、利用者側に無くても集められる。"""
+        """拡張が同梱した YAML は、利用者側に無くても集められ、持ち主の拡張名が付く。"""
         pack = tmp_path / "pack" / "tool_configs"
         self._touch(pack, "llm_pack.yaml")
         use_extensions(make_extension("pack", tool_config_roots=[pack]))
 
-        assert tool_paths.resolve_tool_config_files("llm_", tmp_path) == [pack / "llm_pack.yaml"]
+        [entry] = tool_paths.resolve_tool_configs("llm_", tmp_path)
 
-    def test_user_yaml_overrides_bundled_one(
+        assert entry.path == pack / "llm_pack.yaml"
+        assert entry.extension == "pack"
+        assert entry.config == {"type": "x"}
+        assert entry.override_path is None
+
+    def test_override_is_merged_by_top_level_key(
         self, tmp_path: Path, make_extension, use_extensions
     ) -> None:
-        """同じ stem は `config_root/tools` 側が丸ごと勝つ。"""
-        pack = tmp_path / "pack" / "tool_configs"
-        self._touch(pack, "llm_pack.yaml", "llm_other.yaml")
+        """差分は書いたキーだけを置き換え、リストは要素ではなく丸ごと置き換える。"""
+        pack = tmp_path / "pack"
+        self._write(
+            pack,
+            "task_a.yaml",
+            "type: task_x\nschedule: '0 1 * * *'\navailable_tools: [one, two]\n",
+        )
+        override = self._write(
+            tmp_path / "extensions" / "pack" / "tools", "task_a.yaml", "available_tools: [three]\n"
+        )
+        use_extensions(make_extension("pack", tool_config_roots=[pack]))
+
+        [entry] = tool_paths.resolve_tool_configs("task_", tmp_path)
+
+        assert entry.config == {
+            "type": "task_x",
+            "schedule": "0 1 * * *",
+            "available_tools": ["three"],
+        }
+        assert entry.path == pack / "task_a.yaml"
+        assert entry.override_path == override
+        assert entry.override_keys == frozenset({"available_tools"})
+
+    def test_override_can_disable(
+        self, tmp_path: Path, make_extension, use_extensions
+    ) -> None:
+        """`enabled: false` も差分として重なる（止めるかどうかは呼び出し側が判定する）。"""
+        pack = tmp_path / "pack"
+        self._touch(pack, "llm_a.yaml")
+        self._write(tmp_path / "extensions" / "pack" / "tools", "llm_a.yaml", "enabled: false\n")
+        use_extensions(make_extension("pack", tool_config_roots=[pack]))
+
+        [entry] = tool_paths.resolve_tool_configs("llm_", tmp_path)
+
+        assert not tool_paths.is_tool_enabled(entry.config)
+        assert entry.config["type"] == "x"
+
+    def test_empty_override_keeps_bundled(
+        self, tmp_path: Path, make_extension, use_extensions
+    ) -> None:
+        """空の差分は何も変えない。"""
+        pack = tmp_path / "pack"
+        self._touch(pack, "llm_a.yaml")
+        self._write(tmp_path / "extensions" / "pack" / "tools", "llm_a.yaml", "")
+        use_extensions(make_extension("pack", tool_config_roots=[pack]))
+
+        [entry] = tool_paths.resolve_tool_configs("llm_", tmp_path)
+
+        assert entry.config == {"type": "x"}
+        assert entry.override_keys == frozenset()
+
+    def test_user_yaml_with_bundled_stem_fails_fast(
+        self, tmp_path: Path, make_extension, use_extensions
+    ) -> None:
+        """`config_root/tools` に同梱と同じ stem があれば、置き換えずに落とす。"""
+        pack = tmp_path / "pack"
+        self._touch(pack, "llm_pack.yaml")
         self._touch(tmp_path / "tools", "llm_pack.yaml")
         use_extensions(make_extension("pack", tool_config_roots=[pack]))
 
-        assert tool_paths.resolve_tool_config_files("llm_", tmp_path) == [
-            pack / "llm_other.yaml",
-            tmp_path / "tools" / "llm_pack.yaml",
-        ]
+        with pytest.raises(ValueError, match="same name as a tool bundled by extension 'pack'"):
+            tool_paths.resolve_tool_configs("llm_", tmp_path)
+
+    def test_user_yaml_with_bundled_stem_of_other_kind_fails_fast(
+        self, tmp_path: Path, make_extension, use_extensions
+    ) -> None:
+        """種類ごとに集めても、同じ種類の stem の衝突は検出する。"""
+        pack = tmp_path / "pack"
+        self._touch(pack, "task_a.yaml")
+        self._touch(tmp_path / "tools", "task_a.yaml", "llm_user.yaml")
+        use_extensions(make_extension("pack", tool_config_roots=[pack]))
+
+        assert [e.name for e in tool_paths.resolve_tool_configs("llm_", tmp_path)] == ["llm_user"]
+        with pytest.raises(ValueError, match="same name as a tool bundled"):
+            tool_paths.resolve_tool_configs("task_", tmp_path)
+
+    def test_override_for_unbundled_stem_fails_fast(
+        self, tmp_path: Path, make_extension, use_extensions
+    ) -> None:
+        """同梱に無いツール名の差分は落とす。"""
+        pack = tmp_path / "pack"
+        self._touch(pack, "llm_a.yaml")
+        self._touch(tmp_path / "extensions" / "pack" / "tools", "llm_missing.yaml")
+        use_extensions(make_extension("pack", tool_config_roots=[pack]))
+
+        with pytest.raises(ValueError, match="does not match any tool bundled by extension 'pack'"):
+            tool_paths.resolve_tool_configs("llm_", tmp_path)
+
+    def test_override_for_tool_of_another_extension_fails_fast(
+        self, tmp_path: Path, make_extension, use_extensions
+    ) -> None:
+        """別の拡張が同梱したツールの差分を、違う拡張のディレクトリに置いたら落とす。"""
+        a = tmp_path / "a"
+        self._touch(a, "llm_a.yaml")
+        self._touch(tmp_path / "extensions" / "pack-b" / "tools", "llm_a.yaml")
+        use_extensions(
+            make_extension("pack-a", tool_config_roots=[a]),
+            make_extension("pack-b"),
+        )
+
+        with pytest.raises(ValueError, match="extension 'pack-b'"):
+            tool_paths.resolve_tool_configs("llm_", tmp_path)
+
+    def test_unknown_extension_directory_fails_fast(
+        self, tmp_path: Path, make_extension, use_extensions
+    ) -> None:
+        """ロードしていない拡張名のディレクトリは落とす（`tools/` が無くても）。"""
+        (tmp_path / "extensions" / "nope").mkdir(parents=True)
+        use_extensions(make_extension("pack"))
+
+        with pytest.raises(ValueError, match="does not match any loaded extension"):
+            tool_paths.resolve_tool_configs("llm_", tmp_path)
+
+    def test_files_directly_under_extensions_are_ignored(
+        self, tmp_path: Path, use_extensions
+    ) -> None:
+        """`extensions/` の直下のファイルは見ない。"""
+        self._touch(tmp_path / "extensions", "README.md")
+        use_extensions()
+
+        assert tool_paths.resolve_tool_configs("llm_", tmp_path) == []
+
+    def test_override_syntax_error_fails_fast(
+        self, tmp_path: Path, make_extension, use_extensions
+    ) -> None:
+        """差分の YAML の構文エラーは、パスを含めて落とす。"""
+        pack = tmp_path / "pack"
+        self._touch(pack, "llm_a.yaml")
+        self._write(tmp_path / "extensions" / "pack" / "tools", "llm_a.yaml", "a: [unclosed\n")
+        use_extensions(make_extension("pack", tool_config_roots=[pack]))
+
+        with pytest.raises(ValueError, match="Failed to parse tool config override"):
+            tool_paths.resolve_tool_configs("llm_", tmp_path)
+
+    def test_override_not_a_mapping_fails_fast(
+        self, tmp_path: Path, make_extension, use_extensions
+    ) -> None:
+        """差分の YAML のトップレベルがマッピングでなければ落とす。"""
+        pack = tmp_path / "pack"
+        self._touch(pack, "llm_a.yaml")
+        self._write(tmp_path / "extensions" / "pack" / "tools", "llm_a.yaml", "- a\n")
+        use_extensions(make_extension("pack", tool_config_roots=[pack]))
+
+        with pytest.raises(ValueError, match="must be a mapping"):
+            tool_paths.resolve_tool_configs("llm_", tmp_path)
 
     def test_same_stem_in_two_extensions_fails_fast(
         self, tmp_path: Path, make_extension, use_extensions
@@ -263,7 +413,7 @@ class TestResolveToolConfigFiles:
         )
 
         with pytest.raises(ValueError, match="bundled by both extensions 'pack-a' and 'pack-b'"):
-            tool_paths.resolve_tool_config_files("llm_", tmp_path)
+            tool_paths.resolve_tool_configs("llm_", tmp_path)
 
     def test_missing_directories_are_skipped(
         self, tmp_path: Path, make_extension, use_extensions
@@ -271,7 +421,7 @@ class TestResolveToolConfigFiles:
         """存在しないディレクトリは拡張側・利用者側とも読み飛ばす。"""
         use_extensions(make_extension("pack", tool_config_roots=[tmp_path / "nope"]))
 
-        assert tool_paths.resolve_tool_config_files("llm_", tmp_path / "no_config") == []
+        assert tool_paths.resolve_tool_configs("llm_", tmp_path / "no_config") == []
 
     def test_prefix_filters_kind(self, tmp_path: Path, make_extension, use_extensions) -> None:
         """`llm_` と `task_` は別々に集める。"""
@@ -279,37 +429,9 @@ class TestResolveToolConfigFiles:
         self._touch(pack, "llm_x.yaml", "task_y.yaml")
         use_extensions(make_extension("pack", tool_config_roots=[pack]))
 
-        assert tool_paths.resolve_tool_config_files("task_", tmp_path) == [pack / "task_y.yaml"]
-
-
-class TestResolveToolConfigOwners:
-    @staticmethod
-    def _touch(directory: Path, *names: str) -> None:
-        """`directory` に空のファイルを作る。"""
-        directory.mkdir(parents=True, exist_ok=True)
-        for name in names:
-            (directory / name).write_text("type: x\n")
-
-    def test_returns_bundled_stems_with_extension_name(
-        self, tmp_path: Path, make_extension, use_extensions
-    ) -> None:
-        """同梱した stem は、利用者の YAML で置き換えられていてもその拡張のものとして返す。"""
-        pack = tmp_path / "pack"
-        self._touch(pack, "task_a.yaml", "task_b.yaml", "llm_c.yaml")
-        self._touch(tmp_path / "tools", "task_b.yaml", "task_user.yaml")
-        use_extensions(make_extension("pack", tool_config_roots=[pack]))
-
-        assert tool_paths.resolve_tool_config_owners("task_", tmp_path) == {
-            "task_a": "pack",
-            "task_b": "pack",
-        }
-
-    def test_empty_without_extensions(self, tmp_path: Path, use_extensions) -> None:
-        """拡張が同梱していなければ空。"""
-        use_extensions()
-        self._touch(tmp_path / "tools", "task_user.yaml")
-
-        assert tool_paths.resolve_tool_config_owners("task_", tmp_path) == {}
+        assert [e.path for e in tool_paths.resolve_tool_configs("task_", tmp_path)] == [
+            pack / "task_y.yaml"
+        ]
 
 
 class TestIsToolEnabled:

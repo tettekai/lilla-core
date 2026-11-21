@@ -1,17 +1,15 @@
 import logging
 from pathlib import Path
 
-import yaml
-
 from lilla_core.core.config import get_config
 from lilla_core.loaders.script_loader import find_tool_class, load_script_class
 from lilla_core.loaders.tool_paths import (
     find_tool_file,
     import_tool_module,
     is_import_path,
+    ToolConfigEntry,
     is_tool_enabled,
-    resolve_tool_config_files,
-    resolve_tool_config_owners,
+    resolve_tool_configs,
     resolve_tool_dirs,
     resolve_tool_roots,
 )
@@ -21,21 +19,19 @@ logger = logging.getLogger(__name__)
 tool_class_map = {}  # type名（type: self は "self:<解決後の .py のパス>"）-> クラス（キャッシュ）
 
 
-def _load_tool_configs(config_root: Path) -> list[tuple[str, dict]]:
-    """task ツールの YAML を読み込み、(ファイルパス, dict) のリストを返す。
+def _load_tool_configs(config_root: Path) -> list[ToolConfigEntry]:
+    """task ツールの YAML を、上書きを重ねたうえで返す。
 
-    集める YAML は `tool_paths.resolve_tool_config_files()` に従う（拡張が同梱した
-    既定 YAML → `config_root/tools` の順で、同じ stem は後者が丸ごと上書き）。
-    `enabled: false` の YAML は含めない。
+    集める YAML は `tool_paths.resolve_tool_configs()` に従う（拡張が同梱した既定
+    YAML に `${CONFIG_ROOT}/extensions/<拡張名>/tools/` の差分を重ねたものと、
+    `${CONFIG_ROOT}/tools` の利用者のツール）。`enabled: false` のものは含めない。
     """
     results = []
-    for config_path in resolve_tool_config_files("task_", config_root):
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f)
-        if not is_tool_enabled(config or {}):
-            logger.info("Task tool disabled by config: %s", config_path)
+    for entry in resolve_tool_configs("task_", config_root):
+        if not is_tool_enabled(entry.config):
+            logger.info("Task tool disabled by config: %s", entry.override_path or entry.path)
             continue
-        results.append((str(config_path), config))
+        results.append(entry)
     return results
 
 
@@ -98,7 +94,11 @@ def _resolve_self_tool_class(
 
 
 def _build_tool_entry(
-    instance, name: str, config: dict, extension: str | None = None
+    instance,
+    name: str,
+    config: dict,
+    extension: str | None = None,
+    file_overrides: frozenset[str] = frozenset(),
 ) -> dict:
     """インスタンスからツールメタデータ dict を生成する（純粋関数）。
 
@@ -112,6 +112,8 @@ def _build_tool_entry(
         config: ツールの YAML 設定（現状は未使用）。
         extension: このツールの YAML を `tool_config_roots()` で同梱した拡張の名前。
             拡張のものでなければ `None`（タスクの上書きの対象を決めるのに使う）。
+        file_overrides: `${CONFIG_ROOT}/extensions/<拡張名>/tools/` の YAML に書かれていた
+            キー。ここにある `schedule` / `enabled` はダッシュボードの上書きより優先する。
 
     Returns:
         ツールメタデータ dict。
@@ -123,6 +125,7 @@ def _build_tool_entry(
         "trigger": _get_trigger_from_filename(name),
         "scheduled": bool(getattr(instance, "schedule", None)),
         "extension": extension,
+        "file_overrides": frozenset(file_overrides),
     }
 
 
@@ -145,10 +148,11 @@ def load_all_tools(
     if class_map is None:
         class_map = tool_class_map
 
-    owners = resolve_tool_config_owners("task_", config_root)
     tool_dirs: list[Path] | None = None
     tools = {}
-    for config_path, config in _load_tool_configs(config_root):
+    for entry in _load_tool_configs(config_root):
+        config = entry.config
+        config_path = str(entry.path)
         tool_type = config.get("type")
         if not tool_type:
             logger.warning("Config file %s has no type. Skipping", config_path)
@@ -157,16 +161,18 @@ def load_all_tools(
         if tool_type == "self":
             if tool_dirs is None:
                 tool_dirs = resolve_tool_dirs(tool_roots, config_root)
-            cls = _resolve_self_tool_class(Path(config_path), tool_dirs, class_map)
+            cls = _resolve_self_tool_class(entry.path, tool_dirs, class_map)
         else:
             cls = _resolve_tool_class(tool_type, tool_roots, class_map)
         if not cls:
             continue
 
         config["_yaml_path"] = config_path
-        name = Path(config_path).stem
+        name = entry.name
         instance = cls(config, name)
-        tools[name] = _build_tool_entry(instance, name, config, owners.get(name))
+        tools[name] = _build_tool_entry(
+            instance, name, config, entry.extension, entry.override_keys
+        )
         logger.info("Tool loaded: %s (%s)", name, tool_type)
 
     return tools

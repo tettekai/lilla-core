@@ -39,6 +39,7 @@ class _TaskJob:
     extension: str | None
     default_schedule: str
     job_func: Callable[[], None]
+    file_overrides: frozenset[str] = frozenset()
 
 
 #: ツール名 -> デフォルト。`start_scheduler()` が作り、`stop_scheduler()` が捨てる。
@@ -82,6 +83,7 @@ async def start_scheduler(tools: dict, bot, llm_tools: dict = None) -> None:
             extension=tool_info.get("extension"),
             default_schedule=tool.schedule,
             job_func=_make_job_func(tool_name, tool, bot, llm_tools or {}),
+            file_overrides=frozenset(tool_info.get("file_overrides", frozenset())),
         )
 
     extension_names = [ext.name for ext in get_extensions()]
@@ -297,7 +299,9 @@ def _sync_job(job: _TaskJob, override: TaskOverride | None) -> None:
         override: `_parse_overrides()` が返した、そのタスクの上書き項目。
     """
     tool_name = job.tool_name
-    resolved = resolve_task(tool_name, job.extension, job.default_schedule, override)
+    resolved = resolve_task(
+        tool_name, job.extension, job.default_schedule, override, job.file_overrides
+    )
     if not resolved.enabled:
         if tool_name in _applied_schedules:
             _remove_job(tool_name)

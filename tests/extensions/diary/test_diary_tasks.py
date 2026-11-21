@@ -296,12 +296,11 @@ class TestLoading:
         assert tools["task_hearing_diary"]["instance"].schedule == "0 22 * * *"
         assert tools["task_write_diary"]["instance"].schedule == "30 3 * * *"
 
-    def test_user_yaml_replaces_bundled_one(self, config_root: Path) -> None:
-        """同じ stem の YAML で置き換えても `diary` 拡張のタスクのままで、省略項目は既定値で埋まる。"""
-        tools_dir = config_root / "tools"
-        tools_dir.mkdir()
+    def test_override_yaml_is_merged_into_bundled_one(self, config_root: Path) -> None:
+        """差分を重ねても `diary` 拡張のタスクのままで、`type` と省略項目は同梱・既定値のまま。"""
+        tools_dir = config_root / "extensions" / "diary" / "tools"
+        tools_dir.mkdir(parents=True)
         (tools_dir / "task_hearing_diary.yaml").write_text(
-            "type: task_diary_llm\n"
             'schedule: "0 5 * * *"\n'
             "available_tools:\n"
             "  - $main\n"
@@ -310,7 +309,7 @@ class TestLoading:
             encoding="utf-8",
         )
         (tools_dir / "task_write_diary.yaml").write_text(
-            "type: task_diary_faircopy\n" 'schedule: "15 4 * * *"\n', encoding="utf-8"
+            'schedule: "15 4 * * *"\n', encoding="utf-8"
         )
 
         tools = self._load(config_root)
@@ -323,14 +322,13 @@ class TestLoading:
         assert task._allowed_tool_names == ["llm_diary_draft_faircopy_get", "llm_writer"]
         assert tools["task_write_diary"]["extension"] == "diary"
         assert tools["task_write_diary"]["instance"].schedule == "15 4 * * *"
+        assert tools["task_write_diary"]["file_overrides"] == frozenset({"schedule"})
 
-    def test_user_yaml_can_disable(self, config_root: Path) -> None:
-        """同じ stem の YAML に `enabled: false` を書くとロードされない。"""
-        tools_dir = config_root / "tools"
-        tools_dir.mkdir()
-        (tools_dir / "task_hearing_diary.yaml").write_text(
-            "type: task_diary_llm\nenabled: false\n", encoding="utf-8"
-        )
+    def test_override_yaml_can_disable(self, config_root: Path) -> None:
+        """差分に `enabled: false` を書くとロードされない。"""
+        tools_dir = config_root / "extensions" / "diary" / "tools"
+        tools_dir.mkdir(parents=True)
+        (tools_dir / "task_hearing_diary.yaml").write_text("enabled: false\n", encoding="utf-8")
 
         assert set(self._load(config_root)) == {"task_write_diary"}
 

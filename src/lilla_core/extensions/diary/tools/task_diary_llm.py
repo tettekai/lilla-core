@@ -6,8 +6,8 @@
 実行部分（LLM を 1 往復させ、`NO_NOTIFICATION` なら通知しない、通知先へ送る）は
 コアの `task_scheduled_llm` の `ScheduledLlmTask` をそのまま使い、このクラスは
 YAML で省略された項目を stem ごとのコード既定値で埋めるだけを受け持つ。そのため
-同梱の YAML は `type` だけでよく、利用者が `${CONFIG_ROOT}/tools` に同じ stem の
-YAML を置いて置き換えるときも、変えたい項目だけを書けばよい。
+同梱の YAML は `type` だけでよく、利用者が `${CONFIG_ROOT}/extensions/diary/tools/` に
+同じ stem の YAML で差分を重ねるときも、変えたい項目だけを書けばよい。
 
 YAML の項目（すべて省略可能）:
 

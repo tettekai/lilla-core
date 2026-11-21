@@ -12,8 +12,8 @@
   `settings_model()` で申告し、値はコアの `extension_settings` に保存される）
 - `diary_drafts` コレクションのリポジトリ（`repository.py`。`startup_repos()` で申告）
 - 日記ドラフトの LLM ツール（`tools/`。`tool_roots()` で探索ルートへ足す）と、その
-  既定のツール YAML（`tool_configs/`。`tool_config_roots()` で同梱する。利用者が
-  `${CONFIG_ROOT}/tools` に同じ stem の YAML を置くと丸ごと置き換わる）
+  既定のツール YAML（`tool_configs/`。`tool_config_roots()` で同梱する。利用者は
+  `${CONFIG_ROOT}/extensions/diary/tools/` に同じ stem の YAML で差分を重ねられる）
 - 会話向けの日記の説明（`default_prompt()`。ja / en）
 - 保存先 `notes` で清書を書くトップレベルディレクトリ `diary` の宣言（`notes_directories()`）
 - 清書を notes の `diary/` の下へ書く既定タスク（`tools/task_diary_faircopy.py`。書くかどうかは
@@ -311,8 +311,8 @@ class DiaryExtension(Extension):
     def tool_config_roots(self) -> list[Path]:
         """同梱する既定のツール YAML（`lilla_core/extensions/diary/tool_configs/`）のディレクトリを返す。
 
-        利用者が `${CONFIG_ROOT}/tools` に同じ stem の YAML を置くと、同梱分は
-        丸ごと置き換わる（無効化するなら `enabled: false`）。
+        利用者は `${CONFIG_ROOT}/extensions/diary/tools/` に同じ stem の YAML を置くと、
+        同梱分へトップレベルのキー単位で差分を重ねられる（無効化するなら `enabled: false`）。
         """
         return [_PACKAGE_DIR / "tool_configs"]
 

@@ -14,7 +14,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-import yaml
 
 from lilla_core.core.config import get_config
 from lilla_core.core.extension import get_tool_context_providers
@@ -25,7 +24,7 @@ from lilla_core.loaders.tool_paths import (
     is_import_path,
     is_tool_enabled,
     is_within_tool_dirs,
-    resolve_tool_config_files,
+    resolve_tool_configs,
     resolve_tool_dirs,
     resolve_tool_roots,
 )
@@ -129,9 +128,9 @@ def load_llm_tools(
 ) -> dict[str, dict]:
     """ツール YAML（`llm_*.yaml`）を読み込み、対応するツールをロードして返す。
 
-    YAML は `tool_paths.resolve_tool_config_files()` が集める（拡張が同梱した既定
-    YAML → `config_root/tools` の順で、同じ stem は後者が丸ごと上書き）。
-    `enabled: false` の YAML はロードしない。
+    YAML は `tool_paths.resolve_tool_configs()` が集める（拡張が同梱した既定 YAML に
+    `${CONFIG_ROOT}/extensions/<拡張名>/tools/` の差分を重ねたものと、`config_root/tools`
+    の利用者のツール）。`enabled: false` の YAML はロードしない。
 
     各 YAML の type をもとに tools/**/llm_*.py を探してロードする。
     YAML に description がある場合は SCHEMA["description"] を上書きする。
@@ -163,12 +162,12 @@ def load_llm_tools(
     tool_dirs = resolve_tool_dirs(tool_roots, config_root)
     llm_tools: dict[str, dict] = {}
 
-    for config_path in resolve_tool_config_files("llm_", config_root):
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f) or {}
+    for entry in resolve_tool_configs("llm_", config_root):
+        config = entry.config
+        config_path = entry.path
 
         if not is_tool_enabled(config):
-            logger.info("LLM tool disabled by config: %s", config_path)
+            logger.info("LLM tool disabled by config: %s", entry.override_path or config_path)
             continue
 
         tool_type = config.get("type")
@@ -214,7 +213,7 @@ def load_llm_tools(
             logger.warning("SCHEMA or execute not found: %s (%s)", origin, config_path)
             continue
 
-        name = Path(config_path).stem
+        name = entry.name
 
         # function.name を YAML のファイル名（stem）で上書き、description があれば上書き
         # ネスト形式（{"type":"function","function":{...}}）は function["description"] を上書き

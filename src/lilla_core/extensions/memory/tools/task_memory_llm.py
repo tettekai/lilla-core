@@ -4,8 +4,8 @@
 `task_scheduled_llm` の `ScheduledLlmTask` をそのまま使い、このクラスは次の 2 つを受け持つ。
 
 - YAML で省略された項目を stem ごとのコード既定値で埋める（同梱の YAML は `type` だけでよく、
-  利用者が `${CONFIG_ROOT}/tools` に同じ stem の YAML を置いて置き換えるときも、変えたい
-  項目だけを書けばよい）
+  利用者が `${CONFIG_ROOT}/extensions/memory/tools/` に同じ stem の YAML で差分を重ねるときも、
+  変えたい項目だけを書けばよい）
 - 対象日・パスなど LLM に計算させたくない値をコードで決め、プロンプトの変数として渡す
   （`_template_variables()`）
 

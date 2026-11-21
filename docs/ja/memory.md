@@ -20,8 +20,8 @@ notes と同じ **標準機能** で、`LILLA_EXTENSIONS` に並べなくても�
 決めます。
 
 ツール YAML とタスク YAML は拡張に同梱しているので、`${CONFIG_ROOT}/tools` に置かなくても次のものが
-読み込まれます（同じ stem の YAML を `${CONFIG_ROOT}/tools` に置くと、同梱分を丸ごと置き換えます。
-止めるなら `enabled: false`）。
+読み込まれます（変えるときは `${CONFIG_ROOT}/extensions/memory/tools/` に同じ stem の YAML を置き、
+変えたいキーだけを書きます。止めるなら `enabled: false`。[ツール契約](tools.md#同梱ツールの上書き上級者向け)）。
 
 | stem | 種類 | 内容 |
 |------|------|------|
@@ -114,8 +114,8 @@ MongoDB のコレクションは `remember`（`_id` が日付 `YYYY-MM-DD`、`en
   何を書いたかを通知します。
 
 時刻と有効 / 無効は、ダッシュボードの [拡張のタスクの上書き](extension-task-override.md) で変えられます。
-プロンプト・LLM・通知先・ツールを変えるときは、同じ stem の YAML を `${CONFIG_ROOT}/tools` に置いて
-丸ごと置き換えます（変えたい項目だけを書けば、残りは既定値で埋まります）。
+プロンプト・LLM・通知先・ツールを変えるときは、同じ stem の YAML を
+`${CONFIG_ROOT}/extensions/memory/tools/` に置き、変えたい項目だけを書きます（残りは既定値で埋まります）。
 
 ## ダッシュボードで編集する設定
 

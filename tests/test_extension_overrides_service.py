@@ -276,8 +276,38 @@ class TestBuildDetail:
         assert [task["name"] for task in detail["tasks"]] == ["task_other"]
 
 
+class TestBuildDetailFileOverrides:
+    """`extensions/<拡張名>/tools/` の YAML で固定したタスクの項目。"""
+
+    def test_reports_file_locked_and_ignores_dashboard_value(self, registered, tools) -> None:
+        """YAML に書いたキーは `file_locked` に挙げ、画面の上書きは実効値に効かない。"""
+        tools["task_a"]["file_overrides"] = frozenset({"schedule", "target"})
+        doc = {"tasks": {"task_a": {"schedule": "0 9 * * *", "enabled": False}}}
+
+        detail = svc.build_detail("diary", tools, doc, "ja", {}, False)
+
+        task_a = detail["tasks"][0]
+        assert task_a["file_locked"] == ["schedule"]
+        assert task_a["override"] == {"enabled": False}
+        assert task_a["effective"] == {"schedule": "0 22 * * *", "enabled": False}
+        assert detail["tasks"][1]["file_locked"] == []
+
+
 class TestParseUpdate:
     """保存リクエストの検証。"""
+
+    def test_rejects_setting_key_locked_by_file(self, registered, tools) -> None:
+        """YAML で固定したキーへの値は拒否し、null（消す）と他のキーは受け付ける。"""
+        tools["task_a"]["file_overrides"] = frozenset({"schedule"})
+
+        with pytest.raises(OverrideValidationError, match="tool config override file"):
+            svc.parse_update("diary", {"tasks": {"task_a": {"schedule": "0 9 * * *"}}}, tools)
+
+        update = svc.parse_update(
+            "diary", {"tasks": {"task_a": {"schedule": None, "enabled": False}}}, tools
+        )
+        assert update.set_fields == {"tasks.task_a.enabled": False}
+        assert update.unset_fields == ["tasks.task_a.schedule"]
 
     def test_prompt_set_and_unset(self, registered, tools) -> None:
         """{mode, text} は保存（空文字も有効）、null は上書きを消す。"""
