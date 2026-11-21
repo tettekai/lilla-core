@@ -8,7 +8,7 @@
 import できなければ公式拡張パック（`lilla_core.extensions.google_oauth`）を
 補ってもう一度だけ試す短縮名記法にも対応する（`_import_extension_module()`）。
 
-`BUILTIN_EXTENSION_MODULES` に挙げた拡張（ノート置き場 `notes`）は標準機能で、
+`BUILTIN_EXTENSION_MODULES` に挙げた拡張（ノート置き場 `notes` と長期記憶 `memory`）は標準機能で、
 `LILLA_EXTENSIONS` に並べなくても `load_extensions()` が常に先頭へ読み込む。
 `LILLA_EXTENSIONS` に残っていたら、二重登録にせず警告して読み飛ばす。
 
@@ -82,7 +82,10 @@ EXTENSIONS_ENV_VAR = "LILLA_EXTENSIONS"
 #: `LILLA_EXTENSIONS` によらず `load_extensions()` が常に読み込む標準機能のモジュール。
 #: 実装は公式拡張パックと同じ `Extension` 契約で書かれており、コア本体はモジュールを
 #: 直接 import せず、ここに挙げた import パスを文字列で読む。
-BUILTIN_EXTENSION_MODULES: tuple[str, ...] = ("lilla_core.extensions.notes",)
+BUILTIN_EXTENSION_MODULES: tuple[str, ...] = (
+    "lilla_core.extensions.notes",
+    "lilla_core.extensions.memory",
+)
 
 #: 各拡張モジュールが `Extension` インスタンスを export する属性名。
 EXTENSION_ATTR = "extension"
@@ -629,6 +632,21 @@ class Extension:
         ほかの拡張（notes を含む）との重複はロード時に `ValueError` で落とす。
         """
         return {}
+
+    async def notes_watched_paths(self) -> list[str]:
+        """ノート置き場（`notes`）で、変わったら差分を知らせてほしいファイルのパスを返す。
+
+        notes は書き込み（LLM ツール・ダッシュボード・`/notes.git` への push など、どの経路でも）で
+        コミットするたびに、ロード済みのすべての拡張のこのメソッドを await し、返ったパスの
+        ファイルが変わっていれば差分を `notify_warning`（エラー通知チャンネル）で知らせる。
+        通知の本文と添付は notes が組み立てる。
+
+        パスは notes の論理パス（`memory/core.md` のような `/` 区切りの相対パス。ディレクトリは
+        指せない）。コミットのたびに呼ぶため、設定を読んで返すパスを変えてよい（通知を切るなら
+        空のリストを返す）。例外・形の正しくないパスは WARNING ログを出して無視し、書き込みの
+        結果は変えない。
+        """
+        return []
 
     def startup_repos(self) -> list[StartupRepoFactory]:
         """`on_ready` で `init_collection()` を呼ぶリポジトリファクトリを返す。"""
@@ -1665,7 +1683,7 @@ def load_extensions(spec: str | None = None) -> list[Extension]:
     （`_import_extension_module`）。公式拡張パック向けの短縮記法で、`.` を含む
     パス（第三者パックや、すでにフルパスで書いた公式拡張）には適用しない。
 
-    `BUILTIN_EXTENSION_MODULES` の拡張（標準機能のノート置き場 `notes`）は `spec` に
+    `BUILTIN_EXTENSION_MODULES` の拡張（標準機能のノート置き場 `notes` と長期記憶 `memory`）は `spec` に
     よらず常に先頭へ読み込む（他の拡張が `requires` で依存しても並び順を気にせずに
     済むため）。`spec` に同じ拡張が書かれていたら（短縮名・フルパスのどちらでも）、
     二重登録で落とさずに WARNING を出して読み飛ばす。
