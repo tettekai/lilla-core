@@ -61,62 +61,62 @@ class TestNormalizeSkillName:
 
 
 class TestFormatSkillInstruction:
-    def test_wraps_prompt_without_extra(self, locale) -> None:
+    async def test_wraps_prompt_without_extra(self, locale) -> None:
         """追加指示を省略するとラッパーだけを返す。"""
         locale("ja")
-        result = format_skill_instruction("proofread", "次の文章を校正して")
+        result = await format_skill_instruction("proofread", "次の文章を校正して")
         assert result == _JA_WRAPPER.format(body="次の文章を校正して")
 
-    def test_appends_labeled_extra(self, locale) -> None:
+    async def test_appends_labeled_extra(self, locale) -> None:
         """追加指示は前後の空白を除き、空行を挟んでラベル付きで続ける。"""
         locale("ja")
-        result = format_skill_instruction("proofread", "次の文章を校正して", "  今日は良い天気でした。  ")
+        result = await format_skill_instruction("proofread", "次の文章を校正して", "  今日は良い天気でした。  ")
         assert result == (
             _JA_WRAPPER.format(body="次の文章を校正して") + "\n\n追加指示: 今日は良い天気でした。"
         )
 
     @pytest.mark.parametrize("extra", ["", "   ", " \n\t ", None])
-    def test_blank_extra_is_omitted(self, locale, extra) -> None:
+    async def test_blank_extra_is_omitted(self, locale, extra) -> None:
         """空・空白だけの追加指示は行ごと付けない。"""
         locale("ja")
-        result = format_skill_instruction("proofread", "本文", extra)
+        result = await format_skill_instruction("proofread", "本文", extra)
         assert result == _JA_WRAPPER.format(body="本文")
 
-    def test_multiline_prompt_and_extra(self, locale) -> None:
+    async def test_multiline_prompt_and_extra(self, locale) -> None:
         """複数行の本文はそのまま入れ、複数行の追加指示は 1 行目にだけラベルを付ける。"""
         locale("ja")
-        result = format_skill_instruction("proofread", "\n1行目\n\n2行目\n", "A\nB\nC")
+        result = await format_skill_instruction("proofread", "\n1行目\n\n2行目\n", "A\nB\nC")
         assert result == _JA_WRAPPER.format(body="1行目\n\n2行目") + "\n\n追加指示: A\nB\nC"
 
-    def test_braces_in_extra_are_kept(self, locale) -> None:
+    async def test_braces_in_extra_are_kept(self, locale) -> None:
         """追加指示の `{}` は書式として解釈せずそのまま残す。"""
         locale("ja")
-        result = format_skill_instruction("proofread", "本文", "{name} {0}")
+        result = await format_skill_instruction("proofread", "本文", "{name} {0}")
         assert result.endswith("追加指示: {name} {0}")
 
-    def test_prompt_is_rendered_but_extra_is_not(self, locale, monkeypatch) -> None:
+    async def test_prompt_is_rendered_but_extra_is_not(self, locale, monkeypatch) -> None:
         """本文は Jinja2 テンプレートとして展開し、追加指示（利用者の入力）は展開しない。"""
         from lilla_core.services import prompt_template
 
         locale("ja")
         monkeypatch.setattr(prompt_template, "current_hour", lambda now=None: "H")
-        result = format_skill_instruction("proofread", "{{ current_hour }} 時点", "{{ current_hour }}")
+        result = await format_skill_instruction("proofread", "{{ current_hour }} 時点", "{{ current_hour }}")
         assert result == (
             _JA_WRAPPER.format(body="H 時点") + "\n\n追加指示: {{ current_hour }}"
         )
 
-    def test_prompt_render_failure_keeps_body(self, locale, caplog) -> None:
+    async def test_prompt_render_failure_keeps_body(self, locale, caplog) -> None:
         """本文の展開に失敗したら WARNING を出してそのまま入れる。"""
         locale("ja")
         with caplog.at_level("WARNING"):
-            result = format_skill_instruction("proofread", "{{ now }}")
+            result = await format_skill_instruction("proofread", "{{ now }}")
         assert result == _JA_WRAPPER.format(body="{{ now }}")
         assert "skill 'proofread'" in caplog.text
 
-    def test_english_locale(self, locale) -> None:
+    async def test_english_locale(self, locale) -> None:
         """`en` では英語のラッパーとラベルを使う。"""
         locale("en")
-        result = format_skill_instruction("proofread", "次の文章を校正して", "今日は良い天気でした。")
+        result = await format_skill_instruction("proofread", "次の文章を校正して", "今日は良い天気でした。")
         assert result == (
             _EN_WRAPPER.format(body="次の文章を校正して")
             + "\n\nAdditional instructions: 今日は良い天気でした。"

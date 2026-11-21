@@ -10,7 +10,9 @@
 - 展開には `SandboxedEnvironment` を使う。本文はダッシュボードから書き換えられるものも
   あるため、テンプレートから Python の属性・モジュールへ手が届かないようにする
 - どのプロンプトにも共通の変数 `current_hour`（`ui.timezone` の現在日時を
-  `YYYY-MM-DD HH:xx` にした文字列。プロンプトのキャッシュが効くよう時までにする）を渡す
+  `YYYY-MM-DD HH:xx` にした文字列。プロンプトのキャッシュが効くよう時までにする）と、
+  保存先 `notes` のファイルを読む関数 `notes(path)`（無いファイルは空文字）を渡す。
+  notes の読み取りが非同期のため環境は async モードで、展開の関数はどれも async
 - 拡張のプロンプトにだけ `settings`（その拡張の画面管理の設定を呼ぶたびに読み直した
   もの。秘匿値（`SecretStr` / `SecretBytes`）は除く）も渡す
 - 未定義の名前は `StrictUndefined` で失敗にする（黙って空文字にしない）
@@ -38,6 +40,7 @@ _ENV = SandboxedEnvironment(
     autoescape=False,
     undefined=StrictUndefined,
     keep_trailing_newline=True,
+    enable_async=True,
 )
 
 _SECRET_TYPES = (SecretStr, SecretBytes)
@@ -46,7 +49,10 @@ _SECRET_TYPES = (SecretStr, SecretBytes)
 _REMOVED = object()
 
 #: どのプロンプトにも渡す共通の変数の名前（呼び出し元の変数と重ねてはならない）。
-COMMON_VARIABLE_NAMES = frozenset({"current_hour"})
+COMMON_VARIABLE_NAMES = frozenset({"current_hour", "notes"})
+
+#: `notes(path)` が返す本文の最大文字数（超えた分は切り詰めて WARNING を出す）。
+MAX_NOTE_CHARS = 100_000
 
 #: `current_hour` の書式。分は伏せる（システムプロンプトの時刻と同じく時まで）。
 _CURRENT_HOUR_FORMAT = "%Y-%m-%d %H:xx"
@@ -136,6 +142,38 @@ def current_hour(now: datetime | None = None) -> str:
     return now.strftime(_CURRENT_HOUR_FORMAT)
 
 
+async def read_note(path: Any) -> str:
+    """テンプレートの関数 `notes(path)` の本体。保存先 `notes` のファイルの本文を返す。
+
+    ファイルが無いときは空文字を返す（まだ作られていないノートを書いておけるように）。
+    `MAX_NOTE_CHARS` を超える本文は切り詰めて WARNING を出す。
+
+    Raises:
+        TypeError: `path` が文字列でないとき。
+        RuntimeError: 保存先 `notes` が登録されていないとき。
+        FileStorageError: パスの規則違反・ディレクトリ・読み取りの失敗など（無いファイルを除く）。
+    """
+    from lilla_core.core.extension import get_file_storage
+    from lilla_core.core.file_storage import FileStorageNotFoundError
+
+    if not isinstance(path, str):
+        raise TypeError("notes() takes a note path string")
+    storage = get_file_storage("notes")
+    if storage is None:
+        raise RuntimeError("file storage 'notes' is not registered")
+    try:
+        text = await storage.read(path)
+    except FileStorageNotFoundError:
+        return ""
+    if len(text) > MAX_NOTE_CHARS:
+        logger.warning(
+            "Note %s is longer than %d characters; truncating it in the prompt",
+            path, MAX_NOTE_CHARS,
+        )
+        return text[:MAX_NOTE_CHARS]
+    return text
+
+
 def check_syntax(text: str) -> None:
     """テンプレートの構文だけを確かめる。
 
@@ -148,7 +186,7 @@ def check_syntax(text: str) -> None:
         raise PromptTemplateError(f"Template syntax error (line {e.lineno}): {e.message}") from e
 
 
-def render_template(
+async def render_template(
     text: str,
     variables: dict[str, Any] | None = None,
     *,
@@ -156,7 +194,7 @@ def render_template(
 ) -> str:
     """テンプレートを、共通の変数と呼び出し元の変数で展開する（全プロンプト共通の処理）。
 
-    共通の変数（`current_hour`）はここで作る。呼び出し元ごとに違う変数（拡張の
+    共通の変数（`current_hour` と関数 `notes`）はここで作る。呼び出し元ごとに違う変数（拡張の
     `settings` など）は `variables` で渡す。値は展開済みの値としてそのまま出力し、
     値の中の波括弧はもう一度展開しない。
 
@@ -178,14 +216,14 @@ def render_template(
     if reserved:
         raise ValueError(f"Template variables overlap common variables: {sorted(reserved)}")
     check_syntax(text)
-    common = {"current_hour": current_hour(now)}
+    common = {"current_hour": current_hour(now), "notes": read_note}
     try:
-        return _ENV.from_string(text).render(**common, **variables)
+        return await _ENV.from_string(text).render_async(**common, **variables)
     except Exception as e:
         raise PromptTemplateError(f"Failed to render template: {type(e).__name__}: {e}") from e
 
 
-def render_or_raw(
+async def render_or_raw(
     text: str,
     label: str,
     variables: dict[str, Any] | None = None,
@@ -208,7 +246,7 @@ def render_or_raw(
     if not text:
         return text
     try:
-        return render_template(text, variables, now=now)
+        return await render_template(text, variables, now=now)
     except PromptTemplateError as e:
         logger.warning(
             "Failed to render prompt template %s; using the template as is: %s", label, e,
@@ -216,7 +254,7 @@ def render_or_raw(
         return text
 
 
-def render_prompt(text: str, settings: dict[str, Any]) -> str:
+async def render_prompt(text: str, settings: dict[str, Any]) -> str:
     """拡張のプロンプトを、共通の変数と `settings` で展開する。
 
     `settings` は `_SettingsView` に包んで渡すため、項目名が dict のメソッド名
@@ -233,7 +271,7 @@ def render_prompt(text: str, settings: dict[str, Any]) -> str:
         PromptTemplateError: 構文エラー・未定義の名前・サンドボックスの拒否など、
             展開のどこかで失敗したとき。
     """
-    return render_template(text, {"settings": _SettingsView(settings)})
+    return await render_template(text, {"settings": _SettingsView(settings)})
 
 
 def _mentions_secret(annotation: Any) -> bool:
@@ -333,7 +371,7 @@ def find_comments(text: str) -> list[TemplateComment]:
     return comments
 
 
-def preview_skill_prompt(text: str) -> TemplatePreview:
+async def preview_skill_prompt(text: str) -> TemplatePreview:
     """スキルの本文を、実行時と同じ変数（`current_hour`）で試しに展開する。
 
     保存時の検査（ダッシュボードの Skills API）もこの関数を使い、プレビューと結果をそろえる。
@@ -341,7 +379,7 @@ def preview_skill_prompt(text: str) -> TemplatePreview:
     Raises:
         PromptTemplateError: 構文エラー・未定義の名前・サンドボックスの拒否など。
     """
-    rendered = render_template(text)
+    rendered = await render_template(text)
     return TemplatePreview(rendered=rendered, comments=find_comments(text))
 
 
@@ -367,7 +405,7 @@ async def preview_extension_prompt(name: str, text: str) -> TemplatePreview:
             "settings could not be loaded: %s", name, e,
         )
         return TemplatePreview(rendered=None, comments=comments, settings_unavailable=True)
-    return TemplatePreview(rendered=render_prompt(text, settings), comments=comments)
+    return TemplatePreview(rendered=await render_prompt(text, settings), comments=comments)
 
 
 async def validate_extension_prompt(name: str, text: str) -> None:
@@ -410,7 +448,7 @@ async def render_extension_prompt_parts(name: str, texts: list[str]) -> list[str
     results: list[str] = []
     for text in texts:
         try:
-            results.append(render_prompt(text, settings))
+            results.append(await render_prompt(text, settings))
         except PromptTemplateError as e:
             logger.warning(
                 "Failed to render prompt template of extension '%s'; "

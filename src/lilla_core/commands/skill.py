@@ -63,7 +63,7 @@ async def handle_skill(ctx, arg: str, tools: dict, bot) -> None:
         return
 
     logger.info("[SKILL] Expanding skill '%s'", name)
-    content = format_skill_instruction(name, skill.get("prompt", ""), extra)
+    content = await format_skill_instruction(name, skill.get("prompt", ""), extra)
     await ctx.start_conversation(content)
 
 

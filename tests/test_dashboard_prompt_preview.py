@@ -132,7 +132,7 @@ class TestSkillPreview:
 
         assert res.status == 400
         assert match in (await res.json())["error"]
-        assert dashboard_server._check_skill_prompt(text) is not None
+        assert await dashboard_server._check_skill_prompt(text) is not None
 
 
 class TestExtensionPreview:

@@ -8,15 +8,15 @@
 
 展開するのは、運用者が書くプロンプトだけです。
 
-| プロンプト | 渡す変数 |
+| プロンプト | 共通の変数・関数（下記）のほかに渡す変数 |
 |------------|----------|
-| `prompt.system` / `prompt.conversation` / `prompt.discord` | `current_hour` |
-| LLM プロバイダーの `prompt`（[プロバイダーごとの追記](llm-provider-prompt.md)） | `current_hour` |
-| `llm_expert` の `prompt`（[ツール契約](tools.md)） | `current_hour` |
-| `task_scheduled_llm` の `prompt`（[スケジュール実行](scheduled-llm.md)） | `current_hour` |
-| 拡張の `client_prompt_providers()` が返した本文 | `current_hour` |
-| スキルの本文（`!skill` と `llm_load_skill`。[スキル](skills.md)） | `current_hour` |
-| 拡張のプロンプト（[デフォルトと上書き](extension-prompt.md)） | `current_hour`・`settings` |
+| `prompt.system` / `prompt.conversation` / `prompt.discord` | なし |
+| LLM プロバイダーの `prompt`（[プロバイダーごとの追記](llm-provider-prompt.md)） | なし |
+| `llm_expert` の `prompt`（[ツール契約](tools.md)） | なし |
+| `task_scheduled_llm` の `prompt`（[スケジュール実行](scheduled-llm.md)） | なし |
+| 拡張の `client_prompt_providers()` が返した本文 | なし |
+| スキルの本文（`!skill` と `llm_load_skill`。[スキル](skills.md)） | なし |
+| 拡張のプロンプト（[デフォルトと上書き](extension-prompt.md)） | `settings` |
 
 次のものはデータなので展開しません（中に `{{` があってもそのまま渡します）。
 
@@ -24,11 +24,14 @@
 - `!skill` の追加指示（利用者の入力）、スキルの名前と説明（スキルの一覧）
 - コードに書いてある固定の文言
 
-## 共通の変数
+## 共通の変数・関数
 
-| 変数 | 中身 |
+どのプロンプトでも、次の変数と関数を使えます。
+
+| 名前 | 中身 |
 |------|------|
 | `current_hour` | 今の日時を `ui.timezone`（[タイムゾーン](timezone.md)）で `YYYY-MM-DD HH:xx` にした文字列（例: `2026-11-14 20:xx`）。曜日は付けません |
+| `notes(パス)` | ノート置き場 `notes`（[ノート置き場](notes.md)）のファイルの本文（下記の「ノートを読む」） |
 
 分を伏せて時までにしているのは、システムプロンプトの中身が 1 時間ごとにしか変わらないようにして、
 LLM 側のプロンプトのキャッシュを効かせるためです（会話履歴の現在時刻と同じ考え方です）。
@@ -37,6 +40,32 @@ LLM 側のプロンプトのキャッシュを効かせるためです（会話�
 ```markdown
 いまは {{ current_hour }} です。今日のうちに済ませることがあれば教えてください。
 ```
+
+## ノートを読む（`notes()`）
+
+`notes("パス")` は、ノート置き場 `notes` のファイルの本文をその場所に入れます。パスは notes の
+パス（`memory/core.md` のような `/` 区切りの相対パス）です。展開のたびに最新を読みます。
+
+```markdown
+{% if notes("memory/core.md") %}
+## 覚えていること
+{{ notes("memory/core.md") }}
+{% endif %}
+```
+
+- ファイルが無いときは空文字になります（まだ作られていないノートを書いておけます）
+- 読めるのはファイルだけで、書き込みはできません。ディレクトリ・notes のパスの規則に合わない
+  パス・読み取りの失敗は、展開の失敗になります（下記の「失敗したとき」）
+- 本文が 100,000 文字を超えるときは、そこで切り詰めて WARNING ログを出します
+- 本文の中の `{{` などはもう一度展開しません
+- 同じテンプレートで同じパスを 2 回書くと、2 回読みます（上の例のように条件と本文で使う程度なら
+  問題になりません）
+
+**注意:** 読んだ本文は、そのままシステムプロンプトなどに入ります。LLM のツール
+（`llm_notes_write`）や夜間のタスク、`/notes.git` への push で書かれた本文も含むため、
+その中の文章が指示として扱われうることを前提に、どのノートを入れるかを決めてください。
+本文を「指示ではなく情報」として読ませたいときは、テンプレートの側でタグで囲み、
+その旨を書き添えてください。会話のたびに本文が LLM へ送られる点にも注意してください。
 
 ## 書き方の規則
 

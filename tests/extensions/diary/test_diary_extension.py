@@ -198,22 +198,22 @@ class TestDefaultPrompt:
 
 
 
-def _render(locale: str, **values: object) -> str:
+async def _render(locale: str, **values: object) -> str:
     """会話向けの説明を、コアと同じ Jinja2 の展開で `DiarySettings` の値を入れて返す。"""
     from lilla_core.extensions.diary import DiarySettings
     from lilla_core.services.prompt_template import render_prompt, settings_for_template
 
     settings = settings_for_template(DiarySettings(**values))
-    return render_prompt(diary.extension.default_prompt()[locale], settings)
+    return await render_prompt(diary.extension.default_prompt()[locale], settings)
 
 
 class TestDefaultPromptRendering:
     """設定から組み立てる清書の保存先の説明。"""
 
     @pytest.mark.parametrize("locale", ["ja", "en"])
-    def test_default_settings_show_faircopy_path(self, locale: str) -> None:
+    async def test_default_settings_show_faircopy_path(self, locale: str) -> None:
         """既定の設定では、notes の `diary/` + 既定の `faircopy_path` と読み方を載せる。"""
-        text = _render(locale)
+        text = await _render(locale)
 
         assert "diary/{year}/{month}/{date}.md" in text
         assert "llm_notes_read" in text
@@ -221,15 +221,15 @@ class TestDefaultPromptRendering:
         assert text.count("llm_diary_draft_get") == 2
 
     @pytest.mark.parametrize("locale", ["ja", "en"])
-    def test_custom_path_follows_settings(self, locale: str) -> None:
+    async def test_custom_path_follows_settings(self, locale: str) -> None:
         """`faircopy_path` を変えると説明のパスも変わる（先頭の `diary/` も読み替えない）。"""
-        assert "diary/journal/{date}.md" in _render(locale, faircopy_path="journal/{date}.md")
-        assert "diary/diary/{date}.md" in _render(locale, faircopy_path="diary/{date}.md")
+        assert "diary/journal/{date}.md" in await _render(locale, faircopy_path="journal/{date}.md")
+        assert "diary/diary/{date}.md" in await _render(locale, faircopy_path="diary/{date}.md")
 
     @pytest.mark.parametrize("locale", ["ja", "en"])
-    def test_faircopy_off_hides_location(self, locale: str) -> None:
+    async def test_faircopy_off_hides_location(self, locale: str) -> None:
         """清書がオフなら保存先の説明を出さず、下書きの説明だけを残す（末尾に空行も残さない）。"""
-        text = _render(locale, faircopy_storage=[])
+        text = await _render(locale, faircopy_storage=[])
 
         assert "llm_notes_read" not in text
         assert "llm_diary_draft_set" in text
@@ -238,9 +238,9 @@ class TestDefaultPromptRendering:
 
     @pytest.mark.parametrize("locale", ["ja", "en"])
     @pytest.mark.parametrize("storage", [["notes"], []])
-    def test_rendered_without_template_syntax(self, locale: str, storage: list[str]) -> None:
+    async def test_rendered_without_template_syntax(self, locale: str, storage: list[str]) -> None:
         """展開後の本文に Jinja2 の記法が残らない。"""
-        text = _render(locale, faircopy_storage=storage)
+        text = await _render(locale, faircopy_storage=storage)
 
         assert not any(token in text for token in ("{{", "{%", "%}", "}}"))
 

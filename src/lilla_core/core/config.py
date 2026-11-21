@@ -1137,7 +1137,7 @@ class AppConfig(BaseSettings):
         from lilla_core.services.prompt_template import render_or_raw
 
         src = override or f"dir:{self.env.config_root}/prompt/{subdir}"
-        return render_or_raw(await load_text_resources(src), f"prompt.{subdir}")
+        return await render_or_raw(await load_text_resources(src), f"prompt.{subdir}")
 
     async def load_system_prompt(self) -> str:
         """システムプロンプトを読み込んで返す（呼ぶたびに読み直す）。

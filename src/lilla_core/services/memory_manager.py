@@ -57,7 +57,7 @@ async def _resolve_client_prompt(client_type: str) -> str:
             if inspect.isawaitable(text):
                 text = await text
             if text:
-                parts.append(render_or_raw(text, f"client prompt for '{client_type}'"))
+                parts.append(await render_or_raw(text, f"client prompt for '{client_type}'"))
         return "\n\n".join(parts)
     if client_type == "discord":
         return await get_config().load_discord_client_prompt()

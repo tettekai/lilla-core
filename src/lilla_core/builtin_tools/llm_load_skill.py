@@ -224,5 +224,5 @@ async def execute(input: dict, context: dict) -> dict:
         return tool_error(TOOL_NAME, message, message)
 
     logger.info("[SKILL] Loading skill '%s' via tool", name)
-    content = format_skill_instruction(name, skill.get("prompt", ""))
+    content = await format_skill_instruction(name, skill.get("prompt", ""))
     return tool_success(TOOL_NAME, t("tool.load_skill.loaded", name=name), content)
