@@ -25,6 +25,13 @@ class TestNotesExtensionDeclaration:
         assert notes.extension.tool_roots() == [_PACKAGE_DIR / "tools"]
         assert notes.extension.locale_dirs() == [_PACKAGE_DIR / "locales"]
 
+    def test_declares_bundled_tool_configs(self) -> None:
+        """同梱のツール YAML のディレクトリに 4 つのツールの YAML がある。"""
+        roots = notes.extension.tool_config_roots()
+
+        assert roots == [_PACKAGE_DIR / "tool_configs"]
+        assert {p.stem for p in roots[0].glob("*.yaml")} == _TOOL_STEMS
+
     def test_file_storage(self) -> None:
         """保存先 `notes` を申告する。"""
         from lilla_core.core.file_storage import FileStorage
@@ -192,3 +199,47 @@ class TestComposition:
             alert = catalog["notes"]["alert"]["large_deletion"]
             assert all(f"{{{key}}}" in alert for key in ("path", "removed", "added", "commit"))
             assert catalog["notes"]["alert"]["patch_truncated"]
+
+
+class TestBundledToolConfigs:
+    """同梱のツール YAML のロード（ホストの YAML による置き換え・`enabled: false`）。"""
+
+    @pytest.fixture
+    def config_root(self, tmp_path: Path) -> Path:
+        """ホストの `${CONFIG_ROOT}` に見立てた空のディレクトリ（`tools/` つき）を返す。"""
+        (tmp_path / "tools").mkdir()
+        return tmp_path
+
+    def _load(self, config_root: Path, use_extensions) -> dict[str, dict]:
+        """notes だけを登録して LLM ツールをロードする。"""
+        from lilla_core.loaders.llm_tool_loader import load_llm_tools
+
+        use_extensions(notes.extension)
+        return load_llm_tools(tool_roots=notes.extension.tool_roots(), config_root=config_root)
+
+    def test_loads_all_tools_without_host_yaml(self, config_root: Path, use_extensions) -> None:
+        """ホストに YAML が無くても 4 つのツールがロードされる。"""
+        tools = self._load(config_root, use_extensions)
+
+        assert set(tools) == _TOOL_STEMS
+
+    def test_host_yaml_replaces_bundled(self, config_root: Path, use_extensions) -> None:
+        """ホストの同じ stem の YAML が同梱分を丸ごと置き換える。"""
+        (config_root / "tools" / "llm_notes_read.yaml").write_text(
+            "type: llm_notes_read\ndescription: host description\n", encoding="utf-8"
+        )
+
+        tools = self._load(config_root, use_extensions)
+
+        assert tools["llm_notes_read"]["tool_config"]["description"] == "host description"
+        assert tools["llm_notes_read"]["schema"]["function"]["description"] == "host description"
+
+    def test_host_yaml_can_disable_one_tool(self, config_root: Path, use_extensions) -> None:
+        """ホストの `enabled: false` で 1 つだけ止められる。"""
+        (config_root / "tools" / "llm_notes_write.yaml").write_text(
+            "type: llm_notes_write\nenabled: false\n", encoding="utf-8"
+        )
+
+        tools = self._load(config_root, use_extensions)
+
+        assert set(tools) == _TOOL_STEMS - {"llm_notes_write"}

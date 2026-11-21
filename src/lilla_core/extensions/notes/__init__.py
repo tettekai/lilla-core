@@ -5,7 +5,7 @@
 
 設定なしで使えるテキストの置き場所で、中身は「パス + 本文 + 更新日時」を持つ仮想の
 ファイルシステムで、1 回の書き込みが 1 コミットになる。LLM からは `files` 拡張と同じ形のツール（`llm_notes_list` /
-`llm_notes_read` / `llm_notes_write` / `llm_notes_search`。YAML を置いたものだけ有効）で
+`llm_notes_read` / `llm_notes_write` / `llm_notes_search`。YAML は `tool_configs/` に同梱し既定で有効）で
 読み書きし、人は観測用ダッシュボードの「ノート」画面で閲覧・検索・編集する。コードからは
 コアの `FileStorage`（`get_file_storage("notes")`）として使える。共有 HTTP サーバーの
 `/notes.git` から Git で clone / fetch / push もできる（push には同じ守りをかける）。
@@ -116,11 +116,17 @@ class NotesExtension(Extension):
             )
 
     def tool_roots(self) -> list[Path]:
-        """LLM ツール（このパッケージの `tools/`）の探索先を返す。
-
-        ツール YAML は同梱しない（利用者が `${CONFIG_ROOT}/tools` に置いたものだけ有効）。
-        """
+        """LLM ツール（このパッケージの `tools/`）の探索先を返す。"""
         return [_PACKAGE_DIR / "tools"]
+
+    def tool_config_roots(self) -> list[Path]:
+        """同梱する既定のツール YAML（このパッケージの `tool_configs/`）のディレクトリを返す。
+
+        利用者が `${CONFIG_ROOT}/tools` に同じ stem の YAML を置くと、同梱分は
+        丸ごと置き換わる（止めるなら `enabled: false`）。通常会話で使うには、
+        引き続き `tools.sets.main` に並べる必要がある。
+        """
+        return [_PACKAGE_DIR / "tool_configs"]
 
     def locale_dirs(self) -> list[Path]:
         """文言カタログ（このパッケージの `locales/`）を返す。"""

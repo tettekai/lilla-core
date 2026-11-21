@@ -173,12 +173,31 @@ class DiaryExtension(Extension):
 
 ## LLM ツール
 
-`${CONFIG_ROOT}/tools` に YAML を置いたものだけ有効になります（同梱はしません）。
-通常会話で使うには `tools.sets.main` にも並べます。
+4 つのツールの YAML は notes に同梱しており、ホストが何も置かなくてもロードされます。
+ロードされたツールは、タスクの `available_tools` や共有 HTTP サーバーの `POST /api/tools/call` から呼べます。
+
+ただし、**同梱しただけでは通常会話の LLM には見えません**。通常会話で LLM に渡すのは `tools.sets.main` に
+並べたツールだけなので、会話で使うときは今までどおり並べます。
 
 ```yaml
-# ${CONFIG_ROOT}/tools/llm_notes_read.yaml
-type: llm_notes_read
+# lilla.yaml
+tools:
+  sets:
+    main:
+      - llm_notes_list
+      - llm_notes_read
+      - llm_notes_write
+      - llm_notes_search
+```
+
+`${CONFIG_ROOT}/tools` に同じ stem の YAML を置くと、同梱分を丸ごと置き換えます（説明文を変えるときなど）。
+`enabled: false` と書けば、そのツールだけロードしません（たとえば読み取りだけにしたいときは
+`llm_notes_write` を止めます）。
+
+```yaml
+# ${CONFIG_ROOT}/tools/llm_notes_write.yaml
+type: llm_notes_write
+enabled: false
 ```
 
 | ツール YAML | 関数名 | 内容 |
@@ -284,7 +303,7 @@ push は通常の書き込みと同じロックで 1 つずつ処理し、検査
 Git の公開には有効 / 無効の設定がなく、notes が読み込まれていれば（＝常に）載ります。読み取りと
 書き込みの権限の区別も無く、有効なトークンならどれでも clone と push ができます。理由は次のとおりです。
 
-- 同じトークンで `POST /api/tools/call` から notes のツール（YAML を置いて有効にしたもの）も呼べるため、
+- 同じトークンで `POST /api/tools/call` から notes のツール（同梱またはホストの YAML でロードされたもの）も呼べるため、
   Git だけを分けても、トークンが漏れたときに失うものはほとんど変わりません
 - push は上のとおり通常の書き込みと同じ守りを通ります
 - 使うときだけ有効にする設定は、戻し忘れると意味がなくなります

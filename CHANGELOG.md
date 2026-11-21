@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- notes の LLM ツール（`llm_notes_list` / `llm_notes_read` / `llm_notes_write` / `llm_notes_search`）の YAML を notes に同梱した（#375）。ホストが `${CONFIG_ROOT}/tools` に YAML を置かなくてもロードされ、タスクの `available_tools` と `POST /api/tools/call` から呼べる。通常会話で使うには引き続き `tools.sets.main` に並べる。ホストの同じ stem の YAML は同梱分を置き換え、`enabled: false` で個別に止められる（いま置いている YAML はそのまま使える）
+
 ## [0.9.0] - 2026-11-20
 
 ### Added
