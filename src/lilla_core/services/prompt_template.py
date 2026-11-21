@@ -15,6 +15,9 @@
   notes の読み取りが非同期のため環境は async モードで、展開の関数はどれも async
 - 拡張のプロンプトにだけ `settings`（その拡張の画面管理の設定を呼ぶたびに読み直した
   もの。秘匿値（`SecretStr` / `SecretBytes`）は除く）も渡す
+- どのプロンプトでも使えるフィルタ `strip_tag(name)`（値の中から `<name …>` / `</name>` の形の
+  タグを取り除き、取り除いたら WARNING を出す）を登録する。読み込んだ本文をタグで囲んで渡すときに、
+  本文がタグを閉じて外へ出られないようにするため
 - 未定義の名前は `StrictUndefined` で失敗にする（黙って空文字にしない）
 - 記法を含まない本文が展開後も変わらないよう、末尾の改行を残す
 - 会話を止めないため、呼び出し元は失敗したら元の本文を使う（`render_or_raw()`）
@@ -22,6 +25,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import types
 import typing
 from dataclasses import dataclass, field
@@ -42,6 +46,41 @@ _ENV = SandboxedEnvironment(
     keep_trailing_newline=True,
     enable_async=True,
 )
+
+#: `strip_tag` に渡せるタグ名（英字で始まり、英数字・`_`・`-`）。
+_TAG_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
+
+
+def strip_tag(value: Any, name: Any) -> str:
+    """テンプレートのフィルタ `strip_tag(name)` の本体。値の中から `name` のタグを取り除く。
+
+    開きタグ・閉じタグ（`<name>` / `<name 属性>` / `</name>` / `< / NAME >` など。大文字小文字と
+    `<` の後ろ・`/` の前後の空白は区別しない。`>` が無い途中までの形も含む）を空文字に置き換える。
+    `name` の後ろに英数字・`_`・`-` が続くもの（`<name_extra>` など）は別のタグとして残す。
+    タグではない単語としての `name` は書き換えない。取り除いたときは件数を WARNING ログに出す。
+
+    Args:
+        value: 対象の文字列（文字列でなければ `str()` にする）。
+        name: 取り除くタグの名前。
+
+    Returns:
+        タグを取り除いた文字列。
+
+    Raises:
+        ValueError: `name` がタグ名の形でないとき。
+    """
+    if not isinstance(name, str) or not _TAG_NAME_RE.fullmatch(name):
+        raise ValueError("strip_tag() takes a tag name of letters, digits, '_' and '-'")
+    pattern = re.compile(
+        r"<\s*/?\s*" + re.escape(name) + r"(?![A-Za-z0-9_-])[^<>]*>?", re.IGNORECASE
+    )
+    text, count = pattern.subn("", str(value))
+    if count:
+        logger.warning("Removed %d '%s' tag(s) from text in a prompt template", count, name)
+    return text
+
+
+_ENV.filters["strip_tag"] = strip_tag
 
 _SECRET_TYPES = (SecretStr, SecretBytes)
 

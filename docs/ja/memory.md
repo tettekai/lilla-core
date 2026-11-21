@@ -75,7 +75,8 @@ MongoDB のコレクションは `remember`（`_id` が日付 `YYYY-MM-DD`、`en
 `default_prompt()`（ja / en）は、remember の使い方・日付の決め方・`memory/` の中身を伝え、続けて
 `memory/core.md` の本文を `<long_term_memory>` タグで囲んで入れます。本文はテンプレートの関数
 [`notes()`](prompt-template.md#ノートを読むnotes) で会話のたびに読み直し、`core.md` がまだ無ければ
-タグの節ごと出しません。本文中の `long_term_memory` は `long-term-memory` に書き換えてから囲みます
+タグの節ごと出しません。本文中の `<long_term_memory>` / `</long_term_memory>` の形のタグ（大文字小文字は区別しません）は
+[フィルタ `strip_tag`](prompt-template.md#タグを取り除くstrip_tag) で取り除いてから囲みます。取り除いたときは WARNING ログが出ます
 （タグを閉じて外へ出られないようにするため）。
 
 設定 `use_in_conversation` をオフにすると、何も入れません（notes も読みません）。夜間タスクは

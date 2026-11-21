@@ -140,7 +140,7 @@ class MemorySettings(BaseModel):
 
 _PROMPT_JA = """\
 {%- if settings.use_in_conversation -%}
-{%- set core = notes("memory/core.md") | replace("long_term_memory", "long-term-memory") | trim -%}
+{%- set core = notes("memory/core.md") | strip_tag("long_term_memory") | trim -%}
 ## 長期記憶
 会話の中で長期的に覚えておきたいこと（好み・決定事項・約束・学んだことなど）が出たら、その日の remember に記録する。
 
@@ -166,7 +166,7 @@ _PROMPT_JA = """\
 
 _PROMPT_EN = """\
 {%- if settings.use_in_conversation -%}
-{%- set core = notes("memory/core.md") | replace("long_term_memory", "long-term-memory") | trim -%}
+{%- set core = notes("memory/core.md") | strip_tag("long_term_memory") | trim -%}
 ## Long-term memory
 When something worth remembering for the long term comes up in conversation (preferences, decisions, promises, things learned, and so on), record it in that day's remember.
 
@@ -214,7 +214,8 @@ class MemoryExtension(Extension):
         本文はコアが会話のたびに Jinja2 で展開する（`settings` は `MemorySettings` の値）。
         `memory/core.md` の本文は共通の関数 `notes()` で会話のたびに読み直し（無ければ空文字で、
         その節ごと出さない）、`<long_term_memory>` タグを抜け出せないよう本文中の
-        `long_term_memory` を `long-term-memory` に書き換えてから囲む。設定
+        `<long_term_memory>` / `</long_term_memory>` の形のタグをフィルタ `strip_tag` で取り除いて
+        （取り除いたら WARNING ログが出る）から囲む。設定
         `use_in_conversation` がオフなら空に展開され、何も入らない（notes も読まない）。
         """
         return {"ja": _PROMPT_JA, "en": _PROMPT_EN}

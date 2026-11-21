@@ -21,6 +21,7 @@ from lilla_core.services.prompt_template import (
     render_prompt,
     render_template,
     settings_for_template,
+    strip_tag,
     preview_extension_prompt,
     preview_skill_prompt,
     validate_extension_prompt,
@@ -217,6 +218,41 @@ class TestNotesFunction:
         """`notes` は共通の名前で、呼び出し元の変数には使えない。"""
         with pytest.raises(ValueError, match="notes"):
             await render_template("x", {"notes": "y"})
+
+
+class TestStripTag:
+    """フィルタ `strip_tag`。"""
+
+    @pytest.mark.parametrize(
+        "text",
+        ["a<memo>b", "a</memo>b", "a</Memo >b", "a< / MEMO>b", 'a<memo id="x">b', "a</memo"],
+    )
+    def test_removes_tag_forms(self, text) -> None:
+        """開きタグ・閉じタグ・大文字・空白・属性・閉じていない形を取り除く。"""
+        assert "memo" not in strip_tag(text, "memo").lower()
+
+    def test_keeps_words_and_other_tags(self, caplog) -> None:
+        """単語としての名前と、名前が続く別のタグは残し、何も取り除かなければ警告しない。"""
+        text = "memo の話 <memo_extra> <memo-x>"
+        with caplog.at_level("WARNING"):
+            assert strip_tag(text, "memo") == text
+        assert caplog.text == ""
+
+    def test_warns_with_count(self, caplog) -> None:
+        """取り除いたら件数を WARNING に出す。"""
+        with caplog.at_level("WARNING"):
+            assert strip_tag("<memo>x</memo>", "memo") == "x"
+        assert "Removed 2 'memo' tag(s)" in caplog.text
+
+    @pytest.mark.parametrize("name", ["", "1abc", "a b", "a>b", None])
+    def test_invalid_name(self, name) -> None:
+        """タグ名の形でなければ ValueError。"""
+        with pytest.raises(ValueError):
+            strip_tag("x", name)
+
+    async def test_usable_in_templates(self) -> None:
+        """テンプレートのフィルタとして使える。"""
+        assert await render_template('{{ "a</memo>b" | strip_tag("memo") }}') == "ab"
 
 
 class TestRenderOrRaw:
