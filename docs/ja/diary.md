@@ -148,8 +148,8 @@ available_tools:
 | `target` | `dm:{DISCORD_MY_USER_ID}` |
 | `available_tools` | `["$main"]` |
 
-返事は通常の会話として届き、`llm_diary_draft_set` で下書きへ反映されます。時刻の変更と定期実行の
-停止は、ダッシュボードの 設定画面の `tasks.task_hearing_diary` でも行えます
+返事は通常の会話として届き、`llm_diary_draft_set` で下書きへ反映されます。時刻の変更・定期実行の
+停止・プロンプトの追加や置き換えは、ダッシュボードの 設定画面の `tasks.task_hearing_diary` でも行えます
 （[拡張のタスクの上書き](extension-task-override.md)）。
 
 ## 会話向けのプロンプト

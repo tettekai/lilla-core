@@ -71,6 +71,13 @@ TASK_DEFAULTS: dict[str, dict] = {
 }
 
 
+#: stem ごとにプロンプトへ渡す変数名（`_template_variables()` と合わせる）。
+TASK_VARIABLE_NAMES: dict[str, tuple[str, ...]] = {
+    REVIEW_TASK: ("target_date", "remember_entries"),
+    COMPACTION_TASK: ("journal_path",),
+}
+
+
 def _select_bundled_file(directory: Path, stem: str, locale: str | None) -> Path:
     """`locale` → `ja` → `en` の順に、`{stem}.{言語}.md` のうち存在する最初のファイルを返す。
 
@@ -159,6 +166,10 @@ class MemoryLlmTask(_base.ScheduledLlmTask):
         if "max_tool_call_iterations" not in config:
             config["max_tool_call_iterations"] = defaults["max_tool_call_iterations"]
         return config
+
+    def prompt_variable_names(self) -> list[str]:
+        """stem ごとに `_template_variables()` が渡す変数名を返す。"""
+        return list(TASK_VARIABLE_NAMES.get(self.name, ()))
 
     async def _template_variables(self, context: dict) -> dict | None:
         """stem ごとの変数を返す（することが無い回は None で LLM を呼ばない）。"""

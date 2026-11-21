@@ -9,6 +9,8 @@
 
 ### Added
 
+- 拡張が同梱した LLM の定期タスク（`task_scheduled_llm` とその派生クラス。`memory` の夜間タスク・`diary` の聞き取りなど）のプロンプトを、ダッシュボードの設定画面から上書きできるようにした（#383）。`extension_overrides` の `tasks.<ツール名>.prompt` に `{"mode": "append" | "replace", "text"}` で保存し、拡張のプロンプトと同じ規則でデフォルト（同梱のプロンプト）と合成する。置き換えモードの空の本文は保存できない。上書きファイル（`${CONFIG_ROOT}/extensions/<拡張名>/tools/`）に `prompt` を書いたタスクではファイルが優先し、画面に ⚠️ を出す。プロンプトだけの保存はスケジューラへ反映せず、次の実行（`!runtask` を含む）から使われる。保存値が不正・読み込みに失敗したときは WARNING を出してデフォルトを使う。プレビュー API（`POST /api/admin/prompt-preview`）に `target.type: task` を足し、タスクの変数と `notes()` をダミー値で展開する（実際のデータは読まない）。派生クラスは `prompt_variable_names()` でプロンプトの変数名を申告する。説明は `docs/ja/extension-task-override.md`
+
 - プロンプトの source spec（`prompt.system` / `prompt.conversation` / `prompt.discord`・LLM プロバイダーの `prompt`・`task_scheduled_llm` / `llm_expert` の `prompt` など）で、パスの先頭に `$notes` を書くとノート置き場から読めるようにした（#373）。`file:$notes/memory/core.md` / `dir:$notes/memory/personal` のように書き、ディスクの指定と混在できる。組み立てのたびに最新を読み、無いノートは空、notes のパス規則に合わない指定（`..`・空の要素など）はエラーになる。説明は `docs/ja/prompt-sources.md`
 - `client_prompt_providers()` のプロバイダに非同期関数も使えるようにした（#373。非破壊のため `EXTENSION_API_VERSION` は変えていない）
 - Jinja2 で展開するどのプロンプトでも、関数 `notes("パス")` でノート置き場 `notes` のファイルの本文を読めるようにした（#378）。拡張のプロンプト・スキルなど source spec を書けない場所でも使える。無いファイルは空文字（ディレクトリのパスも空文字で、WARNING ログを出す）、パスの規則違反（`..`・先頭の `/` など。notes の外は読めない）・読み取りの失敗は展開の失敗（WARNING を出して展開前の本文を使う）、100,000 文字を超える本文は切り詰める。`notes` は共通の名前になり、呼び出し元の変数には使えない。説明は `docs/ja/prompt-template.md`

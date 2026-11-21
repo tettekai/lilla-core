@@ -27,6 +27,13 @@ YAML の項目:
 - `max_tool_call_iterations` … 任意。このタスクだけのツール呼び出しの往復上限（正の
   int）。省略時は `llm.max_tool_call_iterations` を使う。int 以外・bool・1 未満は
   初期化で落とす
+
+拡張が同梱したタスク（ローダーが `_extension` を入れたもの）は、ダッシュボードの設定画面で
+保存したプロンプトの上書き（`extension_overrides` の `tasks.<ツール名>.prompt`。会話向けの
+拡張のプロンプトと同じ `{"mode": "append" | "replace", "text"}`）を実行のたびに読み、
+`prompt` の本文と合成する（`services/extension_prompt_override.py` の規則）。
+`${CONFIG_ROOT}/extensions/<拡張名>/tools/` の YAML に `prompt` を書いたときは、そちらが勝ち、
+画面の上書きは使わない。利用者が `${CONFIG_ROOT}/tools` に置いたタスクは上書きの対象外。
 """
 from __future__ import annotations
 
@@ -62,6 +69,10 @@ def _is_no_notification(reply: str) -> bool:
 class ScheduledLlmTask:
     """cron で LLM に処理を委譲し、必要なときだけ `target` へ通知する定期タスク。"""
 
+    #: ダッシュボードからプロンプトを上書きできるタスクの目印（ローダーはファイルから
+    #: クラスを読むため、`isinstance` ではなくこの属性で見分ける）。
+    prompt_override_supported = True
+
     def __init__(self, config: dict, name: str) -> None:
         """YAML 設定からタスクを組み立てる。
 
@@ -92,6 +103,8 @@ class ScheduledLlmTask:
         self._target = self._config.get("target")
         self._llm_provider = self._config.get("llm_provider")
         self._prompt_sources = self._config.get("prompt")
+        self.extension = self._config.get("_extension")
+        self._file_override_keys = frozenset(self._config.get("_override_keys") or ())
         if not self._llm_provider:
             raise ValueError(f"Task tool {name} requires llm_provider")
         if not self._prompt_sources:
@@ -247,12 +260,76 @@ class ScheduledLlmTask:
         """
         return {}
 
-    async def _build_prompt(self, context: dict, variables: dict | None = None) -> str:
-        """`prompt` の source spec を読み込み、Jinja2 テンプレートとして展開する。
+    def prompt_variable_names(self) -> list[str]:
+        """`_template_variables()` がプロンプトへ渡す変数名を返す（派生クラスが上書きする）。
 
+        ダッシュボードのプレビューと保存時の検査が、この名前のダミー値で上書きの本文を
+        試しに展開する。共通の変数（`current_hour` / `notes`）は含めない。
+        """
+        return []
+
+    @property
+    def prompt_file_overridden(self) -> bool:
+        """`${CONFIG_ROOT}/extensions/<拡張名>/tools/` の YAML が `prompt` を書いているか。"""
+        return "prompt" in self._file_override_keys
+
+    async def load_default_prompt(self) -> str:
+        """`prompt` の source spec を読み込んだ本文（展開前）を返す。
+
+        画面上書きを合成するときの「既定」で、ダッシュボードの表示にも使う。
+        """
+        from lilla_core.utils.resource_loader import load_text_resources
+
+        return await load_text_resources(self._prompt_sources)
+
+    async def _load_prompt_override(self):
+        """ダッシュボードで保存したこのタスクのプロンプトの上書きを読む。
+
+        拡張が同梱していないタスク・上書きファイルが `prompt` を書いているタスクは読まない。
+        読み込みの失敗と不正な保存値は WARNING を出して `None`（既定を使う）にする。
+
+        Returns:
+            `PromptOverride`。上書きが無い・使わないなら `None`。
+        """
+        from lilla_core.repository.extension_override_repository import (
+            get_extension_override_repo,
+        )
+        from lilla_core.services.extension_prompt_override import (
+            InvalidPromptOverrideError,
+            parse_prompt_override,
+        )
+
+        if not self.extension or self.prompt_file_overridden:
+            return None
+        try:
+            doc = await get_extension_override_repo().find_one(self.extension)
+        except Exception as e:
+            logger.warning(
+                "[scheduled_llm] Failed to load the prompt override of task '%s' of "
+                "extension '%s'; using the default prompt: %s", self.name, self.extension, e,
+            )
+            return None
+        tasks = (doc or {}).get("tasks")
+        entry = tasks.get(self.name) if isinstance(tasks, dict) else None
+        if not isinstance(entry, dict) or "prompt" not in entry:
+            return None
+        try:
+            return parse_prompt_override(entry["prompt"])
+        except InvalidPromptOverrideError as e:
+            logger.warning(
+                "[scheduled_llm] Ignoring invalid prompt override of task '%s' of "
+                "extension '%s'; using the default prompt: %s", self.name, self.extension, e,
+            )
+            return None
+
+    async def _build_prompt(self, context: dict, variables: dict | None = None) -> str:
+        """`prompt` の本文に画面の上書きを合成し、Jinja2 テンプレートとして展開する。
+
+        既定（`prompt` の本文）と上書きの追加分は、それぞれ独立したテンプレートとして
+        展開してから空行区切りでつなぐ（`services/extension_prompt_override.py` の規則）。
         `current_hour` の基準時刻は context の `now`（無ければ今）で、表示は
         `local_timezone()` が解決したタイムゾーン（`ui.timezone`、未指定なら
-        OS のローカル）へ合わせる。展開に失敗したら WARNING を出して読み込んだ
+        OS のローカル）へ合わせる。展開に失敗した部分は WARNING を出して読み込んだ
         ままの本文を使う。
 
         Args:
@@ -262,12 +339,18 @@ class ScheduledLlmTask:
         Returns:
             LLM へ渡すプロンプト本文（前後の空白は除去済み）。
         """
-        from lilla_core.utils.resource_loader import load_text_resources
+        from lilla_core.services.extension_prompt_override import compose_extension_prompt
 
         now = context.get("now")
         if not isinstance(now, datetime):
             now = None
-        prompt = await load_text_resources(self._prompt_sources)
-        return (await render_or_raw(
-            prompt, f"task '{self.name}' prompt", variables or None, now=now
-        )).strip()
+        default_text = await self.load_default_prompt()
+        override = await self._load_prompt_override()
+        label = f"task '{self.name}' prompt"
+
+        async def _render(parts: list[str]) -> list[str]:
+            return [
+                await render_or_raw(part, label, variables or None, now=now) for part in parts
+            ]
+
+        return (await compose_extension_prompt(default_text, override, _render)).strip()

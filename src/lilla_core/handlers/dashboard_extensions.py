@@ -57,11 +57,11 @@ async def _detail(name: str, tools: dict) -> dict:
     from lilla_core.core.config import get_config
     from lilla_core.handlers import task_handler
     from lilla_core.repository.extension_override_repository import get_extension_override_repo
-    from lilla_core.services.extension_overrides import build_detail
-
+    from lilla_core.services.extension_overrides import build_detail, load_task_default_prompts
     from lilla_core.services.extension_settings import build_settings_detail
 
     doc = await get_extension_override_repo().find_one(name)
+    task_default_prompts = await load_task_default_prompts(name, tools)
     detail = build_detail(
         name,
         tools,
@@ -70,6 +70,7 @@ async def _detail(name: str, tools: dict) -> dict:
         task_handler.get_applied_schedules(),
         task_handler.is_scheduler_running(),
         task_handler.is_scheduler_enabled(),
+        task_default_prompts,
     )
     # 設定の読み込み失敗は節の `error` に入れ、上書きの編集は続けられるようにする
     detail["settings"] = await build_settings_detail(name)
@@ -113,7 +114,10 @@ async def handle_update(request: web.Request) -> web.Response:
     """PATCH /api/admin/extensions/{name}/overrides - 上書きを保存する。
 
     リクエスト全体を検証してから 1 回の更新で保存し（不正なら 400 で何も保存しない）、
-    タスクを変えたときだけ稼働中のスケジューラへ反映する。プロンプトの上書き
+    タスクの `schedule` / `enabled` を変えたときだけ稼働中のスケジューラへ反映する
+    （タスクのプロンプトだけの変更は反映せず、次の実行で読まれる）。タスクのプロンプトは、
+    そのタスクが宣言した変数名のダミー値で試しに展開し（実データは読まない）、展開できなければ
+    400 にする。プロンプトの上書き
     （`{"mode", "text"}`）は、モードによらず入力本文（`text`）だけを Jinja2 テンプレートとして
     今の設定で試しに展開し、展開できなければ 400 にする
     （設定を読めなければ構文だけを確かめる）。応答の `saved` は保存の成否、
@@ -129,7 +133,15 @@ async def handle_update(request: web.Request) -> web.Response:
         find_extension,
         parse_update,
     )
-    from lilla_core.services.prompt_template import PromptTemplateError, validate_extension_prompt
+    from lilla_core.services.extension_overrides import (
+        task_entries_of,
+        task_prompt_variable_names,
+    )
+    from lilla_core.services.prompt_template import (
+        PromptTemplateError,
+        validate_extension_prompt,
+        validate_task_prompt,
+    )
 
     name = request.match_info["name"]
     if find_extension(name) is None:
@@ -149,6 +161,14 @@ async def handle_update(request: web.Request) -> web.Response:
             await validate_extension_prompt(name, prompt["text"])
         except PromptTemplateError as e:
             return _error(400, f"prompt: {e}")
+    if update.task_prompts:
+        # タスクのプロンプトは実データを読まず、宣言した変数名のダミー値で試しに展開する
+        entries = task_entries_of(name, tools)
+        for tool_name, text in update.task_prompts.items():
+            try:
+                await validate_task_prompt(text, task_prompt_variable_names(entries[tool_name]))
+            except PromptTemplateError as e:
+                return _error(400, f"tasks.{tool_name}.prompt: {e}")
 
     try:
         await get_extension_override_repo().update_overrides(

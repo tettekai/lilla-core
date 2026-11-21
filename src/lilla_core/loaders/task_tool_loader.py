@@ -168,6 +168,10 @@ def load_all_tools(
             continue
 
         config["_yaml_path"] = config_path
+        # 同梱した拡張と上書きファイルのキーをタスクへ伝える（ScheduledLlmTask が
+        # ダッシュボードのプロンプトの上書きを読むかどうかの判断に使う）
+        config["_extension"] = entry.extension
+        config["_override_keys"] = sorted(entry.override_keys)
         name = entry.name
         instance = cls(config, name)
         tools[name] = _build_tool_entry(

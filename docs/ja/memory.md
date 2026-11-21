@@ -113,8 +113,9 @@ MongoDB のコレクションは `remember`（`_id` が日付 `YYYY-MM-DD`、`en
 - 何も書かなかったときは `NO_NOTIFICATION` と返させ、通知しません。書いたときは、書いたパスごとに
   何を書いたかを通知します。
 
-時刻と有効 / 無効は、ダッシュボードの [拡張のタスクの上書き](extension-task-override.md) で変えられます。
-プロンプト・LLM・通知先・ツールを変えるときは、同じ stem の YAML を
+時刻と有効 / 無効、プロンプトは、ダッシュボードの [拡張のタスクの上書き](extension-task-override.md) で
+変えられます（プロンプトでは `task_memory_review` なら `target_date` / `remember_entries`、
+`task_memory_compaction` なら `journal_path` の変数を使えます）。LLM・通知先・ツールを変えるときは、同じ stem の YAML を
 `${CONFIG_ROOT}/extensions/memory/tools/` に置き、変えたい項目だけを書きます（残りは既定値で埋まります）。
 
 ## ダッシュボードで編集する設定

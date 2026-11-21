@@ -616,22 +616,49 @@ async def _check_skill_prompt(prompt: str) -> str | None:
     return None
 
 
+def _prompt_task_entry(request: web.Request, target: dict) -> dict | None:
+    """プレビューの `target` が指す、拡張が同梱した LLM の定期タスクのエントリ（無ければ None）。"""
+    from lilla_core.handlers.dashboard_extensions import TOOLS_KEY
+    from lilla_core.services.extension_overrides import (
+        find_extension,
+        supports_prompt_override,
+        task_entries_of,
+    )
+
+    name = target.get("name")
+    task = target.get("task")
+    if not isinstance(name, str) or not isinstance(task, str) or find_extension(name) is None:
+        return None
+    info = task_entries_of(name, request.app.get(TOOLS_KEY) or {}).get(task)
+    if info is None or not supports_prompt_override(info):
+        return None
+    return info
+
+
 async def handle_api_prompt_preview(request: web.Request) -> web.Response:
     """POST /api/admin/prompt-preview - Jinja2 テンプレートを試しに展開して返す（保存しない）。
 
     ボディは ``{"text": str, "target": {"type": "skill"}}`` か
-    ``{"text": str, "target": {"type": "extension", "name": str}}``。展開には保存時の検査と
+    ``{"text": str, "target": {"type": "extension", "name": str}}`` か
+    ``{"text": str, "target": {"type": "task", "name": 拡張名, "task": ツール名}}``。
+    タスクは `preview_task_prompt()` で、そのタスクが宣言した変数名のダミー値で展開する
+    （remember や notes の実データは読まない）。展開には保存時の検査と
     同じ関数（スキルは `preview_skill_prompt()`、拡張のプロンプトは
     `preview_extension_prompt()`）を使い、スキルの本文は保存時と同じく前後の空白を除いてから
     展開する。成功なら 200 で ``{"rendered", "comments", "settings_unavailable"}``
     （設定を読めず試しの展開を飛ばしたときは ``rendered`` が null）、展開できなければ
     400 で ``{"error": 理由}``（構文エラーは行番号つき）。
     """
-    from lilla_core.services.extension_overrides import default_prompts_of, find_extension
+    from lilla_core.services.extension_overrides import (
+        default_prompts_of,
+        find_extension,
+        task_prompt_variable_names,
+    )
     from lilla_core.services.prompt_template import (
         PromptTemplateError,
         preview_extension_prompt,
         preview_skill_prompt,
+        preview_task_prompt,
     )
 
     body, ok = await parse_json_body(request)
@@ -657,9 +684,17 @@ async def handle_api_prompt_preview(request: web.Request) -> web.Response:
                     {"error": f"Extension '{name}' has no default prompt"}, status=404
                 )
             preview = await preview_extension_prompt(name, text)
+        elif target_type == "task":
+            info = _prompt_task_entry(request, target)
+            if info is None:
+                return web.json_response(
+                    {"error": "Task is not an LLM task bundled by a loaded extension"},
+                    status=404,
+                )
+            preview = await preview_task_prompt(text, task_prompt_variable_names(info))
         else:
             return web.json_response(
-                {"error": "target.type must be 'skill' or 'extension'"}, status=400
+                {"error": "target.type must be 'skill', 'extension' or 'task'"}, status=400
             )
     except PromptTemplateError as e:
         return web.json_response({"error": str(e)}, status=400)

@@ -1,7 +1,7 @@
 # 拡張のタスクの上書き
 
 拡張が同梱する定期タスク（`tool_config_roots()` で同梱した `task_*.yaml`）の実行スケジュール
-（crontab）と有効・無効を、拡張のコードやツール YAML を編集せずに、MongoDB のドキュメント 1 件で
+（crontab）と有効・無効、LLM を使うタスクのプロンプトを、拡張のコードやツール YAML を編集せずに、MongoDB のドキュメント 1 件で
 拡張ごとに上書きできます。上書きは [拡張のデフォルトプロンプトと上書き](extension-prompt.md) と
 同じ `extension_overrides` コレクションの、拡張ごとのドキュメントに書きます。
 
@@ -16,7 +16,8 @@
   "prompt": "（任意。プロンプトの上書き）",
   "tasks": {
     "task_diary_digest": { "schedule": "30 21 * * *" },
-    "task_diary_cleanup": { "enabled": false }
+    "task_diary_cleanup": { "enabled": false },
+    "task_hearing_diary": { "prompt": { "mode": "append", "text": "今日は短めに聞いてください。" } }
   },
   "updated_at": { "$date": "2026-10-28T00:00:00Z" }
 }
@@ -40,11 +41,33 @@ db.extension_overrides.updateOne(
 |------|----|------|
 | `schedule` | 文字列（crontab） | 実行スケジュール。既存と同じく `ui.timezone`（未指定なら OS のローカル）で解釈する |
 | `enabled` | 真偽値 | `false` ならスケジューラにジョブを登録しない |
+| `prompt` | `{"mode": "append" \| "replace", "text": 文字列}` | LLM を使うタスク（[`task_scheduled_llm`](scheduled-llm.md) とその派生クラス）のプロンプト。形と合成の規則は [拡張のプロンプトの上書き](extension-prompt.md) と同じ |
 
 - 項目ごとに上書きします。書いていない項目はデフォルト（ツールの `schedule`、有効）を使います。
 - `tasks` キーの無いドキュメント、ドキュメントの無い拡張は、全タスクがデフォルトです。
 - `tasks` の有無や中身は、`prompt` の上書きに影響しません（逆も同じ）。
-- タスクの内容やタスク用のプロンプトは上書きできません。ツール YAML・タスクの実装に書きます。
+- タスクの内容（LLM・通知先・ツールなど）は上書きできません。上書きファイルに書きます。
+
+## タスクのプロンプト
+
+`prompt` を上書きできるのは、拡張が同梱した LLM のタスク（`task_scheduled_llm` とその派生クラス。
+`memory` の `task_memory_review` / `task_memory_compaction`、`diary` の `task_hearing_diary` など）
+だけです。LLM を使わないタスク（`diary` の清書 `task_write_diary` など）には欄が出ず、保存すると 400 に
+なります。
+
+- デフォルトは拡張が同梱したプロンプト（`task_prompts/{stem}.{言語}.md` など、YAML の `prompt` が
+  指すもの）です。
+- `append` はデフォルトの後ろへ空行を挟んで足し、`replace` は入力した本文だけを使います。
+  デフォルトと入力した本文はそれぞれ Jinja2 で展開してからつなぐため、`append` のデフォルト部分は
+  拡張の更新に追従します。
+- `replace` で本文を空にしては保存できません（タスクのプロンプトが空だと LLM を呼べないため）。
+  止めたいときは `enabled: false` にします。
+- 本文ではそのタスクが渡す変数（`memory` の `task_memory_review` なら `target_date` /
+  `remember_entries`、`task_memory_compaction` なら `journal_path`）と、共通の `current_hour` /
+  `notes()` を使えます（[プロンプトのテンプレート](prompt-template.md)）。
+- 保存済みの値が形に合わない・読み込みに失敗したときは、WARNING ログを出してデフォルトを使います。
+- プロンプトは実行のたびに読みます。保存してもスケジューラへの反映はせず、次の実行
+  （`!runtask` を含む）から使われます。
 
 ## 対象になるタスク
 
@@ -54,7 +77,7 @@ db.extension_overrides.updateOne(
 
 ## 上書きファイルとの優先順位
 
-値は項目（`schedule` / `enabled`）ごとに、次の順で後ろのものが勝ちます。
+値は項目（`schedule` / `enabled` / `prompt`）ごとに、次の順で後ろのものが勝ちます。
 
 1. 拡張が同梱した YAML
 2. この `extension_overrides` の `tasks`（ダッシュボード）
