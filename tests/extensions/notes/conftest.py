@@ -128,3 +128,29 @@ def watch_paths():
 
     yield _watch
     ext_module.set_extensions(previous)
+
+
+class FakeToolCacheRepo:
+    """`ToolCacheRepository` の代わりにメモリ上で `(tool_name, args_key)` → 内容を持つ。"""
+
+    def __init__(self) -> None:
+        """空のキャッシュで作る。"""
+        self.entries: dict[tuple[str, str], dict] = {}
+
+    async def set(self, tool_name: str, args_key: str, data: str, expiration_minutes: int) -> None:
+        """1 件を保存する（上書き）。"""
+        self.entries[(tool_name, args_key)] = {"data": data, "expiration_minutes": expiration_minutes}
+
+    async def delete(self, tool_name: str, args_key: str) -> bool:
+        """1 件を消す。"""
+        return self.entries.pop((tool_name, args_key), None) is not None
+
+
+@pytest.fixture(autouse=True)
+def tool_cache(monkeypatch: pytest.MonkeyPatch) -> FakeToolCacheRepo:
+    """`get_tool_cache_repo()` をメモリ上の偽物に差し替える（書き込みのたびに MongoDB へ行かないように）。"""
+    from lilla_core.repository import tool_cache_repository
+
+    fake = FakeToolCacheRepo()
+    monkeypatch.setattr(tool_cache_repository, "get_tool_cache_repo", lambda: fake)
+    return fake

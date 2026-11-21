@@ -61,8 +61,11 @@ async def execute(input: dict, context: dict) -> dict:
     dict
         標準形式の結果辞書。`data` は `path` / `content` / `offset` / `total_chars` /
         `truncated`（続きがあるか）/ `next_offset`（続きがあるときだけ）/ `writable`。
+        FrontMatter に `lilla-cache-expiration-minutes`（正の整数）があれば `cache_writes` に
+        そのノートの 1 件を付ける（ローダーの `cache.mode: auto` が保存し、結果からは除く）。
     """
     from lilla_core.extensions.notes import service
+    from lilla_core.extensions.notes.read_cache import build_cache_write
     from lilla_core.extensions.notes.tool_support import run_notes_operation
 
     tool_name = SCHEMA["function"]["name"]
@@ -93,6 +96,8 @@ async def execute(input: dict, context: dict) -> dict:
             data["next_offset"] = end
         span = f"、{offset}〜{end}文字目" if offset or truncated else ""
         memory_entry = f"ノート「{note.path}」を読みました（{len(text)}文字{span}）。"
-        return tool_success(tool_name, memory_entry, data)
+        cache_write = build_cache_write(note.path, text)
+        cache_writes = [cache_write] if cache_write is not None else []
+        return {**tool_success(tool_name, memory_entry, data), "cache_writes": cache_writes}
 
     return await run_notes_operation(tool_name, context, operation)

@@ -1,1 +1,3 @@
 type: llm_notes_read
+cache:
+  mode: auto
