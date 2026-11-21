@@ -146,12 +146,13 @@ async def read_note(path: Any) -> str:
     """テンプレートの関数 `notes(path)` の本体。保存先 `notes` のファイルの本文を返す。
 
     ファイルが無いときは空文字を返す（まだ作られていないノートを書いておけるように）。
+    ディレクトリを指したときも空文字を返すが、指定の誤りに気づけるよう WARNING を出す。
     `MAX_NOTE_CHARS` を超える本文は切り詰めて WARNING を出す。
 
     Raises:
         TypeError: `path` が文字列でないとき。
         RuntimeError: 保存先 `notes` が登録されていないとき。
-        FileStorageError: パスの規則違反・読み取りの失敗など（無いファイルを除く。ディレクトリの扱いは保存先による）。
+        FileStorageError: パスの規則違反・読み取りの失敗など（無いファイル・ディレクトリを除く）。
     """
     from lilla_core.core.extension import get_file_storage
     from lilla_core.core.file_storage import FileStorageNotFoundError
@@ -164,6 +165,11 @@ async def read_note(path: Any) -> str:
     try:
         text = await storage.read(path)
     except FileStorageNotFoundError:
+        if await _is_directory(storage, path):
+            logger.warning(
+                "Note path %s is a directory, not a file; notes() returns an empty string",
+                path,
+            )
         return ""
     if len(text) > MAX_NOTE_CHARS:
         logger.warning(
@@ -172,6 +178,15 @@ async def read_note(path: Any) -> str:
         )
         return text[:MAX_NOTE_CHARS]
     return text
+
+
+async def _is_directory(storage: Any, path: str) -> bool:
+    """`path` が保存先にあるディレクトリかを返す（一覧が取れれば真。失敗は偽として扱う）。"""
+    try:
+        await storage.list(path)
+    except Exception:
+        return False
+    return True
 
 
 def check_syntax(text: str) -> None:

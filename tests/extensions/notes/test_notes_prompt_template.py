@@ -66,10 +66,18 @@ class TestNotesFunctionWithRealStorage:
         """無いノートは空文字。"""
         assert await render_template('[{{ notes("memory/core.md") }}]') == "[]"
 
-    async def test_directory_is_empty(self, notes_storage) -> None:
-        """notes ではディレクトリはファイルとして無いため、指すと空文字になる。"""
+    async def test_directory_is_empty_with_warning(self, notes_storage, caplog) -> None:
+        """ディレクトリを指すと空文字になり、誤りに気づけるよう WARNING を出す。"""
         await _write(notes_storage, {"memory/core.md": "x"})
-        assert await render_template('[{{ notes("memory") }}]') == "[]"
+        with caplog.at_level(logging.WARNING, logger="lilla_core.services.prompt_template"):
+            assert await render_template('[{{ notes("memory") }}]') == "[]"
+        assert any("is a directory" in r.getMessage() for r in caplog.records)
+
+    async def test_missing_file_has_no_warning(self, notes_storage, caplog) -> None:
+        """無いファイルは空文字で、WARNING は出さない。"""
+        with caplog.at_level(logging.WARNING, logger="lilla_core.services.prompt_template"):
+            assert await render_template('[{{ notes("memory/core.md") }}]') == "[]"
+        assert not any("is a directory" in r.getMessage() for r in caplog.records)
 
     async def test_outside_paths_fail(self, notes_storage, outside_file: Path) -> None:
         """notes の外を指すパスは展開の失敗にし、外のファイルの本文を出さない。"""

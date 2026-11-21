@@ -11,7 +11,7 @@
 
 - プロンプトの source spec（`prompt.system` / `prompt.conversation` / `prompt.discord`・LLM プロバイダーの `prompt`・`task_scheduled_llm` / `llm_expert` の `prompt` など）で、パスの先頭に `$notes` を書くとノート置き場から読めるようにした（#373）。`file:$notes/memory/core.md` / `dir:$notes/memory/personal` のように書き、ディスクの指定と混在できる。組み立てのたびに最新を読み、無いノートは空、notes のパス規則に合わない指定（`..`・空の要素など）はエラーになる。説明は `docs/ja/prompt-sources.md`
 - `client_prompt_providers()` のプロバイダに非同期関数も使えるようにした（#373。非破壊のため `EXTENSION_API_VERSION` は変えていない）
-- Jinja2 で展開するどのプロンプトでも、関数 `notes("パス")` でノート置き場 `notes` のファイルの本文を読めるようにした（#378）。拡張のプロンプト・スキルなど source spec を書けない場所でも使える。無いファイル（ディレクトリのパスも含む）は空文字、パスの規則違反（`..`・先頭の `/` など。notes の外は読めない）・読み取りの失敗は展開の失敗（WARNING を出して展開前の本文を使う）、100,000 文字を超える本文は切り詰める。`notes` は共通の名前になり、呼び出し元の変数には使えない。説明は `docs/ja/prompt-template.md`
+- Jinja2 で展開するどのプロンプトでも、関数 `notes("パス")` でノート置き場 `notes` のファイルの本文を読めるようにした（#378）。拡張のプロンプト・スキルなど source spec を書けない場所でも使える。無いファイルは空文字（ディレクトリのパスも空文字で、WARNING ログを出す）、パスの規則違反（`..`・先頭の `/` など。notes の外は読めない）・読み取りの失敗は展開の失敗（WARNING を出して展開前の本文を使う）、100,000 文字を超える本文は切り詰める。`notes` は共通の名前になり、呼び出し元の変数には使えない。説明は `docs/ja/prompt-template.md`
 
 ### Changed
 
