@@ -102,3 +102,29 @@ def declare_notes_dirs():
 def journal_dir(declare_notes_dirs) -> None:
     """拡張が `journal/` を宣言した状態にする。"""
     declare_notes_dirs({"journal": {"ja": "日誌用", "en": "for the journal"}})
+
+
+@pytest.fixture
+def watch_paths():
+    """notes 拡張と、`notes_watched_paths()` で指定したパスを申告するテスト用の拡張を登録する関数を返す。
+
+    `paths` に例外を渡すと `notes_watched_paths()` がそれを投げる。登録内容はテストの終わりに元へ戻す。
+    """
+    from lilla_core.core import extension as ext_module
+    from lilla_core.core.extension import Extension
+
+    previous = ext_module.get_extensions()
+
+    def _watch(paths, name: str = "watcher") -> None:
+        class _Watching(Extension):
+            async def notes_watched_paths(self):
+                if isinstance(paths, BaseException):
+                    raise paths
+                return paths
+
+        watching = _Watching()
+        watching.name = name
+        ext_module.set_extensions([notes.extension, watching])
+
+    yield _watch
+    ext_module.set_extensions(previous)

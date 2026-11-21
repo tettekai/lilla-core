@@ -12,6 +12,14 @@
 - プロンプトの source spec（`prompt.system` / `prompt.conversation` / `prompt.discord`・LLM プロバイダーの `prompt`・`task_scheduled_llm` / `llm_expert` の `prompt` など）で、パスの先頭に `$notes` を書くとノート置き場から読めるようにした（#373）。`file:$notes/memory/core.md` / `dir:$notes/memory/personal` のように書き、ディスクの指定と混在できる。組み立てのたびに最新を読み、無いノートは空、notes のパス規則に合わない指定（`..`・空の要素など）はエラーになる。説明は `docs/ja/prompt-sources.md`
 - `client_prompt_providers()` のプロバイダに非同期関数も使えるようにした（#373。非破壊のため `EXTENSION_API_VERSION` は変えていない）
 - Jinja2 で展開するどのプロンプトでも、関数 `notes("パス")` でノート置き場 `notes` のファイルの本文を読めるようにした（#378）。拡張のプロンプト・スキルなど source spec を書けない場所でも使える。無いファイルは空文字（ディレクトリのパスも空文字で、WARNING ログを出す）、パスの規則違反（`..`・先頭の `/` など。notes の外は読めない）・読み取りの失敗は展開の失敗（WARNING を出して展開前の本文を使う）、100,000 文字を超える本文は切り詰める。`notes` は共通の名前になり、呼び出し元の変数には使えない。説明は `docs/ja/prompt-template.md`
+- Jinja2 で展開するどのプロンプトでも、フィルタ `strip_tag("タグ名")` で値の中から `<タグ名>` / `</タグ名>` の形のタグを取り除けるようにした（#374）。読み込んだ本文をタグで囲むときに、本文が囲みの外へ出られないようにするためのもの。大文字小文字と空白は区別せず、取り除いたら WARNING ログを出す。説明は `docs/ja/prompt-template.md`
+- 長期記憶の `memory` 拡張（`lilla_core.extensions.memory`）を標準機能として足した（#374）。notes と同じく `LILLA_EXTENSIONS` によらず常に読み込まれ、並べていたら WARNING を出して読み飛ばす。説明は `docs/ja/memory.md`
+  - 日中は LLM ツール `llm_remember_append` / `llm_remember_get` で、覚えておきたいことを MongoDB の `remember`（`_id` が日付・`entries` に追記）へその日の分として記録する。通常会話で使うには `tools.sets.main` に並べる
+  - 夜間タスク `task_memory_review`（毎日 04:30。直前に締まった日の remember を notes の `memory/core.md` と `memory/personal/` へ振り分ける）と `task_memory_compaction`（毎週月曜 03:30。`core.md` から外すものを `memory/journal/YYYYMM.md` へ移す）を同梱した。対象日などはコードで決めてプロンプトの変数で渡し、remember の中身はタグで囲んだデータとして渡す
+  - 会話向けのプロンプトに、使い方と `memory/core.md` の本文（`notes()` で会話のたびに読む）を入れる。ダッシュボードの設定 `use_in_conversation`（既定はオン）で切れる。ほかの設定は `day_rollover`（既定 `04:00`）と `notify_core_changes`（既定はオン）
+  - notes のトップレベルディレクトリ `memory` を宣言する
+- `Extension.notes_watched_paths()` を足した（#374）。ノート置き場 `notes` で、変わったら差分を知らせてほしいファイルのパスを返すと、どの書き込みの経路（LLM ツール・ダッシュボード・`/notes.git` への push・削除・復元）でも、エラー通知チャンネルへ差分の `.patch` を添えて知らせる（非破壊のため `EXTENSION_API_VERSION` は変えていない）
+- `ScheduledLlmTask` に、派生クラスがプロンプトの展開に変数を足す `_template_variables(context)` を足した（#374）。`None` を返すとその回は LLM を呼ばない
 
 ### Changed
 
@@ -19,7 +27,12 @@
 - **BREAKING**: `AppConfig` のプロパティ `system_prompt` / `conversation_prompt` / `discord_client_prompt` をやめ、非同期の `load_system_prompt()` / `load_conversation_prompt()` / `load_discord_client_prompt()` に置き換えた（#373）。`cfg.system_prompt` は `await cfg.load_system_prompt()` に書き換える。読む内容と「呼ぶたびに読み直す」意味は変わらない
 - **BREAKING**: `ScheduledLlmTask._build_prompt()` を非同期にした（#373）。オーバーライドしているサブクラスは `async def` にする
 - **BREAKING**: `lilla_core.services.prompt_template` の `render_template()` / `render_or_raw()` / `render_prompt()` / `preview_skill_prompt()` と、`lilla_core.services.skills.format_skill_instruction()` を非同期関数にした（#378。Jinja2 を async モードで動かすため）。呼び出しは `await` を付けて書き換える。同期版は残していない
+- **BREAKING**: 長期記憶の `memory` が常に読み込まれるようになったため、ホストが同じ stem・同じ名前のツール（`llm_remember_append` / `llm_remember_get` など）を自前で持っていると、ツールファイルの重複で起動時に落ちる（#374）。ホスト側の実装を外し、使い続ける記憶は手で notes の `memory/` へコピーする（自動の移行はしない。`remember` コレクションの形は同じなのでそのまま使える）。ホストの `prompt.system` に `file:$notes/memory/core.md` を書いていたら外す（同じ本文が 2 回入る）
 - notes の LLM ツール（`llm_notes_list` / `llm_notes_read` / `llm_notes_write` / `llm_notes_search`）の YAML を notes に同梱した（#375）。ホストが `${CONFIG_ROOT}/tools` に YAML を置かなくてもロードされ、タスクの `available_tools` と `POST /api/tools/call` から呼べる。通常会話で使うには引き続き `tools.sets.main` に並べる。ホストの同じ stem の YAML は同梱分を置き換え、`enabled: false` で個別に止められる（いま置いている YAML はそのまま使える）
+
+### Fixed
+
+- `/notes.git` への push にファイルの追加が含まれると、差分の読み取りが失敗して大量削除の通知が出なかったのを直した（#374）
 
 ## [0.9.0] - 2026-11-20
 

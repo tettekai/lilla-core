@@ -1,6 +1,8 @@
 """`lilla_core.extensions.notes.service` と `NotesStorage` のテスト。"""
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from lilla_core.core.file_storage import (
@@ -369,6 +371,88 @@ class TestLargeDeletionAlert:
         text = alert.await_args.kwargs["attachment_text"]
         assert text.endswith("notes.alert.patch_truncated\n")
         assert len(text) == 10 + len("\nnotes.alert.patch_truncated\n")
+
+
+class TestWatchedChangeAlert:
+    """拡張が `notes_watched_paths()` で申告したファイルの変更の通知。"""
+
+    @pytest.fixture(autouse=True)
+    def plain_messages(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """文言はキーと引数をそのまま並べた形にする（カタログの中身に依らず確かめるため）。"""
+        from lilla_core.ui import messages
+
+        monkeypatch.setattr(
+            messages,
+            "t",
+            lambda key, **params: " ".join([key, *(f"{k}={v}" for k, v in sorted(params.items()))]),
+        )
+
+    def _watched_messages(self, alert) -> list[str]:
+        """送られた通知のうち、申告したファイルの変更の通知の本文を返す。"""
+        return [
+            c.args[1] for c in alert.await_args_list
+            if c.args[1].startswith("notes.alert.watched_change ")
+        ]
+
+    async def test_create_overwrite_append_delete_restore_are_notified(
+        self, notes_repo, alert, watch_paths
+    ) -> None:
+        """作成・上書き・追記・削除・復元のどれでも、差分を添えて知らせる。"""
+        watch_paths(["user/core.md"])
+        await service.write_note("user/core.md", "a\n", "create")
+        await service.write_note("user/core.md", "b\n", "overwrite")
+        await service.write_note("user/core.md", "c\n", "append")
+        await service.restore_previous_version("user/core.md")
+        await service.delete_note("user/core.md")
+
+        messages = self._watched_messages(alert)
+        assert len(messages) == 5
+        assert all("path=user/core.md" in m for m in messages)
+        assert "added=1" in messages[0] and "removed=0" in messages[0]
+        first = alert.await_args_list[0].kwargs
+        assert first["attachment_name"].endswith(".patch")
+        assert "--- /dev/null" in first["attachment_text"] and "+a\n" in first["attachment_text"]
+
+    async def test_other_paths_and_unchanged_content_are_not_notified(
+        self, notes_repo, alert, watch_paths
+    ) -> None:
+        """申告していないファイルの変更と、中身が変わらない書き込みは知らせない。"""
+        watch_paths(["user/core.md"])
+        await service.write_note("user/other.md", "x\n", "create")
+        await service.write_note("user/core.md", "a\n", "create")
+        alert.reset_mock()
+        await service.write_note("user/core.md", "a\n", "overwrite")
+
+        assert self._watched_messages(alert) == []
+
+    async def test_nothing_is_watched_without_declarations(self, notes_repo, alert, watch_paths) -> None:
+        """空のリストを返せば通知しない。"""
+        watch_paths([])
+        await service.write_note("user/core.md", "a\n", "create")
+        assert self._watched_messages(alert) == []
+
+    async def test_failing_or_invalid_declarations_are_skipped(
+        self, notes_repo, alert, watch_paths, caplog
+    ) -> None:
+        """申告の例外・不正なパスは WARNING を出して飛ばし、書き込みは成功させる。"""
+        watch_paths(RuntimeError("boom"))
+        with caplog.at_level(logging.WARNING):
+            await service.write_note("user/a.md", "a\n", "create")
+        assert "notes_watched_paths() failed" in caplog.text
+
+        watch_paths(["../x.md", "user/a.md"])
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            await service.write_note("user/a.md", "b\n", "overwrite")
+        assert "invalid watched notes path" in caplog.text
+        assert len(self._watched_messages(alert)) == 1
+
+    async def test_alert_failure_does_not_fail_write(self, notes_repo, alert, watch_paths) -> None:
+        """通知に失敗しても書き込みは成功させる。"""
+        watch_paths(["user/core.md"])
+        alert.side_effect = RuntimeError("discord down")
+        await service.write_note("user/core.md", "a\n", "create")
+        assert (await service.read_note("user/core.md")).content == "a\n"
 
 
 class TestDiffStats:

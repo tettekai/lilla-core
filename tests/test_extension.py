@@ -781,36 +781,41 @@ class TestLoadExtensionsComposesConfig:
 
 
 class TestBuiltinExtensions:
-    """標準機能の拡張（`notes`）は `LILLA_EXTENSIONS` によらず常に読み込まれる。"""
+    """標準機能の拡張（`notes` / `memory`）は `LILLA_EXTENSIONS` によらず常に読み込まれる。"""
 
-    def test_builtin_modules_are_notes_only(self) -> None:
-        """標準機能は notes だけ（他の公式拡張パックの拡張は並べたときだけ有効）。"""
-        assert ext_module.BUILTIN_EXTENSION_MODULES == ("lilla_core.extensions.notes",)
+    def test_builtin_modules_are_notes_and_memory(self) -> None:
+        """標準機能は notes と memory だけ（他の公式拡張パックの拡張は並べたときだけ有効）。"""
+        assert ext_module.BUILTIN_EXTENSION_MODULES == (
+            "lilla_core.extensions.notes",
+            "lilla_core.extensions.memory",
+        )
 
-    def test_empty_spec_loads_notes(self) -> None:
-        """空でも notes が読み込まれ、保存先・画面・設定が有効になる（MongoDB のリポジトリは持たない）。"""
+    def test_empty_spec_loads_builtins(self) -> None:
+        """空でも notes と memory が読み込まれ、保存先・画面・設定が有効になる。"""
         loaded = ext_module.load_extensions("")
 
-        assert [e.name for e in loaded] == ["notes"]
+        assert [e.name for e in loaded] == ["notes", "memory"]
         assert ext_module.get_file_storage("notes") is not None
         assert [p.name for p in ext_module.get_dashboard_pages()] == ["notes"]
-        assert ext_module.get_startup_repos() == []
+        assert len(ext_module.get_startup_repos()) == 1
         notes_cfg = config_module().get_config().extensions.notes
         assert notes_cfg.max_content_chars == 1_000_000
 
     def test_notes_is_loaded_before_listed_extensions(
         self, register_module, make_extension
     ) -> None:
-        """notes は先頭に入り、並べた拡張はその後ろにロード順で続く。"""
+        """標準機能は先頭に入り、並べた拡張はその後ろにロード順で続く。"""
         dependent = make_extension("a")
         dependent.requires = ("notes",)
         register_module("pack_a", extension=dependent)
 
         loaded = ext_module.load_extensions("pack_a")
 
-        assert [e.name for e in loaded] == ["notes", "a"]
+        assert [e.name for e in loaded] == ["notes", "memory", "a"]
 
-    @pytest.mark.parametrize("entry", ["notes", "lilla_core.extensions.notes"])
+    @pytest.mark.parametrize(
+        "entry", ["notes", "lilla_core.extensions.notes", "memory", "lilla_core.extensions.memory"]
+    )
     def test_listed_notes_is_skipped_with_warning(
         self, entry: str, register_module, make_extension, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -820,7 +825,7 @@ class TestBuiltinExtensions:
         with caplog.at_level(logging.WARNING, logger=ext_module.__name__):
             loaded = ext_module.load_extensions(f"pack_a,{entry}")
 
-        assert [e.name for e in loaded] == ["notes", "a"]
+        assert [e.name for e in loaded] == ["notes", "memory", "a"]
         assert any(
             "built-in feature" in r.getMessage() and entry in r.getMessage()
             for r in caplog.records

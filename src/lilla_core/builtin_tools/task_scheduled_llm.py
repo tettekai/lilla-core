@@ -137,7 +137,14 @@ class ScheduledLlmTask:
             )
             return
 
-        prompt = await self._build_prompt(context)
+        variables = await self._template_variables(context)
+        if variables is None:
+            logger.info(
+                "[scheduled_llm] %s has nothing to do this time. Skipping", self.name
+            )
+            return
+
+        prompt = await self._build_prompt(context, variables)
         if not prompt:
             logger.warning(
                 "[scheduled_llm] %s resolved an empty prompt from %r. Skipping",
@@ -224,7 +231,23 @@ class ScheduledLlmTask:
             _MY_USER_ID_PLACEHOLDER, str(get_config().discord.my_user_id)
         )
 
-    async def _build_prompt(self, context: dict) -> str:
+    async def _template_variables(self, context: dict) -> dict | None:
+        """プロンプトの展開に足す変数を返す（派生クラスが上書きする。既定は何も足さない）。
+
+        LLM に計算させたくない値（対象日など）をコードで決めて渡すための差し込み口。
+        `None` を返すと、その回は LLM を呼ばずに何もしない（INFO ログだけ）。
+        共通の変数（`current_hour`）と同じ名前は使えない（展開に失敗し、読み込んだままの
+        本文になる）。
+
+        Args:
+            context: タスク実行コンテキスト。
+
+        Returns:
+            変数名 → 値。その回を飛ばすなら None。
+        """
+        return {}
+
+    async def _build_prompt(self, context: dict, variables: dict | None = None) -> str:
         """`prompt` の source spec を読み込み、Jinja2 テンプレートとして展開する。
 
         `current_hour` の基準時刻は context の `now`（無ければ今）で、表示は
@@ -234,6 +257,7 @@ class ScheduledLlmTask:
 
         Args:
             context: タスク実行コンテキスト。
+            variables: 展開に足す変数（`_template_variables()` の戻り値）。
 
         Returns:
             LLM へ渡すプロンプト本文（前後の空白は除去済み）。
@@ -244,4 +268,6 @@ class ScheduledLlmTask:
         if not isinstance(now, datetime):
             now = None
         prompt = await load_text_resources(self._prompt_sources)
-        return (await render_or_raw(prompt, f"task '{self.name}' prompt", now=now)).strip()
+        return (await render_or_raw(
+            prompt, f"task '{self.name}' prompt", variables or None, now=now
+        )).strip()

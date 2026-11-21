@@ -24,9 +24,9 @@ extension = MyExtension()
 作ったモジュールは `LILLA_EXTENSIONS` に並べて読み込みます
 （[インストールと起動](getting-started.md#拡張を読み込んで起動する)）。
 
-標準機能のノート置き場（[`notes`](notes.md)。`name = "notes"`）だけは、`LILLA_EXTENSIONS` によらず
-コアが常に読み込みます（並べた拡張より前に入るため、`requires = ("notes",)` を書いても並び順を
-気にしなくて済みます）。`LILLA_EXTENSIONS` に並べても二重には読み込まず、警告を出して読み飛ばします。
+標準機能のノート置き場（[`notes`](notes.md)。`name = "notes"`）と長期記憶（[`memory`](memory.md)。
+`name = "memory"`）だけは、`LILLA_EXTENSIONS` によらずコアが常に読み込みます（並べた拡張より前に
+入るため、`requires = ("notes",)` を書いても並び順を気にしなくて済みます）。`LILLA_EXTENSIONS` に並べても二重には読み込まず、警告を出して読み飛ばします。
 
 ## メソッド一覧
 
@@ -50,6 +50,7 @@ extension = MyExtension()
 | `dashboard_public_routes` | 認証の外側に載せる公開ルート（OAuth の戻り先など）。パスは `/oauth/{name}` 配下のみ。`state` の検証は拡張側の責任 |
 | `http_routes` | 共有 HTTP サーバー（ダッシュボードとは別ポート）に足すルート（`HttpRoute(method, path, handler, auth)`）。パスの接頭辞に制約は無く、`auth` は `bearer`（既定）/ `public` / `deferred`（[共有 HTTP サーバー](http-server.md)） |
 | `notes_directories` | ノート置き場 `notes` で書き込むトップレベルディレクトリと用途（`ja` / `en`）を「名前 → 用途」で宣言する。宣言したディレクトリの配下だけに書ける（[ノート置き場](notes.md)） |
+| `notes_watched_paths` | ノート置き場 `notes` で、変わったら差分を知らせてほしいファイルのパスを返す（非同期。コミットのたびに呼ぶ）（[ノート置き場](notes.md#申告されたファイルの変更の通知)） |
 | `file_storages` | テキストファイルの保存先（`FileStorage` の実装）を「名前 → 実装」で申告する。利用側は `get_file_storage(name)` / `list_file_storages()` で引く（[保存先の共通インタフェース](file-storage.md)） |
 | `config_model` | この拡張が足す YAML セクションのモデル 1 つ（足さないなら `None`）。置き場は `extensions.<name のハイフンをアンダースコアにしたもの>`（`google-oauth` なら `cfg.extensions.google_oauth`）（[設定の合成](extension-config.md)） |
 | `settings_model` | ダッシュボードで編集する設定（設定の本体）のモデル 1 つ（持たないなら `None`）。MongoDB の `extension_settings` に保存し、`load_settings()` で処理ごとに読む。全項目に既定値が必要で、`config_model()` と同じ項目は持てない（[画面で管理する拡張の設定](extension-settings.md)） |

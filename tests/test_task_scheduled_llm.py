@@ -264,6 +264,49 @@ class TestScheduledLlmTask:
         mock_run_conversation.assert_not_awaited()
         mock_send_to_discord.assert_not_awaited()
 
+    async def test_template_variables_are_rendered(
+        self, wired, tmp_path: Path, mock_run_conversation
+    ) -> None:
+        """派生クラスの `_template_variables()` の値を変数として展開し、値の中は展開し直さない。"""
+        path = tmp_path / "vars.md"
+        path.write_text("Day {{ target_date }}: {{ body }}", encoding="utf-8")
+
+        class _Task(ScheduledLlmTask):
+            async def _template_variables(self, context):
+                return {"target_date": "2026-09-27", "body": "{{ current_hour }}"}
+
+        task = _Task(
+            {"schedule": "* * * * *", "target": "dm:1", "llm_provider": "p",
+             "prompt": f"file:{path}", "available_tools": []},
+            "task_vars",
+        )
+
+        await task.execute({"discord_client": MagicMock(), "now": _NOW})
+
+        assert mock_run_conversation.await_args.kwargs["inject_user_content"] == (
+            "Day 2026-09-27: {{ current_hour }}"
+        )
+
+    async def test_template_variables_none_skips_the_run(
+        self, wired, prompt_file: Path, mock_run_conversation, mock_send_to_discord
+    ) -> None:
+        """`_template_variables()` が None なら LLM を呼ばずに何もしない。"""
+
+        class _Task(ScheduledLlmTask):
+            async def _template_variables(self, context):
+                return None
+
+        task = _Task(
+            {"schedule": "* * * * *", "target": "dm:1", "llm_provider": "p",
+             "prompt": f"file:{prompt_file}", "available_tools": []},
+            "task_vars",
+        )
+
+        await task.execute({"discord_client": MagicMock(), "now": _NOW})
+
+        mock_run_conversation.assert_not_awaited()
+        mock_send_to_discord.assert_not_awaited()
+
     async def test_uses_local_now_when_context_has_no_now(
         self, wired, prompt_file: Path, mock_run_conversation
     ) -> None:

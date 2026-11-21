@@ -1,0 +1,2 @@
+# 週次の core 整理（既定は毎週月曜 03:30）。既定値は task_memory_llm.py が持つ
+type: task_memory_llm

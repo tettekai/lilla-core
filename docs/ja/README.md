@@ -38,6 +38,7 @@ lilla-core の利用者向けドキュメントの目次です。日本語版が
 - [ローカルのファイル読み書き（公式拡張パック）](files.md) — `lilla_core.extensions.files`
 - [日記（公式拡張パック）](diary.md) — `lilla_core.extensions.diary`
 - [ノート置き場（標準機能）](notes.md) — 常に有効な `notes`（`lilla_core.extensions.notes`）
+- [長期記憶（標準機能）](memory.md) — 常に有効な `memory`（`lilla_core.extensions.memory`）。remember と夜間の整理、`memory/core.md`
 
 ## 拡張
 

@@ -440,14 +440,17 @@ def _push_changes_sync(repo_path: Path, old_head: bytes, new_head: bytes) -> lis
         store = repo.object_store
         changes: list[tuple[str, str, str]] = []
         for change in tree_changes(store, store[old_head].tree, store[new_head].tree):
-            if change.old.sha is None:  # 追加では消える行が無い
+            # 追加では old、削除では new が None（または sha が None）になる
+            old = change.old if change.old is not None and change.old.sha is not None else None
+            new = change.new if change.new is not None and change.new.sha is not None else None
+            if change.type == CHANGE_DELETE:
+                new = None
+            entry = old or new
+            if entry is None:
                 continue
-            path = change.old.path.decode("utf-8", "replace")
-            before = store[change.old.sha].data.decode("utf-8", "replace")
-            after = (
-                "" if change.type == CHANGE_DELETE
-                else store[change.new.sha].data.decode("utf-8", "replace")
-            )
+            path = entry.path.decode("utf-8", "replace")
+            before = "" if old is None else store[old.sha].data.decode("utf-8", "replace")
+            after = "" if new is None else store[new.sha].data.decode("utf-8", "replace")
             changes.append((path, before, after))
         return changes
     finally:
@@ -455,15 +458,15 @@ def _push_changes_sync(repo_path: Path, old_head: bytes, new_head: bytes) -> lis
 
 
 async def _alert_push(repo_path: Path, old_head: bytes, new_head: bytes, config: NotesConfig) -> None:
-    """push で消えた行の合計が閾値以上なら知らせる（失敗は WARNING ログだけ）。"""
-    from lilla_core.extensions.notes.service import alert_if_large_deletion_changes
+    """push の変更を通常の書き込みと同じく知らせる（大量削除・申告されたパスの変更。失敗は WARNING ログだけ）。"""
+    from lilla_core.extensions.notes.service import notify_changes
 
     try:
         changes = await asyncio.to_thread(_push_changes_sync, repo_path, old_head, new_head)
     except Exception as e:  # 通知の失敗で push の結果を変えない
         logger.warning("Failed to read notes push changes for alert: %s", e)
         return
-    await alert_if_large_deletion_changes(changes, new_head.decode("ascii"), config)
+    await notify_changes(changes, new_head.decode("ascii"), config)
 
 
 def build_routes() -> list[HttpRoute]:
