@@ -137,7 +137,7 @@ async def _generate_reply(record: dict, result_text: str, client_type: str) -> s
 
     result_text = _sanitize_external_response(result_text)
 
-    extra_prompt = config.conversation_prompt + _INJECTION_GUARD_PROMPT
+    extra_prompt = await config.load_conversation_prompt() + _INJECTION_GUARD_PROMPT
 
     system_prompt = await memory_manager.build_system_prompt(
         extra_prompt=extra_prompt, client_type=client_type

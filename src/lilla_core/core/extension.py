@@ -188,7 +188,7 @@ RESERVED_EXTENSION_NAMES = frozenset(
 # 型エイリアス（可読性向上目的のためだけ）
 StartupRepoFactory = Callable[[], Any]
 DeliveryFn = Callable[[str, "SavedConversation"], Awaitable[None]]
-PromptProvider = Callable[[], str]
+PromptProvider = Callable[[], str | Awaitable[str]]
 ConversationStartHook = Callable[["ConversationContext"], Awaitable[None]]
 ContextValueProvider = Callable[[], Any]
 
@@ -655,7 +655,9 @@ class Extension:
         """システムプロンプトへ追記する文字列のプロバイダを `client_type` ごとにリストで返す。
 
         同じ `client_type` に複数の拡張が足せる（加算式）。コアは全拡張分を
-        ロード順に連結し、各プロバイダの戻り値を空行区切りで追記する。
+        ロード順に連結し、各プロバイダの戻り値を空行区切りで追記する。プロバイダは
+        同期関数でも非同期関数（コルーチンを返すもの）でもよく、非同期なら await する
+        （中で `load_text_resources` を await できる）。
         """
         return {}
 

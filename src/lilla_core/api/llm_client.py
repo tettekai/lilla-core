@@ -73,8 +73,9 @@ def _ensure_system_prompt(
 
     既に内容のある system メッセージが含まれていれば、最初のそれ（content が文字列の
     もの）の末尾へ provider_prompt を足した新しいリストを返す。含まれない場合は
-    system_prompt（未指定ならデフォルト）に provider_prompt を足して先頭に追加した
-    新しいリストを返す。渡された messages 自体は書き換えない。
+    system_prompt に provider_prompt を足して先頭に追加した新しいリストを返す
+    （未指定時の既定のシステムプロンプトは `_call` が読み込んでから渡す）。渡された
+    messages 自体は書き換えない。
     """
     if _has_system_message(messages):
         if not provider_prompt:
@@ -86,7 +87,7 @@ def _ensure_system_prompt(
                 result[i] = {**m, "content": _append_prompt(content, provider_prompt)}
                 break
         return result
-    effective_prompt = _append_prompt(system_prompt or get_config().system_prompt, provider_prompt)
+    effective_prompt = _append_prompt(system_prompt or "", provider_prompt)
     return [{"role": "system", "content": effective_prompt}, *messages]
 
 
@@ -118,7 +119,7 @@ def _get_provider(llm_name: str | None):
     return _resolve_provider(llm_name)[1]
 
 
-def _load_provider_prompt(provider, provider_name: str = "") -> str:
+async def _load_provider_prompt(provider, provider_name: str = "") -> str:
     """実際に送る具体プロバイダーの `prompt`（追記）を読み込んで返す。
 
     `provider` は `_get_provider` が返した具体プロバイダー（resolver 名の直呼びなら
@@ -133,7 +134,7 @@ def _load_provider_prompt(provider, provider_name: str = "") -> str:
     if not spec or not isinstance(spec, (str, list)):
         return ""
     config_root = get_config().env.config_root
-    text = load_text_resources(resolve_llm_provider_prompt_spec(spec, config_root), config_root)
+    text = await load_text_resources(resolve_llm_provider_prompt_spec(spec, config_root), config_root)
     return render_or_raw(text, f"llm.providers.{provider_name}.prompt").strip()
 
 
@@ -612,11 +613,15 @@ async def _call(
     """プロバイダーを解決してアダプターを選び、組み立てて送る（公開関数の共通部分）。"""
     provider_name, provider = _resolve_provider(llm_name)
     adapter = _select_adapter(provider, api)
+    if not system_prompt and api != "responses" and not _has_system_message(messages):
+        # Chat 系は system メッセージが無ければ既定のシステムプロンプトを補う
+        # （Responses API は補わない）
+        system_prompt = await get_config().load_system_prompt()
     request = adapter.build_request(
         provider,
         messages,
         system_prompt=system_prompt,
-        provider_prompt=_load_provider_prompt(provider, provider_name),
+        provider_prompt=await _load_provider_prompt(provider, provider_name),
         tools=tools,
     )
     return await _send(adapter, provider, request, provider_name=provider_name, api=api)

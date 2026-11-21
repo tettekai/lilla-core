@@ -26,6 +26,7 @@ def mock_cfg() -> MagicMock:
     cfg.env.mongodb_uri = "mongodb://localhost:27017"
     cfg.mongodb.db_name = "test_db"
     cfg.memory.session_memory_ttl_hours = 3
+    cfg.load_conversation_prompt = AsyncMock(return_value="")
     # datetime_utils.local_timezone() が OS のローカルタイムゾーンへ解決するようにする
     cfg.ui.timezone = None
     return cfg
@@ -1765,7 +1766,7 @@ class TestClientTypeDispatch:
         client_type: str,
     ) -> None:
         """対話クライアントには conversation_prompt が付与される。"""
-        mock_cfg.conversation_prompt = "会話プロンプト"
+        mock_cfg.load_conversation_prompt = AsyncMock(return_value="会話プロンプト")
 
         await conversation_service.run_conversation(fake_tools, client_type=client_type)
 
@@ -1780,7 +1781,7 @@ class TestClientTypeDispatch:
         mock_memory_manager_instance: MagicMock,
     ) -> None:
         """task 実行には conversation_prompt を付与しない（空文字列）。"""
-        mock_cfg.conversation_prompt = "会話プロンプト"
+        mock_cfg.load_conversation_prompt = AsyncMock(return_value="会話プロンプト")
 
         await conversation_service.run_conversation(fake_tools, client_type="task")
 

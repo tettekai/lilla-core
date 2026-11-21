@@ -137,7 +137,7 @@ class ScheduledLlmTask:
             )
             return
 
-        prompt = self._build_prompt(context)
+        prompt = await self._build_prompt(context)
         if not prompt:
             logger.warning(
                 "[scheduled_llm] %s resolved an empty prompt from %r. Skipping",
@@ -224,7 +224,7 @@ class ScheduledLlmTask:
             _MY_USER_ID_PLACEHOLDER, str(get_config().discord.my_user_id)
         )
 
-    def _build_prompt(self, context: dict) -> str:
+    async def _build_prompt(self, context: dict) -> str:
         """`prompt` の source spec を読み込み、Jinja2 テンプレートとして展開する。
 
         `current_hour` の基準時刻は context の `now`（無ければ今）で、表示は
@@ -243,5 +243,5 @@ class ScheduledLlmTask:
         now = context.get("now")
         if not isinstance(now, datetime):
             now = None
-        prompt = load_text_resources(self._prompt_sources)
+        prompt = await load_text_resources(self._prompt_sources)
         return render_or_raw(prompt, f"task '{self.name}' prompt", now=now).strip()

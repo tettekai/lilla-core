@@ -7,8 +7,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- プロンプトの source spec（`prompt.system` / `prompt.conversation` / `prompt.discord`・LLM プロバイダーの `prompt`・`task_scheduled_llm` / `llm_expert` の `prompt` など）で、パスの先頭に `$notes` を書くとノート置き場から読めるようにした（#373）。`file:$notes/memory/core.md` / `dir:$notes/memory/personal` のように書き、ディスクの指定と混在できる。組み立てのたびに最新を読み、無いノートは空、notes のパス規則に合わない指定（`..`・空の要素など）はエラーになる。説明は `docs/ja/prompt-sources.md`
+- `client_prompt_providers()` のプロバイダに非同期関数も使えるようにした（#373。非破壊のため `EXTENSION_API_VERSION` は変えていない）
+
 ### Changed
 
+- **BREAKING**: `lilla_core.utils.resource_loader.load_text_resources` を非同期関数にした（#373）。`text = load_text_resources(spec)` は `text = await load_text_resources(spec)` に書き換える。同期版は残していない
+- **BREAKING**: `AppConfig` のプロパティ `system_prompt` / `conversation_prompt` / `discord_client_prompt` をやめ、非同期の `load_system_prompt()` / `load_conversation_prompt()` / `load_discord_client_prompt()` に置き換えた（#373）。`cfg.system_prompt` は `await cfg.load_system_prompt()` に書き換える。読む内容と「呼ぶたびに読み直す」意味は変わらない
+- **BREAKING**: `ScheduledLlmTask._build_prompt()` を非同期にした（#373）。オーバーライドしているサブクラスは `async def` にする
 - notes の LLM ツール（`llm_notes_list` / `llm_notes_read` / `llm_notes_write` / `llm_notes_search`）の YAML を notes に同梱した（#375）。ホストが `${CONFIG_ROOT}/tools` に YAML を置かなくてもロードされ、タスクの `available_tools` と `POST /api/tools/call` から呼べる。通常会話で使うには引き続き `tools.sets.main` に並べる。ホストの同じ stem の YAML は同梱分を置き換え、`enabled: false` で個別に止められる（いま置いている YAML はそのまま使える）
 
 ## [0.9.0] - 2026-11-20

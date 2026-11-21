@@ -163,7 +163,7 @@ def llm_config() -> MagicMock:
     """check_llm が参照する設定モック。"""
     cfg = MagicMock()
     cfg.llm.default = "ollama-gemma3"
-    cfg.conversation_prompt = "会話用プロンプト"
+    cfg.load_conversation_prompt = AsyncMock(return_value="会話用プロンプト")
     return cfg
 
 

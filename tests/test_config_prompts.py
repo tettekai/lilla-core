@@ -1,6 +1,6 @@
 """AppConfig のプロンプト読み込みプロパティのテスト。
 
-`system_prompt` / `conversation_prompt` / `discord_client_prompt` は共通ヘルパー
+`load_system_prompt()` / `load_conversation_prompt()` / `load_discord_client_prompt()` は共通ヘルパー
 `_load_prompt` に委譲される。ここでは「override（`prompt` セクション）未設定なら
 {env.config_root}/prompt/{subdir} を、設定済みならその値をそのまま
 load_text_resources へ渡す」という各プロパティの解決規則を検証する。
@@ -12,7 +12,7 @@ load_text_resources へ渡す」という各プロパティの解決規則を検
 import importlib.util
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -38,7 +38,7 @@ _config = _load_real_config_module()
 AppConfig = _config.AppConfig
 
 
-class TestAppConfigPromptProperties:
+class TestAppConfigPromptLoaders:
     """コアの 3 つのプロンプトプロパティの解決規則を検証する。"""
 
     @pytest.fixture
@@ -54,51 +54,51 @@ class TestAppConfigPromptProperties:
 
         return _make
 
-    def test_default_paths_use_config_root_and_subdir(self, make_config):
+    async def test_default_paths_use_config_root_and_subdir(self, make_config):
         """override 未設定時は dir:{config_root}/prompt/{subdir} が使われる。"""
         cfg = make_config(system=None, conversation=None, discord=None)
-        with patch.object(_config, "load_text_resources", side_effect=lambda src: src):
-            assert cfg.system_prompt == "dir:/cfgroot/prompt/system"
-            assert cfg.conversation_prompt == "dir:/cfgroot/prompt/conversation"
-            assert cfg.discord_client_prompt == "dir:/cfgroot/prompt/discord"
+        with patch.object(_config, "load_text_resources", AsyncMock(side_effect=lambda src: src)):
+            assert await cfg.load_system_prompt() == "dir:/cfgroot/prompt/system"
+            assert await cfg.load_conversation_prompt() == "dir:/cfgroot/prompt/conversation"
+            assert await cfg.load_discord_client_prompt() == "dir:/cfgroot/prompt/discord"
 
-    def test_override_paths_are_passed_through(self, make_config):
+    async def test_override_paths_are_passed_through(self, make_config):
         """override 設定時はその値がそのまま load_text_resources へ渡される。"""
         cfg = make_config(
             system="file:/x/system.md",
             conversation="dir:${config_root}/custom/conv",
             discord="file:/x/discord.md",
         )
-        with patch.object(_config, "load_text_resources", side_effect=lambda src: src):
-            assert cfg.system_prompt == "file:/x/system.md"
-            assert cfg.conversation_prompt == "dir:${config_root}/custom/conv"
-            assert cfg.discord_client_prompt == "file:/x/discord.md"
+        with patch.object(_config, "load_text_resources", AsyncMock(side_effect=lambda src: src)):
+            assert await cfg.load_system_prompt() == "file:/x/system.md"
+            assert await cfg.load_conversation_prompt() == "dir:${config_root}/custom/conv"
+            assert await cfg.load_discord_client_prompt() == "file:/x/discord.md"
 
-    def test_list_source_spec_is_accepted_and_passed_through(self, make_config):
+    async def test_list_source_spec_is_accepted_and_passed_through(self, make_config):
         """prompt の各項目にリスト形式の source spec を指定してもバリデーションエラーに
         ならず、そのまま load_text_resources へ渡される。"""
         cfg = make_config(system=["file:/x/a.md", "dir:${config_root}/b"])
-        with patch.object(_config, "load_text_resources", side_effect=lambda src: src):
-            assert cfg.system_prompt == ["file:/x/a.md", "dir:${config_root}/b"]
+        with patch.object(_config, "load_text_resources", AsyncMock(side_effect=lambda src: src)):
+            assert await cfg.load_system_prompt() == ["file:/x/a.md", "dir:${config_root}/b"]
 
-    def test_returns_value_from_load_text_resources(self, make_config):
+    async def test_returns_value_from_load_text_resources(self, make_config):
         """プロパティの戻り値は load_text_resources の戻り値をそのまま返す。"""
         cfg = make_config(system=None)
-        with patch.object(_config, "load_text_resources", return_value="LOADED") as loader:
-            assert cfg.system_prompt == "LOADED"
+        with patch.object(_config, "load_text_resources", AsyncMock(return_value="LOADED")) as loader:
+            assert await cfg.load_system_prompt() == "LOADED"
             loader.assert_called_once_with("dir:/cfgroot/prompt/system")
 
-    def test_renders_loaded_text_as_template(self, make_config):
+    async def test_renders_loaded_text_as_template(self, make_config):
         """読み込んだ本文は Jinja2 テンプレートとして展開する（`current_hour` など）。"""
         cfg = make_config(system=None)
-        with patch.object(_config, "load_text_resources", return_value="now {{ current_hour }}"), \
+        with patch.object(_config, "load_text_resources", AsyncMock(return_value="now {{ current_hour }}")), \
                 patch("lilla_core.services.prompt_template.current_hour", return_value="H"):
-            assert cfg.system_prompt == "now H"
+            assert await cfg.load_system_prompt() == "now H"
 
-    def test_render_failure_keeps_loaded_text(self, make_config, caplog):
+    async def test_render_failure_keeps_loaded_text(self, make_config, caplog):
         """展開に失敗したら WARNING を出して読み込んだままの本文を返す。"""
         cfg = make_config(conversation=None)
-        with patch.object(_config, "load_text_resources", return_value="{{ now }}"), \
+        with patch.object(_config, "load_text_resources", AsyncMock(return_value="{{ now }}")), \
                 caplog.at_level("WARNING"):
-            assert cfg.conversation_prompt == "{{ now }}"
+            assert await cfg.load_conversation_prompt() == "{{ now }}"
         assert "prompt.conversation" in caplog.text

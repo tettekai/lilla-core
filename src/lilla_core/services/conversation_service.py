@@ -312,7 +312,7 @@ async def _run_conversation(
     )
 
     memory_manager = get_memory_manager()
-    extra = _config.conversation_prompt if client_type != "task" else ""
+    extra = await _config.load_conversation_prompt() if client_type != "task" else ""
     system_prompt = await memory_manager.build_system_prompt(
         extra_prompt=extra,
         client_type=client_type,
