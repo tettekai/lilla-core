@@ -186,7 +186,7 @@ class TestHandleToolresult:
         from lilla_core.core import config as core_config
 
         config = MagicMock()
-        config.conversation_prompt = "会話プロンプト"
+        config.load_conversation_prompt = AsyncMock(return_value="会話プロンプト")
         config.discord.my_user_id = ""
         monkeypatch.setattr(core_config, "get_config", lambda: config)
         return config
@@ -710,7 +710,7 @@ class TestToolresultAttachmentBody:
         from lilla_core.core import config as core_config
 
         config = MagicMock()
-        config.conversation_prompt = "会話プロンプト"
+        config.load_conversation_prompt = AsyncMock(return_value="会話プロンプト")
         config.discord.my_user_id = ""
         monkeypatch.setattr(core_config, "get_config", lambda: config)
         return config

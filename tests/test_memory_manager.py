@@ -24,10 +24,10 @@ def mock_cfg() -> MagicMock:
     cfg = MagicMock()
     cfg.memory.conversation_ttl_hours = 72
     cfg.memory.max_history_turns = 10
-    cfg.system_prompt = _SYSTEM_PROMPT
+    cfg.load_system_prompt = AsyncMock(return_value=_SYSTEM_PROMPT)
     cfg.memory.history_days = 2
     cfg.memory.session_memory_ttl_hours = 3
-    cfg.discord_client_prompt = _DISCORD_PROMPT
+    cfg.load_discord_client_prompt = AsyncMock(return_value=_DISCORD_PROMPT)
     cfg.lilla_client_prompt = _LILLA_CLIENT_PROMPT
     cfg.ui.locale = "ja"
     return cfg
@@ -169,7 +169,7 @@ def client_prompt_providers(mock_cfg: MagicMock, make_extension, use_extensions)
     use_extensions(make_extension(
         "prompt-pack",
         client_prompt_providers={
-            "discord": [lambda: mock_cfg.discord_client_prompt],
+            "discord": [mock_cfg.load_discord_client_prompt],
             "lilla-client": [lambda: mock_cfg.lilla_client_prompt],
         },
     ))
@@ -1178,24 +1178,24 @@ class TestExtensionPromptAppend:
 class TestResolveClientPrompt:
     """クライアント固有プロンプトの解決順（拡張 → コア内蔵 → 何も付けない）。"""
 
-    def test_extension_provider_wins(self, mm_module, make_extension, use_extensions) -> None:
+    async def test_extension_provider_wins(self, mm_module, make_extension, use_extensions) -> None:
         """拡張が "discord" を出していればそれを使う。"""
         use_extensions(make_extension(
             "pack", client_prompt_providers={"discord": [lambda: "custom-discord-prompt"]}
         ))
-        assert mm_module._resolve_client_prompt("discord") == "custom-discord-prompt"
+        assert await mm_module._resolve_client_prompt("discord") == "custom-discord-prompt"
 
-    def test_falls_back_to_core_default_for_discord(
+    async def test_falls_back_to_core_default_for_discord(
         self, mm_module, use_extensions, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """拡張が 0 個でも "discord" にはコア内蔵のプロンプトが付く。"""
         use_extensions()
         cfg = MagicMock()
-        cfg.discord_client_prompt = "core-discord-prompt"
+        cfg.load_discord_client_prompt = AsyncMock(return_value="core-discord-prompt")
         monkeypatch.setattr(mm_module, "get_config", lambda: cfg)
-        assert mm_module._resolve_client_prompt("discord") == "core-discord-prompt"
+        assert await mm_module._resolve_client_prompt("discord") == "core-discord-prompt"
 
-    def test_multiple_providers_are_joined_in_load_order(
+    async def test_multiple_providers_are_joined_in_load_order(
         self, mm_module, make_extension, use_extensions
     ) -> None:
         """複数の拡張が同じ client_type に出したプロンプトは、ロード順に空行区切りで連結する。"""
@@ -1203,34 +1203,34 @@ class TestResolveClientPrompt:
             make_extension("a", client_prompt_providers={"discord": [lambda: "first"]}),
             make_extension("b", client_prompt_providers={"discord": [lambda: "", lambda: "third"]}),
         )
-        assert mm_module._resolve_client_prompt("discord") == "first\n\nthird"
+        assert await mm_module._resolve_client_prompt("discord") == "first\n\nthird"
 
-    def test_all_empty_providers_fall_back_to_nothing_not_core_default(
+    async def test_all_empty_providers_fall_back_to_nothing_not_core_default(
         self, mm_module, make_extension, use_extensions, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """拡張が "discord" を出していれば、全て空でもコア内蔵へは戻らない。"""
         use_extensions(make_extension("a", client_prompt_providers={"discord": [lambda: ""]}))
         cfg = MagicMock()
-        cfg.discord_client_prompt = "core-discord-prompt"
+        cfg.load_discord_client_prompt = AsyncMock(return_value="core-discord-prompt")
         monkeypatch.setattr(mm_module, "get_config", lambda: cfg)
-        assert mm_module._resolve_client_prompt("discord") == ""
+        assert await mm_module._resolve_client_prompt("discord") == ""
 
-    def test_no_prompt_for_other_client_types(self, mm_module, use_extensions) -> None:
+    async def test_no_prompt_for_other_client_types(self, mm_module, use_extensions) -> None:
         """内蔵デフォルトは "discord" だけで、他の client_type には付かない。"""
         use_extensions()
-        assert mm_module._resolve_client_prompt("lilla-client") == ""
-        assert mm_module._resolve_client_prompt("") == ""
+        assert await mm_module._resolve_client_prompt("lilla-client") == ""
+        assert await mm_module._resolve_client_prompt("") == ""
 
-    def test_extension_provider_for_other_client_type(
+    async def test_extension_provider_for_other_client_type(
         self, mm_module, make_extension, use_extensions
     ) -> None:
         """拡張が増やした client_type も同じ経路で解決できる。"""
         use_extensions(make_extension(
             "pack", client_prompt_providers={"lilla-client": [lambda: "lilla-client-prompt"]}
         ))
-        assert mm_module._resolve_client_prompt("lilla-client") == "lilla-client-prompt"
+        assert await mm_module._resolve_client_prompt("lilla-client") == "lilla-client-prompt"
 
-    def test_provider_is_reevaluated_each_call(
+    async def test_provider_is_reevaluated_each_call(
         self, mm_module, make_extension, use_extensions
     ) -> None:
         """プロバイダは呼ぶたびに評価される（戻り値をキャッシュしない）。"""
@@ -1238,8 +1238,21 @@ class TestResolveClientPrompt:
         use_extensions(make_extension(
             "pack", client_prompt_providers={"discord": [lambda: next(values)]}
         ))
-        assert mm_module._resolve_client_prompt("discord") == "first"
-        assert mm_module._resolve_client_prompt("discord") == "second"
+        assert await mm_module._resolve_client_prompt("discord") == "first"
+        assert await mm_module._resolve_client_prompt("discord") == "second"
+
+    async def test_async_provider_is_awaited(
+        self, mm_module, make_extension, use_extensions
+    ) -> None:
+        """非同期関数のプロバイダも使え、同期のプロバイダとロード順に連結される。"""
+        async def async_provider() -> str:
+            return "from-async"
+
+        use_extensions(
+            make_extension("a", client_prompt_providers={"discord": [async_provider]}),
+            make_extension("b", client_prompt_providers={"discord": [lambda: "from-sync"]}),
+        )
+        assert await mm_module._resolve_client_prompt("discord") == "from-async\n\nfrom-sync"
 
 
 class TestGetMemoryManager:
@@ -1249,7 +1262,7 @@ class TestGetMemoryManager:
 
         mock_cfg = MagicMock()
         mock_cfg.memory.max_history_turns = 10
-        mock_cfg.system_prompt = "prompt"
+        mock_cfg.load_system_prompt = AsyncMock(return_value="prompt")
 
         mm_module.get_memory_manager.cache_clear()
         with patch.object(mm_module, "get_config", return_value=mock_cfg):
@@ -1262,7 +1275,7 @@ class TestGetMemoryManager:
 
         mock_cfg = MagicMock()
         mock_cfg.memory.max_history_turns = 10
-        mock_cfg.system_prompt = "prompt"
+        mock_cfg.load_system_prompt = AsyncMock(return_value="prompt")
 
         mm_module.get_memory_manager.cache_clear()
         with patch.object(mm_module, "get_config", return_value=mock_cfg):

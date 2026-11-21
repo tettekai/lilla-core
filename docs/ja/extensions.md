@@ -36,7 +36,7 @@ extension = MyExtension()
 | `on_message` | `on_message` の冒頭で呼ばれる。`True` を返すと以降の処理を止める |
 | `setup` | `bot.start()` の前に await される起動処理（HTTP サーバー等）。引数は `SetupContext` 1 つ（`tools` / `llm_tools` / `bot` / `config`）で、フィールドの追加は既存の拡張を壊さない |
 | `result_deliveries` | `!toolresult` の配送先を `client_type` ごとに指定。配送関数は返信本文と、保存済みの会話履歴の `SavedConversation`（`_id`・`time`）を受け取る（[下記](#結果の配送result_deliveries)） |
-| `client_prompt_providers` | `client_type` ごとのシステムプロンプト追記。形は `{client_type: [プロバイダ, ...]}` の加算式で、複数の拡張が同じ `client_type` に足せる。コアがロード順に空行区切りで連結する |
+| `client_prompt_providers` | `client_type` ごとのシステムプロンプト追記。形は `{client_type: [プロバイダ, ...]}` の加算式で、複数の拡張が同じ `client_type` に足せる。コアがロード順に空行区切りで連結する。プロバイダは同期関数でも非同期関数でもよい（非同期なら await する） |
 | `default_prompt` | この拡張のデフォルトのプロンプトを言語ごとに返す（`{"ja": ..., "en": ...}`。特定の言語は必須ではない。既定は `None`）。`client_type` によらず（`task` を除く）システムプロンプトへ入り、MongoDB の `extension_overrides` で拡張ごとに上書きできる（[拡張のデフォルトプロンプトと上書き](extension-prompt.md)） |
 | `conversation_start_hooks` | 会話処理開始前に await される非同期フック。形は `{client_type: [フック, ...]}` でプロンプトと同じく加算式。各フックは `ConversationContext`（`client_type` / `client_state` / `discord_channel_id` / `llm_name`）1 つを受け取る |
 | `tool_context_providers` | ツール実行 context への値の注入 |

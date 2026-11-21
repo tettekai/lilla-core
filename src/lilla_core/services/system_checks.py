@@ -249,7 +249,7 @@ async def check_llm() -> CheckResult:
     try:
         memory_manager = get_memory_manager()
         system_prompt = await memory_manager.build_system_prompt(
-            extra_prompt=config.conversation_prompt, client_type="discord"
+            extra_prompt=await config.load_conversation_prompt(), client_type="discord"
         )
         enc = tiktoken.get_encoding(_TIKTOKEN_ENCODING)
         token_count = len(enc.encode(system_prompt))

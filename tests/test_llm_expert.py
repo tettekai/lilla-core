@@ -60,7 +60,7 @@ def mock_loader() -> MagicMock:
 @pytest.fixture
 def mock_load_prompt() -> MagicMock:
     """load_text_resources の差し替え用モック。"""
-    return MagicMock(return_value="EXPERT SYSTEM PROMPT")
+    return AsyncMock(return_value="EXPERT SYSTEM PROMPT")
 
 
 @pytest.fixture

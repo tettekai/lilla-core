@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import re
 from datetime import datetime, timedelta, timezone, tzinfo
@@ -28,18 +29,18 @@ _NOTE_TAG = "channel_note"
 _NOTE_BREAKOUT_RE = re.compile(rf"</?\s*{_NOTE_TAG}\s*>", re.IGNORECASE)
 
 
-def _resolve_client_prompt(client_type: str) -> str:
+async def _resolve_client_prompt(client_type: str) -> str:
     """`client_type` に付けるクライアント固有プロンプトを解決する。
 
     解決順は次のとおり。プロバイダは呼ぶたびに評価される（＝ファイルを
     読み直す）ため、戻り値はキャッシュしない。
 
     1. 拡張の `client_prompt_providers()` に `client_type` があれば、全プロバイダを
-       ロード順に評価し、空でない戻り値をそれぞれ Jinja2 テンプレートとして展開して
+       ロード順に評価し（非同期関数なら await する）、空でない戻り値をそれぞれ Jinja2 テンプレートとして展開して
        （`current_hour` だけを渡す。失敗したら WARNING を出してそのまま使う）、
        空行区切りで連結して使う
     2. 誰も出していなければ、`"discord"` のときだけコア内蔵の
-       `discord_client_prompt` を使う
+       `load_discord_client_prompt()` を使う
     3. どちらにも該当しなければ何も付けない
 
     Args:
@@ -50,14 +51,16 @@ def _resolve_client_prompt(client_type: str) -> str:
     """
     providers = get_client_prompt_providers(client_type)
     if providers:
-        parts = [
-            render_or_raw(text, f"client prompt for '{client_type}'")
-            for text in (provider() for provider in providers)
-            if text
-        ]
+        parts = []
+        for provider in providers:
+            text = provider()
+            if inspect.isawaitable(text):
+                text = await text
+            if text:
+                parts.append(render_or_raw(text, f"client prompt for '{client_type}'"))
         return "\n\n".join(parts)
     if client_type == "discord":
-        return get_config().discord_client_prompt
+        return await get_config().load_discord_client_prompt()
     return ""
 
 
@@ -559,12 +562,12 @@ class MemoryManager:
         now_str = now.strftime("%b") + f" {now.day}" + " " + now.strftime("%H:xx") + f" ({weekday})"
         time_section = f"Current time: {now_str}"
 
-        client_prompt = _resolve_client_prompt(client_type)
+        client_prompt = await _resolve_client_prompt(client_type)
         extension_prompts = await self._resolve_extension_prompts(client_type)
         channel_section = self._resolve_registered_channel_section(discord_channel_id)
         channel_note_section = await self._resolve_channel_summary_section(discord_channel_id)
 
-        base = self._config.system_prompt
+        base = await self._config.load_system_prompt()
         if client_prompt:
             base = base + "\n\n" + client_prompt
         if extra_prompt:

@@ -27,7 +27,7 @@ YAML のファイル名（stem）がツール名になるので、同じ `type` 
   置き換わります。未設定のときは LLM を呼ばずに終わります（送る先が無いため）
 - `llm_provider` … **必須**。`llm.providers` のプロバイダー名を書きます。無ければ
   起動時に失敗します
-- `prompt` … **必須**。[`file:` / `dir:` の source spec](tools.md) をそのまま渡します。
+- `prompt` … **必須**。[`file:` / `dir:` の source spec](prompt-sources.md) をそのまま渡します。
   `dir:` はそのディレクトリの `.md` / `.txt` をファイル名昇順で連結します。無ければ
   起動時に失敗します
 - `available_tools` … 任意。この実行で LLM に見せるツールの許可リストです（後述）。

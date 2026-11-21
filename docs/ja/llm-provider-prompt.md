@@ -19,9 +19,10 @@ llm:
 
 ## 書き方
 
-- 値は `prompt.system` と同じ source spec です。`file:`（1 ファイル）か `dir:`
+- 値は `prompt.system` と同じ [source spec](prompt-sources.md) です。`file:`（1 ファイル）か `dir:`
   （`.md` / `.txt` をファイル名昇順）で始め、リストで複数並べることもできます。
-  `${config_root}` を展開し、相対パスは `CONFIG_ROOT` 基準で解決します。
+  `${config_root}` を展開し、相対パスは `CONFIG_ROOT` 基準で解決します。`$notes` で始まる
+  ものはノート置き場から読みます（相対パスとしては扱いません）。
 - 本文を YAML に直書きすることはできません。`file:` / `dir:` で始まらない値（本文や
   接頭辞の無いパス）と空の指定は、起動時に `ValidationError` で失敗します。
 - 書かなければ追記しません（従来どおり）。

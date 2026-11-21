@@ -49,7 +49,7 @@ async def test_chat_to_llm_uses_content_when_present() -> None:
         patch.object(llm_client, "send_http_request", new=AsyncMock(return_value=response_body)),
     ):
         mock_get_config.return_value.get_llm_provider.return_value = _PROVIDER
-        mock_get_config.return_value.system_prompt = "system"
+        mock_get_config.return_value.load_system_prompt = AsyncMock(return_value="system")
         result = await llm_client.chat_to_llm("こんにちは")
 
     assert result == "こんにちは"
@@ -67,7 +67,7 @@ async def test_chat_to_llm_falls_back_to_reasoning_content_when_content_empty(
         caplog.at_level(logging.WARNING),
     ):
         mock_get_config.return_value.get_llm_provider.return_value = _PROVIDER
-        mock_get_config.return_value.system_prompt = "system"
+        mock_get_config.return_value.load_system_prompt = AsyncMock(return_value="system")
         result = await llm_client.chat_to_llm("質問")
 
     assert result == "結論はこれです"
@@ -83,7 +83,7 @@ async def test_chat_to_llm_returns_empty_string_when_both_missing() -> None:
         patch.object(llm_client, "send_http_request", new=AsyncMock(return_value=response_body)),
     ):
         mock_get_config.return_value.get_llm_provider.return_value = _PROVIDER
-        mock_get_config.return_value.system_prompt = "system"
+        mock_get_config.return_value.load_system_prompt = AsyncMock(return_value="system")
         result = await llm_client.chat_to_llm("質問")
 
     assert result == ""
@@ -108,7 +108,7 @@ async def test_chat_to_llm_with_tools_falls_back_to_reasoning_content_when_no_to
         caplog.at_level(logging.WARNING),
     ):
         mock_get_config.return_value.get_llm_provider.return_value = _PROVIDER
-        mock_get_config.return_value.system_prompt = "system"
+        mock_get_config.return_value.load_system_prompt = AsyncMock(return_value="system")
         result = await llm_client.chat_to_llm_with_tools([{"role": "user", "content": "質問"}])
 
     assert result["content"] == "最終回答はこちら"
@@ -143,7 +143,7 @@ async def test_chat_to_llm_with_tools_keeps_content_none_when_tool_calls_present
         patch.object(llm_client, "send_http_request", new=AsyncMock(return_value=response_body)),
     ):
         mock_get_config.return_value.get_llm_provider.return_value = _PROVIDER
-        mock_get_config.return_value.system_prompt = "system"
+        mock_get_config.return_value.load_system_prompt = AsyncMock(return_value="system")
         result = await llm_client.chat_to_llm_with_tools([{"role": "user", "content": "質問"}])
 
     assert result["content"] is None
@@ -162,7 +162,7 @@ async def test_chat_to_llm_with_resolver_name_uses_fallback_without_script() -> 
         ) as mock_send,
     ):
         mock_get_config.return_value.get_llm_provider.side_effect = lambda name=None: providers[name]
-        mock_get_config.return_value.system_prompt = "system"
+        mock_get_config.return_value.load_system_prompt = AsyncMock(return_value="system")
         result = await llm_client.chat_to_llm("hi", llm_name="router")
 
     assert result == "ok"
@@ -196,7 +196,7 @@ class TestSendGuard:
             patch.object(llm_client, "get_config") as mock_get_config,
             patch.object(llm_client, "send_http_request", new=send),
         ):
-            mock_get_config.return_value.system_prompt = "system"
+            mock_get_config.return_value.load_system_prompt = AsyncMock(return_value="system")
             yield mock_get_config, send
         guard_globals["clear_cache"]()
 
@@ -290,7 +290,7 @@ class TestProviderPrompt:
             patch.object(llm_client, "send_http_request", new=send),
         ):
             cfg = mock_get_config.return_value
-            cfg.system_prompt = "DEFAULT SYSTEM"
+            cfg.load_system_prompt = AsyncMock(return_value="DEFAULT SYSTEM")
             cfg.env.config_root = tmp_path
             cfg.llm.default = "plain"
             yield cfg, send, tmp_path
@@ -436,7 +436,7 @@ class TestSendPaths:
             patch.object(llm_client, "ensure_llm_request_allowed", new=guard),
         ):
             cfg = mock_get_config.return_value
-            cfg.system_prompt = "SYSTEM"
+            cfg.load_system_prompt = AsyncMock(return_value="SYSTEM")
             yield cfg, send, guard, order
 
     @staticmethod
@@ -785,7 +785,7 @@ class TestUsageRecording:
             patch.object(llm_client, "record_llm_usage", new=record),
         ):
             cfg = mock_get_config.return_value
-            cfg.system_prompt = "SYSTEM"
+            cfg.load_system_prompt = AsyncMock(return_value="SYSTEM")
             cfg.llm.default = "main"
             yield cfg, send, record
 
@@ -916,7 +916,7 @@ class TestUsageRecordingFailure:
             caplog.at_level(logging.WARNING),
         ):
             mock_get_config.return_value.get_llm_provider.return_value = provider
-            mock_get_config.return_value.system_prompt = "S"
+            mock_get_config.return_value.load_system_prompt = AsyncMock(return_value="S")
             mock_get_config.return_value.llm.default = "main"
             assert await llm_client.chat_to_llm("hi") == "ok"
         assert any("Failed to record LLM usage" in r.message for r in caplog.records)
@@ -945,7 +945,7 @@ class TestRetry:
             patch.object(llm_client, "_sleep", new=sleep),
         ):
             cfg = mock_get_config.return_value
-            cfg.system_prompt = "SYSTEM"
+            cfg.load_system_prompt = AsyncMock(return_value="SYSTEM")
             cfg.llm.default = "main"
             yield cfg, send, guard, record, sleep
 

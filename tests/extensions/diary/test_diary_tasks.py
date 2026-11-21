@@ -185,7 +185,7 @@ class TestPrompt:
         """清書は LLM を通さないため、既定プロンプトを同梱しない。"""
         assert not list(_PROMPT_DIR.glob("task_write_diary.*"))
 
-    def test_prompt_spec_replaces_default(self, with_cfg, tmp_path: Path) -> None:
+    async def test_prompt_spec_replaces_default(self, with_cfg, tmp_path: Path) -> None:
         """`prompt` に source spec を書くと、同梱の既定の代わりに使い `{{ current_hour }}` を展開する。"""
         prompt = tmp_path / "p.md"
         prompt.write_text("now={{ current_hour }}", encoding="utf-8")
@@ -196,16 +196,16 @@ class TestPrompt:
         with patch(
             "lilla_core.utils.datetime_utils.local_timezone", return_value=_TZ
         ):
-            assert task._build_prompt({"now": _NOW}) == "now=2026-09-28 22:xx"
+            assert await task._build_prompt({"now": _NOW}) == "now=2026-09-28 22:xx"
 
-    def test_default_prompt_renders_current_hour(self, with_cfg) -> None:
+    async def test_default_prompt_renders_current_hour(self, with_cfg) -> None:
         """同梱の既定プロンプトも `{{ current_hour }}` を展開する。"""
         task = DiaryLlmTask({"type": "task_diary_llm"}, "task_hearing_diary")
 
         with patch(
             "lilla_core.utils.datetime_utils.local_timezone", return_value=_TZ
         ):
-            text = task._build_prompt({"now": _NOW})
+            text = await task._build_prompt({"now": _NOW})
 
         assert "2026-09-28 22:xx" in text
         assert "{{" not in text

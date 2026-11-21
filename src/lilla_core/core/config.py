@@ -23,7 +23,7 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
-from lilla_core.utils.resource_loader import SourceSpec, load_text_resources
+from lilla_core.utils.resource_loader import SourceSpec, load_text_resources, notes_logical_path
 
 logger = logging.getLogger(__name__)
 
@@ -266,7 +266,8 @@ def resolve_llm_provider_prompt_spec(spec: SourceSpec, config_root: str | Path) 
 
     `${config_root}` を展開したうえで、`file:` / `dir:` の後ろが相対パスなら
     `config_root` を前に付ける（`load_text_resources` は相対パスをカレントディレクトリ
-    基準で読むため、ここで揃えてから渡す）。
+    基準で読むため、ここで揃えてから渡す）。`$notes` で始まるものはディスクのパスでは
+    ないため、そのまま渡す。
 
     Args:
         spec: `lilla.yaml` に書かれた `prompt` の値（文字列かその列）。
@@ -280,7 +281,12 @@ def resolve_llm_provider_prompt_spec(spec: SourceSpec, config_root: str | Path) 
     for item in specs:
         expanded = item.replace("${config_root}", str(config_root)).strip()
         prefix = "file:" if expanded.startswith("file:") else "dir:"
-        path = Path(expanded[len(prefix):].strip())
+        rest = expanded[len(prefix):].strip()
+        if notes_logical_path(rest) is not None:
+            # `$notes` は保存先 notes の論理パスで、ディスクの相対パスではない
+            resolved.append(f"{prefix}{rest}")
+            continue
+        path = Path(rest)
         if not path.is_absolute():
             path = Path(config_root) / path
         resolved.append(f"{prefix}{path}")
@@ -1118,49 +1124,46 @@ class AppConfig(BaseSettings):
             file_secret_settings,
         )
 
-    def _load_prompt(self, override: SourceSpec | None, subdir: str) -> str:
+    async def _load_prompt(self, override: SourceSpec | None, subdir: str) -> str:
         """プロンプトを読み込む共通処理。
 
         override（各 prompt 設定）が指定されていればそのパスを使用し、未設定の
         場合は {config_root}/prompt/{subdir} を既定パスとして使用する。いずれも
-        load_text_resources に委譲するため、${config_root} の置換や、ディレクトリ・
-        ファイルが存在しない場合に空文字列を返す挙動は同ユーティリティに従う。
+        load_text_resources に委譲するため、${config_root} の置換・`$notes` の読み込み、
+        ディレクトリ・ファイルが存在しない場合に空文字列を返す挙動は同ユーティリティに従う。
         読み込んだ本文は Jinja2 テンプレートとして展開する（`current_hour` などの共通の
         変数。失敗したら WARNING を出して読み込んだままの本文を返す）。
         """
         from lilla_core.services.prompt_template import render_or_raw
 
         src = override or f"dir:{self.env.config_root}/prompt/{subdir}"
-        return render_or_raw(load_text_resources(src), f"prompt.{subdir}")
+        return render_or_raw(await load_text_resources(src), f"prompt.{subdir}")
 
-    @property
-    def system_prompt(self) -> str:
-        """システムプロンプトディレクトリから読み込んだシステムプロンプトを返す。
+    async def load_system_prompt(self) -> str:
+        """システムプロンプトを読み込んで返す（呼ぶたびに読み直す）。
 
         prompt.system が設定されている場合はそのパスを使用し、${config_root} を
         env.config_root の値で置換する。未設定の場合は {config_root}/prompt/system を使用する。
         """
-        return self._load_prompt(self.prompt.system, "system")
+        return await self._load_prompt(self.prompt.system, "system")
 
-    @property
-    def conversation_prompt(self) -> str:
-        """会話プロンプトディレクトリから読み込んだプロンプトを返す。
+    async def load_conversation_prompt(self) -> str:
+        """会話プロンプトを読み込んで返す（呼ぶたびに読み直す）。
 
         prompt.conversation が設定されている場合はそのパスを使用し、${config_root} を
         env.config_root の値で置換する。未設定の場合は {config_root}/prompt/conversation を使用する。
         ディレクトリが存在しない・ファイルが存在しない場合は空文字列を返す（load_text_resources の既存動作）。
         """
-        return self._load_prompt(self.prompt.conversation, "conversation")
+        return await self._load_prompt(self.prompt.conversation, "conversation")
 
-    @property
-    def discord_client_prompt(self) -> str:
-        """Discord クライアント固有のプロンプトディレクトリから読み込んだプロンプトを返す。
+    async def load_discord_client_prompt(self) -> str:
+        """Discord クライアント固有のプロンプトを読み込んで返す（呼ぶたびに読み直す）。
 
         prompt.discord が設定されている場合はそのパスを使用し、${config_root} を
         env.config_root の値で置換する。未設定の場合は {config_root}/prompt/discord を使用する。
         ディレクトリが存在しない・ファイルが存在しない場合は空文字列を返す。
         """
-        return self._load_prompt(self.prompt.discord, "discord")
+        return await self._load_prompt(self.prompt.discord, "discord")
 
     def get_llm_provider(self, name: str | None = None) -> LlmProviderConfig:
         """LLMプロバイダー設定を取得する。
