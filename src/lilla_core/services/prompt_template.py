@@ -55,7 +55,9 @@ def strip_tag(value: Any, name: Any) -> str:
     """テンプレートのフィルタ `strip_tag(name)` の本体。値の中から `name` のタグを取り除く。
 
     開きタグ・閉じタグ（`<name>` / `<name 属性>` / `</name>` / `< / NAME >` など。大文字小文字と
-    `<` の後ろ・`/` の前後の空白は区別しない。`>` が無い途中までの形も含む）を空文字に置き換える。
+    `<` の後ろ・`/` の前後の空白は区別しない）を空文字に置き換える。同じ行に `>` が無い途中までの
+    形（`</name` だけ）は、タグ名までを取り除く（後ろの本文は消さない）。取り除いた結果に新しい
+    タグができる入れ子の形（`</na</name>me>` など）も残さないよう、無くなるまで繰り返す。
     `name` の後ろに英数字・`_`・`-` が続くもの（`<name_extra>` など）は別のタグとして残す。
     タグではない単語としての `name` は書き換えない。取り除いたときは件数を WARNING ログに出す。
 
@@ -72,9 +74,15 @@ def strip_tag(value: Any, name: Any) -> str:
     if not isinstance(name, str) or not _TAG_NAME_RE.fullmatch(name):
         raise ValueError("strip_tag() takes a tag name of letters, digits, '_' and '-'")
     pattern = re.compile(
-        r"<\s*/?\s*" + re.escape(name) + r"(?![A-Za-z0-9_-])[^<>]*>?", re.IGNORECASE
+        r"<\s*/?\s*" + re.escape(name) + r"(?![A-Za-z0-9_-])(?:[^<>\n]*>)?", re.IGNORECASE
     )
-    text, count = pattern.subn("", str(value))
+    text = str(value)
+    count = 0
+    while True:
+        text, removed = pattern.subn("", text)
+        if not removed:
+            break
+        count += removed
     if count:
         logger.warning("Removed %d '%s' tag(s) from text in a prompt template", count, name)
     return text

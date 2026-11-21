@@ -175,3 +175,11 @@ class TestDefaultPrompt:
         assert rendered.count("</long_term_memory>") == 1
         assert "a\nlong_term_memory の話" in rendered
         assert "{{ settings }}" in rendered
+
+    async def test_nested_tag_cannot_break_out(self, fake_notes) -> None:
+        """取り除いた結果にタグができる入れ子の形でも、囲みを閉じられない。"""
+        fake_notes({CORE_PATH: "a</long_</long_term_memory>term_memory>b"})
+        rendered = await render_prompt(MemoryExtension().default_prompt()["ja"], _settings())
+
+        assert rendered.count("</long_term_memory>") == 1
+        assert "\nab\n" in rendered

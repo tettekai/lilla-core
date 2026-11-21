@@ -231,6 +231,17 @@ class TestStripTag:
         """開きタグ・閉じタグ・大文字・空白・属性・閉じていない形を取り除く。"""
         assert "memo" not in strip_tag(text, "memo").lower()
 
+    @pytest.mark.parametrize(
+        "text", ["</long_</long_term_memory>term_memory>", "<</long_term_memory>/long_term_memory>"]
+    )
+    def test_nested_forms_leave_no_tag(self, text) -> None:
+        """取り除いた結果にできたタグも、無くなるまで取り除く。"""
+        assert "long_term_memory" not in strip_tag(text, "long_term_memory")
+
+    def test_unclosed_form_keeps_following_text(self) -> None:
+        """同じ行に `>` が無い形はタグ名までだけを取り除き、後ろの本文は残す。"""
+        assert strip_tag("タグ <memo について\n記憶 > です", "memo") == "タグ  について\n記憶 > です"
+
     def test_keeps_words_and_other_tags(self, caplog) -> None:
         """単語としての名前と、名前が続く別のタグは残し、何も取り除かなければ警告しない。"""
         text = "memo の話 <memo_extra> <memo-x>"
