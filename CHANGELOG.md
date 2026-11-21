@@ -23,7 +23,7 @@
 
 ### Changed
 
-- **BREAKING**: 拡張が同梱したツール YAML（`tool_config_roots()`）の上書きを、`${CONFIG_ROOT}/extensions/<拡張名>/tools/` に置く差分の YAML に変えた（#382）。同梱分へトップレベルのキー単位で重ね（リストは丸ごと置き換え、`type` は省略できる）、止めるなら `enabled: false` を書く。`${CONFIG_ROOT}/tools` に同梱分と同じ stem の YAML を置いて丸ごと置き換える従来の方法は廃止し、起動時のエラーにした（移行の読み替えは無いので、手で移す）。同梱していない stem の上書き・ロードしていない拡張のディレクトリ・YAML の構文エラーも起動時のエラーになる。同梱タスクの `schedule` / `enabled` は、上書きファイルに書いたものがダッシュボードの `extension_overrides` の `tasks` より優先し、設定画面では編集できなくなる。書いたキーをツールが受け付けるかは検査しない上級者向けの手段。説明は `docs/ja/tools.md`
+- **BREAKING**: 拡張が同梱したツール YAML（`tool_config_roots()`）の上書きを、`${CONFIG_ROOT}/extensions/<拡張名>/tools/` に置く差分の YAML に変えた（#382）。同梱分へトップレベルのキー単位で重ね（リストは丸ごと置き換え、`type` は省略できる）、止めるなら `enabled: false` を書く。`${CONFIG_ROOT}/tools` に同梱分と同じ stem の YAML を置いて丸ごと置き換える従来の方法は廃止し、起動時のエラーにした（移行の読み替えは無いので、手で移す）。同梱していない stem の上書き・ロードしていない拡張のディレクトリ・YAML の構文エラーも起動時のエラーになる。同梱タスクの `schedule` / `enabled` は、上書きファイルに書いたものがダッシュボードの `extension_overrides` の `tasks` より優先し、設定画面ではその項目に ⚠️ で知らせる（入力・保存はできるが使われない）。書いたキーをツールが受け付けるかは検査しない上級者向けの手段。説明は `docs/ja/tools.md`
 - **BREAKING**: `lilla_core.utils.resource_loader.load_text_resources` を非同期関数にした（#373）。`text = load_text_resources(spec)` は `text = await load_text_resources(spec)` に書き換える。同期版は残していない
 - **BREAKING**: `AppConfig` のプロパティ `system_prompt` / `conversation_prompt` / `discord_client_prompt` をやめ、非同期の `load_system_prompt()` / `load_conversation_prompt()` / `load_discord_client_prompt()` に置き換えた（#373）。`cfg.system_prompt` は `await cfg.load_system_prompt()` に書き換える。読む内容と「呼ぶたびに読み直す」意味は変わらない
 - **BREAKING**: `ScheduledLlmTask._build_prompt()` を非同期にした（#373）。オーバーライドしているサブクラスは `async def` にする
