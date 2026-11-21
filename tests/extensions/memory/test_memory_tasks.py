@@ -124,6 +124,13 @@ class TestReviewVariables:
         assert "青が好き" in variables["remember_entries"]
         entries.assert_awaited_once_with(date(2026, 9, 27))
 
+    async def test_keys_match_declared_names(self, cfg, storage, entries) -> None:
+        """実行時に渡す変数のキーが、画面のプレビュー・保存時の検査に使う宣言と一致する。"""
+        task = _task(REVIEW_TASK)
+        variables = await task._template_variables({"now": _NOW})
+
+        assert sorted(variables) == sorted(task.prompt_variable_names())
+
     async def test_no_entries_skips(self, cfg, storage, entries) -> None:
         """記録が無い日は None（LLM を呼ばない）で、ひな形も書かない。"""
         entries.return_value = []
@@ -161,6 +168,16 @@ class TestCompactionVariables:
         variables = await _task(COMPACTION_TASK)._template_variables({"now": _NOW})
         assert variables == {"journal_path": "memory/journal/202609.md"}
         storage.exists.assert_awaited_once_with(CORE_PATH)
+
+    async def test_keys_match_declared_names(self, cfg, storage, monkeypatch) -> None:
+        """実行時に渡す変数のキーが、画面のプレビュー・保存時の検査に使う宣言と一致する。"""
+        from lilla_core.extensions.memory import service
+
+        monkeypatch.setattr(service, "local_timezone", lambda: _TZ)
+        task = _task(COMPACTION_TASK)
+        variables = await task._template_variables({"now": _NOW})
+
+        assert sorted(variables) == sorted(task.prompt_variable_names())
 
     async def test_no_core_skips(self, cfg, storage) -> None:
         """core.md がまだ無ければ None。"""
