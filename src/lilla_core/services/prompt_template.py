@@ -151,7 +151,7 @@ async def read_note(path: Any) -> str:
     Raises:
         TypeError: `path` が文字列でないとき。
         RuntimeError: 保存先 `notes` が登録されていないとき。
-        FileStorageError: パスの規則違反・ディレクトリ・読み取りの失敗など（無いファイルを除く）。
+        FileStorageError: パスの規則違反・読み取りの失敗など（無いファイルを除く。ディレクトリの扱いは保存先による）。
     """
     from lilla_core.core.extension import get_file_storage
     from lilla_core.core.file_storage import FileStorageNotFoundError
