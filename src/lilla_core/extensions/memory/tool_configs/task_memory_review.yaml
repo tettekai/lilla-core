@@ -1,0 +1,2 @@
+# 毎日の整理（既定は毎日 04:30）。既定値は task_memory_llm.py が持つ
+type: task_memory_llm

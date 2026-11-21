@@ -250,6 +250,26 @@ enabled: false
 添付ファイルにします（長すぎる差分は切り詰めます）。書き込みそのものは止めないので、意図しない
 変更だったときは「直前の版」から戻すか、コミットのハッシュを手がかりに Git から取り出してください。
 
+## 申告されたファイルの変更の通知
+
+拡張は `Extension.notes_watched_paths()`（非同期）で、変わったら知らせてほしいファイルのパスを
+申告できます（[長期記憶](memory.md) の拡張が `memory/core.md` に使っています）。申告されたファイルが
+変わると、どの経路（LLM ツール・ダッシュボード・`/notes.git` への push・削除・復元）でも、エラー通知
+チャンネルへパス・追加と削除の行数・コミットのハッシュを書き、差分を `.patch` で添えて知らせます。
+中身の変わらない書き込みは知らせません。
+
+```python
+class MemoryExtension(Extension):
+    name = "memory"
+
+    async def notes_watched_paths(self):
+        return ["memory/core.md"]
+```
+
+- パスは notes の論理パス（ディレクトリは指せません）。コミットのたびに呼ぶので、設定を読んで
+  返すパスを変えられます（通知を切るなら空のリストを返します）
+- 例外・形の正しくないパスは WARNING ログを出して無視し、書き込みの結果は変えません
+
 ## Git で clone / fetch / push する
 
 共有 HTTP サーバー（[共有 HTTP サーバー](http-server.md)。既定のポートは `8080`）の `/notes.git` で、
