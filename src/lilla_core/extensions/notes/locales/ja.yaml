@@ -9,4 +9,5 @@ notes:
   alert:
     large_deletion: "ノート `{path}` で {removed} 行が消えました（+{added} / -{removed}、コミット `{commit}`）。差分を添付します。"
     large_deletion_files: "ノートの {files} ファイルで合わせて {removed} 行が消えました（+{added} / -{removed}、コミット `{commit}`）。差分を添付します。"
+    watched_change: "ノート `{path}` が変わりました（+{added} / -{removed}、コミット `{commit}`）。差分を添付します。"
     patch_truncated: "（長いため以降を省略しました）"

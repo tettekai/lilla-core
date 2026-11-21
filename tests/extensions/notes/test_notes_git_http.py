@@ -317,6 +317,21 @@ class TestPush:
         assert "files=2" in message and "removed=5" in message
         assert alert.await_args.kwargs["attachment_text"].count("-1\n") == 1
 
+    async def test_watched_path_change_alerts(
+        self, server, git, tmp_path: Path, alert, plain_messages, watch_paths
+    ) -> None:
+        """push でも、申告されたファイルの作成・変更を知らせる（申告外は知らせない）。"""
+        await service.write_note("user/seed.md", "s\n")
+        watch_paths(["user/core.md"])
+        work = await _clone(git, server, tmp_path)
+        await _commit(git, work, {"user/core.md": "a\n", "user/other.md": "x\n"})
+        code, out = await git("push", cwd=work)
+        assert code == 0, out
+        messages = [c.args[1] for c in alert.await_args_list]
+        assert len(messages) == 1
+        assert messages[0].startswith("notes.alert.watched_change ")
+        assert "path=user/core.md" in messages[0] and "added=1" in messages[0]
+
     async def test_small_deletion_does_not_alert(self, server, git, tmp_path: Path, alert) -> None:
         await service.write_note("user/a.md", "1\n2\n3\n")
         work = await _clone(git, server, tmp_path)

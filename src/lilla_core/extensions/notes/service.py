@@ -171,8 +171,8 @@ async def write_note(path: Any, content: Any, mode: str = "overwrite") -> WriteR
         reason = "create" if current is None else mode
         result = await repo.commit({normalized: after}, f"{reason}: {normalized}")
 
-    if result.commit_id is not None and before is not None and mode != "append":
-        await _alert_if_large_deletion(normalized, before, after, result.commit_id, config)
+    if result.commit_id is not None:
+        await notify_changes([(normalized, before or "", after)], result.commit_id, config)
     return WriteResult(path=normalized, created=current is None, size=len(after))
 
 
@@ -286,7 +286,7 @@ async def delete_note(path: Any) -> None:
             raise NotesNotFoundError(NOT_FOUND_MESSAGE)
         result = await repo.commit({normalized: None}, f"delete: {normalized}")
     if result.commit_id is not None:
-        await _alert_if_large_deletion(normalized, current.content, "", result.commit_id, config)
+        await notify_changes([(normalized, current.content, "")], result.commit_id, config)
 
 
 async def get_previous_version(path: Any) -> NoteVersion:
@@ -324,10 +324,9 @@ async def restore_previous_version(path: Any) -> None:
             raise NotesTooLargeError(TOO_LARGE_MESSAGE.format(limit=config.max_content_chars))
         current = await repo.get(normalized)
         result = await repo.commit({normalized: version.content}, f"restore: {normalized}")
-    if result.commit_id is not None and current is not None:
-        await _alert_if_large_deletion(
-            normalized, current.content, version.content, result.commit_id, config
-        )
+    if result.commit_id is not None:
+        before = current.content if current is not None else ""
+        await notify_changes([(normalized, before, version.content)], result.commit_id, config)
 
 
 @dataclass(frozen=True)
@@ -347,7 +346,7 @@ def diff_stats(path: str, before: str, after: str) -> DiffStats:
         difflib.unified_diff(
             before.splitlines(keepends=True),
             after.splitlines(keepends=True),
-            fromfile=f"a/{path}",
+            fromfile=f"a/{path}" if before else "/dev/null",
             tofile=f"b/{path}" if after else "/dev/null",
         )
     )
@@ -366,11 +365,89 @@ def _resolve_bot() -> Any:
     return bot
 
 
-async def _alert_if_large_deletion(
-    path: str, before: str, after: str, commit_id: str, config: NotesConfig
+async def notify_changes(
+    changes: list[tuple[str, str, str]], commit_id: str, config: NotesConfig
 ) -> None:
-    """1 つのファイルの書き込みで消えた行が閾値以上なら知らせる（`alert_if_large_deletion_changes`）。"""
-    await alert_if_large_deletion_changes([(path, before, after)], commit_id, config)
+    """1 回のコミットの変更（`(パス, 前, 後)`。作成は前が空、削除は後が空）を知らせる。
+
+    消えた行の合計が閾値以上なら大量削除の通知（`alert_if_large_deletion_changes`）を、
+    拡張が `notes_watched_paths()` で申告したファイルが変わっていれば変更の通知
+    （`alert_watched_changes`）を出す。どちらも失敗は WARNING ログだけで、書き込みの結果は
+    変えない。すべての書き込みの経路（通常の書き込み・削除・復元・Git の push）がここを通る。
+    """
+    await alert_if_large_deletion_changes(changes, commit_id, config)
+    await alert_watched_changes(changes, commit_id)
+
+
+async def watched_paths() -> set[str]:
+    """ロード済みの拡張が `notes_watched_paths()` で申告したパスを集めて返す。
+
+    1 つの拡張の例外・形の正しくないパスは WARNING ログを出して飛ばす。
+    """
+    from lilla_core.core.extension import get_extensions
+
+    paths: set[str] = set()
+    for ext in get_extensions():
+        try:
+            declared = await ext.notes_watched_paths()
+        except Exception as e:  # 1 つの拡張の失敗で通知全体を止めない
+            logger.warning("Extension '%s' notes_watched_paths() failed: %s", ext.name, e)
+            continue
+        if not isinstance(declared, (list, tuple, set)):
+            logger.warning(
+                "Extension '%s' notes_watched_paths() must return a list of paths", ext.name
+            )
+            continue
+        for path in declared:
+            try:
+                paths.add(normalize_path(path))
+            except NotesError:
+                logger.warning(
+                    "Extension '%s' declared an invalid watched notes path: %r", ext.name, path
+                )
+    return paths
+
+
+async def alert_watched_changes(changes: list[tuple[str, str, str]], commit_id: str) -> None:
+    """申告されたパスのファイルが変わっていれば、ファイルごとに差分をエラー通知チャンネルへ知らせる。
+
+    中身が同じもの（前と後が等しい）は知らせない。通知の失敗は WARNING ログだけ。
+    """
+    try:
+        targets = [c for c in changes if c[1] != c[2]]
+        if not targets:
+            return
+        watched = await watched_paths()
+        targets = [c for c in targets if c[0] in watched]
+        if not targets:
+            return
+        import asyncio
+
+        from lilla_core.core.error_notify import notify_warning
+        from lilla_core.ui.messages import t
+
+        for path, before, after in targets:
+            stats = await asyncio.to_thread(diff_stats, path, before, after)
+            patch = stats.patch
+            if len(patch) > MAX_ALERT_PATCH_CHARS:
+                patch = (
+                    patch[:MAX_ALERT_PATCH_CHARS] + "\n" + t("notes.alert.patch_truncated") + "\n"
+                )
+            message = t(
+                "notes.alert.watched_change",
+                path=path,
+                removed=stats.removed,
+                added=stats.added,
+                commit=commit_id,
+            )
+            await notify_warning(
+                _resolve_bot(),
+                message,
+                attachment_name=f"notes-{commit_id[:12]}.patch",
+                attachment_text=patch,
+            )
+    except Exception as e:  # 通知の失敗で書き込みの結果を変えない
+        logger.warning("Failed to send watched change alert for notes commit %s: %s", commit_id, e)
 
 
 async def alert_if_large_deletion_changes(
