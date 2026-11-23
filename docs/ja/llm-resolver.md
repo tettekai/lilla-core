@@ -63,14 +63,16 @@ Discord・拡張のクライアント・task のどれから呼んでも同じ�
 | `script` | 必須 | `resolve` を定義した Python ファイル。`${config_root}` を展開し、`file:` 接頭は任意、相対パスは `CONFIG_ROOT` 基準。`dir:` は不可 |
 | `fallback` | 必須 | `llm.providers` にある具体プロバイダー名（resolver 型は不可） |
 | `timeout_seconds` | 任意 | `async def resolve` の待ち時間の上限（秒。既定 10） |
+| `max_reselections` | 任意 | 送信が失敗したあとに `resolve` を呼び直して選び直す回数の上限（0 以上の整数。既定 2。0 で選び直さない）。LLM の呼び出し 1 回ごとに数えます（[失敗後の選び直し](#失敗後の選び直し)） |
 
 `timeout_seconds` は具体プロバイダーにも書けますが、意味が違います。具体プロバイダーでは
 LLM の応答を待つ上限（秒。既定 300）で、resolver の値は選ばれた具体プロバイダーの送信には
 効きません。どちらも 0 以下は起動時に失敗します。
 
 resolver 型は HTTP を出さないため `url` / `model` / `api_key_env` /
-`extra_params` / `keep_alive` と再試行の設定（`max_retries` など。[LLM 呼び出しの自動再試行](llm-retry.md)）は書けません。逆に具体プロバイダーは `url` / `model` が必須で、`script` /
-`fallback` は書けません。モデルごとのシステムプロンプト追記（`prompt`）も具体プロバイダー側に書きます。resolver に
+`extra_params` / `keep_alive` と再試行の設定（`max_retries` など。[LLM 呼び出しの自動再試行](llm-retry.md)）・
+`cooldown_seconds` は書けません。逆に具体プロバイダーは `url` / `model` が必須で、`script` /
+`fallback` / `max_reselections` は書けません。モデルごとのシステムプロンプト追記（`prompt`）も具体プロバイダー側に書きます。resolver に
 書いても起動は失敗せず無視され、選ばれた具体プロバイダーの `prompt` が使われます
 （[プロバイダーごとのシステムプロンプト追記](llm-provider-prompt.md)）。
 
@@ -100,6 +102,8 @@ async def resolve(ctx) -> str | None: ...
 - 具体プロバイダー名を返すとそれが使われます。`None` を返すと `fallback` です
 - 未知の名前・別の resolver 名（深さは 1 まで）・文字列以外・例外・タイムアウトは、
   警告ログを出して `fallback` に落ちます。会話は止まりません
+- ただし送信の失敗後に呼ばれたとき（`ctx.failure` があるとき）は `fallback` に落ちません。
+  詳しくは[失敗後の選び直し](#失敗後の選び直し)を参照してください
 
 `ctx` は `lilla_core.services.llm_resolver.LlmResolveContext`（frozen dataclass）です。
 フィールドの追加は非破壊です。
@@ -115,7 +119,10 @@ async def resolve(ctx) -> str | None: ...
 | `user_text` | 直近のユーザー発話のテキスト（タイムスタンプを除き、500 文字で切り詰め） |
 | `has_image` | 今回のユーザー発言に画像添付があり、LLM へ画像パートを渡すときだけ `True` |
 | `called_tool_names` | その回しで既に呼んだツール名のタプル（出現順・重複あり）。最初の呼び出しでは空 |
-| `previous_provider` | その回しで前回選んだ具体プロバイダー名。最初の呼び出しでは `None` |
+| `previous_provider` | その回しで前回選んだ具体プロバイダー名。最初の呼び出しでは `None`。失敗後の選び直しでは失敗したプロバイダー名 |
+| `unavailable_providers` | しばらく前に送信が失敗し、まだ記憶しているプロバイダーのタプル（名前順）。各要素は `provider` / `until`（記憶を解除する時刻。UTC）/ `error_kind` / `status` を持つ（[失敗したプロバイダーの記憶](#失敗したプロバイダーの記憶)） |
+| `failure` | 失敗後の選び直しのときだけ、その失敗の情報（`provider` / `error_kind`（`"http"` / `"connection"` / `"timeout"`）/ `status` / `retry_after`）。通常の呼び出しでは `None` |
+| `reselection` | 失敗後の選び直しの何回目か（1 から）。通常の呼び出しでは `0` |
 
 システムプロンプト・ツールの引数や結果の全文、画像本体（data URL・バイト列）は渡しません。
 過去ターンの履歴に画像があっただけでは `has_image` は `True` になりません。画像ありの
@@ -145,6 +152,62 @@ def resolve(ctx):
 変えたときにプロバイダー側が受け付けるか（思考モードの切り替えでエラーになるなど）は
 コアでは扱いません。スクリプトとプロバイダー設定の側で合わせてください。
 
+## 失敗後の選び直し
+
+resolver が選んだ具体プロバイダーへの送信が失敗すると、コアは `resolve` をもう一度呼び、
+失敗の情報を `ctx.failure` に載せます。別の具体プロバイダー名が返れば、同じリクエスト
+（それまでのツール結果を含むメッセージ列）をそちらへ送り直します。
+
+- 対象の失敗は、同じプロバイダーへの再試行（[LLM 呼び出しの自動再試行](llm-retry.md)）を
+  使い切ったあと、または再試行しない設定のまま終わった次の失敗です: HTTP `404` / `408` /
+  `429` / `5xx`、接続エラー、タイムアウト（`retry_on_timeout` によらず対象）。
+  それ以外の `4xx`（`400` / `401` / `403` / `422` など）・応答の解釈の失敗・
+  [送信前の拒否リスト](llm-send-guard.md)による拒否は、リクエストや設定の問題である
+  可能性が高いため選び直さず、そのまま失敗させます
+- `None`・失敗したプロバイダーと同じ名前・未知の名前・別の resolver 名・文字列以外・
+  例外・タイムアウトのときは選び直さず、**元のエラーで失敗させます**（`fallback` には
+  落としません。`fallback` が失敗したプロバイダーそのものであることが多いため）
+- 選び直しの回数の上限は resolver エントリの `max_reselections`（既定 2）です。上限に
+  達したら `resolve` を呼ばずに元のエラーで失敗させます。回数は LLM の呼び出し 1 回ごとに
+  数え、ツールループの次の呼び出しでは 0 から数え直します
+- 選び直したプロバイダーは、その回しの次の呼び出しで `ctx.previous_provider` になります
+- 選び直しは `run_conversation`（Discord・拡張のクライアント・task の会話）の中だけで
+  行います。`chat_to_llm` を直接呼ぶ経路・`llm_expert`・[最終応答の書き直し](llm-final-reply.md)は
+  対象外で、従来どおり失敗させます
+
+```python
+def resolve(ctx):
+    if ctx.failure is not None:
+        # 失敗したら別のプロバイダーへ。2 回目の失敗では諦める
+        return "local" if ctx.reselection == 1 else None
+    return "deepseek-flash-high"
+```
+
+## 失敗したプロバイダーの記憶
+
+上の対象の失敗で終わった具体プロバイダーは、しばらく記憶され、以後の `resolve` の
+`ctx.unavailable_providers` に載ります。記憶する長さは、応答に `Retry-After` があれば
+その秒数（同じプロバイダーへの再試行を `retry_max_wait_seconds` 超過で見送った回も含む）、
+無ければ具体プロバイダーの `cooldown_seconds`（既定 300 秒。0 で記憶しない）です。
+
+```yaml
+llm:
+  providers:
+    deepseek-flash-high:
+      type: openai_compat
+      url: "https://api.deepseek.com"
+      model: "deepseek-flash"
+      cooldown_seconds: 300   # 既定 300。0 で記憶しない
+```
+
+- 記憶するのは resolver 経由の会話に限らず、具体プロバイダーへの送信が対象の失敗で
+  終わったときすべてです（`llm_expert` や `chat_to_llm` の直接の呼び出しも含む）
+- コアは記憶するだけで、記憶中のプロバイダーへの送信を止めません。避けるかどうかは
+  スクリプトが決めます（固定の `llm_name` や `!model` での固定は、記憶中でもそのまま送ります）
+- 同じプロバイダーが再び失敗したら、新しい失敗で置き換えます。成功しても記憶は消えず、
+  解除時刻まで残ります
+- 保存先はプロセスのメモリで、再起動すると消えます
+
 ## テンプレ
 
 コピーして使える見本を `lilla_core/templates/llm_resolver.py` に同梱しています。
@@ -156,4 +219,6 @@ cp "$(python -c 'import lilla_core, pathlib; print(pathlib.Path(lilla_core.__fil
 
 既定では `None` を返して `fallback` に任せます。`CHANNEL_PROVIDERS`（登録チャンネル名 →
 キー）と `VISION_PROVIDER`（画像ありのときのキー）を埋めると、それぞれの分岐が効きます。
+`FAILOVER_PROVIDERS`（代わりのプロバイダー名の並び）を埋めると、送信が失敗した直後と、
+選んだプロバイダーを記憶中のときに、失敗したもの・記憶中のもの以外の最初の名前へ回します。
 判定モデルを呼ぶ例はコメントで載せています。

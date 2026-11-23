@@ -19,8 +19,34 @@ class LLMError(Exception):
 
     Ollama / OpenAI 互換プロバイダへのリクエスト送信やレスポンス解析で
     発生した例外をラップし、呼び出し側が LLM 由来の失敗を型で識別できるようにする。
+
+    送信の失敗をラップしたものは、失敗したプロバイダー名と失敗の種類を属性に持つ
+    （resolver による別プロバイダーへの再選択と、失敗したプロバイダーの一時記憶に使う）。
+    メッセージだけで作ったもの（送信前検査の例外など）では既定値のまま。
+
+    Attributes:
+        provider_name: 送信先の具体プロバイダー名。送信の失敗でなければ `None`。
+        error_kind: 失敗の種類。`"http"`（HTTP エラー）/ `"connection"`（接続エラー）/
+            `"timeout"`（タイムアウト）/ `"invalid_response"`（応答の解釈の失敗）/
+            `"other"`（それ以外・送信の失敗でないもの）。
+        status: HTTP エラーならそのステータス。それ以外は `None`。
+        retry_after: HTTP エラーの応答の `Retry-After`（秒）。無い・読めなければ `None`。
     """
-    pass
+
+    def __init__(
+        self,
+        *args: object,
+        provider_name: str | None = None,
+        error_kind: str = "other",
+        status: int | None = None,
+        retry_after: float | None = None,
+    ) -> None:
+        """メッセージと、送信の失敗なら失敗の情報を受け取る。"""
+        super().__init__(*args)
+        self.provider_name = provider_name
+        self.error_kind = error_kind
+        self.status = status
+        self.retry_after = retry_after
 
 
 class LlmSendBlockedError(LLMError):

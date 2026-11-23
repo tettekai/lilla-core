@@ -2205,3 +2205,160 @@ class TestPreToolCalls:
         )
 
         assert mock_resolve.await_args_list[0].kwargs["called_tool_names"] == ("climate",)
+
+
+# ---------------------------------------------------------------------------
+# TestReselectAfterFailure
+# ---------------------------------------------------------------------------
+
+
+class TestReselectAfterFailure:
+    """LLM 呼び出しの失敗後に resolver で別プロバイダーへ選び直すこと（#393）。"""
+
+    @staticmethod
+    def _error(provider: str, status: int = 429):
+        """送信の失敗を表す `LLMError` を作る。"""
+        from lilla_core.core.exceptions import LLMError
+
+        return LLMError("boom", provider_name=provider, error_kind="http", status=status)
+
+    @staticmethod
+    def _final(content: str = "done") -> dict:
+        """ツールを呼ばない最終応答。"""
+        return {
+            "content": content, "tool_calls": None, "finish_reason": "stop",
+            "raw_message": {"role": "assistant", "content": content},
+        }
+
+    @staticmethod
+    def _tool_response() -> dict:
+        """ツール `t` を 1 回呼ぶ応答。"""
+        calls = [{"id": "c1", "function": {"name": "t", "arguments": "{}"}}]
+        return {
+            "content": None, "tool_calls": calls, "finish_reason": "tool_calls",
+            "raw_message": {"role": "assistant", "content": None, "tool_calls": calls},
+        }
+
+    def _patch_resolver(self, conversation_service, monkeypatch, choose):
+        """通常の展開は `first` を返し、失敗後の呼び直しは `choose(kwargs)` に任せる。"""
+        monkeypatch.setattr(
+            conversation_service, "resolve_llm_name", AsyncMock(return_value="first")
+        )
+        reselect = AsyncMock(side_effect=lambda name, error, **kw: choose(kw))
+        monkeypatch.setattr(conversation_service, "reselect_llm_name", reselect)
+        return reselect
+
+    async def test_no_tools_call_is_resent_to_reselected_provider(
+        self, conversation_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ツールなしの 1 回呼び出しでも、失敗したら選び直した先へ同じ履歴を送る。"""
+        mock_chat = AsyncMock(side_effect=[self._error("first"), "from second"])
+        monkeypatch.setattr(conversation_service, "chat_to_llm", mock_chat)
+        reselect = self._patch_resolver(conversation_service, monkeypatch, lambda kw: "second")
+
+        reply = await conversation_service.run_conversation({}, llm_name="router")
+
+        assert reply == "from second"
+        assert [c.kwargs["llm_name"] for c in mock_chat.call_args_list] == ["first", "second"]
+        assert mock_chat.call_args_list[0].args == mock_chat.call_args_list[1].args
+        kwargs = reselect.call_args.kwargs
+        assert reselect.call_args.args[0] == "router"
+        assert kwargs["failed_provider"] == "first"
+        assert kwargs["reselection"] == 1
+
+    async def test_tool_loop_reselects_mid_loop(
+        self, conversation_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ツールループ途中の呼び出しが失敗しても、同じメッセージ列を選び直した先へ送る。"""
+        mock_with_tools = AsyncMock(
+            side_effect=[self._tool_response(), self._error("first", 503), self._final("ok")]
+        )
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_with_tools)
+        monkeypatch.setattr(
+            _tool_loop(), "execute_tool_call",
+            AsyncMock(return_value={"success": True, "tool_name": "t", "memory_entry": "r"}),
+        )
+        reselect = self._patch_resolver(conversation_service, monkeypatch, lambda kw: "second")
+
+        reply = await conversation_service.run_conversation({"t": {}}, llm_name="router")
+
+        assert reply == "ok"
+        used = [c.kwargs["llm_name"] for c in mock_with_tools.call_args_list]
+        assert used == ["first", "first", "second"]
+        assert reselect.call_args.kwargs["called_tool_names"] == ("t",)
+        assert reselect.call_args.kwargs["failed_provider"] == "first"
+
+    async def test_reselected_provider_becomes_previous_provider(
+        self, conversation_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """送り直して応答したプロバイダーが、次の展開の `previous_provider` になる。"""
+        mock_with_tools = AsyncMock(
+            side_effect=[self._error("first"), self._tool_response(), self._final()]
+        )
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_with_tools)
+        monkeypatch.setattr(
+            _tool_loop(), "execute_tool_call",
+            AsyncMock(return_value={"success": True, "tool_name": "t", "memory_entry": "r"}),
+        )
+        resolve = AsyncMock(side_effect=lambda name, **kw: kw.get("previous_provider") or "first")
+        monkeypatch.setattr(conversation_service, "resolve_llm_name", resolve)
+        monkeypatch.setattr(
+            conversation_service, "reselect_llm_name", AsyncMock(return_value="second")
+        )
+
+        await conversation_service.run_conversation({"t": {}}, llm_name="router")
+
+        assert resolve.call_args_list[1].kwargs["previous_provider"] == "second"
+        used = [c.kwargs["llm_name"] for c in mock_with_tools.call_args_list]
+        assert used == ["first", "second", "second"]
+
+    async def test_none_from_reselect_raises_original_error(
+        self, conversation_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """呼び直しが `None` なら送り直さず、元のエラーで終わる。"""
+        error = self._error("first")
+        mock_chat = AsyncMock(side_effect=error)
+        monkeypatch.setattr(conversation_service, "chat_to_llm", mock_chat)
+        self._patch_resolver(conversation_service, monkeypatch, lambda kw: None)
+
+        with pytest.raises(type(error)) as exc_info:
+            await conversation_service.run_conversation({}, llm_name="router")
+
+        assert exc_info.value is error
+        assert mock_chat.await_count == 1
+
+    async def test_reselection_count_is_passed_per_call(
+        self, conversation_service, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """続けて失敗すると選び直しの回数が増え、`None` が返った時点の失敗で終わる。"""
+        errors = [self._error("first"), self._error("second"), self._error("third")]
+        mock_chat = AsyncMock(side_effect=errors)
+        monkeypatch.setattr(conversation_service, "chat_to_llm", mock_chat)
+        choices = iter(["second", "third", None])
+        reselect = self._patch_resolver(conversation_service, monkeypatch, lambda kw: next(choices))
+
+        with pytest.raises(type(errors[0])) as exc_info:
+            await conversation_service.run_conversation({}, llm_name="router")
+
+        assert exc_info.value is errors[2]
+        assert [c.kwargs["reselection"] for c in reselect.call_args_list] == [1, 2, 3]
+        assert [c.kwargs["failed_provider"] for c in reselect.call_args_list] == [
+            "first", "second", "third",
+        ]
+
+    async def test_final_reply_provider_rewrite_is_not_reselected(
+        self, conversation_service, mock_cfg: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`final_reply_provider` の書き直しの失敗は選び直さず、そのままエラーになる。"""
+        local = MagicMock(final_reply_provider="main")
+        main = MagicMock(final_reply_provider=None)
+        mock_cfg.llm.providers = {"first": local, "main": main}
+        error = self._error("main")
+        mock_with_tools = AsyncMock(side_effect=[self._final("draft"), error])
+        monkeypatch.setattr(_tool_loop(), "chat_to_llm_with_tools", mock_with_tools)
+        reselect = self._patch_resolver(conversation_service, monkeypatch, lambda kw: "second")
+
+        with pytest.raises(type(error)):
+            await conversation_service.run_conversation({"t": {}}, llm_name="router")
+
+        reselect.assert_not_awaited()

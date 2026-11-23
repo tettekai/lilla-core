@@ -30,6 +30,16 @@ llm:
 - ツールループ中は LLM を呼ぶたびに呼ばれる。`ctx.called_tool_names` にその回しで
   呼んだツール名、`ctx.previous_provider` に前回選んだ名前が載る（最初は空 / `None`）。
   同じを続けるなら `ctx.previous_provider` を返す（`None` は `fallback` になる）
+- 具体プロバイダーへの送信が失敗すると（HTTP 404 / 408 / 429 / 5xx・接続エラー・
+  タイムアウト。同じプロバイダーへの再試行を使い切ったあと）、もう一度呼ばれる。
+  そのとき `ctx.failure` に失敗の情報（`provider` / `error_kind` / `status` /
+  `retry_after`）、`ctx.reselection` に何回目の選び直しか（1 から）が載る。
+  別の具体プロバイダー名を返すと同じリクエストをそちらへ送り直し、`None`・失敗した
+  プロバイダーと同じ名前を返すと元のエラーで止まる（このときは `fallback` に落ちない）。
+  回数の上限は resolver エントリの `max_reselections`（既定 2）
+- `ctx.unavailable_providers` には、しばらく前に失敗したプロバイダーが載る
+  （`provider` / `until` / `error_kind` / `status`）。コアは記憶するだけで送信は
+  止めないため、避けるかどうかはここで決める
 """
 from __future__ import annotations
 
@@ -41,6 +51,11 @@ CHANNEL_PROVIDERS: dict[str, str] = {}
 # 例: "gpt-vision"
 VISION_PROVIDER: str | None = None
 
+# 失敗したとき・選んだプロバイダーがしばらく使えないときに、上から順に試す代わりの
+# プロバイダー名。空なら特別扱いしない（失敗したらそのままエラーになる）。
+# 例: ["deepseek-flash-low", "local"]
+FAILOVER_PROVIDERS: list[str] = []
+
 
 def resolve(ctx) -> str | None:
     """回しごとに使う具体プロバイダー名を返す（`None` なら `fallback` に任せる）。
@@ -49,8 +64,29 @@ def resolve(ctx) -> str | None:
         ctx: `LlmResolveContext`。`client_type` / `discord_channel_id` /
             `channel_name` / `user_text` / `has_image` / `provider_names` /
             `resolver_name` / `fallback` / `called_tool_names` /
-            `previous_provider` を持つ。
+            `previous_provider` / `failure` / `reselection` /
+            `unavailable_providers` を持つ。
     """
+    unavailable = {entry.provider for entry in ctx.unavailable_providers}
+
+    # 送信が失敗した直後は、失敗したもの・しばらく使えないもの以外の代わりへ回す
+    if ctx.failure is not None:
+        return _first_available(unavailable | {ctx.failure.provider})
+
+    choice = _choose(ctx)
+    # 選んだプロバイダーがしばらく使えないなら代わりへ回す（代わりが無ければそのまま）
+    if FAILOVER_PROVIDERS and (choice or ctx.fallback) in unavailable:
+        return _first_available(unavailable) or choice
+    return choice
+
+
+def _first_available(excluded: set[str]) -> str | None:
+    """`FAILOVER_PROVIDERS` のうち `excluded` に無い最初の名前を返す（無ければ `None`）。"""
+    return next((name for name in FAILOVER_PROVIDERS if name not in excluded), None)
+
+
+def _choose(ctx) -> str | None:
+    """失敗を考えずに使いたいプロバイダー名を返す（`None` なら `fallback`）。"""
     # 画像添付があるときは視覚対応のキーへ寄せる
     if ctx.has_image and VISION_PROVIDER in ctx.provider_names:
         return VISION_PROVIDER

@@ -9,6 +9,12 @@
 `run_conversation` はツールループ内の各 LLM 呼び出しの前（最初の呼び出しを含む）に
 展開をやり直し、その回しで既に呼んだツール名と前回選んだ具体プロバイダー名を
 文脈に載せる。スクリプトは状態を持たず、前回と同じを続けるならその名前を返す。
+
+LLM 呼び出しが別プロバイダーへ回す対象の失敗で終わったら、`run_conversation` は
+`reselect_llm_name` で失敗の情報を載せて `resolve(ctx)` を呼び直し、別の具体
+プロバイダー名が返れば同じリクエストをそちらへ送る（resolver エントリの
+`max_reselections` 回まで）。呼び直しでは `fallback` に落とさず、別の具体プロバイダー名を
+返さなかったら元のエラーで終わる。
 """
 from __future__ import annotations
 
@@ -22,6 +28,13 @@ from typing import Any
 
 from lilla_core.core.config import AppConfig, get_config, resolve_llm_resolver_script_path
 from lilla_core.loaders.script_loader import load_script_function
+from lilla_core.services.llm_provider_cooldown import (
+    LlmFailure,
+    UnavailableProvider,
+    failure_from_error,
+    is_reselectable_failure,
+    unavailable_providers,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +78,14 @@ class LlmResolveContext:
     called_tool_names: tuple[str, ...] = ()
     #: その回しで前回選んだ具体プロバイダー名。最初の LLM 呼び出しでは `None`。
     previous_provider: str | None = None
+    #: 失敗したため記憶中の具体プロバイダー（名前順）。解除時刻を過ぎたものは含まない。
+    #: コアは記憶中のプロバイダーへの送信を止めない（避けるかどうかはスクリプトが決める）。
+    unavailable_providers: tuple[UnavailableProvider, ...] = ()
+    #: 失敗後に呼び直したときだけ、直前の送信の失敗。通常の呼び出しでは `None`。
+    failure: LlmFailure | None = None
+    #: 失敗後に呼び直したときだけ、この LLM 呼び出しで何回目の選び直しか（1 始まり）。
+    #: 通常の呼び出しでは 0。
+    reselection: int = 0
 
 
 def _script_path(provider, config: AppConfig) -> Path:
@@ -153,6 +174,81 @@ def content_has_image(content: Any) -> bool:
     return any(isinstance(part, dict) and part.get("type") == "image_url" for part in content)
 
 
+def _build_context(
+    name: str,
+    provider,
+    config: AppConfig,
+    *,
+    client_type: str,
+    discord_channel_id: int | None,
+    user_content: Any,
+    has_image: bool,
+    called_tool_names: tuple[str, ...],
+    previous_provider: str | None,
+    failure: LlmFailure | None = None,
+    reselection: int = 0,
+) -> LlmResolveContext:
+    """resolver スクリプトへ渡す文脈を組み立てる。"""
+    channel_name = None
+    if discord_channel_id is not None:
+        entry = config.discord.find_channel_by_id(discord_channel_id)
+        channel_name = entry.name if entry is not None else None
+    return LlmResolveContext(
+        client_type=client_type,
+        resolver_name=name,
+        fallback=provider.fallback,
+        provider_names=tuple(config.llm.providers),
+        discord_channel_id=discord_channel_id,
+        channel_name=channel_name,
+        user_text=summarize_user_text(user_content),
+        has_image=has_image,
+        called_tool_names=tuple(called_tool_names),
+        previous_provider=previous_provider,
+        unavailable_providers=unavailable_providers(),
+        failure=failure,
+        reselection=reselection,
+    )
+
+
+async def _call_resolve(
+    name: str, provider, config: AppConfig, ctx: LlmResolveContext, outcome: str
+) -> tuple[bool, Any]:
+    """スクリプトの `resolve(ctx)` を呼んで `(呼べたか, 戻り値)` を返す。
+
+    `resolve` が無い・例外・タイムアウトは警告ログ（`outcome` は落とし先の説明）を出して
+    `(False, None)` を返す。
+    """
+    try:
+        func = _load_resolve_function(provider, config)
+        if func is None:
+            logger.warning("LLM resolver '%s' has no resolve function; %s", name, outcome)
+            return False, None
+        result = func(ctx)
+        if inspect.isawaitable(result):
+            result = await asyncio.wait_for(result, timeout=provider.timeout_seconds)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "LLM resolver '%s' timed out after %ss; %s", name, provider.timeout_seconds, outcome
+        )
+        return False, None
+    except Exception as e:
+        logger.warning("LLM resolver '%s' failed (%s); %s", name, e, outcome, exc_info=True)
+        return False, None
+    return True, result
+
+
+def _invalid_choice(result: Any, config: AppConfig) -> str | None:
+    """`resolve` の戻り値が具体プロバイダー名でなければ、その理由（ログ用）を返す。"""
+    if not isinstance(result, str):
+        return f"a non-string value ({result!r})"
+    chosen = config.llm.providers.get(result)
+    if chosen is None:
+        return f"an unknown provider '{result}'"
+    if chosen.type == "resolver":
+        return f"another resolver '{result}' (nesting is not supported)"
+    return None
+
+
 async def resolve_llm_name(
     llm_name: str | None,
     *,
@@ -194,63 +290,134 @@ async def resolve_llm_name(
         return name
 
     fallback = provider.fallback
-    channel_name = None
-    if discord_channel_id is not None:
-        entry = config.discord.find_channel_by_id(discord_channel_id)
-        channel_name = entry.name if entry is not None else None
-    ctx = LlmResolveContext(
+    ctx = _build_context(
+        name,
+        provider,
+        config,
         client_type=client_type,
-        resolver_name=name,
-        fallback=fallback,
-        provider_names=tuple(config.llm.providers),
         discord_channel_id=discord_channel_id,
-        channel_name=channel_name,
-        user_text=summarize_user_text(user_content),
+        user_content=user_content,
         has_image=has_image,
-        called_tool_names=tuple(called_tool_names),
+        called_tool_names=called_tool_names,
         previous_provider=previous_provider,
     )
-
-    try:
-        func = _load_resolve_function(provider, config)
-        if func is None:
-            logger.warning("LLM resolver '%s' has no resolve function; using fallback '%s'", name, fallback)
-            return fallback
-        result = func(ctx)
-        if inspect.isawaitable(result):
-            result = await asyncio.wait_for(result, timeout=provider.timeout_seconds)
-    except asyncio.TimeoutError:
-        logger.warning(
-            "LLM resolver '%s' timed out after %ss; using fallback '%s'",
-            name, provider.timeout_seconds, fallback,
-        )
+    ok, result = await _call_resolve(
+        name, provider, config, ctx, f"using fallback '{fallback}'"
+    )
+    if not ok:
         return fallback
-    except Exception as e:
-        logger.warning("LLM resolver '%s' failed (%s); using fallback '%s'", name, e, fallback, exc_info=True)
-        return fallback
-
     if result is None:
         logger.debug("LLM resolver '%s' returned None; using fallback '%s'", name, fallback)
         return fallback
-    if not isinstance(result, str):
-        logger.warning(
-            "LLM resolver '%s' returned a non-string value (%r); using fallback '%s'",
-            name, result, fallback,
-        )
-        return fallback
-    chosen = config.llm.providers.get(result)
-    if chosen is None:
-        logger.warning(
-            "LLM resolver '%s' returned an unknown provider '%s'; using fallback '%s'",
-            name, result, fallback,
-        )
-        return fallback
-    if chosen.type == "resolver":
-        logger.warning(
-            "LLM resolver '%s' returned another resolver '%s' (nesting is not supported); "
-            "using fallback '%s'",
-            name, result, fallback,
-        )
+    reason = _invalid_choice(result, config)
+    if reason is not None:
+        logger.warning("LLM resolver '%s' returned %s; using fallback '%s'", name, reason, fallback)
         return fallback
     logger.info("LLM resolver '%s' selected provider '%s'", name, result)
     return result
+
+
+async def reselect_llm_name(
+    llm_name: str | None,
+    error: BaseException,
+    *,
+    failed_provider: str | None,
+    reselection: int,
+    client_type: str,
+    discord_channel_id: int | None = None,
+    user_content: Any = None,
+    has_image: bool = False,
+    called_tool_names: tuple[str, ...] = (),
+    config: AppConfig | None = None,
+) -> str | None:
+    """LLM 呼び出しの失敗後に resolver を呼び直し、送り直す具体プロバイダー名を返す。
+
+    選び直さない（`None` を返す）のは次のとき。呼び出し元は元のエラーで終わらせる。
+
+    - キーが resolver 型でない（具体プロバイダーを直接指定した会話）
+    - 失敗が別プロバイダーへ回す対象でない（`is_reselectable_failure`。送信前検査の拒否・
+      `400` / `401` / `403` などの 4xx・応答の解釈の失敗など）
+    - `reselection`（この LLM 呼び出しで何回目の選び直しか。1 始まり）が resolver エントリの
+      `max_reselections` を超えた
+    - スクリプトが `None`・失敗したのと同じ名前・未知の名前・別の resolver 名・文字列以外を
+      返した、または例外・タイムアウト（通常の展開と違い `fallback` には落とさない）
+
+    文脈には通常の項目に加え、`failure`（直前の失敗）と `reselection` を載せる。失敗した
+    プロバイダーは送信の時点で記憶されているため、`unavailable_providers` にも入っている
+    （`cooldown_seconds: 0` などで記憶しなかった場合を除く）。
+
+    Args:
+        llm_name: 呼び出し側が決めたキー（`run_conversation` の `llm_name`）。
+        error: 直前の LLM 呼び出しの例外。
+        failed_provider: 失敗した呼び出しで使った具体プロバイダー名。
+        reselection: この LLM 呼び出しで何回目の選び直しか（1 始まり）。
+        client_type: 会話の送信元クライアント種別。
+        discord_channel_id: Discord からの会話ならそのチャンネル ID。
+        user_content: 直近のユーザー発話の content。
+        has_image: 今回のユーザー発言に画像パートがあるか。
+        called_tool_names: その回しで既に呼んだツール名（出現順・重複あり）。
+        config: 使う設定。省略時は `get_config()`。
+
+    Returns:
+        送り直す具体プロバイダー名。選び直さないなら `None`。
+    """
+    config = config or get_config()
+    name = llm_name or config.llm.default
+    provider = config.llm.providers.get(name)
+    if provider is None or provider.type != "resolver":
+        return None
+    if not is_reselectable_failure(error):
+        return None
+    if reselection > (provider.max_reselections or 0):
+        logger.warning(
+            "LLM resolver '%s' reached max_reselections (%s); giving up",
+            name, provider.max_reselections,
+        )
+        return None
+
+    failure = failure_from_error(error)
+    ctx = _build_context(
+        name,
+        provider,
+        config,
+        client_type=client_type,
+        discord_channel_id=discord_channel_id,
+        user_content=user_content,
+        has_image=has_image,
+        called_tool_names=called_tool_names,
+        previous_provider=failed_provider,
+        failure=failure,
+        reselection=reselection,
+    )
+    giving_up = "not reselecting a provider"
+    ok, result = await _call_resolve(name, provider, config, ctx, giving_up)
+    if not ok:
+        return None
+    if result is None:
+        logger.info(
+            "LLM resolver '%s' returned None after provider '%s' failed; %s",
+            name, failed_provider, giving_up,
+        )
+        return None
+    reason = _invalid_choice(result, config)
+    if reason is not None:
+        logger.warning("LLM resolver '%s' returned %s; %s", name, reason, giving_up)
+        return None
+    if result == failed_provider:
+        logger.info(
+            "LLM resolver '%s' returned the failed provider '%s' again; %s",
+            name, result, giving_up,
+        )
+        return None
+    logger.warning(
+        "LLM resolver '%s' reselected provider '%s' after provider '%s' failed (%s)",
+        name, result, failed_provider, _describe(failure),
+    )
+    return result
+
+
+def _describe(failure: LlmFailure) -> str:
+    """ログ用に失敗の種類を短く表す。"""
+    if failure.status is not None:
+        return f"HTTP {failure.status}"
+    return failure.error_kind

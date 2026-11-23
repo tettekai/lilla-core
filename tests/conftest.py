@@ -70,6 +70,22 @@ def _no_llm_usage_writes(request):
         llm_usage._schedule_write = original
 
 
+@pytest.fixture(autouse=True)
+def _clear_llm_provider_cooldown():
+    """失敗した LLM プロバイダーの記憶（プロセスメモリ）をテストごとに空にする。
+
+    送信の失敗を確かめるテストが記憶を残すと、後のテストの resolver の文脈
+    （`unavailable_providers`）に漏れるため。
+    """
+    import lilla_core.services.llm_provider_cooldown as cooldown
+
+    cooldown.clear()
+    try:
+        yield
+    finally:
+        cooldown.clear()
+
+
 _INTERNAL_PACKAGES = frozenset({
     "api", "commands", "handlers", "repository", "services", "loaders", "lilla_core"
 })

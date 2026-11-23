@@ -1157,3 +1157,116 @@ class TestRetry:
         kwargs = record.call_args.kwargs
         assert kwargs["provider_name"] == "grok"
         assert kwargs["usage"].input_tokens == 1
+
+
+class TestFailureCooldown:
+    """送信の失敗の分類と、失敗したプロバイダーの記憶（#393）。"""
+
+    @pytest.fixture
+    def env(self):
+        """設定・送信・送信前検査・記録・待ち時間をモックする。"""
+        send = AsyncMock()
+        with (
+            patch.object(llm_client, "get_config") as mock_get_config,
+            patch.object(llm_client, "send_http_request", new=send),
+            patch.object(llm_client, "ensure_llm_request_allowed", new=MagicMock()),
+            patch.object(llm_client, "record_llm_usage", new=MagicMock()),
+            patch.object(llm_client, "_sleep", new=AsyncMock()),
+        ):
+            cfg = mock_get_config.return_value
+            cfg.load_system_prompt = AsyncMock(return_value="SYSTEM")
+            cfg.llm.default = "main"
+            yield cfg, send
+
+    @staticmethod
+    def _provider(cooldown_seconds=300.0, **kw):
+        provider = TestRetry._provider(**kw)
+        provider.cooldown_seconds = cooldown_seconds
+        return provider
+
+    @staticmethod
+    def _unavailable():
+        from lilla_core.services import llm_provider_cooldown
+
+        return llm_provider_cooldown.unavailable_providers()
+
+    async def test_error_carries_failure_details(self, env) -> None:
+        cfg, send = env
+        cfg.get_llm_provider.return_value = self._provider(max_retries=0)
+        send.side_effect = TestRetry._http_error(503, headers={"Retry-After": "7"})
+        with pytest.raises(llm_client.LLMError) as exc_info:
+            await llm_client.chat_to_llm("hi", llm_name="grok")
+        error = exc_info.value
+        assert (error.provider_name, error.error_kind, error.status, error.retry_after) == (
+            "grok", "http", 503, 7.0,
+        )
+
+    @pytest.mark.parametrize(
+        ("raised", "kind"),
+        [(TimeoutError(), "timeout"), ("connection", "connection")],
+    )
+    async def test_error_kind_for_non_http_failures(self, env, raised, kind) -> None:
+        import aiohttp
+
+        cfg, send = env
+        cfg.get_llm_provider.return_value = self._provider(max_retries=0)
+        send.side_effect = aiohttp.ServerDisconnectedError() if raised == "connection" else raised
+        with pytest.raises(llm_client.LLMError) as exc_info:
+            await llm_client.chat_to_llm("hi", llm_name="grok")
+        assert exc_info.value.error_kind == kind
+        assert exc_info.value.status is None
+
+    async def test_parse_failure_is_invalid_response_and_not_remembered(self, env) -> None:
+        cfg, send = env
+        cfg.get_llm_provider.return_value = self._provider()
+        send.return_value = "not json"
+        with pytest.raises(llm_client.LLMError) as exc_info:
+            await llm_client.chat_to_llm("hi", llm_name="grok")
+        assert exc_info.value.error_kind == "invalid_response"
+        assert self._unavailable() == ()
+
+    async def test_remembers_with_cooldown_seconds_after_retries(self, env) -> None:
+        from lilla_core.utils.datetime_utils import utc_now
+        from datetime import timedelta
+
+        cfg, send = env
+        cfg.get_llm_provider.return_value = self._provider(cooldown_seconds=120.0, max_retries=2)
+        send.side_effect = [TestRetry._http_error(503)] * 3
+        with pytest.raises(llm_client.LLMError):
+            await llm_client.chat_to_llm("hi", llm_name="grok")
+        assert send.await_count == 3
+        (entry,) = self._unavailable()
+        assert (entry.provider, entry.status) == ("grok", 503)
+        assert entry.until <= utc_now() + timedelta(seconds=120)
+
+    async def test_retry_after_over_max_wait_is_used_for_cooldown(self, env) -> None:
+        from lilla_core.utils.datetime_utils import utc_now
+        from datetime import timedelta
+
+        cfg, send = env
+        cfg.get_llm_provider.return_value = self._provider(
+            cooldown_seconds=60.0, max_retries=2, retry_max_wait_seconds=30.0
+        )
+        send.side_effect = TestRetry._http_error(429, headers={"Retry-After": "3600"})
+        with pytest.raises(llm_client.LLMError):
+            await llm_client.chat_to_llm("hi", llm_name="grok")
+        assert send.await_count == 1
+        (entry,) = self._unavailable()
+        assert entry.until > utc_now() + timedelta(seconds=3500)
+
+    async def test_zero_cooldown_does_not_remember(self, env) -> None:
+        cfg, send = env
+        cfg.get_llm_provider.return_value = self._provider(cooldown_seconds=0.0, max_retries=0)
+        send.side_effect = TestRetry._http_error(503)
+        with pytest.raises(llm_client.LLMError):
+            await llm_client.chat_to_llm("hi", llm_name="grok")
+        assert self._unavailable() == ()
+
+    @pytest.mark.parametrize("status", [400, 401, 403, 422])
+    async def test_other_4xx_is_not_remembered(self, env, status) -> None:
+        cfg, send = env
+        cfg.get_llm_provider.return_value = self._provider()
+        send.side_effect = TestRetry._http_error(status)
+        with pytest.raises(llm_client.LLMError):
+            await llm_client.chat_to_llm("hi", llm_name="grok")
+        assert self._unavailable() == ()
