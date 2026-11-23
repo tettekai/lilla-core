@@ -637,3 +637,291 @@ class TestTemplate:
         assert await resolver_mod.resolve_llm_name(
             None, client_type="discord", discord_channel_id=555, has_image=True, config=cfg
         ) == "local"
+
+
+    async def test_template_failover_example(self, modules, config_root):
+        """`FAILOVER_PROVIDERS` を埋めると、失敗後と記憶中のプロバイダーで代わりへ回す（#393）。"""
+        from lilla_core.services import llm_provider_cooldown
+
+        config_mod, resolver_mod = modules
+        template = Path(importlib.util.find_spec("lilla_core").origin).parent / "templates" / "llm_resolver.py"
+        body = template.read_text(encoding="utf-8").replace(
+            "FAILOVER_PROVIDERS: list[str] = []", "FAILOVER_PROVIDERS: list[str] = ['high', 'low']"
+        )
+        _write_script(config_root, body)
+        _write_yaml(config_root)
+        cfg = config_mod.AppConfig()
+        # 失敗した直後は失敗したもの以外の最初へ
+        assert await resolver_mod.reselect_llm_name(
+            None, _llm_error("high"), failed_provider="high", reselection=1,
+            client_type="discord", config=cfg,
+        ) == "low"
+        # 記憶中なら最初から代わりへ
+        llm_provider_cooldown.record_failure(_llm_error("high"), 300.0)
+        assert await resolver_mod.resolve_llm_name(None, client_type="discord", config=cfg) == "low"
+        # 代わりも尽きたら選び直しはせず元のエラーで止まる
+        llm_provider_cooldown.record_failure(_llm_error("low"), 300.0)
+        assert await resolver_mod.reselect_llm_name(
+            None, _llm_error("low"), failed_provider="low", reselection=1,
+            client_type="discord", config=cfg,
+        ) is None
+
+
+class TestReselectionConfig:
+    """`cooldown_seconds` / `max_reselections` の起動時検証（#393）。"""
+
+    def test_defaults(self, modules):
+        """具体プロバイダーは `cooldown_seconds` 300 秒、resolver は `max_reselections` 2 回。"""
+        config_mod, _ = modules
+        concrete = config_mod.LlmProviderConfig(type="openai_compat", url="u", model="m")
+        resolver = config_mod.LlmProviderConfig(type="resolver", script="s.py", fallback="x")
+        assert concrete.cooldown_seconds == 300.0
+        assert concrete.max_reselections is None
+        assert resolver.max_reselections == 2
+        assert resolver.cooldown_seconds is None
+
+    def test_values_are_kept(self, modules):
+        """書いた値をそのまま使う（0 も可）。"""
+        config_mod, _ = modules
+        concrete = config_mod.LlmProviderConfig(
+            type="ollama", url="u", model="m", cooldown_seconds=0
+        )
+        resolver = config_mod.LlmProviderConfig(
+            type="resolver", script="s.py", fallback="x", max_reselections=0
+        )
+        assert concrete.cooldown_seconds == 0
+        assert resolver.max_reselections == 0
+
+    def test_resolver_rejects_cooldown_seconds(self, modules):
+        """resolver に `cooldown_seconds` は書けない。"""
+        config_mod, _ = modules
+        with pytest.raises(ValidationError, match="cooldown_seconds"):
+            config_mod.LlmProviderConfig(
+                type="resolver", script="s.py", fallback="x", cooldown_seconds=60
+            )
+
+    def test_concrete_rejects_max_reselections(self, modules):
+        """具体プロバイダーに `max_reselections` は書けない。"""
+        config_mod, _ = modules
+        with pytest.raises(ValidationError, match="max_reselections"):
+            config_mod.LlmProviderConfig(
+                type="openai_compat", url="u", model="m", max_reselections=1
+            )
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            {"type": "openai_compat", "url": "u", "model": "m", "cooldown_seconds": -1},
+            {"type": "resolver", "script": "s.py", "fallback": "x", "max_reselections": -1},
+            {"type": "resolver", "script": "s.py", "fallback": "x", "max_reselections": 1.5},
+            {"type": "resolver", "script": "s.py", "fallback": "x", "max_reselections": True},
+        ],
+        ids=["negative-cooldown", "negative-reselections", "float-reselections", "bool-reselections"],
+    )
+    def test_invalid_values_fail(self, modules, data):
+        """負の値・整数以外は起動時に落ちる。"""
+        config_mod, _ = modules
+        with pytest.raises(ValidationError):
+            config_mod.LlmProviderConfig(**data)
+
+
+def _llm_error(provider: str = "low", status: int | None = 429, kind: str = "http", retry_after=None):
+    """送信の失敗を表す `LLMError` を作る。"""
+    from lilla_core.core.exceptions import LLMError
+
+    return LLMError(
+        "boom", provider_name=provider, error_kind=kind, status=status, retry_after=retry_after
+    )
+
+
+class TestReselectLlmName:
+    """`reselect_llm_name()` による失敗後の呼び直し（#393）。"""
+
+    def _cfg(self, modules, config_root, body: str, **yaml_kwargs):
+        """スクリプトと設定を書いて `AppConfig` を返す。"""
+        config_mod, _ = modules
+        _write_yaml(config_root, **yaml_kwargs)
+        _write_script(config_root, body)
+        return config_mod.AppConfig()
+
+    @staticmethod
+    def _captured(resolver_mod):
+        """スクリプトが `captured` に積んだ文脈を返す。"""
+        func = next(iter(resolver_mod._resolve_functions.values()))
+        return func.__globals__["captured"]
+
+    async def _reselect(self, resolver_mod, cfg, error=None, **kwargs):
+        """既定の引数で `reselect_llm_name` を呼ぶ。"""
+        params = {"failed_provider": "low", "reselection": 1, "client_type": "discord"}
+        params.update(kwargs)
+        return await resolver_mod.reselect_llm_name(
+            None, error or _llm_error(), config=cfg, **params
+        )
+
+    async def test_returns_other_provider(self, modules, config_root):
+        """スクリプトが別の具体プロバイダー名を返せばそれを返す。"""
+        _, resolver_mod = modules
+        cfg = self._cfg(modules, config_root, "def resolve(ctx):\n    return 'local'\n")
+        assert await self._reselect(resolver_mod, cfg) == "local"
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "def resolve(ctx):\n    return None\n",
+            "def resolve(ctx):\n    return 'low'\n",
+            "def resolve(ctx):\n    return 'nope'\n",
+            "def resolve(ctx):\n    return 'router'\n",
+            "def resolve(ctx):\n    return 42\n",
+            "def resolve(ctx):\n    raise RuntimeError('boom')\n",
+        ],
+        ids=["none", "same", "unknown", "resolver", "non-string", "exception"],
+    )
+    async def test_gives_up_without_fallback(self, modules, config_root, body):
+        """`None`・同じ名前・不正な名前・例外では `fallback` へ送らず `None` を返す。"""
+        _, resolver_mod = modules
+        cfg = self._cfg(modules, config_root, body)
+        assert await self._reselect(resolver_mod, cfg) is None
+
+    async def test_timeout_gives_up(self, modules, config_root):
+        """呼び直しのタイムアウトも `fallback` に落とさない。"""
+        _, resolver_mod = modules
+        cfg = self._cfg(
+            modules,
+            config_root,
+            "import asyncio\nasync def resolve(ctx):\n    await asyncio.sleep(5)\n    return 'local'\n",
+            more="      timeout_seconds: 0.05\n",
+        )
+        assert await self._reselect(resolver_mod, cfg) is None
+
+    async def test_limit(self, modules, config_root):
+        """`max_reselections` を超えたらスクリプトを呼ばずに `None`。"""
+        _, resolver_mod = modules
+        cfg = self._cfg(
+            modules,
+            config_root,
+            "captured = []\ndef resolve(ctx):\n    captured.append(ctx)\n    return 'local'\n",
+            more="      max_reselections: 1\n",
+        )
+        assert await self._reselect(resolver_mod, cfg, reselection=1) == "local"
+        assert await self._reselect(resolver_mod, cfg, reselection=2) is None
+        assert len(self._captured(resolver_mod)) == 1
+
+    async def test_zero_disables(self, modules, config_root):
+        """`max_reselections: 0` なら選び直さない。"""
+        _, resolver_mod = modules
+        cfg = self._cfg(
+            modules,
+            config_root,
+            "def resolve(ctx):\n    raise AssertionError('called')\n",
+            more="      max_reselections: 0\n",
+        )
+        assert await self._reselect(resolver_mod, cfg) is None
+
+    async def test_concrete_key_is_not_reselected(self, modules, config_root):
+        """具体プロバイダーを直接指定した会話では選び直さない。"""
+        _, resolver_mod = modules
+        cfg = self._cfg(modules, config_root, "def resolve(ctx):\n    raise AssertionError('called')\n")
+        result = await resolver_mod.reselect_llm_name(
+            "low", _llm_error(), failed_provider="low", reselection=1,
+            client_type="discord", config=cfg,
+        )
+        assert result is None
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            pytest.param(lambda: _llm_error(status=400), id="400"),
+            pytest.param(lambda: _llm_error(status=401), id="401"),
+            pytest.param(lambda: _llm_error(status=None, kind="invalid_response"), id="parse"),
+            pytest.param(
+                lambda: __import__(
+                    "lilla_core.core.exceptions", fromlist=["x"]
+                ).LlmSendBlockedError("blocked"),
+                id="send-guard",
+            ),
+        ],
+    )
+    async def test_non_reselectable_failure(self, modules, config_root, error):
+        """対象外の失敗（送信前検査・400 などの 4xx・解釈の失敗）では呼び直さない。"""
+        _, resolver_mod = modules
+        cfg = self._cfg(modules, config_root, "def resolve(ctx):\n    raise AssertionError('called')\n")
+        assert await self._reselect(resolver_mod, cfg, error=error()) is None
+
+    @pytest.mark.parametrize(
+        ("status", "kind"),
+        [(404, "http"), (408, "http"), (429, "http"), (500, "http"), (503, "http"),
+         (None, "connection"), (None, "timeout")],
+    )
+    async def test_reselectable_failures(self, modules, config_root, status, kind):
+        """404 / 408 / 429 / 5xx・接続エラー・タイムアウトでは呼び直す。"""
+        _, resolver_mod = modules
+        cfg = self._cfg(modules, config_root, "def resolve(ctx):\n    return 'local'\n")
+        error = _llm_error(status=status, kind=kind)
+        assert await self._reselect(resolver_mod, cfg, error=error) == "local"
+
+    async def test_context_carries_failure(self, modules, config_root):
+        """文脈に失敗の情報・回数・失敗したプロバイダー（前回の選択）・記憶中の一覧が載る。"""
+        from lilla_core.services import llm_provider_cooldown
+
+        _, resolver_mod = modules
+        cfg = self._cfg(
+            modules,
+            config_root,
+            "captured = []\n"
+            "def resolve(ctx):\n"
+            "    captured.append(ctx)\n"
+            "    avoid = {u.provider for u in ctx.unavailable_providers}\n"
+            "    return next(n for n in ('low', 'high', 'local') if n not in avoid)\n",
+        )
+        error = _llm_error(provider="low", status=429, retry_after=12.0)
+        llm_provider_cooldown.record_failure(error, 300)
+
+        chosen = await self._reselect(
+            resolver_mod, cfg, error=error, reselection=2,
+            called_tool_names=("read",), discord_channel_id=555, user_content="hi",
+        )
+
+        assert chosen == "high"
+        ctx = self._captured(resolver_mod)[0]
+        assert ctx.failure.provider == "low"
+        assert ctx.failure.status == 429
+        assert ctx.failure.error_kind == "http"
+        assert ctx.failure.retry_after == 12.0
+        assert ctx.reselection == 2
+        assert ctx.previous_provider == "low"
+        assert ctx.called_tool_names == ("read",)
+        assert ctx.channel_name == "study"
+        assert ctx.user_text == "hi"
+        assert [u.provider for u in ctx.unavailable_providers] == ["low"]
+        assert ctx.unavailable_providers[0].status == 429
+
+
+class TestUnavailableProvidersInResolve:
+    """通常の展開でも記憶中のプロバイダーが文脈に載ること（#393）。"""
+
+    async def test_normal_resolve_sees_unavailable(self, modules, config_root):
+        """記憶中のものを避けるかはスクリプトが決め、記憶が無ければ空・失敗情報は `None`。"""
+        from lilla_core.services import llm_provider_cooldown
+
+        config_mod, resolver_mod = modules
+        _write_yaml(config_root)
+        _write_script(
+            config_root,
+            "captured = []\n"
+            "def resolve(ctx):\n"
+            "    captured.append(ctx)\n"
+            "    avoid = {u.provider for u in ctx.unavailable_providers}\n"
+            "    return 'local' if 'low' in avoid else 'low'\n",
+        )
+        cfg = config_mod.AppConfig()
+
+        assert await resolver_mod.resolve_llm_name(None, client_type="discord", config=cfg) == "low"
+        llm_provider_cooldown.record_failure(_llm_error(provider="low", status=503), 300)
+        assert await resolver_mod.resolve_llm_name(None, client_type="discord", config=cfg) == "local"
+
+        func = next(iter(resolver_mod._resolve_functions.values()))
+        first, second = func.__globals__["captured"]
+        assert first.unavailable_providers == ()
+        assert first.failure is None
+        assert first.reselection == 0
+        assert [u.provider for u in second.unavailable_providers] == ["low"]

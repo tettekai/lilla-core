@@ -64,6 +64,12 @@ LLM_RETRY_BACKOFF_SECONDS = 1.0
 #: 具体プロバイダーの `retry_max_wait_seconds` の既定値（1 回の再試行の前に待つ上限の秒数）
 LLM_RETRY_MAX_WAIT_SECONDS = 30.0
 
+#: 具体プロバイダーの `cooldown_seconds` の既定値（失敗したプロバイダーを記憶する秒数）
+LLM_COOLDOWN_SECONDS = 300.0
+
+#: resolver の `max_reselections` の既定値（1 回の LLM 呼び出しで別プロバイダーへ選び直す上限）
+LLM_MAX_RESELECTIONS = 2
+
 #: 再試行の設定項目（具体プロバイダーだけが持つ）
 _LLM_RETRY_FIELDS = (
     "max_retries",
@@ -128,6 +134,13 @@ class LlmProviderConfig(BaseModel):
     # 具体プロバイダーのみ。`timeout_seconds` を超えた回も再試行するか（既定 false。
     # 上流で最初のリクエストも処理されて料金が二重にかかりうるため）
     retry_on_timeout: StrictBool | None = None
+    # 具体プロバイダーのみ。別プロバイダーへ回す対象の失敗（HTTP 404 / 408 / 429 / 5xx・
+    # 接続エラー・タイムアウト）のあと、このプロバイダーを失敗したものとして記憶する秒数
+    # （0 以上。既定 300 秒。0 で記憶しない）。応答に `Retry-After` があればそちらを使う
+    cooldown_seconds: float | None = None
+    # resolver のみ。1 回の LLM 呼び出しが失敗したあと、`resolve` を呼び直して別の具体
+    # プロバイダーへ同じリクエストを送る回数の上限（0 以上の整数。既定 2。0 で選び直さない）
+    max_reselections: StrictInt | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -160,6 +173,8 @@ class LlmProviderConfig(BaseModel):
         再試行の設定（`max_retries` / `retry_backoff_seconds` / `retry_max_wait_seconds` /
         `retry_on_timeout`）も具体プロバイダーだけが持ち、未指定なら既定値（2 回・1 秒・
         30 秒・false）を入れる。`max_retries` は 0 以上、秒数は正の数に限る。
+        `cooldown_seconds` は具体プロバイダーだけ（0 以上・既定 300 秒）、`max_reselections` は
+        resolver だけ（0 以上の整数・既定 2）が持つ。
         """
         if self.keep_alive is not None and self.type != "ollama":
             raise ValueError(
@@ -180,6 +195,7 @@ class LlmProviderConfig(BaseModel):
                     "input_price_per_million_tokens",
                     "output_price_per_million_tokens",
                     "final_reply_provider",
+                    "cooldown_seconds",
                     *_LLM_RETRY_FIELDS,
                 )
                 if getattr(self, name) is not None
@@ -190,13 +206,21 @@ class LlmProviderConfig(BaseModel):
                 raise ValueError(
                     "llm provider of type 'resolver' must not set: " + ", ".join(unexpected)
                 )
+            if self.max_reselections is None:
+                self.max_reselections = LLM_MAX_RESELECTIONS
+            elif self.max_reselections < 0:
+                raise ValueError("llm provider max_reselections must not be negative")
         else:
             missing = [name for name in ("url", "model") if not getattr(self, name)]
             if missing:
                 raise ValueError(
                     f"llm provider of type '{self.type}' requires: {', '.join(missing)}"
                 )
-            unexpected = [name for name in ("script", "fallback") if getattr(self, name) is not None]
+            unexpected = [
+                name
+                for name in ("script", "fallback", "max_reselections")
+                if getattr(self, name) is not None
+            ]
             if unexpected:
                 raise ValueError(
                     f"llm provider of type '{self.type}' must not set: {', '.join(unexpected)}"
@@ -208,6 +232,10 @@ class LlmProviderConfig(BaseModel):
                 if price is not None and price < 0:
                     raise ValueError(f"llm provider {name} must not be negative")
             self._apply_retry_defaults()
+            if self.cooldown_seconds is None:
+                self.cooldown_seconds = LLM_COOLDOWN_SECONDS
+            elif self.cooldown_seconds < 0:
+                raise ValueError("llm provider cooldown_seconds must not be negative")
         if self.timeout_seconds is None:
             self.timeout_seconds = (
                 RESOLVER_TIMEOUT_SECONDS if self.type == "resolver" else LLM_REQUEST_TIMEOUT_SECONDS

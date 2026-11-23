@@ -23,13 +23,18 @@ from lilla_core.loaders.llm_tool_loader import (
     build_tools_param,
     resolve_available_tools,
 )
-from lilla_core.services.llm_resolver import content_has_image, resolve_llm_name
+from lilla_core.services.llm_resolver import (
+    content_has_image,
+    reselect_llm_name,
+    resolve_llm_name,
+)
 from lilla_core.services.memory_manager import get_memory_manager
 from lilla_core.services.message_util import extract_meta_block, prepend_timestamp_prefix
 from lilla_core.services.session_memory_manager import get_session_memory_manager
 from lilla_core.services.tool_loop import (
     PreToolCallsResult,
     build_tool_message_content,
+    call_llm_with_reselection,
     run_pre_tool_calls,
     run_tool_loop,
 )
@@ -185,7 +190,12 @@ async def run_conversation(
         決まったキーが `type: resolver` なら、ツールループ内の各 LLM 呼び出しの前
         （最初の呼び出しを含む）にスクリプトの `resolve(ctx)` で具体プロバイダーへ
         展開する（`services/llm_resolver.py`）。その回しで既に呼んだツール名と前回
-        選んだ具体プロバイダー名を文脈に載せる。
+        選んだ具体プロバイダー名を文脈に載せる。LLM 呼び出しが別プロバイダーへ回す対象の
+        失敗（HTTP 404 / 408 / 429 / 5xx・接続エラー・タイムアウト）で終わったら、失敗の
+        情報を載せて `resolve(ctx)` を呼び直し、別の具体プロバイダー名が返れば同じ
+        リクエストをそちらへ送る（resolver エントリの `max_reselections` 回まで。
+        ツールなしの 1 回呼び出しとツールループの各呼び出しの両方。`final_reply_provider`
+        の書き直しと打ち切り時のまとめは対象外）。
         会話開始フックの `ConversationContext.llm_name` は展開前のキーのまま。
         ツールループで最終応答（tool_calls なし）を返した具体プロバイダーに
         `final_reply_provider` があれば、その本文は捨て、以降の LLM 呼び出しを指定先に
@@ -342,6 +352,22 @@ async def _run_conversation(
         or content_has_image(inject_user_content),
     }
 
+    async def _reselect_provider(
+        error: BaseException,
+        failed_provider: str | None,
+        called_tool_names: tuple[str, ...],
+        reselection: int,
+    ) -> str | None:
+        """LLM 呼び出しの失敗後、resolver キーなら呼び直して送り直す先を決める。"""
+        return await reselect_llm_name(
+            llm_key,
+            error,
+            failed_provider=failed_provider,
+            reselection=reselection,
+            called_tool_names=called_tool_names,
+            **resolve_kwargs,
+        )
+
     if not use_tools:
         if pre_tool_calls:
             logger.warning(
@@ -349,7 +375,12 @@ async def _run_conversation(
                 len(pre_tool_calls),
             )
         resolved_name = await resolve_llm_name(llm_key, **resolve_kwargs)
-        reply = await chat_to_llm(history, system_prompt=system_prompt, llm_name=resolved_name)
+
+        async def _chat(name: str | None) -> str:
+            """履歴をそのまま `name` へ送る。"""
+            return await chat_to_llm(history, system_prompt=system_prompt, llm_name=name)
+
+        reply, _ = await call_llm_with_reselection(_chat, resolved_name, _reselect_provider)
         return _apply_meta_actions(reply)
 
     messages = list(history)
@@ -401,6 +432,7 @@ async def _run_conversation(
         max_iterations=max_iterations,
         select_provider=_select_provider,
         initial_called_tool_names=pre_result.called_tool_names,
+        reselect_provider=_reselect_provider,
     )
     needs_auth_list = pre_result.needs_auth_list + list(loop_result.needs_auth_list)
 

@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Any, NoReturn, Protocol
+from typing import Any, Protocol
 
 import aiohttp
 
@@ -24,9 +24,20 @@ logger = logging.getLogger(__name__)
 _LLM_ERROR_PREFIX = "LLM call error"
 
 
-def _raise_llm_error(error: Exception) -> NoReturn:
-    """元例外を接頭辞付きの LLMError にラップして送出する。"""
-    raise LLMError(f"{_LLM_ERROR_PREFIX}: {error}") from error
+def _wrap_llm_error(error: Exception, provider_name: str | None = None) -> LLMError:
+    """元例外を接頭辞付きの LLMError にラップして返す。
+
+    `provider_name` を渡した場合（送信の失敗）は、元例外から失敗の種類・HTTP ステータス・
+    `Retry-After` を取り出して `LLMError` の属性に載せる。
+    """
+    kind, status, retry_after = _classify_failure(error) if provider_name else ("other", None, None)
+    return LLMError(
+        f"{_LLM_ERROR_PREFIX}: {error}",
+        provider_name=provider_name,
+        error_kind=kind,
+        status=status,
+        retry_after=retry_after,
+    )
 
 
 def _resolve_content(message: dict[str, Any]) -> str:
@@ -484,6 +495,25 @@ def _parse_retry_after(headers: Any) -> float | None:
     return max(seconds, 0.0)
 
 
+def _classify_failure(error: Exception) -> tuple[str, int | None, float | None]:
+    """送信の失敗を `(種類, HTTP ステータス, Retry-After 秒)` に分類する。
+
+    種類は `LLMError.error_kind` の値（`http` / `timeout` / `connection` /
+    `invalid_response` / `other`）。
+    """
+    if isinstance(error, aiohttp.ClientResponseError):
+        return "http", error.status, _parse_retry_after(error.headers)
+    # aiohttp の ServerTimeoutError も TimeoutError なので、接続エラーより先に判定する
+    if isinstance(error, TimeoutError):
+        return "timeout", None, None
+    if isinstance(error, (aiohttp.ClientConnectionError, aiohttp.ClientPayloadError)):
+        return "connection", None, None
+    if isinstance(error, (ValueError, KeyError, IndexError, TypeError)):
+        # json.JSONDecodeError は ValueError の派生
+        return "invalid_response", None, None
+    return "other", None, None
+
+
 def _describe_failure(error: Exception) -> str:
     """ログ用に失敗の種類を短く表す（HTTP エラーはステータス、それ以外は例外の型名）。"""
     if isinstance(error, aiohttp.ClientResponseError):
@@ -586,13 +616,21 @@ async def _send(
 
     応答を解釈できたら、成功した試行の HTTP 送信から解釈までの所要時間と使用量を
     `record_llm_usage()` で 1 回だけ記録する（記録の失敗は結果に影響しない）。
+
+    失敗したら `LLMError` にプロバイダー名と失敗の種類を載せ、別プロバイダーへ回す対象の
+    失敗（`services/llm_provider_cooldown.py`）ならそのプロバイダーを一時的に記憶する。
+    記憶は呼び出しの経路（会話・タスク・`llm_expert`・直接呼び出し）を問わない。
     """
+    from lilla_core.services import llm_provider_cooldown
+
     ensure_llm_request_allowed(request.body)
     try:
         reply, started = await _post_with_retries(provider, request, provider_name)
         result = adapter.parse_response(json.loads(reply))
     except Exception as e:
-        _raise_llm_error(e)
+        wrapped = _wrap_llm_error(e, provider_name)
+        llm_provider_cooldown.record_failure(wrapped, provider.cooldown_seconds)
+        raise wrapped from e
     record_llm_usage(
         provider_name=provider_name,
         provider=provider,

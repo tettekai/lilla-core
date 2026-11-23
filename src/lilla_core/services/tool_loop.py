@@ -24,11 +24,11 @@ import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, TypeVar
 
 from lilla_core.api.llm_client import chat_to_llm_with_tools
 from lilla_core.core.config import get_config
-from lilla_core.core.exceptions import LlmSendBlockedError, LlmSendGuardUnavailableError
+from lilla_core.core.exceptions import LLMError, LlmSendBlockedError, LlmSendGuardUnavailableError
 from lilla_core.loaders.llm_tool_loader import execute_tool_call
 from lilla_core.utils.datetime_utils import ensure_utc
 
@@ -44,6 +44,48 @@ INVALID_PRE_TOOL_NAME = "invalid_pre_tool_call"
 # 引数はこのループで既に実行したツール名（出現順・重複あり）と、前回選んだプロバイダー名
 # （最初は None）。
 ProviderSelector = Callable[[tuple[str, ...], str | None], Awaitable[str | None]]
+
+# LLM 呼び出しが失敗したあとに呼ばれ、同じリクエストを送り直すプロバイダー名を返す
+# コールバック。引数は失敗の例外・失敗したプロバイダー名・このループで既に実行したツール名・
+# この LLM 呼び出しで何回目の選び直しか（1 始まり）。None を返せば元の例外で終わる。
+ProviderReselector = Callable[
+    [BaseException, str | None, tuple[str, ...], int], Awaitable[str | None]
+]
+
+_T = TypeVar("_T")
+
+
+async def call_llm_with_reselection(
+    call: Callable[[str | None], Awaitable[_T]],
+    provider: str | None,
+    reselect_provider: ProviderReselector | None,
+    called_tool_names: Sequence[str] = (),
+) -> tuple[_T, str | None]:
+    """LLM を 1 回呼び、`LLMError` で失敗したら選び直したプロバイダーへ同じ呼び出しを送り直す。
+
+    `call` はプロバイダー名を受け取って LLM を呼ぶ関数（リクエストの中身は毎回同じ）。
+    失敗のたびに `reselect_provider` を呼び、名前が返ればそちらで `call` をやり直す。
+    `reselect_provider` が無い、または `None` を返したら元の例外をそのまま送出する
+    （回数の上限や対象の失敗の判断はコールバックが持つ）。
+
+    Returns:
+        `(call の戻り値, 実際に応答したプロバイダー名)`。
+    """
+    reselection = 0
+    while True:
+        try:
+            return await call(provider), provider
+        except LLMError as error:
+            if reselect_provider is None:
+                raise
+            reselection += 1
+            next_provider = await reselect_provider(
+                error, provider, tuple(called_tool_names), reselection
+            )
+            if next_provider is None:
+                raise
+            provider = next_provider
+
 
 # ツール呼び出しの上限に達したとき、ツールなしで 1 回だけ LLM を呼ぶ際に末尾へ足す指示。
 # 打ち切りの伝達は固定文言を後ろに付けず、LLM 自身に普段の口調で書かせる。
@@ -405,6 +447,7 @@ async def run_tool_loop(
     stop_on_needs_auth: bool = False,
     summarize_with_final_reply_provider: bool = True,
     initial_called_tool_names: Sequence[str] = (),
+    reselect_provider: ProviderReselector | None = None,
 ) -> ToolLoopResult:
     """LLM のツール呼び出しループを最終応答か上限まで回す。
 
@@ -447,6 +490,11 @@ async def run_tool_loop(
     initial_called_tool_names : Sequence[str]
         このループより前に実行済みのツール名（`run_pre_tool_calls` の事前実行分など）。
         結果の `called_tool_names` の先頭に入り、最初の呼び出しから `select_provider` に渡る。
+    reselect_provider : ProviderReselector | None
+        各 LLM 呼び出しが `LLMError` で失敗したときに呼んで、同じリクエストを送り直す
+        プロバイダー名を決めるコールバック（`call_llm_with_reselection`）。None なら
+        選び直さずに例外をそのまま伝える。送り直して応答したプロバイダーは、次の
+        `select_provider` の「前回のプロバイダー」になる。打ち切り時のまとめには使わない。
 
     上限に達したときは、`llm.on_tool_call_limit` が `summarize`（既定）なら
     `summarize_on_limit` でツールなしのまとめを 1 回だけ書かせて `content` に入れる。
@@ -461,15 +509,22 @@ async def run_tool_loop(
     provider: str | None = None
     allowed_names = _schemas_by_function_name(tools).keys()
 
+    async def _call(name: str | None) -> dict:
+        """今のメッセージ列をそのまま `name` へ送る。"""
+        return await chat_to_llm_with_tools(
+            messages, system_prompt=system_prompt, tools=tools, llm_name=name
+        )
+
     while result.iterations < max_iterations:
         if select_provider is not None:
             provider = await select_provider(tuple(result.called_tool_names), provider)
         else:
             provider = llm_name
         result.provider = provider
-        response = await chat_to_llm_with_tools(
-            messages, system_prompt=system_prompt, tools=tools, llm_name=provider
+        response, provider = await call_llm_with_reselection(
+            _call, provider, reselect_provider, result.called_tool_names
         )
+        result.provider = provider
 
         if not response["tool_calls"]:
             result.content = response["content"] or ""

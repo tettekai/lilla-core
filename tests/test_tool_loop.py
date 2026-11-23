@@ -824,3 +824,94 @@ class TestInitialCalledToolNames:
 
         assert seen == [("pre",), ("pre", "t")]
         assert result.called_tool_names == ["pre", "t"]
+
+
+# ---------------------------------------------------------------------------
+# 失敗後の再選択（#393）
+# ---------------------------------------------------------------------------
+
+
+def _llm_error(provider: str = "p1"):
+    from lilla_core.core.exceptions import LLMError
+
+    return LLMError("LLM call error: x", provider_name=provider, error_kind="http", status=503)
+
+
+class TestCallLlmWithReselection:
+    async def test_returns_first_result_without_calling_reselector(self, tool_loop) -> None:
+        call = AsyncMock(return_value="ok")
+        reselect = AsyncMock()
+        result = await tool_loop.call_llm_with_reselection(call, "p1", reselect)
+        assert result == ("ok", "p1")
+        reselect.assert_not_awaited()
+
+    async def test_resends_to_reselected_provider(self, tool_loop) -> None:
+        error = _llm_error()
+        call = AsyncMock(side_effect=[error, "ok"])
+        reselect = AsyncMock(return_value="p2")
+        result = await tool_loop.call_llm_with_reselection(call, "p1", reselect, ["t"])
+        assert result == ("ok", "p2")
+        assert [c.args for c in call.await_args_list] == [("p1",), ("p2",)]
+        reselect.assert_awaited_once_with(error, "p1", ("t",), 1)
+
+    async def test_reselection_count_increases(self, tool_loop) -> None:
+        call = AsyncMock(side_effect=[_llm_error("p1"), _llm_error("p2"), "ok"])
+        reselect = AsyncMock(side_effect=["p2", "p3"])
+        result = await tool_loop.call_llm_with_reselection(call, "p1", reselect)
+        assert result == ("ok", "p3")
+        assert [c.args[3] for c in reselect.await_args_list] == [1, 2]
+        assert [c.args[1] for c in reselect.await_args_list] == ["p1", "p2"]
+
+    async def test_none_reraises_latest_error(self, tool_loop) -> None:
+        first, second = _llm_error("p1"), _llm_error("p2")
+        call = AsyncMock(side_effect=[first, second])
+        reselect = AsyncMock(side_effect=["p2", None])
+        with pytest.raises(type(first)) as exc_info:
+            await tool_loop.call_llm_with_reselection(call, "p1", reselect)
+        assert exc_info.value is second
+
+    async def test_without_reselector_reraises(self, tool_loop) -> None:
+        error = _llm_error()
+        call = AsyncMock(side_effect=error)
+        with pytest.raises(type(error)) as exc_info:
+            await tool_loop.call_llm_with_reselection(call, "p1", None)
+        assert exc_info.value is error
+        assert call.await_count == 1
+
+    async def test_non_llm_error_is_not_caught(self, tool_loop) -> None:
+        call = AsyncMock(side_effect=RuntimeError("boom"))
+        reselect = AsyncMock()
+        with pytest.raises(RuntimeError):
+            await tool_loop.call_llm_with_reselection(call, "p1", reselect)
+        reselect.assert_not_awaited()
+
+
+class TestRunToolLoopReselection:
+    async def test_failure_without_reselector_propagates(
+        self, tool_loop, mock_llm_client: MagicMock, llm_config: MagicMock
+    ) -> None:
+        """`llm_expert` のように再選択を渡さない経路は、従来どおり例外をそのまま伝える。"""
+        error = _llm_error()
+        mock_llm_client.chat_to_llm_with_tools.side_effect = error
+        with pytest.raises(type(error)) as exc_info:
+            await _run(tool_loop, llm_name="p1")
+        assert exc_info.value is error
+        assert mock_llm_client.chat_to_llm_with_tools.await_count == 1
+
+    async def test_mid_loop_failure_resends_to_reselected_provider(
+        self, tool_loop, mock_llm_client: MagicMock, llm_config: MagicMock
+    ) -> None:
+        mock_llm_client.chat_to_llm_with_tools.side_effect = [
+            _tool_response(("t", "{}")),
+            _llm_error("p1"),
+            _final_response("done"),
+        ]
+        reselect = AsyncMock(return_value="p2")
+        result = await _run(tool_loop, llm_name="p1", reselect_provider=reselect)
+        assert result.content == "done"
+        assert result.provider == "p2"
+        calls = mock_llm_client.chat_to_llm_with_tools.await_args_list
+        assert [c.kwargs.get("llm_name") for c in calls] == ["p1", "p1", "p2"]
+        assert reselect.await_args.args[2] == ("t",)
+        # 再送したのは同じリクエスト（ツール結果まで含むメッセージ列）
+        assert calls[1].args == calls[2].args
