@@ -253,7 +253,7 @@ _PROMPT_JA = """\
 - 会話の中で日記に残る話が出たら、llm_diary_draft_get でその日の下書きの最新の全文を取ってから、llm_diary_draft_set で書く。
 - llm_diary_draft_set には、取得した全文のうち話に出た <<名前>> の穴だけを書き換えた全文を渡す。見出し・frontmatter のキー・日付・末尾の固定文は変えない。
 - 話に出なかった空の穴は <<名前>> のまま残す。moodscore は本人に確認した値だけを入れ、推測しない。
-- date はツールの引数で必ず指定する。日付の区切り（既定 04:00）より前の時刻なら前日、それ以外はその日の日付にする。
+- 日記の日付（日記日）は {{ settings.day_rollover }} で切り替わる。llm_diary_draft_set は、いまの日記日の下書きへ書く（日付は指定しない）。llm_diary_draft_get も date を省略すればいまの日記日の下書きを返し、過去の日を読むときだけ date を指定する。
 {%- if settings.faircopy_storage %}
 - 書き終えた日記は、清書タスクが清書して notes の diary/{{ settings.faircopy_path }} に保存している（{date} は YYYY-MM-DD、{year} / {month} / {day} は 4 桁 / 2 桁 / 2 桁の年・月・日）。過去の日記を読むときは、日付からこのパスを組み立てて llm_notes_read で読む。
 - 清書は清書タスクが動いた後にできるため、当日や、まだ清書されていない日は llm_diary_draft_get で下書きを見る。
@@ -266,7 +266,7 @@ The diary records what happened that day and how the user felt. Its body is a pe
 - When something worth keeping in the diary comes up, first call llm_diary_draft_get to fetch the latest full draft for that day, then write it with llm_diary_draft_set.
 - Pass llm_diary_draft_set the full text you fetched, with only the <<name>> holes that came up in the conversation rewritten. Do not change headings, frontmatter keys, the date, or the fixed text at the end.
 - Leave empty holes that did not come up as <<name>>. Fill moodscore only with a value the user confirmed; never guess it.
-- Always pass date as a tool argument. Before the day rollover time (default 04:00) use the previous day; otherwise use that day's date.
+- The diary date switches at {{ settings.day_rollover }}. llm_diary_draft_set writes to the current diary date's draft (you do not pass a date). llm_diary_draft_get also returns the current diary date's draft when you omit date; pass date only to read a past day.
 {%- if settings.faircopy_storage %}
 - Finished diaries are written out by the faircopy task to notes at diary/{{ settings.faircopy_path }} ({date} is YYYY-MM-DD; {year} / {month} / {day} are the 4-digit year, 2-digit month, and 2-digit day). To read a past diary, build this path from the date and read it with llm_notes_read.
 - The faircopy only exists after the faircopy task has run, so for today or any day not yet written out, read the draft with llm_diary_draft_get.

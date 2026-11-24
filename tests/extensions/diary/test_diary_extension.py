@@ -169,7 +169,9 @@ class TestDefaultPrompt:
         assert "llm_diary_draft_get" in text
         assert "llm_diary_draft_set" in text
         assert "moodscore" in text
-        assert "04:00" in text
+        assert "{{ settings.day_rollover }}" in text
+        assert "date はツールの引数で必ず指定" not in text
+        assert "Always pass date" not in text
 
     @pytest.mark.parametrize("locale", ["ja", "en"])
     def test_refers_to_default_tool_names(self, locale: str) -> None:
@@ -187,7 +189,10 @@ class TestDefaultPrompt:
         text = diary.extension.default_prompt()[locale]
 
         assert "<<" in text
-        assert re.findall(r"\{\{(.*?)\}\}", text) == [" settings.faircopy_path "]
+        assert re.findall(r"\{\{(.*?)\}\}", text) == [
+            " settings.day_rollover ",
+            " settings.faircopy_path ",
+        ]
 
     def test_passes_core_validation(self, diary_config_root: Path) -> None:
         """コアの登録時の検証（形・言語の選択）を通る。"""
@@ -218,7 +223,13 @@ class TestDefaultPromptRendering:
         assert "diary/{year}/{month}/{date}.md" in text
         assert "llm_notes_read" in text
         assert "YYYY-MM-DD" in text
-        assert text.count("llm_diary_draft_get") == 2
+        assert "04:00" in text
+        assert text.count("llm_diary_draft_get") == 3
+
+    @pytest.mark.parametrize("locale", ["ja", "en"])
+    async def test_day_rollover_follows_settings(self, locale: str) -> None:
+        """日記日の切り替わり時刻は設定の値を載せる。"""
+        assert "06:30" in await _render(locale, day_rollover="06:30")
 
     @pytest.mark.parametrize("locale", ["ja", "en"])
     async def test_custom_path_follows_settings(self, locale: str) -> None:
@@ -233,7 +244,7 @@ class TestDefaultPromptRendering:
 
         assert "llm_notes_read" not in text
         assert "llm_diary_draft_set" in text
-        assert text.count("llm_diary_draft_get") == 1
+        assert text.count("llm_diary_draft_get") == 2
         assert text == text.rstrip()
 
     @pytest.mark.parametrize("locale", ["ja", "en"])

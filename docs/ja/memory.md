@@ -25,8 +25,8 @@ notes と同じ **標準機能** で、`LILLA_EXTENSIONS` に並べなくても�
 
 | stem | 種類 | 内容 |
 |------|------|------|
-| `llm_remember_append` | LLM ツール | その日の remember に 1 件追記する。同じ本文が既にあれば追記しない（`appended: false`） |
-| `llm_remember_get` | LLM ツール | その日の remember を追記した順に全件返す |
+| `llm_remember_append` | LLM ツール | いまの日付の remember に 1 件追記する。日付は引数で受け取らず `day_rollover` から決め、書いた日付を `date` で返す。同じ本文が既にあれば追記しない（`appended: false`） |
+| `llm_remember_get` | LLM ツール | 指定した日付の remember を追記した順に全件返す。`date`（`YYYY-MM-DD`）は任意で、省略するといまの日付。不正な `date` は失敗する |
 | `task_memory_review` | タスク（`type: task_memory_llm`） | 毎日 04:30。直前に締まった日の remember を、`memory/core.md` と `memory/personal/` へ振り分けて書く |
 | `task_memory_compaction` | タスク（`type: task_memory_llm`） | 毎週月曜 03:30。`memory/core.md` から、もう覚えておく必要がないものを `memory/journal/YYYYMM.md` へ移す |
 
@@ -72,7 +72,7 @@ MongoDB のコレクションは `remember`（`_id` が日付 `YYYY-MM-DD`、`en
 
 ## 会話向けのプロンプト
 
-`default_prompt()`（ja / en）は、remember の使い方・日付の決め方・`memory/` の中身を伝え、続けて
+`default_prompt()`（ja / en）は、remember の使い方・日付が `day_rollover` で切り替わること・`memory/` の中身を伝え、続けて
 `memory/core.md` の本文を `<long_term_memory>` タグで囲んで入れます。本文はテンプレートの関数
 [`notes()`](prompt-template.md#ノートを読むnotes) で会話のたびに読み直し、`core.md` がまだ無ければ
 タグの節ごと出しません。本文中の `<long_term_memory>` / `</long_term_memory>` の形のタグ（大文字小文字は区別しません）は
@@ -123,7 +123,7 @@ MongoDB のコレクションは `remember`（`_id` が日付 `YYYY-MM-DD`、`en
 | 項目 | 既定 | 内容 |
 |------|------|------|
 | `use_in_conversation` | オン | 会話のシステムプロンプトに長期記憶（使い方と `core.md` の本文）を入れる |
-| `day_rollover` | `04:00` | 日付の区切り（`ui.timezone`）。日付 d の remember には、d の区切りから翌日の区切りまで追記できる |
+| `day_rollover` | `04:00` | 日付の区切り（`ui.timezone`）。日付 d の remember には、d の区切りから翌日の区切りまで追記する（追記する日付はツールがこの値から決める） |
 | `notify_core_changes` | オン | `memory/core.md` が変わったら差分を知らせる |
 
 ## `core.md` の変更通知

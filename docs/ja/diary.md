@@ -25,9 +25,9 @@ YAML を置き、変えたいキーだけを書きます。止めるなら `enab
 
 | stem | 種類 | 内容 |
 |------|------|------|
-| `llm_diary_draft_get` | LLM ツール | その日の下書きを返す。無ければテンプレートから作り、`<<date>>` を曜日付きの日付（例: `2026-09-28 (月)`）で埋める |
-| `llm_diary_draft_set` | LLM ツール | その日の下書きを丸ごと置き換える。書き込める時間帯の外や、テンプレートの固定文が壊れているときは保存しない |
-| `llm_diary_draft_faircopy_get` | LLM ツール（タスク専用） | 下書きの残った穴を `-` にした清書を返す（`<<moodscore>>` は残す）。保存はしない。`supported_client_type: task` で、通常会話には出ない |
+| `llm_diary_draft_get` | LLM ツール | 指定した日付の下書きを返す。`date`（`YYYY-MM-DD`）は任意で、省略するといまの日記日。無ければテンプレートから作り、`<<date>>` を曜日付きの日付（例: `2026-09-28 (月)`）で埋める |
+| `llm_diary_draft_set` | LLM ツール | いまの日記日の下書きを丸ごと置き換える。日付は引数で受け取らず `day_rollover` から決め、書いた日付を `date` で返す。テンプレートの固定文が壊れているとき（切り替わり前に取った下書きで日付の行が合わないときを含む）は保存しない |
+| `llm_diary_draft_faircopy_get` | LLM ツール（タスク専用） | 指定した日付（省略するといまの日記日）の下書きの残った穴を `-` にした清書を返す（`<<moodscore>>` は残す）。保存はしない。`supported_client_type: task` で、通常会話には出ない |
 | `task_hearing_diary` | タスク（`type: task_diary_llm`） | 毎日 22:00。その日の下書きを見て、まだ埋まっていない項目を中心に尋ねる |
 | `task_write_diary` | タスク（`type: task_diary_faircopy`） | 毎日 03:30。LLM を通さずに前日分の清書を notes へ書く |
 
@@ -155,7 +155,7 @@ available_tools:
 ## 会話向けのプロンプト
 
 `diary` 拡張は会話向けの説明（いつ下書きを読み書きするか・穴の扱い・`moodscore` を推測しない・
-date の選び方）を `default_prompt()` に ja / en で持ちます（[拡張のデフォルトプロンプトと上書き](extension-prompt.md)）。
+日記日が `day_rollover` で切り替わること）を `default_prompt()` に ja / en で持ちます（[拡張のデフォルトプロンプトと上書き](extension-prompt.md)）。
 
 - 清書の保存先がオンのときは、清書の置き場所（notes の `diary/` + `faircopy_path`）と、過去の日記は
   日付からパスを組み立てて `llm_notes_read` で読むこと、まだ清書されていない日は下書きを見ることも

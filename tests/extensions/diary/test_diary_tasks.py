@@ -177,7 +177,7 @@ class TestPrompt:
 
         assert "{{ current_hour }}" in text
         assert "{{now}}" not in text
-        assert "04:00" in text
+        assert "04:00" not in text
         assert "obsidian" not in text.lower()
         assert "llm_diary_draft_get" in text
 
