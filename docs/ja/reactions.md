@@ -93,18 +93,40 @@ Bot の発言へのリアクションの追加・削除を、raw 系のイベン
 `ConversationRepository`（`lilla_core.repository.conversation_repository`）のメソッドで
 取得します。HTTP API などとしての公開は利用側のアプリケーションで行います。
 
-- `list_for_client()`: 各要素に `reactions` を含めます（リアクションが無ければ空配列）。
-  既存の項目（`_id`・`time`・`message.role`・`message.content`）の形は変わりません
-- `list_reacted(limit, offset, emojis=None, after_id=None, since=None)`: リアクションの付いた
-  メッセージだけを `list_for_client()` と同じ形・並び順・続きの取り方で返します。`emojis`
-  （標準の絵文字は文字、カスタム絵文字は名前）を複数指定すると、いずれかが付いたものに
-  絞ります
+- `list_for_client(limit, offset, after_id=None, since=None, before_id=None)`: 各要素に
+  `reactions` を含めます（リアクションが無ければ空配列）。既存の項目（`_id`・`time`・
+  `message.role`・`message.content`）の形は変わりません
+- `list_reacted(limit, offset, emojis=None, after_id=None, since=None, before_id=None)`:
+  リアクションの付いたメッセージだけを `list_for_client()` と同じ形・並び順・続きの取り方で
+  返します。`emojis`（標準の絵文字は文字、カスタム絵文字は名前）を複数指定すると、いずれかが
+  付いたものに絞ります
 - `count_reactions()`: 絵文字ごとの件数を全期間で集計し、`{"emoji", "count"}`（カスタム
   絵文字は `emoji_id` も）を件数の多い順で返します。今の一覧に出ていない古い絵文字も拾えます
 - `get_reactions(conversation_id)`: 会話履歴 1 件の今の `reactions` を `list_for_client()` と
   同じ要素の形で返します（無ければ空リスト）。重複した追加や付いていない絵文字の削除のように
   フックが呼ばれない操作のあとに、今の状態を返したいときに使います。会話履歴が無ければ
   `ConversationNotFoundError`、`conversation_id` が ObjectId として不正な形式なら `ValueError` を送出します
+
+### 続きの取り方
+
+`list_for_client()` と `list_reacted()` は同じ規則で続きを取ります。どちらも `(time, _id)` の
+組で前後を判定するため、同じ時刻に続けて保存されたメッセージも取りこぼしません。
+
+- 引数なし: 新しい順に `offset` 件飛ばして `limit` 件返します
+- `after_id`（新しい方向）: 指定したメッセージより新しいものを、基準の直後から `limit` 件、
+  古い順で返します。さらに新しい続きは、返した最後（いちばん新しい要素）の `_id` を次の
+  `after_id` に渡します
+- `before_id`（古い方向）: 指定したメッセージより古いものを、基準の直前から `limit` 件取り、
+  古い順で返します（`after_id` と同じ並び）。さらに古い続きは、返した先頭（いちばん古い
+  要素）の `_id` を次の `before_id` に渡します
+- `since`: その時刻以降（境界を含む）に絞ります。`after_id` / `before_id` と一緒に渡すと
+  両方の条件を満たすものだけを返します
+- どちらの基準も自身は含みません。続きに `offset` は使いません（ずれるため）
+- `after_id` と `before_id` の同時指定は `ValueError` です。ObjectId として不正な形式も
+  `ValueError` です
+- 基準のメッセージが無ければ（TTL で消えた・削除されたなど）、`since` の有無によらず
+  `ConversationNotFoundError` を送出します。空のリストは「もう無い」の意味なので、呼び出し側は
+  これを「起点を失ったので取り直す」合図として扱います
 
 リアクション付きのメッセージは全体のごく一部なので、`reactions` を持つドキュメントだけを
 対象にした部分インデックス（`reactions_time_id`）を起動時に作り、`list_reacted()` と

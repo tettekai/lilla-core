@@ -6,9 +6,9 @@ class ReauthenticationRequiredError(Exception):
 class ConversationNotFoundError(LookupError):
     """差分取得の起点に指定した会話履歴のドキュメントが見つからないときにスローされる例外。
 
-    `ConversationRepository.list_for_client(after_id=...)` で、`after_id` の
-    ドキュメントが存在しない（TTL で消えた・削除された・別 DB の id など）うえ、
-    代わりに使える `since` も渡されていない場合に送出する。呼び出し側は
+    `ConversationRepository.list_for_client(after_id=... / before_id=...)` で、
+    基準のドキュメントが存在しない（TTL で消えた・削除された・別 DB の id など）
+    場合に、`since` の有無によらず送出する。呼び出し側は
     「起点が失われたので全件を取り直す」合図として扱う（HTTP なら 404 / 410 など）。
     """
     pass
