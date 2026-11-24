@@ -16,20 +16,22 @@ class TestRememberAppend:
 
     async def test_appended(self, monkeypatch) -> None:
         """追記できたら `appended: true`。"""
-        mock = AsyncMock(return_value=True)
+        mock = AsyncMock(return_value=(date(2026, 9, 28), True))
         monkeypatch.setattr(llm_remember_append, "append_entry", mock)
 
-        result = await llm_remember_append.execute({"date": "2026-09-28", "content": "a"}, {})
+        result = await llm_remember_append.execute({"content": "a"}, {})
 
         assert result["success"] is True
         assert result["data"] == {"date": "2026-09-28", "appended": True}
-        mock.assert_awaited_once_with(date(2026, 9, 28), "a")
+        mock.assert_awaited_once_with("a")
 
     async def test_duplicate(self, monkeypatch) -> None:
         """同じ本文があれば `appended: false` と理由を返す（失敗ではない）。"""
-        monkeypatch.setattr(llm_remember_append, "append_entry", AsyncMock(return_value=False))
+        monkeypatch.setattr(
+            llm_remember_append, "append_entry", AsyncMock(return_value=(date(2026, 9, 28), False))
+        )
 
-        result = await llm_remember_append.execute({"date": "2026-09-28", "content": "a"}, {})
+        result = await llm_remember_append.execute({"content": "a"}, {})
 
         assert result["success"] is True
         assert result["data"]["appended"] is False
@@ -40,22 +42,22 @@ class TestRememberAppend:
         monkeypatch.setattr(
             llm_remember_append, "append_entry", AsyncMock(side_effect=RememberError("outside"))
         )
-        result = await llm_remember_append.execute({"date": "2026-09-28", "content": "a"}, {})
+        result = await llm_remember_append.execute({"content": "a"}, {})
         assert result["success"] is False
         assert "outside" in result["error"]
 
-    async def test_invalid_date(self) -> None:
-        """日付が無ければ失敗。"""
-        result = await llm_remember_append.execute({"content": "a"}, {})
-        assert result["success"] is False
-        assert "YYYY-MM-DD" in result["error"]
+    def test_schema_has_no_date(self) -> None:
+        """書き込みの日付は LLM に指定させない。"""
+        params = llm_remember_append.SCHEMA["function"]["parameters"]
+        assert "date" not in params["properties"]
+        assert params["required"] == ["content"]
 
     async def test_unexpected_error(self, monkeypatch) -> None:
         """想定外の例外も失敗にする。"""
         monkeypatch.setattr(
             llm_remember_append, "append_entry", AsyncMock(side_effect=RuntimeError("db"))
         )
-        result = await llm_remember_append.execute({"date": "2026-09-28", "content": "a"}, {})
+        result = await llm_remember_append.execute({"content": "a"}, {})
         assert result["success"] is False
 
 
@@ -80,11 +82,33 @@ class TestRememberGet:
             ],
         }
 
-    @pytest.mark.parametrize("value", [None, "28/09/2026"])
+    @pytest.mark.parametrize("value", ["28/09/2026", "2026-02-30", 20260928])
     async def test_invalid_date(self, value) -> None:
         """日付が不正なら失敗。"""
         result = await llm_remember_get.execute({"date": value}, {})
         assert result["success"] is False
+
+    @pytest.mark.parametrize("args", [{}, {"date": None}])
+    async def test_date_omitted_reads_current_date(self, monkeypatch, args) -> None:
+        """日付を省略したら、いまの日付の記録を読む。"""
+        monkeypatch.setattr(
+            service, "load_memory_settings", AsyncMock(return_value=service.MemorySettings())
+        )
+        monkeypatch.setattr(service, "current_date", lambda rollover: date(2026, 9, 27))
+        get = AsyncMock(return_value=[])
+        monkeypatch.setattr(llm_remember_get, "get_entries", get)
+
+        result = await llm_remember_get.execute(args, {})
+
+        assert result["success"] is True
+        assert result["data"]["date"] == "2026-09-27"
+        get.assert_awaited_once_with(date(2026, 9, 27))
+
+    def test_schema_date_is_optional(self) -> None:
+        """`date` は任意。"""
+        params = llm_remember_get.SCHEMA["function"]["parameters"]
+        assert "date" in params["properties"]
+        assert "date" not in params["required"]
 
 
 def test_service_is_shared() -> None:

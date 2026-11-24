@@ -181,49 +181,48 @@ class TestSetDraft:
     async def test_set_inside_window_saves(self, svc, repo):
         from datetime import date
         with patch.object(svc, "utc_now", return_value=_jst(2026, 9, 28, 22)):
-            await svc.set_draft(date(2026, 9, 28), self._filled(svc))
+            assert await svc.set_draft(self._filled(svc)) == date(2026, 9, 28)
         repo.set_content.assert_awaited_once()
+        assert repo.set_content.await_args.args[0] == "2026-09-28"
 
     @pytest.mark.asyncio
     async def test_set_after_midnight_still_same_diary_day(self, svc, repo):
+        """0 時から区切りまでは前日の日記日へ書く。"""
         from datetime import date
         with patch.object(svc, "utc_now", return_value=_jst(2026, 9, 29, 3, 30)):
-            await svc.set_draft(date(2026, 9, 28), self._filled(svc))
-        repo.set_content.assert_awaited_once()
+            assert await svc.set_draft(self._filled(svc)) == date(2026, 9, 28)
+        assert repo.set_content.await_args.args[0] == "2026-09-28"
 
     @pytest.mark.asyncio
-    async def test_set_outside_window_fails_with_active_date(self, svc, repo):
-        from datetime import date
+    async def test_set_after_rollover_rejects_previous_day_draft(self, svc, repo):
+        """区切りの後に前の日の下書きを渡すと、日付の行が合わずに保存しない。"""
         with patch.object(svc, "utc_now", return_value=_jst(2026, 9, 29, 5)):
             with pytest.raises(svc.DiaryDraftError) as e:
-                await svc.set_draft(date(2026, 9, 28), self._filled(svc))
+                await svc.set_draft(self._filled(svc))
         assert "2026-09-29" in str(e.value)
         repo.set_content.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_broken_heading_is_rejected(self, svc, repo):
-        from datetime import date
         broken = self._filled(svc).replace("## 今日の出来事", "## 変えた見出し")
         with patch.object(svc, "utc_now", return_value=_jst(2026, 9, 28, 22)):
             with pytest.raises(svc.DiaryDraftError):
-                await svc.set_draft(date(2026, 9, 28), broken)
+                await svc.set_draft(broken)
         repo.set_content.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_date_mismatch_is_rejected(self, svc, repo):
-        from datetime import date
         wrong = self._filled(svc, "2026-09-27")
         with patch.object(svc, "utc_now", return_value=_jst(2026, 9, 28, 22)):
             with pytest.raises(svc.DiaryDraftError):
-                await svc.set_draft(date(2026, 9, 28), wrong)
+                await svc.set_draft(wrong)
 
     @pytest.mark.asyncio
     async def test_truncated_tail_is_rejected(self, svc, repo):
-        from datetime import date
         cut = self._filled(svc).replace("\nend", "")
         with patch.object(svc, "utc_now", return_value=_jst(2026, 9, 28, 22)):
             with pytest.raises(svc.DiaryDraftError):
-                await svc.set_draft(date(2026, 9, 28), cut)
+                await svc.set_draft(cut)
 
     @pytest.mark.asyncio
     async def test_reads_settings_once_per_set(self, svc, repo, stored):
@@ -235,13 +234,14 @@ class TestSetDraft:
 
         repo.set_content.side_effect = _change_settings
         with patch.object(svc, "utc_now", return_value=_jst(2026, 9, 28, 22)):
-            await svc.set_draft(date(2026, 9, 28), self._filled(svc))
+            await svc.set_draft(self._filled(svc))
         svc._test_load.assert_awaited_once()
 
         # 保存をまたいだ次の処理は新しい版（23:00 区切り・新しいテンプレ）を使う
+        repo.set_content.side_effect = None
         with patch.object(svc, "utc_now", return_value=_jst(2026, 9, 28, 22)):
-            with pytest.raises(svc.DiaryDraftError, match="2026-09-27"):
-                await svc.set_draft(date(2026, 9, 28), self._filled(svc))
+            assert await svc.set_draft("# 2026-09-27 (日)\n") == date(2026, 9, 27)
+        assert repo.set_content.await_args.args[0] == "2026-09-27"
 
     @pytest.mark.asyncio
     async def test_custom_rollover_is_used(self, svc, repo, stored):
@@ -249,38 +249,35 @@ class TestSetDraft:
         from datetime import date
         stored["v"] = _settings(rollover="06:30")
         with patch.object(svc, "utc_now", return_value=_jst(2026, 9, 29, 5)):
-            await svc.set_draft(date(2026, 9, 28), self._filled(svc))
+            assert await svc.set_draft(self._filled(svc)) == date(2026, 9, 28)
         repo.set_content.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_unset_template_saves_nothing(self, svc, repo, stored):
-        from datetime import date
         filled = self._filled(svc)
         stored["v"] = _settings(template=None)
         with patch.object(svc, "utc_now", return_value=_jst(2026, 9, 28, 22)):
             with pytest.raises(svc.DiaryDraftError, match="not set"):
-                await svc.set_draft(date(2026, 9, 28), filled)
+                await svc.set_draft(filled)
         repo.set_content.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_db_failure_saves_nothing(self, svc, repo, stored):
-        from datetime import date
         from lilla_core.services.extension_settings import SettingsUnavailableError
         filled = self._filled(svc)
         stored["v"] = SettingsUnavailableError("db down")
         with pytest.raises(svc.DiaryDraftError, match="could not load"):
-            await svc.set_draft(date(2026, 9, 28), filled)
+            await svc.set_draft(filled)
         repo.set_content.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_existing_draft_against_new_template_is_rejected(self, svc, repo, stored):
         """テンプレを変えた後は、古いテンプレの形の本文は今までどおり固定文の検証で弾く。"""
-        from datetime import date
         filled = self._filled(svc)
         stored["v"] = _settings(template=TEMPLATE.replace("## ひとこと", "## メモ"))
         with patch.object(svc, "utc_now", return_value=_jst(2026, 9, 28, 22)):
             with pytest.raises(svc.DiaryDraftError, match="fixed text"):
-                await svc.set_draft(date(2026, 9, 28), filled)
+                await svc.set_draft(filled)
         repo.set_content.assert_not_awaited()
 
     def test_holes_may_stay_unfilled(self, svc):
@@ -349,10 +346,34 @@ class TestTools:
     """ツールの入出力と公開範囲。"""
 
     @pytest.mark.asyncio
-    async def test_get_requires_date(self, svc, repo):
+    @pytest.mark.parametrize("args", [{}, {"date": None}])
+    async def test_get_defaults_to_current_diary_date(self, svc, repo, args):
+        """日付を省略したら、いまの日記日（区切りより前なら前日）の下書きを返す。"""
         mod = _load_tool("llm_diary_draft_get")
-        res = await mod.execute({}, {})
+        with patch.object(svc, "utc_now", return_value=_jst(2026, 9, 29, 3)):
+            res = await mod.execute(args, {})
+        assert res["success"] is True
+        assert res["data"]["date"] == "2026-09-28"
+        repo.get.assert_awaited_once_with("2026-09-28")
+
+    @pytest.mark.asyncio
+    async def test_get_past_date(self, svc, repo):
+        """過去の日付を指定したら、その日の下書きを返す（書き込み時間帯の制限は無い）。"""
+        repo.get.return_value = {"_id": "2026-01-02", "content": "old"}
+        mod = _load_tool("llm_diary_draft_get")
+        with patch.object(svc, "utc_now", return_value=_jst(2026, 9, 29, 12)):
+            res = await mod.execute({"date": "2026-01-02"}, {})
+        assert res["success"] is True
+        assert res["data"] == {"date": "2026-01-02", "content": "old"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", ["llm_diary_draft_get", "llm_diary_draft_faircopy_get"])
+    @pytest.mark.parametrize("value", ["", "today", "2026-02-30", 20260928])
+    async def test_get_invalid_date_fails(self, svc, repo, name, value):
+        mod = _load_tool(name)
+        res = await mod.execute({"date": value}, {})
         assert res["success"] is False
+        repo.get.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_get_returns_content(self, svc, repo):
@@ -365,9 +386,29 @@ class TestTools:
     async def test_set_error_is_reported(self, svc, repo):
         mod = _load_tool("llm_diary_draft_set")
         with patch.object(svc, "utc_now", return_value=_jst(2026, 9, 29, 5)):
-            res = await mod.execute({"date": "2026-09-28", "content": "x"}, {})
+            res = await mod.execute({"content": "x"}, {})
         assert res["success"] is False
-        assert "2026-09-29" in res["error"]
+        assert "fixed text" in res["error"]
+
+    @pytest.mark.asyncio
+    async def test_set_returns_written_date(self, svc, repo):
+        """日付は受け取らず、書いた日記日を返す。"""
+        from datetime import date
+        content = svc.build_initial_draft(svc.template_text(_settings()), date(2026, 9, 28))
+        mod = _load_tool("llm_diary_draft_set")
+        with patch.object(svc, "utc_now", return_value=_jst(2026, 9, 29, 3)):
+            res = await mod.execute({"content": content}, {})
+        assert res["success"] is True
+        assert res["data"] == {"date": "2026-09-28", "saved": True}
+
+    @pytest.mark.asyncio
+    async def test_faircopy_tool_defaults_to_current_diary_date(self, svc, repo):
+        repo.get.return_value = {"_id": "2026-09-28", "content": "a"}
+        mod = _load_tool("llm_diary_draft_faircopy_get")
+        with patch.object(svc, "utc_now", return_value=_jst(2026, 9, 29, 3)):
+            res = await mod.execute({}, {})
+        assert res["data"]["date"] == "2026-09-28"
+        repo.get.assert_awaited_once_with("2026-09-28")
 
     @pytest.mark.asyncio
     async def test_faircopy_tool(self, svc, repo):
@@ -407,11 +448,19 @@ class TestDiarySchemas:
         assert "普段の会話" not in desc
         assert "必ず呼んで" not in desc
 
-    @pytest.mark.parametrize("name", _NAMES)
-    def test_date_description_refers_to_day_rollover(self, name):
-        params = _load_tool(name).SCHEMA["function"]["parameters"]["properties"]
-        assert "day_rollover" in params["date"]["description"]
-        assert "書き込み可能時間帯の開始時刻" not in params["date"]["description"]
+    def test_set_has_no_date(self):
+        """書き込みの日付は LLM に指定させない。"""
+        params = _load_tool("llm_diary_draft_set").SCHEMA["function"]["parameters"]
+        assert "date" not in params["properties"]
+        assert params["required"] == ["content"]
+
+    @pytest.mark.parametrize("name", ["llm_diary_draft_get", "llm_diary_draft_faircopy_get"])
+    def test_read_date_is_optional(self, name):
+        params = _load_tool(name).SCHEMA["function"]["parameters"]
+        assert "date" in params["properties"]
+        assert "date" not in params["required"]
+        assert "必須" not in params["properties"]["date"]["description"]
+        assert "補完されない" not in params["properties"]["date"]["description"]
 
 
 class TestDayRollover:

@@ -145,7 +145,7 @@ _PROMPT_JA = """\
 会話の中で長期的に覚えておきたいこと（好み・決定事項・約束・学んだことなど）が出たら、その日の remember に記録する。
 
 - 記録する前に llm_remember_get でその日の記録を読み、同じことを既に書いていないか確かめる。まだ無ければ llm_remember_append で 1 件に 1 つの事柄を書く。文章は整えなくてよい。
-- date はツールの引数で必ず指定する。日付の区切り（{{ settings.day_rollover }}）より前の時刻なら前日、それ以外はその日の日付にする。
+- remember の日付は {{ settings.day_rollover }} で切り替わる。llm_remember_append は、いまの日付の記録へ書く（日付は指定しない）。llm_remember_get も date を省略すればいまの日付の記録を読み、過去の日を読むときだけ date を指定する。
 - notes の memory/ の下へは直接書かない（llm_notes_write を使わない）。remember の記録は夜間の整理タスクがまとめて memory/ へ整理する。
 - memory/ の中身（読むのは自由）:
   - memory/core.md … 長期記憶の本体（下に載せてある）
@@ -171,7 +171,7 @@ _PROMPT_EN = """\
 When something worth remembering for the long term comes up in conversation (preferences, decisions, promises, things learned, and so on), record it in that day's remember.
 
 - Before recording, read that day's records with llm_remember_get and check that you have not already written the same thing. If it is not there yet, write one item per call with llm_remember_append. It does not need to be polished prose.
-- Always pass date as a tool argument. Before the day rollover ({{ settings.day_rollover }}) use the previous day; otherwise use that day's date.
+- The remember date switches at {{ settings.day_rollover }}. llm_remember_append writes to the current date's records (you do not pass a date). llm_remember_get also reads the current date's records when you omit date; pass date only to read a past day.
 - Do not write under memory/ in notes directly (do not use llm_notes_write there). The nightly tasks organize the remember records into memory/.
 - What is in memory/ (you may read it freely):
   - memory/core.md … the main long-term memory (included below)

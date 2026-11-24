@@ -135,17 +135,46 @@ class TestAppendAndGet:
     """追記と読み取り。"""
 
     async def test_append(self, settings, repo) -> None:
-        """時間帯の中なら正規化した本文で追記する。"""
+        """いまの日付へ、正規化した本文で追記し、日付を返す。"""
         with patch.object(service, "utc_now", return_value=_at(2026, 9, 28, 12, 0)):
-            assert await service.append_entry(date(2026, 9, 28), " 青が好き ") is True
+            assert await service.append_entry(" 青が好き ") == (date(2026, 9, 28), True)
         repo.append_if_absent.assert_awaited_once_with("2026-09-28", "青が好き")
 
-    async def test_append_outside_window(self, settings, repo) -> None:
-        """時間帯の外なら追記しない。"""
+    async def test_append_before_rollover_goes_to_previous_day(self, settings, repo) -> None:
+        """区切りより前（0 時〜区切り）なら前日の記録へ追記する。"""
+        with patch.object(service, "utc_now", return_value=_at(2026, 9, 29, 3, 59)):
+            assert await service.append_entry("x") == (date(2026, 9, 28), True)
+        repo.append_if_absent.assert_awaited_once_with("2026-09-28", "x")
+
+    async def test_append_uses_saved_rollover(self, monkeypatch, repo) -> None:
+        """日付の区切りは保存した設定の値を使う。"""
+        monkeypatch.setattr(
+            service,
+            "load_memory_settings",
+            AsyncMock(return_value=MemorySettings(day_rollover="06:00")),
+        )
+        with patch.object(service, "utc_now", return_value=_at(2026, 9, 29, 5, 0)):
+            assert await service.append_entry("x") == (date(2026, 9, 28), True)
+
+    async def test_append_duplicate(self, settings, repo) -> None:
+        """同じ本文が既にあれば False を返す。"""
+        repo.append_if_absent.return_value = False
         with patch.object(service, "utc_now", return_value=_at(2026, 9, 28, 12, 0)):
-            with pytest.raises(RememberError):
-                await service.append_entry(date(2026, 9, 27), "x")
-        repo.append_if_absent.assert_not_awaited()
+            assert await service.append_entry("x") == (date(2026, 9, 28), False)
+
+    async def test_resolve_read_date_default(self, settings) -> None:
+        """読み取りの日付を省略したら、いまの日付。"""
+        with patch.object(service, "utc_now", return_value=_at(2026, 9, 29, 3, 0)):
+            assert await service.resolve_read_date(None) == date(2026, 9, 28)
+
+    async def test_resolve_read_date_given(self, monkeypatch) -> None:
+        """指定があればその日付を使い、設定は読まない。"""
+        load = AsyncMock()
+        monkeypatch.setattr(service, "load_memory_settings", load)
+        assert await service.resolve_read_date("2026-01-02") == date(2026, 1, 2)
+        load.assert_not_awaited()
+        with pytest.raises(RememberError, match="YYYY-MM-DD"):
+            await service.resolve_read_date("2026/01/02")
 
     async def test_get_entries(self, repo) -> None:
         """追記順に、時刻を `ui.timezone` の ISO 文字列にして返す。"""

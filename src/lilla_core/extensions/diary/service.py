@@ -13,7 +13,9 @@ MongoDB に持って読み書きする。書き出し先はここでは知らな
 
 日付は `ui.timezone` 基準で `DiarySettings.day_rollover`（既定 04:00）を区切りとし、
 日記日 d の分には d の `day_rollover` から翌日の `day_rollover` まで書き込める。各日の
-区間は切れ目なく続くため、どの時刻にも書き込める日記日がちょうど 1 つある。
+区間は切れ目なく続くため、どの時刻にも書き込める日記日がちょうど 1 つあり、書き込む
+日記日は LLM に指定させずここで決める（`set_draft`）。読み取りは過去の日も指定でき、
+省略したらいまの日記日を読む（`resolve_read_date`）。
 
 設定は 1 回の処理（get / set）の中で `load_diary_settings()` を 1 回だけ呼んで読み、
 その処理の間は同じスナップショットを使う（下位の関数は設定を引数で受け取り、
@@ -57,10 +59,10 @@ def parse_date(value: object) -> date:
     """`YYYY-MM-DD` 形式の日付文字列を検証して `date` にする。
 
     Raises:
-        DiaryDraftError: 未指定または形式・暦として不正なとき。
+        DiaryDraftError: 文字列でない、または形式・暦として不正なとき。
     """
     if not isinstance(value, str) or not _DATE_RE.fullmatch(value.strip()):
-        raise DiaryDraftError("date is required in YYYY-MM-DD format")
+        raise DiaryDraftError("date must be in YYYY-MM-DD format")
     try:
         return date.fromisoformat(value.strip())
     except ValueError as e:
@@ -232,6 +234,20 @@ def ensure_writable(d: date, rollover: time) -> None:
     )
 
 
+async def resolve_read_date(value: object) -> date:
+    """読み取りの対象日を決める。未指定（`None`）ならいま書き込める日記日を返す。
+
+    指定があれば `parse_date` で検証する（設定は読まない）。
+
+    Raises:
+        DiaryDraftError: 指定した日付が不正なとき、または未指定で設定を読めないとき。
+    """
+    if value is None:
+        settings = await load_diary_settings()
+        return current_writable_date(day_rollover(settings))
+    return parse_date(value)
+
+
 async def get_draft(d: date) -> str:
     """その日のドラフトを返す。無ければテンプレから作って保存する。
 
@@ -251,21 +267,29 @@ async def get_draft(d: date) -> str:
     return doc["content"]
 
 
-async def set_draft(d: date, content: object) -> None:
-    """その日のドラフトを丸ごと置き換える。
+async def set_draft(content: object) -> date:
+    """いま書き込める日記日（`current_writable_date`）のドラフトを丸ごと置き換える。
+
+    本文の `<<date>>` の位置はその日記日と一致しなければならないため、区切りをまたいで
+    前の日の下書きを渡すと固定文の検証で失敗する（前の日の内容を新しい日へ書かない）。
+
+    Returns:
+        書き込んだ日記日。
 
     Raises:
-        DiaryDraftError: 設定を読めない・テンプレが未設定、書き込み可能時間帯の外、
-            または固定文が壊れているとき。
+        DiaryDraftError: 設定を読めない・テンプレが未設定、または固定文が壊れているとき。
     """
     from lilla_core.extensions.diary.repository import get_diary_draft_repo
 
     if not isinstance(content, str) or not content.strip():
         raise DiaryDraftError("content is required (the Markdown body)")
     settings = await load_diary_settings()
-    ensure_writable(d, day_rollover(settings))
+    rollover = day_rollover(settings)
+    d = current_writable_date(rollover)
+    ensure_writable(d, rollover)
     validate_content(template_text(settings), content, d)
     await get_diary_draft_repo().set_content(d.isoformat(), _normalize(content) + "\n")
+    return d
 
 
 async def get_faircopy(d: date) -> FaircopyResult:

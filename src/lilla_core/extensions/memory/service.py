@@ -7,7 +7,9 @@
 
 日付は `ui.timezone` 基準で `MemorySettings.day_rollover`（既定 04:00）を区切りとし、
 日付 d の分には d の `day_rollover` から翌日の `day_rollover` まで追記できる。各日の区間は
-切れ目なく続くため、どの時刻にも追記できる日付がちょうど 1 つある。
+切れ目なく続くため、どの時刻にも追記できる日付がちょうど 1 つあり、追記する日付は
+LLM に指定させずここで決める（`append_entry`）。読み取りは過去の日も指定でき、
+省略したらいまの日付を読む（`resolve_read_date`）。
 
 設定は 1 回の処理（追記・読み取り・タスクの 1 回）の中で `load_memory_settings()` を
 1 回だけ呼んで読み、下位の関数には引数で渡す。
@@ -82,14 +84,28 @@ def parse_date(value: object) -> date:
     """`YYYY-MM-DD` 形式の日付文字列を検証して `date` にする。
 
     Raises:
-        RememberError: 未指定または形式・暦として不正なとき。
+        RememberError: 文字列でない、または形式・暦として不正なとき。
     """
     if not isinstance(value, str) or not _DATE_RE.fullmatch(value.strip()):
-        raise RememberError("date is required in YYYY-MM-DD format")
+        raise RememberError("date must be in YYYY-MM-DD format")
     try:
         return date.fromisoformat(value.strip())
     except ValueError as e:
         raise RememberError(f"invalid date: {value}") from e
+
+
+async def resolve_read_date(value: object) -> date:
+    """読み取りの対象日を決める。未指定（`None`）ならいま追記できる日付を返す。
+
+    指定があれば `parse_date` で検証する（設定は読まない）。
+
+    Raises:
+        RememberError: 指定した日付が不正なとき、または未指定で設定を読めないとき。
+    """
+    if value is None:
+        settings = await load_memory_settings()
+        return current_date(rollover_time(settings))
+    return parse_date(value)
 
 
 def normalize_content(content: object) -> str:
@@ -168,21 +184,24 @@ def _format_time(value: object) -> str | None:
     return value.astimezone(local_timezone()).isoformat()
 
 
-async def append_entry(d: date, content: object) -> bool:
-    """その日の記録に 1 件追記する。
+async def append_entry(content: object) -> tuple[date, bool]:
+    """いま追記できる日付（`current_date`）の記録に 1 件追記する。
 
     Returns:
-        追記したら True、同じ本文が既にあって追記しなかったら False。
+        追記した日付と、追記したら True・同じ本文が既にあって追記しなかったら False の組。
 
     Raises:
-        RememberError: 本文が空・長すぎる、追記できる時間帯の外、または設定を読めないとき。
+        RememberError: 本文が空・長すぎる、または設定を読めないとき。
     """
     from lilla_core.extensions.memory.repository import get_remember_repo
 
     text = normalize_content(content)
     settings = await load_memory_settings()
-    ensure_writable(d, rollover_time(settings))
-    return await get_remember_repo().append_if_absent(d.isoformat(), text)
+    rollover = rollover_time(settings)
+    d = current_date(rollover)
+    ensure_writable(d, rollover)
+    appended = await get_remember_repo().append_if_absent(d.isoformat(), text)
+    return d, appended
 
 
 async def get_entries(d: date) -> list[RememberEntry]:

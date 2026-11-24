@@ -5,7 +5,7 @@ import logging
 
 from lilla_core.tool_support.tool_result import tool_error, tool_success
 
-from lilla_core.extensions.memory.service import RememberError, append_entry, parse_date
+from lilla_core.extensions.memory.service import RememberError, append_entry
 
 logger = logging.getLogger(__name__)
 
@@ -14,33 +14,29 @@ SCHEMA = {
     "function": {
         "name": "llm_remember_append",
         "description": (
-            "長期的に覚えておきたいこと（好み・決定事項・約束・学んだことなど）を、その日の remember に 1 件記録する。記録は夜間の整理タスクがまとめて長期記憶へ整理するため、文章は整えなくてよい。追記するだけで、既存の記録の編集・削除はできない。その日に既にある本文と完全に一致する本文は追記されず、appended が false になる。日付 d の分に追記できるのは d の日付の区切り（day_rollover の時刻。既定 04:00）から翌日の区切りまでで、それ以外の日付・空の本文・2000 文字を超える本文は失敗する。"
+            "長期的に覚えておきたいこと（好み・決定事項・約束・学んだことなど）を、いまの日付の remember に 1 件記録する。記録は夜間の整理タスクがまとめて長期記憶へ整理するため、文章は整えなくてよい。追記するだけで、既存の記録の編集・削除はできない。その日に既にある本文と完全に一致する本文は追記されず、appended が false になる。記録する日付はツールが決め（日付は day_rollover の時刻で切り替わる）、実際に記録した日付を date で返す。空の本文・2000 文字を超える本文は失敗する。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "date": {
-                    "type": "string",
-                    "description": "記録の日付（YYYY-MM-DD）。必須。日付の区切りより前は前日、それ以外はその日の日付を指定する。省略しても補完されない。",
-                },
                 "content": {
                     "type": "string",
                     "description": "覚えておきたい内容。1 件に 1 つの事柄を書く。メモ書きのままでよい。",
                 },
             },
-            "required": ["date", "content"],
+            "required": ["content"],
         },
     },
 }
 
 
 async def execute(input: dict, context: dict) -> dict:
-    """その日の記録に 1 件追記する。
+    """いまの日付の記録に 1 件追記する。
 
     Parameters
     ----------
     input : dict
-        LLM から渡されるパラメータ（`date` 必須、`content` 必須）
+        LLM から渡されるパラメータ（`content` 必須）
     context : dict
         ツール実行コンテキスト（未使用）
 
@@ -52,8 +48,7 @@ async def execute(input: dict, context: dict) -> dict:
     tool_name = SCHEMA["function"]["name"]
 
     try:
-        d = parse_date(input.get("date"))
-        appended = await append_entry(d, input.get("content"))
+        d, appended = await append_entry(input.get("content"))
     except RememberError as e:
         return tool_error(tool_name, "llm_remember_append 失敗", str(e))
     except Exception as e:
