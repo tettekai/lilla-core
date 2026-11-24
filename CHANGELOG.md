@@ -25,9 +25,11 @@
   - notes のトップレベルディレクトリ `memory` を宣言する
 - `Extension.notes_watched_paths()` を足した（#374）。ノート置き場 `notes` で、変わったら差分を知らせてほしいファイルのパスを返すと、どの書き込みの経路（LLM ツール・ダッシュボード・`/notes.git` への push・削除・復元）でも、エラー通知チャンネルへ差分の `.patch` を添えて知らせる（非破壊のため `EXTENSION_API_VERSION` は変えていない）
 - `ScheduledLlmTask` に、派生クラスがプロンプトの展開に変数を足す `_template_variables(context)` を足した（#374）。`None` を返すとその回は LLM を呼ばない
+- `ConversationRepository.list_for_client()` と `list_reacted()` に `before_id` を足し、指定したメッセージより `(time, _id)` の組で古いものを、基準の直前から `limit` 件・古い順で取れるようにした（#397）。返した先頭の `_id` を次の `before_id` に渡すと、さらに古い続きを重複も取りこぼしもなく取れる。`after_id` との同時指定・不正な形式は `ValueError`。説明は `docs/ja/reactions.md`
 
 ### Changed
 
+- **BREAKING**: `list_for_client()` / `list_reacted()` で `after_id` の基準のメッセージが無いとき、`since` があっても `since` だけの絞り込みに落とさず、常に `ConversationNotFoundError` を送出するようにした（#397）。`before_id` も同じ
 - **BREAKING**: 拡張が同梱したツール YAML（`tool_config_roots()`）の上書きを、`${CONFIG_ROOT}/extensions/<拡張名>/tools/` に置く差分の YAML に変えた（#382）。同梱分へトップレベルのキー単位で重ね（リストは丸ごと置き換え、`type` は省略できる）、止めるなら `enabled: false` を書く。`${CONFIG_ROOT}/tools` に同梱分と同じ stem の YAML を置いて丸ごと置き換える従来の方法は廃止し、起動時のエラーにした（移行の読み替えは無いので、手で移す）。同梱していない stem の上書き・ロードしていない拡張のディレクトリ・YAML の構文エラーも起動時のエラーになる。同梱タスクの `schedule` / `enabled` は、上書きファイルに書いたものがダッシュボードの `extension_overrides` の `tasks` より優先し、設定画面ではその項目に ⚠️ で知らせる（入力・保存はできるが使われない）。書いたキーをツールが受け付けるかは検査しない上級者向けの手段。説明は `docs/ja/tools.md`
 - **BREAKING**: `lilla_core.utils.resource_loader.load_text_resources` を非同期関数にした（#373）。`text = load_text_resources(spec)` は `text = await load_text_resources(spec)` に書き換える。同期版は残していない
 - **BREAKING**: `AppConfig` のプロパティ `system_prompt` / `conversation_prompt` / `discord_client_prompt` をやめ、非同期の `load_system_prompt()` / `load_conversation_prompt()` / `load_discord_client_prompt()` に置き換えた（#373）。`cfg.system_prompt` は `await cfg.load_system_prompt()` に書き換える。読む内容と「呼ぶたびに読み直す」意味は変わらない

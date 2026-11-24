@@ -356,6 +356,8 @@ def _match(doc: dict, query: dict) -> bool:
                     return False
                 if op == "$gte" and not value >= operand:
                     return False
+                if op == "$lt" and not value < operand:
+                    return False
         elif doc.get(key) != cond:
             return False
     return True
@@ -535,7 +537,7 @@ async def test_list_for_client_after_id_invalid_format_raises_value_error(bad_id
 
 
 async def test_list_for_client_after_id_missing_raises_not_found() -> None:
-    """after_id が存在せず since も無ければ ConversationNotFoundError。"""
+    """after_id が存在しなければ ConversationNotFoundError。"""
     collection, _ = _same_time_collection()
     repo = _make_repo(collection)
 
@@ -543,16 +545,119 @@ async def test_list_for_client_after_id_missing_raises_not_found() -> None:
         await repo.list_for_client(10, 0, after_id="65f0000000000000000000ff")
 
 
-async def test_list_for_client_after_id_missing_falls_back_to_since() -> None:
-    """after_id が存在しなくても since があれば since だけで絞り込む。"""
+async def test_list_for_client_after_id_missing_with_since_raises_not_found() -> None:
+    """after_id が存在しなければ since があっても ConversationNotFoundError（since へは落とさない）。"""
     collection, _ = _same_time_collection()
     repo = _make_repo(collection)
 
+    with pytest.raises(ConversationNotFoundError):
+        await repo.list_for_client(
+            10, 0, after_id="65f0000000000000000000ff", since=_T0 + timedelta(seconds=1),
+        )
+
+
+async def test_list_for_client_before_id_returns_older_oldest_first() -> None:
+    """before_id 指定時はそれより古いものだけを古い順に返し、自身は含めない。"""
+    collection, ids = _same_time_collection()
+    repo = _make_repo(collection)
+
+    assert _contents(await repo.list_for_client(10, 0, before_id=ids["e"])) == ["a", "b", "c", "d"]
+    assert await repo.list_for_client(10, 0, before_id=ids["a"]) == []
+
+
+async def test_list_for_client_before_id_keeps_same_time_predecessors() -> None:
+    """before_id と同じ time の先行（_id が小さいもの）も取りこぼさない。"""
+    collection, ids = _same_time_collection()
+    repo = _make_repo(collection)
+
+    assert _contents(await repo.list_for_client(10, 0, before_id=ids["d"])) == ["a", "b", "c"]
+    assert _contents(await repo.list_for_client(10, 0, before_id=ids["c"])) == ["a", "b"]
+
+
+async def test_list_for_client_before_id_takes_newest_limit() -> None:
+    """before_id は基準の直前（新しい側）から limit 件を取り、古い順で返す。"""
+    collection, ids = _same_time_collection()
+    repo = _make_repo(collection)
+
+    assert _contents(await repo.list_for_client(2, 0, before_id=ids["e"])) == ["c", "d"]
+
+
+async def test_list_for_client_before_id_paging_with_first_id() -> None:
+    """返した先頭の _id を次の before_id に渡すと、古い方向の続きが欠けなく取れる。"""
+    collection, ids = _same_time_collection()
+    repo = _make_repo(collection)
+
+    first = await repo.list_for_client(2, 0, before_id=ids["e"])
+    second = await repo.list_for_client(2, 0, before_id=first[0]["_id"])
+    third = await repo.list_for_client(2, 0, before_id=second[0]["_id"])
+
+    assert _contents(first) == ["c", "d"]
+    assert _contents(second) == ["a", "b"]
+    assert third == []
+
+
+async def test_list_for_client_before_id_sorts_descending() -> None:
+    """before_id では (time, _id) を降順で取る（既存の昇順インデックスを逆向きにたどる）。"""
+    anchor_time = _T0
+    collection = _make_collection()
+    cursor = _make_cursor([])
+    cursor.skip = MagicMock(return_value=cursor)
+    collection.find = MagicMock(return_value=cursor)
+    collection.find_one = AsyncMock(return_value={"_id": ObjectId(_OID), "time": anchor_time})
+    repo = _make_repo(collection)
+
+    await repo.list_for_client(10, 0, before_id=_OID)
+
+    assert collection.find.call_args[0][0] == {
+        "$or": [
+            {"time": {"$lt": anchor_time}},
+            {"time": anchor_time, "_id": {"$lt": ObjectId(_OID)}},
+        ],
+    }
+    cursor.sort.assert_called_once_with([("time", DESCENDING), ("_id", DESCENDING)])
+
+
+@pytest.mark.parametrize(
+    "bad_id", ["", "not-an-object-id", "65f0000000000000000000zz", "abcdefghijkl"]
+)
+async def test_list_for_client_before_id_invalid_format_raises_value_error(bad_id: str) -> None:
+    """before_id が ObjectId として不正な形式なら ValueError。"""
+    collection, _ = _same_time_collection()
+    repo = _make_repo(collection)
+
+    with pytest.raises(ValueError):
+        await repo.list_for_client(10, 0, before_id=bad_id)
+
+
+@pytest.mark.parametrize("since", [None, _T0])
+async def test_list_for_client_before_id_missing_raises_not_found(since: datetime | None) -> None:
+    """before_id が存在しなければ since の有無によらず ConversationNotFoundError。"""
+    collection, _ = _same_time_collection()
+    repo = _make_repo(collection)
+
+    with pytest.raises(ConversationNotFoundError):
+        await repo.list_for_client(10, 0, before_id="65f0000000000000000000ff", since=since)
+
+
+async def test_list_for_client_after_id_and_before_id_together_raise_value_error() -> None:
+    """after_id と before_id の同時指定は ValueError。"""
+    collection, ids = _same_time_collection()
+    repo = _make_repo(collection)
+
+    with pytest.raises(ValueError):
+        await repo.list_for_client(10, 0, after_id=ids["a"], before_id=ids["e"])
+
+
+async def test_list_for_client_before_id_and_since_are_combined() -> None:
+    """before_id と since を両方渡すと、両方を満たすものだけを返す。"""
+    collection, ids = _same_time_collection()
+    repo = _make_repo(collection)
+
     result = await repo.list_for_client(
-        10, 0, after_id="65f0000000000000000000ff", since=_T0 + timedelta(seconds=1),
+        10, 0, before_id=ids["e"], since=_T0 + timedelta(seconds=1),
     )
 
-    assert _contents(result) == ["b", "c", "d", "e"]
+    assert _contents(result) == ["b", "c", "d"]
 
 
 async def test_list_for_client_since_includes_boundary_oldest_first() -> None:
@@ -981,6 +1086,69 @@ async def test_list_reacted_paging_matches_list_for_client() -> None:
     }
     from pymongo import ASCENDING
     cursor.sort.assert_called_once_with([("time", ASCENDING), ("_id", ASCENDING)])
+
+
+async def test_list_reacted_before_id_uses_partial_index_descending() -> None:
+    """before_id でも REACTIONS_INDEX_NAME を hint にし、(time, _id) で古い側を降順に取る。"""
+    from lilla_core.repository.conversation_repository import REACTIONS_INDEX_NAME
+
+    anchor_time = _T0
+    cursor = _make_hintable_cursor([])
+    collection = MagicMock()
+    collection.find = MagicMock(return_value=cursor)
+    collection.find_one = AsyncMock(return_value={"_id": ObjectId(_OID), "time": anchor_time})
+    repo = _make_repo(collection)
+
+    await repo.list_reacted(10, 0, before_id=_OID)
+
+    query = collection.find.call_args[0][0]
+    assert query["$and"][0] == {"reactions": {"$exists": True}}
+    assert query["$and"][1] == {
+        "$or": [
+            {"time": {"$lt": anchor_time}},
+            {"time": anchor_time, "_id": {"$lt": ObjectId(_OID)}},
+        ],
+    }
+    cursor.hint.assert_called_once_with(REACTIONS_INDEX_NAME)
+    cursor.sort.assert_called_once_with([("time", DESCENDING), ("_id", DESCENDING)])
+
+
+async def test_list_reacted_before_id_returns_oldest_first() -> None:
+    """list_reacted の before_id も、取得した降順の結果を古い順に並べ直して返す。"""
+    newer = {"_id": ObjectId("65f0000000000000000000c0"), "time": _T0, "message": {}, "reactions": [{"emoji": "❤️"}]}
+    older = {"_id": ObjectId("65f0000000000000000000b0"), "time": _T0, "message": {}, "reactions": [{"emoji": "❤️"}]}
+    cursor = _make_hintable_cursor([newer, older])
+    collection = MagicMock()
+    collection.find = MagicMock(return_value=cursor)
+    collection.find_one = AsyncMock(return_value={"_id": ObjectId(_OID), "time": _T0})
+    repo = _make_repo(collection)
+
+    result = await repo.list_reacted(2, 0, before_id=_OID)
+
+    assert [item["_id"] for item in result] == [str(older["_id"]), str(newer["_id"])]
+
+
+async def test_list_reacted_missing_anchor_raises_not_found() -> None:
+    """list_reacted でも基準が無ければ since があっても ConversationNotFoundError。"""
+    cursor = _make_hintable_cursor([])
+    collection = MagicMock()
+    collection.find = MagicMock(return_value=cursor)
+    collection.find_one = AsyncMock(return_value=None)
+    repo = _make_repo(collection)
+
+    with pytest.raises(ConversationNotFoundError):
+        await repo.list_reacted(10, 0, before_id=_OID, since=_T0)
+    with pytest.raises(ConversationNotFoundError):
+        await repo.list_reacted(10, 0, after_id=_OID, since=_T0)
+
+
+async def test_list_reacted_after_id_and_before_id_together_raise_value_error() -> None:
+    """list_reacted でも after_id と before_id の同時指定は ValueError。"""
+    collection = MagicMock()
+    repo = _make_repo(collection)
+
+    with pytest.raises(ValueError):
+        await repo.list_reacted(10, 0, after_id=_OID, before_id=_OID)
 
 
 async def test_count_reactions_groups_by_emoji_with_partial_index() -> None:

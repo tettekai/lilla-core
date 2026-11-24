@@ -285,6 +285,7 @@ class ConversationRepository:
         offset: int,
         after_id: str | None = None,
         since: datetime | None = None,
+        before_id: str | None = None,
     ) -> list[dict]:
         """クライアント向けに会話履歴を返す（全件の新しい順か、差分取得）。
 
@@ -292,42 +293,55 @@ class ConversationRepository:
         順序も毎回同じになる（`_id` は ObjectId の採番順で、同じプロセスが続けて保存した
         ものは保存順に大きくなる）。
 
-        - `after_id` / `since` をどちらも省略した場合は従来どおり全件を新しい順
-          （`time` 降順、同時刻は `_id` 降順）にし、`offset` 件飛ばして `limit` 件返す。
-        - どちらかを指定した場合（差分取得）は **古い順**（`time` 昇順、同時刻は
-          `_id` 昇順）で、条件に合うものの先頭から `offset` 件飛ばして `limit` 件返す。
-          古い順にするのは、`limit` で切ったときに「既知の最新件の直後」から欠けなく
-          返すため（新しい順で切ると間が抜ける）と、クライアントが受け取った順に
-          末尾へ追加できるようにするため。続きは最後の要素の `_id` を次の
-          `after_id` に渡せば重複も取りこぼしもなく取れる。
+        - `after_id` / `before_id` / `since` をいずれも省略した場合は従来どおり全件を
+          新しい順（`time` 降順、同時刻は `_id` 降順）にし、`offset` 件飛ばして `limit` 件返す。
+        - `after_id` か `since` を指定した場合（新しい方向の差分取得）は **古い順**
+          （`time` 昇順、同時刻は `_id` 昇順）で、条件に合うものの先頭から `offset` 件
+          飛ばして `limit` 件返す。古い順にするのは、`limit` で切ったときに「既知の
+          最新件の直後」から欠けなく返すため（新しい順で切ると間が抜ける）と、
+          クライアントが受け取った順に末尾へ追加できるようにするため。続きは最後の
+          要素の `_id` を次の `after_id` に渡せば重複も取りこぼしもなく取れる。
+        - `before_id` を指定した場合（古い方向の続き）は、条件に合うものを新しい順に
+          `offset` 件飛ばして最大 `limit` 件取り、返すときは **古い順** に並べ直す
+          （`after_id` 指定時と同じ並び）。さらに古い続きは、返した先頭（いちばん古い
+          要素）の `_id` を次の `before_id` に渡せば重複も取りこぼしもなく取れる。
+          続きに `offset` は使わない（`offset` は飛ばした分も読む）。
 
         Args:
             limit: 返す最大件数。
-            offset: 先頭から飛ばす件数。
+            offset: 飛ばす件数（`before_id` のときは基準に近い新しい側から飛ばす）。
             after_id: このドキュメントより新しいものだけを返す（そのドキュメント自身は
                 **含まない**）。「より新しい」は `(time, _id)` の組で判定し、
                 `time` が大きいもの、または `time` が同じで `_id` が大きいものを返す
                 （同じ時刻に続けて保存された後続ブロックも取りこぼさない）。
                 ObjectId として不正な形式なら `ValueError`。存在しない
-                （TTL で消えた・削除された）場合は、`since` があれば `since` だけで
-                絞り込み、無ければ `ConversationNotFoundError` を送出する
-                （空リストを返すと「新しいものは無い」と区別できず取りこぼすため）。
+                （TTL で消えた・削除された）場合は、`since` の有無によらず
+                `ConversationNotFoundError` を送出する（空リストを返すと
+                「新しいものは無い」と区別できず取りこぼすため）。
             since: この時刻 **以降**（`time >= since`。境界ちょうどを **含む**）のものだけを
                 返す。含めるのは、同じミリ秒に保存された別ブロックを取りこぼさない
                 ためで、`save_entry` が返した `time` を渡すとそのエントリ自身も返る
                 （重複は `_id` で除く想定）。UTC の timezone-aware な値を推奨する。
-                `after_id` と同時に指定した場合は両方の条件を満たすものだけを返す。
+                `after_id` / `before_id` と同時に指定した場合は両方の条件を満たすものだけを返す。
+            before_id: このドキュメントより古いものだけを返す（そのドキュメント自身は
+                **含まない**）。「より古い」は `(time, _id)` の組で判定し、
+                `time` が小さいもの、または `time` が同じで `_id` が小さいものを返す
+                （同じ時刻に続けて保存された先行ブロックも取りこぼさない）。
+                不正な形式・存在しない場合の扱いは `after_id` と同じ。
+                `after_id` との同時指定は `ValueError`。
 
         Returns:
             {"_id": str, "time": datetime, "message": {...}, "reactions": [...]} のリスト。
             `reactions` はリアクションが無ければ空リスト（要素の形は `add_reaction` を参照）。
 
         Raises:
-            ValueError: `after_id` が ObjectId として不正な形式のとき。
-            ConversationNotFoundError: `after_id` のドキュメントが存在せず、
-                `since` も指定されていないとき。
+            ValueError: `after_id` / `before_id` が ObjectId として不正な形式のとき、
+                または両方を同時に指定したとき。
+            ConversationNotFoundError: `after_id` / `before_id` のドキュメントが存在しないとき。
         """
-        return await self._list_paged([], limit, offset, after_id, since, hint=None)
+        return await self._list_paged(
+            [], limit, offset, after_id, before_id, since, hint=None
+        )
 
     async def list_reacted(
         self,
@@ -336,37 +350,40 @@ class ConversationRepository:
         emojis: list[str] | None = None,
         after_id: str | None = None,
         since: datetime | None = None,
+        before_id: str | None = None,
     ) -> list[dict]:
         """リアクションの付いたメッセージだけを `list_for_client` と同じ形・並び順で返す。
 
-        並び順・`offset` / `limit`・続きの取り方（`after_id` / `since`）は
-        `list_for_client` と同じ。`after_id` には、この一覧が返した `_id` をそのまま
-        渡せばよい（基準のドキュメントにリアクションが無くなっていても、`(time, _id)`
-        の組で続きを判定する）。取得はリアクション付きのドキュメントだけを対象にした
-        部分インデックス（`REACTIONS_INDEX_NAME`）を使う。
+        並び順・`offset` / `limit`・続きの取り方（`after_id` / `before_id` / `since`）は
+        `list_for_client` と同じ。`after_id` / `before_id` には、この一覧が返した `_id` を
+        そのまま渡せばよい（基準のドキュメントにリアクションが無くなっていても、
+        `(time, _id)` の組で続きを判定する）。取得はリアクション付きのドキュメントだけを
+        対象にした部分インデックス（`REACTIONS_INDEX_NAME`）を使う。
 
         Args:
             limit: 返す最大件数。
-            offset: 先頭から飛ばす件数。
+            offset: 飛ばす件数（`list_for_client` と同じ）。
             emojis: 絞り込む絵文字（標準の絵文字なら文字そのもの、カスタム絵文字なら
                 名前）。いずれか 1 つでも付いていれば返す。`None` / 空なら
                 リアクション付きのメッセージをすべて対象にする。
             after_id: `list_for_client` と同じ。
             since: `list_for_client` と同じ。
+            before_id: `list_for_client` と同じ。
 
         Returns:
             `list_for_client` と同じ形のリスト（`reactions` は空にならない）。
 
         Raises:
-            ValueError: `after_id` が ObjectId として不正な形式のとき。
-            ConversationNotFoundError: `after_id` のドキュメントが存在せず、
-                `since` も指定されていないとき。
+            ValueError: `after_id` / `before_id` が ObjectId として不正な形式のとき、
+                または両方を同時に指定したとき。
+            ConversationNotFoundError: `after_id` / `before_id` のドキュメントが存在しないとき。
         """
         conditions: list[dict] = [{"reactions": {"$exists": True}}]
         if emojis:
             conditions.append({"reactions.emoji": {"$in": list(emojis)}})
         return await self._list_paged(
-            conditions, limit, offset, after_id, since, hint=REACTIONS_INDEX_NAME
+            conditions, limit, offset, after_id, before_id, since,
+            hint=REACTIONS_INDEX_NAME,
         )
 
     async def count_reactions(self) -> list[dict]:
@@ -408,32 +425,32 @@ class ConversationRepository:
         limit: int,
         offset: int,
         after_id: str | None,
+        before_id: str | None,
         since: datetime | None,
         hint: str | None,
     ) -> list[dict]:
         """`list_for_client` / `list_reacted` の共通の取得処理。
 
-        `base_conditions` に差分取得の条件（`after_id` / `since`）を AND で重ね、
-        `(time, _id)` の複合キーで並べて返す（並び順の決め方は `list_for_client` を参照）。
+        `base_conditions` に差分取得の条件（`after_id` / `before_id` / `since`）を
+        AND で重ね、`(time, _id)` の複合キーで並べて返す（並び順の決め方は
+        `list_for_client` を参照）。`before_id` のときは基準の直前（新しい側）から
+        `limit` 件取るため降順で取得し、返す前に古い順へ並べ直す。
+
+        Raises:
+            ValueError: `after_id` と `before_id` を同時に指定したとき、またはどちらかが
+                ObjectId として不正な形式のとき。
+            ConversationNotFoundError: `after_id` / `before_id` の基準のドキュメントが
+                存在しないとき（`since` の有無によらない）。
         """
+        if after_id is not None and before_id is not None:
+            raise ValueError("after_id and before_id cannot be specified together")
         conditions: list[dict] = list(base_conditions)
         if since is not None:
             conditions.append({"time": {"$gte": since}})
         if after_id is not None:
-            if not isinstance(after_id, str) or not ObjectId.is_valid(after_id):
-                raise ValueError("after_id is not a valid ObjectId")
-            after_oid = ObjectId(after_id)
-            anchor = await self._collection.find_one({"_id": after_oid}, {"time": 1})
-            if anchor is not None:
-                anchor_time = anchor["time"]
-                conditions.append({
-                    "$or": [
-                        {"time": {"$gt": anchor_time}},
-                        {"time": anchor_time, "_id": {"$gt": after_oid}},
-                    ],
-                })
-            elif since is None:
-                raise ConversationNotFoundError("conversation for after_id was not found")
+            conditions.append(await self._anchor_condition(after_id, "after_id", "$gt"))
+        if before_id is not None:
+            conditions.append(await self._anchor_condition(before_id, "before_id", "$lt"))
 
         if not conditions:
             mongo_filter: dict = {}
@@ -443,7 +460,10 @@ class ConversationRepository:
             mongo_filter = {"$and": conditions}
 
         incremental = after_id is not None or since is not None
-        direction = ASCENDING if incremental else DESCENDING
+        if before_id is not None:
+            direction = DESCENDING
+        else:
+            direction = ASCENDING if incremental else DESCENDING
         cursor = self._collection.find(
             mongo_filter,
             {"_id": 1, "message": 1, "time": 1, "reactions": 1},
@@ -457,6 +477,8 @@ class ConversationRepository:
             .limit(limit)
         )
         docs = await cursor.to_list(length=limit)
+        if before_id is not None:
+            docs.reverse()
         return [
             {
                 "_id": str(doc["_id"]),
@@ -466,6 +488,29 @@ class ConversationRepository:
             }
             for doc in docs
         ]
+
+    async def _anchor_condition(self, anchor_id: str, param_name: str, op: str) -> dict:
+        """差分取得の基準 `anchor_id` から `(time, _id)` の組で比べる条件を作る。
+
+        `op` が `$gt` なら基準より新しいもの、`$lt` なら基準より古いものを表す条件を返す。
+
+        Raises:
+            ValueError: `anchor_id` が ObjectId として不正な形式のとき。
+            ConversationNotFoundError: 基準のドキュメントが存在しないとき。
+        """
+        if not isinstance(anchor_id, str) or not ObjectId.is_valid(anchor_id):
+            raise ValueError(f"{param_name} is not a valid ObjectId")
+        anchor_oid = ObjectId(anchor_id)
+        anchor = await self._collection.find_one({"_id": anchor_oid}, {"time": 1})
+        if anchor is None:
+            raise ConversationNotFoundError(f"conversation for {param_name} was not found")
+        anchor_time = anchor["time"]
+        return {
+            "$or": [
+                {"time": {op: anchor_time}},
+                {"time": anchor_time, "_id": {op: anchor_oid}},
+            ],
+        }
 
     async def find_id_by_discord_message_id(self, discord_message_id: int) -> str | None:
         """Discord メッセージ ID から、それを `discord_message_ids` に持つ会話履歴の `_id` を返す。
