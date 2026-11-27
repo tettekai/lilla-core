@@ -25,8 +25,8 @@ dependencies = [
   "python-dotenv==1.2.4",
   "apscheduler==3.11.3",
   "pydantic==2.14.3",
-  "pydantic-settings==2.16.2",
-  "pymongo==4.19.0",
+  "pydantic-settings==2.16.3",
+  "pymongo==4.20.0",
   "tiktoken==0.14.0",
   "bcrypt==5.0.0",
   "dulwich==1.2.21",
@@ -36,7 +36,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "pytest==9.2.0",
-  "pytest-asyncio==1.4.1.post1",
+  "pytest-asyncio==1.5.0",
   "ruff==0.17.6",
 ]
 
