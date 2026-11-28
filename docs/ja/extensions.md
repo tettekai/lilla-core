@@ -24,7 +24,7 @@ extension = MyExtension()
 作ったモジュールは `LILLA_EXTENSIONS` に並べて読み込みます
 （[インストールと起動](getting-started.md#拡張を読み込んで起動する)）。
 
-標準機能のノート置き場（[`notes`](notes.md)。`name = "notes"`）と長期記憶（[`memory`](memory.md)。
+標準機能のノート置き場（[`notes`](notes.md)。`name = "notes"`）とメモリ（[`memory`](memory.md)。
 `name = "memory"`）だけは、`LILLA_EXTENSIONS` によらずコアが常に読み込みます（並べた拡張より前に
 入るため、`requires = ("notes",)` を書いても並び順を気にしなくて済みます）。`LILLA_EXTENSIONS` に並べても二重には読み込まず、警告を出して読み飛ばします。
 

@@ -1,4 +1,4 @@
-"""長期記憶の夜間タスク（毎日の整理 `task_memory_review` と週次の core 整理 `task_memory_compaction`）。
+"""memory 拡張のメモリの夜間タスク（毎日の整理 `task_memory_review` と週次の core 整理 `task_memory_compaction`）。
 
 実行部分（LLM を回し、`NO_NOTIFICATION` なら通知しない、通知先へ送る）はコアの
 `task_scheduled_llm` の `ScheduledLlmTask` をそのまま使い、このクラスは次の 2 つを受け持つ。
@@ -122,7 +122,7 @@ def _notes_storage():
 
 
 class MemoryLlmTask(_base.ScheduledLlmTask):
-    """YAML で省略された項目を既定値で埋め、対象日などを変数で渡す長期記憶の夜間タスク。"""
+    """YAML で省略された項目を既定値で埋め、対象日などを変数で渡すメモリの夜間タスク。"""
 
     def __init__(self, config: dict, name: str) -> None:
         """YAML 設定に既定値を補ってから `ScheduledLlmTask` として組み立てる。
@@ -132,7 +132,7 @@ class MemoryLlmTask(_base.ScheduledLlmTask):
             name: YAML のファイル名 stem（ツール名）。
 
         Raises:
-            ValueError: stem が長期記憶の夜間タスクでない場合、または
+            ValueError: stem がメモリの夜間タスクでない場合、または
                 `ScheduledLlmTask` の検証（`available_tools` の展開など）に失敗した場合。
         """
         super().__init__(self._fill_defaults(dict(config or {}), name), name)
@@ -142,7 +142,7 @@ class MemoryLlmTask(_base.ScheduledLlmTask):
         """省略された項目を既定値で埋めた設定を返す。
 
         Raises:
-            ValueError: stem が長期記憶の夜間タスクでない場合。
+            ValueError: stem がメモリの夜間タスクでない場合。
         """
         from lilla_core.core.config import get_config
 

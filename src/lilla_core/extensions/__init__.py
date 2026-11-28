@@ -14,7 +14,7 @@ import されることはない。有効化は利用者が `LILLA_EXTENSIONS` �
   LLM ツール（フォルダのホワイトリストで範囲を絞る）
 - `files`（`name = "files"`）: ローカルのディレクトリのホワイトリスト内のテキストファイルの読み書き
 
-`notes`（`name = "notes"`。bare Git リポジトリのノート置き場）と `memory`（`name = "memory"`。長期記憶）も
+`notes`（`name = "notes"`。bare Git リポジトリのノート置き場）と `memory`（`name = "memory"`。メモリ）も
 同じ場所に置いているが、これらは公式拡張パックの拡張ではなく標準機能で、`load_extensions()` が
 `LILLA_EXTENSIONS` によらず常に読み込む（`core/extension.py` の `BUILTIN_EXTENSION_MODULES`。コア本体は import パスを文字列で持つだけで、
 モジュールを直接 import しない）。

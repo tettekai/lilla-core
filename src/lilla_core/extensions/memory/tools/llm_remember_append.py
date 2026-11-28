@@ -1,4 +1,4 @@
-"""長期記憶のツール `llm_remember_append`（実処理は `memory.service`）。"""
+"""memory 拡張のメモリのツール `llm_remember_append`（実処理は `memory.service`）。"""
 from __future__ import annotations
 
 import logging
@@ -14,7 +14,7 @@ SCHEMA = {
     "function": {
         "name": "llm_remember_append",
         "description": (
-            "長期的に覚えておきたいこと（好み・決定事項・約束・学んだことなど）を、いまの日付の remember に 1 件記録する。記録は夜間の整理タスクがまとめて長期記憶へ整理するため、文章は整えなくてよい。追記するだけで、既存の記録の編集・削除はできない。その日に既にある本文と完全に一致する本文は追記されず、appended が false になる。記録する日付はツールが決め（日付は day_rollover の時刻で切り替わる）、実際に記録した日付を date で返す。空の本文・2000 文字を超える本文は失敗する。"
+            "長期的に覚えておきたいこと（好み・決定事項・約束・学んだことなど）を、いまの日付の remember に 1 件記録する。記録は夜間の整理タスクがまとめてメモリ（notes の memory/）へ整理するため、文章は整えなくてよい。追記するだけで、既存の記録の編集・削除はできない。その日に既にある本文と完全に一致する本文は追記されず、appended が false になる。記録する日付はツールが決め（日付は day_rollover の時刻で切り替わる）、実際に記録した日付を date で返す。空の本文・2000 文字を超える本文は失敗する。"
         ),
         "parameters": {
             "type": "object",
