@@ -36,7 +36,7 @@ bare Git リポジトリのノート置き場 `notes`（`lilla_core.extensions.n
 直接 import しない）。`LILLA_EXTENSIONS` に `notes` / `lilla_core.extensions.notes` が残っていたら、import せずに
 WARNING を出して読み飛ばす。`set_extensions()` / `lilla_core.testing.use_extensions()` は標準機能を足さない
 （テストで notes が要るなら `lilla_core.extensions.notes.extension` を明示的に渡す）。
-長期記憶の `memory`（`lilla_core.extensions.memory`。lilla-core#374）も同じ扱いの標準機能で、`BUILTIN_EXTENSION_MODULES`
+メモリの `memory`（`lilla_core.extensions.memory`。lilla-core#374）も同じ扱いの標準機能で、`BUILTIN_EXTENSION_MODULES`
 では notes の次に並ぶ。
 
 lilla-core は拡張が一切登録されていない状態でも Discord bot として単体で起動できる

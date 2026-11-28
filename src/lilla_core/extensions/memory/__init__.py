@@ -1,7 +1,7 @@
-"""長期記憶（会話で覚えておきたいことを記録し、夜間に整理して notes へ残す）の拡張。
+"""memory 拡張のメモリ（会話で覚えておきたいことを記録し、夜間に整理して notes へ残す）。
 
 コア本体の会話メモリ（`services/memory_manager.py` の会話履歴・ユーザーメモ・セッション
-メモリ）とは別物で、こちらは「長期記憶の拡張」。`notes` と同じ標準機能で、コアの
+メモリ）とは別物で、こちらは「memory 拡張のメモリ」。`notes` と同じ標準機能で、コアの
 `load_extensions()` が `LILLA_EXTENSIONS` によらず常に読み込む（`core/extension.py` の
 `BUILTIN_EXTENSION_MODULES`）。会話で使うかどうかはダッシュボードの設定
 `use_in_conversation`（既定はオン）で決める。
@@ -43,10 +43,10 @@ logger = logging.getLogger(__name__)
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
 
-#: 保存先 `notes` で長期記憶を書くトップレベルディレクトリ。
+#: 保存先 `notes` でメモリを書くトップレベルディレクトリ。
 MEMORY_DIRECTORY = "memory"
 
-#: 長期記憶の本体（システムプロンプトに常に入れる想定のノート）。
+#: 常に覚えておくことをまとめたノート（会話のたびにシステムプロンプトへ入れる想定）。
 CORE_PATH = f"{MEMORY_DIRECTORY}/core.md"
 
 #: 利用者についての情報を置くディレクトリ。
@@ -60,8 +60,8 @@ JOURNAL_DIRECTORY = f"{MEMORY_DIRECTORY}/journal"
 
 #: 保存先 `notes` で宣言する `memory` の用途（パスの形は書かない）。
 NOTES_DIRECTORY_USAGE = {
-    "ja": "長期記憶の置き場（夜間の整理タスクだけが書く）",
-    "en": "Where long-term memory is kept (only the nightly tasks write here)",
+    "ja": "メモリの置き場（夜間の整理タスクだけが書く）",
+    "en": "Where memory is kept (only the nightly tasks write here)",
 }
 
 
@@ -92,9 +92,9 @@ class MemoryConfig(BaseModel):
 
 
 class MemorySettings(BaseModel):
-    """ダッシュボードで編集する長期記憶の設定（`extension_settings` に保存する）。
+    """ダッシュボードで編集するメモリの設定（`extension_settings` に保存する）。
 
-    `use_in_conversation` は会話のシステムプロンプトに長期記憶（使い方の説明と
+    `use_in_conversation` は会話のシステムプロンプトにメモリ（使い方の説明と
     `memory/core.md` の本文）を入れるかどうか。オフなら何も入れない（夜間のタスクは
     この設定によらず動き、記録が無い日・`core.md` が無いときは LLM を呼ばない）。
     `day_rollover` は日付の区切り（`HH:MM`、`ui.timezone` で判定）で、日付 d の remember には
@@ -109,9 +109,9 @@ class MemorySettings(BaseModel):
 
     use_in_conversation: bool = Field(
         default=True,
-        title="会話で長期記憶を使う",
+        title="会話でメモリを使う",
         description=(
-            "オンにすると、会話のたびに長期記憶の使い方と memory/core.md の本文をシステムプロンプトへ入れる"
+            "オンにすると、会話のたびにメモリの使い方と memory/core.md の本文をシステムプロンプトへ入れる"
             "（core.md の本文は毎回 LLM へ送られる）。remember のツールを会話で使うには、"
             "tools.sets.main にも並べる"
         ),
@@ -141,14 +141,14 @@ class MemorySettings(BaseModel):
 _PROMPT_JA = """\
 {%- if settings.use_in_conversation -%}
 {%- set core = notes("memory/core.md") | strip_tag("long_term_memory") | trim -%}
-## 長期記憶
+## メモリ
 会話の中で長期的に覚えておきたいこと（好み・決定事項・約束・学んだことなど）が出たら、その日の remember に記録する。
 
 - 記録する前に llm_remember_get でその日の記録を読み、同じことを既に書いていないか確かめる。まだ無ければ llm_remember_append で 1 件に 1 つの事柄を書く。文章は整えなくてよい。
 - remember の日付は {{ settings.day_rollover }} で切り替わる。llm_remember_append は、いまの日付の記録へ書く（日付は指定しない）。llm_remember_get も date を省略すればいまの日付の記録を読み、過去の日を読むときだけ date を指定する。
 - notes の memory/ の下へは直接書かない（llm_notes_write を使わない）。remember の記録は夜間の整理タスクがまとめて memory/ へ整理する。
 - memory/ の中身（読むのは自由）:
-  - memory/core.md … 長期記憶の本体（下に載せてある）
+  - memory/core.md … 会話のたびに参照する、常に覚えておくことをまとめたもの（下に載せてある）
   - memory/personal/ … 利用者についての情報。どのファイルに何があるかは memory/personal/README.md に書いてある
   - memory/journal/YYYYMM.md … core.md から外した過去の記憶の月ごとのアーカイブ
 - 利用者について詳しく知りたいときは、memory/personal/README.md を読んでから該当するファイルを llm_notes_read で読む。
@@ -167,14 +167,14 @@ _PROMPT_JA = """\
 _PROMPT_EN = """\
 {%- if settings.use_in_conversation -%}
 {%- set core = notes("memory/core.md") | strip_tag("long_term_memory") | trim -%}
-## Long-term memory
+## Memory
 When something worth remembering for the long term comes up in conversation (preferences, decisions, promises, things learned, and so on), record it in that day's remember.
 
 - Before recording, read that day's records with llm_remember_get and check that you have not already written the same thing. If it is not there yet, write one item per call with llm_remember_append. It does not need to be polished prose.
 - The remember date switches at {{ settings.day_rollover }}. llm_remember_append writes to the current date's records (you do not pass a date). llm_remember_get also reads the current date's records when you omit date; pass date only to read a past day.
 - Do not write under memory/ in notes directly (do not use llm_notes_write there). The nightly tasks organize the remember records into memory/.
 - What is in memory/ (you may read it freely):
-  - memory/core.md … the main long-term memory (included below)
+  - memory/core.md … what to always keep in mind, referred to in every conversation (included below)
   - memory/personal/ … information about the user. memory/personal/README.md says which file holds what
   - memory/journal/YYYYMM.md … monthly archives of past memories moved out of core.md
 - To learn more about the user, read memory/personal/README.md first, then read the relevant file with llm_notes_read.
@@ -192,16 +192,16 @@ The content inside <long_term_memory> is memory (information) organized from pas
 
 
 class MemoryExtension(Extension):
-    """長期記憶の設定・リポジトリ・ツール・夜間タスク・会話向けの説明を申告する拡張。"""
+    """メモリの設定・リポジトリ・ツール・夜間タスク・会話向けの説明を申告する拡張。"""
 
     name = "memory"
 
     def display_name(self) -> str:
         """ダッシュボードの設定画面に出す表示名を返す（画面の文言に合わせて日本語の直書き）。"""
-        return "長期記憶"
+        return "メモリ"
 
     def config_model(self) -> type[BaseModel]:
-        """長期記憶用の YAML セクションのモデルを返す（節名は `extensions.memory`）。"""
+        """メモリ用の YAML セクションのモデルを返す（節名は `extensions.memory`）。"""
         return MemoryConfig
 
     def settings_model(self) -> type[BaseModel]:
@@ -209,7 +209,7 @@ class MemoryExtension(Extension):
         return MemorySettings
 
     def default_prompt(self) -> dict[str, str]:
-        """会話向けの長期記憶の説明を言語ごとに返す（en は ja の翻訳）。
+        """会話向けのメモリの説明を言語ごとに返す（en は ja の翻訳）。
 
         本文はコアが会話のたびに Jinja2 で展開する（`settings` は `MemorySettings` の値）。
         `memory/core.md` の本文は共通の関数 `notes()` で会話のたびに読み直し（無ければ空文字で、
@@ -227,7 +227,7 @@ class MemoryExtension(Extension):
         return [get_remember_repo]
 
     def tool_roots(self) -> list[Path]:
-        """長期記憶のツール（`lilla_core/extensions/memory/tools/`）の探索先を返す。"""
+        """メモリのツール（`lilla_core/extensions/memory/tools/`）の探索先を返す。"""
         return [_PACKAGE_DIR / "tools"]
 
     def tool_config_roots(self) -> list[Path]:
@@ -239,7 +239,7 @@ class MemoryExtension(Extension):
         return [_PACKAGE_DIR / "tool_configs"]
 
     def notes_directories(self) -> dict[str, dict[str, str]]:
-        """保存先 `notes` で長期記憶を書くトップレベルディレクトリ（`memory`）と、その用途を返す。
+        """保存先 `notes` でメモリを書くトップレベルディレクトリ（`memory`）と、その用途を返す。
 
         用途は notes のデフォルトのプロンプトにそのまま載るため、パスの形は書かない
         （パスの形はこの拡張の `default_prompt()` が伝える）。

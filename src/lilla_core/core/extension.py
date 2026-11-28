@@ -8,7 +8,7 @@
 import できなければ公式拡張パック（`lilla_core.extensions.google_oauth`）を
 補ってもう一度だけ試す短縮名記法にも対応する（`_import_extension_module()`）。
 
-`BUILTIN_EXTENSION_MODULES` に挙げた拡張（ノート置き場 `notes` と長期記憶 `memory`）は標準機能で、
+`BUILTIN_EXTENSION_MODULES` に挙げた拡張（ノート置き場 `notes` とメモリ `memory`）は標準機能で、
 `LILLA_EXTENSIONS` に並べなくても `load_extensions()` が常に先頭へ読み込む。
 `LILLA_EXTENSIONS` に残っていたら、二重登録にせず警告して読み飛ばす。
 
@@ -1683,7 +1683,7 @@ def load_extensions(spec: str | None = None) -> list[Extension]:
     （`_import_extension_module`）。公式拡張パック向けの短縮記法で、`.` を含む
     パス（第三者パックや、すでにフルパスで書いた公式拡張）には適用しない。
 
-    `BUILTIN_EXTENSION_MODULES` の拡張（標準機能のノート置き場 `notes` と長期記憶 `memory`）は `spec` に
+    `BUILTIN_EXTENSION_MODULES` の拡張（標準機能のノート置き場 `notes` とメモリ `memory`）は `spec` に
     よらず常に先頭へ読み込む（他の拡張が `requires` で依存しても並び順を気にせずに
     済むため）。`spec` に同じ拡張が書かれていたら（短縮名・フルパスのどちらでも）、
     二重登録で落とさずに WARNING を出して読み飛ばす。

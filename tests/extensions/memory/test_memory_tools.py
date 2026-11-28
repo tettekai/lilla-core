@@ -1,4 +1,4 @@
-"""長期記憶の LLM ツール（`llm_remember_append` / `llm_remember_get`）のテスト。"""
+"""memory 拡張のメモリの LLM ツール（`llm_remember_append` / `llm_remember_get`）のテスト。"""
 from __future__ import annotations
 
 from datetime import date

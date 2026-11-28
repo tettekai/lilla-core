@@ -1,4 +1,4 @@
-"""長期記憶の夜間タスク（`memory.tools.task_memory_llm`）のテスト。"""
+"""memory 拡張のメモリの夜間タスク（`memory.tools.task_memory_llm`）のテスト。"""
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -102,7 +102,7 @@ class TestDefaults:
         assert task._allowed_tool_names == []
 
     def test_unknown_stem(self, cfg) -> None:
-        """長期記憶のタスク以外の stem は落とす。"""
+        """メモリのタスク以外の stem は落とす。"""
         with pytest.raises(ValueError, match="not a memory task"):
             _task("task_other")
 

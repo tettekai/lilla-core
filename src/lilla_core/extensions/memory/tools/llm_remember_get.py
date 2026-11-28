@@ -1,4 +1,4 @@
-"""長期記憶のツール `llm_remember_get`（実処理は `memory.service`）。"""
+"""memory 拡張のメモリのツール `llm_remember_get`（実処理は `memory.service`）。"""
 from __future__ import annotations
 
 import logging
@@ -14,7 +14,7 @@ SCHEMA = {
     "function": {
         "name": "llm_remember_get",
         "description": (
-            "指定した日付に llm_remember_append で記録した「長期的に覚えておきたいこと」を、追記した順に全件返す（各要素は content と created_at）。date を省略するといまの日付（day_rollover の時刻で切り替わる）の記録を返し、返した日付を date に入れる。記録が無ければ空のリストを返す。date が不正なときは失敗する。長期記憶の本体（notes の memory/）は読まない。"
+            "指定した日付に llm_remember_append で記録した「長期的に覚えておきたいこと」を、追記した順に全件返す（各要素は content と created_at）。date を省略するといまの日付（day_rollover の時刻で切り替わる）の記録を返し、返した日付を date に入れる。記録が無ければ空のリストを返す。date が不正なときは失敗する。notes の memory/ は読まない。"
         ),
         "parameters": {
             "type": "object",

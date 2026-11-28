@@ -1,4 +1,4 @@
-"""`lilla_core.extensions.memory`（長期記憶の拡張）の申告・設定・会話向けプロンプトのテスト。"""
+"""`lilla_core.extensions.memory`（memory 拡張のメモリ）の申告・設定・会話向けプロンプトのテスト。"""
 from __future__ import annotations
 
 import pytest
@@ -86,7 +86,7 @@ class TestDeclarations:
         assert ext.name == "memory"
         assert ext.config_model() is memory.MemoryConfig
         assert ext.settings_model() is MemorySettings
-        assert ext.display_name() == "長期記憶"
+        assert ext.display_name() == "メモリ"
 
     def test_notes_directory(self) -> None:
         """notes の `memory` を、パスの形を書かない用途つきで宣言する。"""
@@ -94,6 +94,18 @@ class TestDeclarations:
         assert list(dirs) == ["memory"]
         assert set(dirs["memory"]) == {"ja", "en"}
         assert "/" not in dirs["memory"]["ja"]
+
+    def test_wording_is_memory_not_long_term_memory(self) -> None:
+        """用途の説明と夜間タスクのプロンプトは「長期記憶」と呼ばない。"""
+        texts = list(MemoryExtension().notes_directories()["memory"].values())
+        prompts_dir = memory._PACKAGE_DIR / "task_prompts"
+        prompt_files = sorted(prompts_dir.glob("*.md"))
+        assert len(prompt_files) == 4
+        texts += [p.read_text(encoding="utf-8") for p in prompt_files]
+
+        for text in texts:
+            assert "長期記憶" not in text
+            assert "long-term memory" not in text.lower()
 
     def test_bundled_tool_configs(self) -> None:
         """remember のツールと 2 つの夜間タスクの YAML を同梱する。"""
@@ -144,6 +156,19 @@ class TestDefaultPrompt:
         assert "05:00" in rendered
         assert "<long_term_memory>\n好きな色は青\n</long_term_memory>" in rendered
         assert "memory/core.md" in rendered
+
+    @pytest.mark.parametrize(
+        ("lang", "heading", "old_wording"),
+        [("ja", "## メモリ\n", "長期記憶"), ("en", "## Memory\n", "long-term memory")],
+    )
+    async def test_calls_it_memory(self, lang, heading, old_wording, fake_notes) -> None:
+        """見出しは「メモリ」で、「長期記憶」とは呼ばない（タグ名はそのまま）。"""
+        fake_notes({CORE_PATH: "x"})
+        rendered = await render_prompt(MemoryExtension().default_prompt()[lang], _settings())
+
+        assert rendered.startswith(heading)
+        assert old_wording not in rendered.lower()
+        assert "<long_term_memory>" in rendered
 
     @pytest.mark.parametrize("lang", ["ja", "en"])
     async def test_no_core_section_without_core_md(self, lang, fake_notes) -> None:
