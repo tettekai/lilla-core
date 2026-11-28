@@ -21,15 +21,15 @@ classifiers = [
 dependencies = [
   "aiohttp==3.14.5",
   "discord.py==2.7.1",
-  "pyyaml==6.0.3",
+  "pyyaml==6.0.4",
   "python-dotenv==1.2.4",
   "apscheduler==3.11.3",
-  "pydantic==2.14.3",
+  "pydantic==2.14.4",
   "pydantic-settings==2.16.3",
-  "pymongo==4.20.0",
+  "pymongo==4.20.1",
   "tiktoken==0.14.0",
   "bcrypt==5.0.0",
-  "dulwich==1.2.21",
+  "dulwich==1.2.22",
   "jinja2==3.1.6",
 ]
 
